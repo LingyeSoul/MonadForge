@@ -89,7 +89,7 @@ class HydraLoRAModule(RouterStateMixin, BaseLoRAModule):
         # 80-96x DC-bias outliers + 4096 tokens, mean-pool collapses to DC and
         # the router gets no gradient. lora_down is trained jointly, so
         # signal-carrying directions accumulate in rank-R space instead. See
-        # docs/methods/hydra-lora.md §Fixes.
+        # docs/methods/hydra-lora.md §Router gate.
         if self.use_global_router:
             self.sigma_feature_dim = 0
             self.fei_feature_dim = 0
@@ -139,7 +139,7 @@ class HydraLoRAModule(RouterStateMixin, BaseLoRAModule):
         RMS (not mean) pool: zero-mean activations don't cancel by √N over the
         L≈4096 sequence; safe in rank-R space since lora_down strips the raw
         DiT DC-bias outliers that break RMS in bf16 (docs/methods/hydra-lora.md
-        §Fixes). ``use_global_router`` bypasses this — gate is the broadcast
+        §Router gate). ``use_global_router`` bypasses this — gate is the broadcast
         ``_routing_weights`` buffer, ``lx`` ignored.
         """
         if self.use_global_router:

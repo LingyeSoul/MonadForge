@@ -5,17 +5,16 @@ asset, not a LoRA. The pack is a table of extra T5-side embedding rows
 (`ext_embed [rows, 1024]`, ids ≥ 32128) plus a JSON sidecar with the
 segmentation / row maps. English text is untouched: a prompt or caption with no
 routed character tokenizes bit-identically with or without the pack. On by
-default since v2: `configs/base.toml` ships `vocab_pack` pointing at the
+default: `configs/base.toml` ships `vocab_pack` pointing at the
 shipped pack, `make download-models` installs it, and the loader fetches it
 itself if the default is missing. Setting the key to `""` turns the whole path
 off (stock tokenizer).
 
 Public pack: <https://huggingface.co/sorryhyun/anima-vocab-pack-cjk>
 (`anima_cjk_vocab_pack_jp_v1.{safetensors,json}`, ~285 MB; the model card carries the
-training label). Research history lives under `project/finished/cjk_aware_anima/`; the
-builder is `bench/cjk_adapter/build_ext.py` (ext table) + `scripts/distill_cjk/`
-(corpus builders under `corpus/`, cache, distill) — see [Rebuilding a pack](#rebuilding-a-pack).
-The rest of this page is the shipped surface only.
+training label). The builder is `bench/cjk_adapter/build_ext.py` (ext table) +
+`scripts/distill_cjk/` (corpus builders under `corpus/`, cache, distill) — see
+[Rebuilding a pack](#rebuilding-a-pack).
 
 ## Intended use
 
@@ -50,14 +49,13 @@ make preprocess-te ARGS=--overwrite   # after any change, only if a caption carr
 
 If the configured prefix is the shipped default and the pair is not on disk, the
 loader (`resolve_pack_prefix`) fetches the catalog row itself with one printed
-line — so a pre-v2 checkout whose `base.toml` was overwritten by `make update`
-does not hard-fail. A custom `vocab_pack` path is never auto-fetched: a missing
-pair there is still a `FileNotFoundError` with the download hint.
+line. A custom `vocab_pack` path is never auto-fetched: a missing pair there is a
+`FileNotFoundError` with the download hint.
 
 | Surface | Selection | Notes |
 |---|---|---|
 | `configs/base.toml` `vocab_pack` | path prefix of the pair (shipped default: the CJK pack); `""` = off | The one key every surface below defaults to. `ANIMA_VOCAB_PACK` env overrides it (like `ANIMA_DIT`). |
-| `train.py` | `--vocab_pack` (config chain fills it; `--ext_pack` is the pre-v2 alias) | Routes inline TE caching + sample prompts, hooks the rows for sampling. Training steps read only the caches. |
+| `train.py` | `--vocab_pack` (config chain fills it; `--ext_pack` is an alias) | Routes inline TE caching + sample prompts, hooks the rows for sampling. Training steps read only the caches. |
 | `make preprocess-te` | forwarded automatically when the key is set | Caches are encoded through the pack (T5 ids and `crossattn_emb`) and stamped with its digest. |
 | `inference.py` / `make test` / `make gen` | `--vocab_pack PREFIX` overrides, `--no_vocab_pack` forces off, default = the key | Tokenizer + `llm_adapter.embed` hook, same table as the caches. |
 | `GenerationRequest` | `vocab_pack=…` / `no_vocab_pack=True` | `examples/09_cjk_vocab_pack.py`; the diffusers variant is `examples/10_cjk_vocab_pack_diffusers.py`. |
@@ -86,62 +84,50 @@ strategy and the DiT loader see the same table.
 TE caches invalidate on **caption mtime only** (`_cache_is_current` re-encodes a
 stem whose cache is older than its caption or `.variants.txt`) — no content hash
 of the encoder state. Enabling, disabling or swapping a pack changes the cached T5
-ids and `crossattn_emb` for every caption that carries CJK, but the caption did
-not change, so the trainer would silently use the stale files. Two guards:
+ids and `crossattn_emb` for every caption that carries CJK without touching the
+caption, so the caches go stale.
 
-- Every cache written through a pack carries `vocab_pack` / `vocab_pack_sha`
-  in its safetensors metadata. At train start the cache check compares the
-  stamp with the active pack and warns once per mismatch kind per run (pack
-  → none, none → pack, pack A → pack B) — one line, not one per file, so a
-  pre-v2 dataset whose caches carry no stamp logs a single `none → pack` line
-  under the v2 default. The fix is always `make preprocess-te
-  ARGS=--overwrite`; for EN-only captions the line is informational.
+Every cache written through a pack carries `vocab_pack` / `vocab_pack_sha`
+in its safetensors metadata. At train start the cache check compares the
+stamp with the active pack and warns once per mismatch kind per run (pack
+→ none, none → pack, pack A → pack B) — one line, not one per file; caches with
+no stamp log a single `none → pack` line. The fix is `make preprocess-te
+ARGS=--overwrite`; for EN-only captions the line is informational.
 
 EN-only datasets are unaffected either way (identical ids, identical caches).
 
 ## What works / what does not
 
-- Works: danbooru-style tags in JA behave like their English spelling in
-  same-seed grids (`猫耳` ≈ `cat ears`); mixed EN + CJK prompts; symbols the
-  stock T5 cannot spell (the pack's symbol block, e.g. `♡`); KO / ZH tag rows
-  are trained (glossary-derived) but were not grid-validated as widely as JA.
-  These tag results were measured on the pre-render pack. The rendering packs
-  from `_preview5` on retrain the kana / kanji rows on quoted-text rendering
-  composites, so JA tag behaviour on them is not re-verified.
-- Encode rules `_preview51` adds and `_jp_v1` keeps (json `fold` / `dots`): `〜` → `～`, `―` →
-  `ー`, `，` → `、`; a dot run → its own `…` row (one `・` → `.`, 2–3 dots →
-  `…`, 4+ → `……`). `...` / `…` take the row only beside Japanese text, so an
-  English prompt is unchanged. A reader without `dots` support (an older
-  trainer or ComfyUI node) silently skips the dot rule.
-- Renders (preview): quoted Japanese text drawn into the image —
+- Works: mixed EN + CJK prompts; symbols the stock T5 cannot spell (the pack's
+  symbol block, e.g. `♡`); KO / ZH spans route to glossary-derived tag rows.
+- Encode rules (json `fold` / `dots`): `〜` → `～`, `―` → `ー`, `，` → `、`; a dot
+  run → its own `…` row (one `・` → `.`, 2–3 dots → `…`, 4+ → `……`). `...` / `…`
+  take the row only beside Japanese text, so an English prompt is unchanged. A
+  reader without `dots` support (an older trainer or ComfyUI node) silently skips
+  the dot rule.
+- Renders: quoted Japanese text drawn into the image —
   `speech bubble, japanese text. … Japanese text reads as "はい".` Single kana /
   kanji and very short words render some of the time, seed-dependent; longer
   words and sentences mostly do not.
+- JA written as tags: the kana / kanji rows are trained on quoted-text rendering,
+  not tag identity — write tags in English.
 - Does not: full-CJK rare-kanji character names do not compose —
   type them in latin (`hakurei reimu`). Free-form CJK sentences are a
   tokenization path, not a translation: the rows carry tag identity, not
   grammar.
-- Not in this pack: the quote-partitioned isotropic block (`iso`) used by
-  the manga-unmask line (`project/finished/cjk_aware_anima_dit/`) is a research build
-  (`output/ckpt/*_isoq`), not published. `HybridT5Encoder` handles it when a
-  local pack carries one; the shipped pack routes every CJK span to the
-  trained rows.
-- The **line block** (`mapping["line"]`, 2026-09-26: one vector added to
-  every ext id with an ext neighbour, the pack form of the cjk_anima_scale
-  line's gated `v_line`) was **removed 2026-09-28**. `ext_vocab.materialize`
-  refuses a pack that still carries one — the local
-  `models/vocab_packs/anima_cjk_vocab_pack_300fsp_line05/` no longer loads
-  — and `bake_vocab_pack.py` has no `--line_*` flags. The retrain line
-  composes through per-glyph routing on cold singles instead
-  (`project/finished/cjk_anima_scale/retrain_experiments.md`).
+- `HybridT5Encoder` also handles a quote-partitioned isotropic block (`iso`)
+  when a local pack carries one; the published pack has none and routes every
+  CJK span to the trained rows.
+- `ext_vocab.materialize` refuses a pack that carries a line block
+  (`mapping["line"]`).
 
-## The shipped pack: `_jp_v1` (2026-10-08)
+## The published pack: `_jp_v1`
 
 1 573 trained rows (kana 163, kanji 1 410) on the punct pack (`_preview51`'s
 encode rules and its retrained marks `～ … ♡ ♥ 、 。「」`, carried as is); digest
 `ce0ec15f7168…`. Kanji with a row cover 96.7 % of Manga109-s kanji
 occurrences (`_preview51`: 92.8 %). Trained glyph list:
-`anima_cjk_vocab_pack_jp_v1_trained.json` on the Hub. Recipe of record, all in
+`anima_cjk_vocab_pack_jp_v1_trained.json` on the Hub. Recipe, all in
 `project/cjk_anima_reseed/` (`_archive/plan.md` § 3):
 
 1. **A — identity** (`retrain_kanji_b5`, `project/finished/cjk_anima_scale/`): 225 new
@@ -155,8 +141,8 @@ occurrences (`_preview51`: 92.8 %). Trained glyph list:
 
 Against `_preview51` (pres's read, `progress.md` § 4): glyph F1 +0.029
 (p 0.0035), the page up (en_match +0.097, p 5e-8), cer n.s.; it draws text
-about a third smaller. Upgrading from
-`_preview51`: `make preprocess-te ARGS=--overwrite` for CJK captions.
+about a third smaller. Moving caches from `_preview51`: `make preprocess-te
+ARGS=--overwrite` for CJK captions.
 
 **ComfyUI without a pack loader:** `sorryhyun/anima-jp-extended` is the base
 DiT with `_jp_v1` merged in (`scripts/toolkits/merge_vocab_pack.py` →
@@ -192,7 +178,7 @@ line says the flags were not recorded.
    is (the loader reads the json's routing maps; the Hub repo also carries the
    Qwen3 tokenizer files next to it).
 
-### `synthja_v4` — the JA tag tier (2026-08-31)
+### `synthja_v4` — the JA tag tier
 
 CPU stages, in order (`--lang ja` is the default everywhere; the exact flags of
 the JA glossary / pairs runs were not recorded — the defaults are the recipe):
@@ -222,10 +208,9 @@ make daemon-run ARGS="-m scripts.distill_cjk.distill --pairs $P --cache_dir $C \
 
 `v4` = `v3` + the allowed-kanji filter (`kanji_allow.ALLOWED`, jōyō + jinmeiyō
 + the reviewed hyōgai whitelist) applied inside `tag_glossary`; the ext table
-was the v1 build (`--map ridge --char-init fragment-mean`). `cache_synth3` and
-`pairs_synth_tags.jsonl` are no longer on disk — rebuild from the corpus stages.
+was the v1 build (`--map ridge --char-init fragment-mean`).
 
-### `synthjakozh1sym_r256` — the shipped JA+KO+ZH pack (2026-09-03)
+### `synthjakozh1sym_r256` — the JA+KO+ZH distill
 
 Corpus (CPU). The JA file is `pairs_tags.jsonl` (`build_pairs` + `synth_tags`,
 registers `tags,tags_alt,names,tags_synth_ja`); KO and ZH are `--lang` passes
@@ -233,13 +218,13 @@ of the same stages plus the KO description register and the ZH `tags_zh_hant`
 sibling (OpenCC s2t, emitted by `build_pairs --lang zh`). Flags on record:
 
 ```bash
-# JA (rebuilt 2026-09-02 after the glossary r2 review)
+# JA
 make daemon-run ARGS="-m scripts.distill_cjk.corpus.tag_glossary --mt"
 make exp-cjk-corpus ARGS="tag_glossary --lang ja --reselect post_image_dataset/cjk_distill/assets/tag_glossary_ja.json"  # CPU re-pick over stored candidates
 make exp-cjk-corpus ARGS="build_pairs --lang ja"                  # pairs.jsonl, 63,241 pairs (a --commentary D2 file was passed; D2 is span-less and not a trained register)
 make exp-cjk-corpus ARGS="synth_tags"                             # tags_synth_ja
 # the merge that wrote pairs_tags.jsonl (tags, tags_alt, names, tags_synth_ja — no names_synth) was not recorded
-# KO (0831 glossary audit, round 3)
+# KO
 make exp-cjk-corpus ARGS="tag_glossary --lang ko --reselect"      # sources: KR KB (models/danbooru_tags_classified.csv) → wiki → MT
 make exp-cjk-corpus ARGS="build_pairs --lang ko --alt-register"   # pairs_ko.jsonl: tags_ko / tags_alt_ko / names_ko
 make exp-cjk-corpus ARGS="synth_names --lang ko --context ja --max-names 500 --floor 60 --max-per-name 40"  # → pairs_synth_ko.jsonl
@@ -276,17 +261,16 @@ make daemon-run ARGS="-m scripts.distill_cjk.distill --pairs $D/pairs_tags.jsonl
 The symbol rows ride along untrained in this pack (the pool touches 33 of
 6,118 `sym` rows); the `tags_sym` register that teaches them is
 `build_pairs_sym` → `cache_sym` → the same distill with `cache_sym` appended
-and `tags_sym` in `--train_registers` (the `u5-sym-r256` arm, not shipped).
+and `tags_sym` in `--train_registers`.
 The published `_preview` / `_preview2` packs are this pack plus a baked
 wake-line delta (`scripts/toolkits/bake_vocab_pack.py`), not a re-distill.
 
-## Unmask recipe (not shipped as a variant yet)
+## Unmask recipe
 
-The reason the pack is a trainer path: manga pages train with text masks
-off when the in-image text is OCR'd into the caption and encoded through
-the pack (`masked_loss=false` + OCR captions + `vocab_pack`). Unmasking
-without the captions reproduces the text spam, so it is a bundle, not a
-toggle. The recipe and its evidence live in
-`_archive/cjk_aware_anima/reports/0901_unmask_ab.md` (archived with the frozen line) and the `cjk_unmask_*`
-configs under `configs/gui-methods/custom/`; the OCR caption stage is still
-research-side (v2 release plan items B5/B6).
+Manga pages can train with text masks off when the in-image text is OCR'd into
+the caption and encoded through the pack (`masked_loss=false` + OCR captions +
+`vocab_pack`). Unmasking without the captions reproduces the text spam, so the
+three go together. OCR text clauses come from the caption stages (`make
+caption-full`, attached by the export stage's `--combine_ocr`). Configs:
+`cjk_unmask_*` under `configs/gui-methods/custom/`; evidence:
+`_archive/cjk_aware_anima/reports/0901_unmask_ab.md`.

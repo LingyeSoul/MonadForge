@@ -9,8 +9,8 @@ the same variant; REPA adds no inference-time parameters.
 
 ## Shipped configuration
 
-The stack settled to a single operating point (Phase 0/1 closed 2026-06; DoG
-made default 2026-06-28). All defaults live in `configs/methods/lora.toml`:
+All defaults live in `configs/methods/lora.toml` (`configs/base.toml` keeps
+`use_repa = false`):
 
 | Knob | Default | Meaning |
 |---|---|---|
@@ -27,7 +27,7 @@ per-token L2-normalized features — only *which patches are alike* transfers
 photo prior) cancels out of the pairwise structure by construction. There is no
 projection head and no dimension match.
 
-REPA-DoG replaces the older `spatial_norm` DC removal with a
+REPA-DoG applies a
 difference-of-Gaussians band-pass of the target before standardize + per-token
 L2-norm (`σ₁ = min(gh,gw)/16`, σ₂ off). It strips a broad low-frequency band
 rather than just the DC term, which lifts target discriminability on all content
@@ -38,10 +38,9 @@ Both forms align a noisy-input mid-block feature to the clean-image
 encoder target at every sampled σ (paper-faithful σ-conditioning), captured from
 the primary forward — no second DiT forward, so no block-swap offloader desync.
 
-> An `absolute` arm (`repa_mode = "absolute"`) — per-token cosine through a
-> 3-layer `REPAHead` MLP — remains implemented for reference. It lost the Phase-0
-> A/B (relational preferred ~6:4) and is not the shipped path; the head is
-> training-only and stripped at save. Don't use it without re-benching.
+`repa_mode = "absolute"` — per-token cosine through a 3-layer `REPAHead` MLP —
+is also implemented; relational was preferred ~6:4 over it in A/B. The head is
+training-only and stripped at save.
 
 ## Quick start
 
@@ -92,25 +91,22 @@ features load but the block hook never fires, the adapter warns once.
   `NETWORK_KWARGS` allowlist (`networks/__init__.py`) is AST-derived from literal
   `kwargs.get("<key>")` reads in the consumer modules — a new key read any other
   way is silently not forwarded.
-- EasyControl: relational REPA is validated and shipped as the EasyControl
+- EasyControl: relational REPA is the EasyControl
   default for cond ≠ target tasks (sanitize/colorize). The aux-loss dispatch runs
   on both the cached-LLM-adapter and in-model (`crossattn_emb=None`) text paths;
   a launch check for `repa/active=1.0` *without* `repa/align_loss` catches a
   silently-skipped term. Mechanism in `docs/experimental/easycontrol.md`.
 
-## Guardrails
+## Known results
 
-- Never re-run v1's operating point (global pooling + weight 0.5). v1's
-  documented outcome: anatomy ↑ but anime style broken (vision-encoder
-  photo-prior leak).
-- **Style gate is non-negotiable** — any change that visibly moves style fails
-  regardless of its anatomy delta.
-- Judge on sample grids first, CMMD-vs-own-PE-Core as the drift tripwire.
-  Never FM val loss (uninformative on Anima), never fraction-of-Δ readouts.
-- REPA does not transfer to the DP-DMD (turbo) student — relational REPA on
-  the distilled student was net-negative (drift amplification, then
-  over-alignment damage even after the fix). Refuted and removed; don't
-  re-propose (`_archive/proposals/turbo_repa.md`, `_archive/bench/turbo_repa/`).
+- v1 (global pooling, weight 0.5) improved anatomy but broke anime style — the
+  vision encoder's photo prior leaked through. The relational form cancels that
+  global direction.
+- FM val loss does not track REPA's effect on Anima; changes are read on sample
+  grids, with CMMD against the run's own PE-Core features as the drift check.
+- Relational REPA on the DP-DMD (turbo) student was net-negative (drift
+  amplification, then over-alignment damage); turbo has no REPA path
+  (`_archive/proposals/turbo_repa.md`, `_archive/bench/turbo_repa/`).
 
 ## References
 
@@ -120,7 +116,7 @@ features load but the block hook never fires, the adapter warns once.
   `library/training/losses.py::_repa_loss`,
   `library/datasets/base.py::_try_load_repa_pe` (sidecar loading),
   `library/vision/buckets.py::PE_SPATIAL_B16_512_SPEC`.
-- Design history (archived on closure): `_archive/proposals/repa_v2_patchwise_pe_spatial.md`,
+- Design history: `_archive/proposals/repa_v2_patchwise_pe_spatial.md`,
   `_archive/proposals/repa_phase1_operating_point.md`,
   `_archive/proposals/repa_dog_target.md`; v1 implementation in `_archive/repa/`;
   probes in `_archive/bench/repa/`.

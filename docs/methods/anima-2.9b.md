@@ -39,23 +39,21 @@ Training — the working recipe on 16GB is `--preset low_vram` with
 | `--blocks_to_swap 16` | survives exactly one step, then OOM |
 | `--preset low_vram --blocks_to_swap 0` | works — 32 steps at 4.6 → 2.2 s/it |
 
-That one surviving step matters: it says the 40-block forward/backward path is
-correct and the failure is purely a VRAM ceiling. Note `blocks_to_swap` and
+The surviving step shows the 40-block forward/backward path is correct and the
+failure is a VRAM ceiling. `blocks_to_swap` and
 `unsloth_offload_checkpointing` are mutually exclusive (hard assert in
 `train.py::assert_extra_args`), so the two offload levers do not stack.
 
-`torch_compile` is already on by default in `base.toml`, so the usual
-"block-compile first" response to OOM is spent before you get here — gradient
-checkpointing is the genuine next lever.
+`torch_compile` is already on in `base.toml`; gradient checkpointing is the next
+memory lever.
 
 ### Calibration coverage
 
 `networks/calibration/channel_stats.safetensors` is baked at 28 blocks, so on a
 40-block DiT `channel_scaling` applies to blocks 0–27 and warns for the remaining
 120 modules (observed: `280 DiT modules received calibration-based input scaling`
-/ `120 DiT modules have no calibration stats`). Training is unaffected in
-correctness but blocks 28–39 train without input rebalancing — regenerate with
-`scripts/calibration/analyze_lora_input_channels.py` before serious 2.9B runs.
+/ `120 DiT modules have no calibration stats`). Blocks 28–39 train without input rebalancing; regenerate with
+`scripts/calibration/analyze_lora_input_channels.py` for 2.9B runs.
 `dave_alpha.npz` is likewise a 28-vector and raises a clear re-derive error.
 **CNS γ is not depth-baked** — its `(1, 28, 32)` middle axis is timesteps.
 
@@ -81,9 +79,6 @@ Multi-character prompts are mixed. 2.9B follows the posing better (base turned b
 characters away from the viewer, which the prompt never asked for) but leaked the
 straw hat assigned to only one character onto both — base got that attribution
 right.
-
-Reproduce with `bench`-style ad-hoc generation or `make gen`; the source images
-for these sheets were rendered per-prompt/seed against both `--dit` paths.
 
 ## Prompting
 

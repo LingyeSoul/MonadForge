@@ -516,7 +516,7 @@ def create_network_from_weights(
                     f"appended (≤ {_SIGMA_FEATURE_CAP}). The excess width "
                     f"{extra} is most likely an old-format router trained "
                     "on raw layer input (see docs/methods/hydra-lora.md "
-                    "§Fixes). There is no salvage path — retrain the LoRA."
+                    "§Router gate). There is no salvage path — retrain the LoRA."
                 )
             if sigma_feature_dim_detected is None:
                 sigma_feature_dim_detected = extra
