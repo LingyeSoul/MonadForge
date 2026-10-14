@@ -289,6 +289,58 @@ class Vl16Sweeper:
         return out
 
 
+class Vl16ScoredSweeper(Vl16Sweeper):
+    """``Vl16Sweeper`` plus the mean logprob of the greedy tokens."""
+
+    def read(self, crops):
+        from PIL import Image
+
+        tok = self.proc.tokenizer
+        images = [Image.fromarray(c[:, :, ::-1]) for c in crops]
+        inputs = self.proc(
+            text=[self.text] * len(images),
+            images=images,
+            padding=True,
+            padding_side="left",
+            return_tensors="pt",
+            images_kwargs={
+                "size": {
+                    "shortest_edge": self.r.min_edge,
+                    "longest_edge": 1280 * 28 * 28,
+                }
+            },
+        ).to(self.device)
+        n = inputs["input_ids"].shape[-1]
+        with self.torch.inference_mode():
+            o = self.model.generate(
+                **inputs,
+                max_new_tokens=ev.MAX_NEW_TOKENS,
+                do_sample=False,
+                use_cache=True,
+                output_scores=True,
+                return_dict_in_generate=True,
+            )
+            lp = (
+                self.model.compute_transition_scores(
+                    o.sequences, o.scores, normalize_logits=True
+                )
+                .float()
+                .cpu()
+            )
+        out = []
+        for row, row_lp in zip(o.sequences, lp):
+            gen = row[n:].tolist()
+            keep = [
+                i
+                for i, t in enumerate(gen)
+                if t not in (tok.eos_token_id, tok.pad_token_id)
+            ]
+            ids = [gen[i] for i in keep]
+            mean_lp = float(row_lp[keep].mean()) if keep else float("nan")
+            out.append((tok.decode(ids).strip(), len(ids), mean_lp))
+        return out
+
+
 class MangaOcrSweeper:
     """The manga-ocr fine-tune; its ``read`` already returns a mean token logprob."""
 
@@ -349,6 +401,7 @@ SWEEPERS = {
     "vl16": Vl16Sweeper,
     "manga_ocr": MangaOcrSweeper,
     "stock": Vl16Sweeper,
+    "vl16_scored": Vl16ScoredSweeper,
     "hayai": HayaiSweeper,
     "hayai25": Hayai25Sweeper,
 }
