@@ -368,4 +368,6 @@ to `seed_retrain_0930`: words exact 10 / 26 against 19, singles 6 / 11 against
 18. The rows letter their glyph (singles contained 17 – 18 against 19), but
 they repeat it (dup 12 – 17 against 1): the risk above, in-word exposure at ¼.
 Words keep improving at every save up to 150 a row, so the step count does not
-come down. Neither arm goes warm.
+come down. The scene holds: en_cos_out is at the floor on words and above it on
+singles. Neither arm draws its glyph large or centred, and A leans over B on
+the scene. Neither arm goes warm.
