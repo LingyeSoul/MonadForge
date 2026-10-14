@@ -4,14 +4,18 @@
     ANIMA_MANGA109S_ROOT=… .venv/bin/python project/ocr_reader/hito/opus_manifest.py \\
         [--exclude ids.txt]
 
-Reads ``hito_ocr/ko/prelabel_opus.jsonl`` and ``gelnote_crops/relabel_opus.jsonl``,
-keeps ``status`` ∈ {ok, ok_fixed}, and writes ``manifest_pseudo_opus_relabel.parquet``
-next to the other pseudo manifests (``kind = "sfx"``, ``source = "opus"``). Train with
+Reads every ``hito_ocr/ko/prelabel_opus*.jsonl`` round (``opus_batch.py merge`` adds
+one per round) and ``gelnote_crops/relabel_opus.jsonl``, keeps ``status`` ∈ {ok,
+ok_fixed}, and writes ``manifest_pseudo_opus_relabel.parquet`` next to the other
+pseudo manifests (``kind = "sfx"``, ``source = "opus"``). Train with
 ``--extra_manifest pseudo_opus_relabel``.
 
-Rows of the galleries listed in ``hito_ocr/FLAGGED.md`` are already ``excluded`` in
-the jsonl. ``--exclude`` drops more: a file with one hito gallery / gelnote image id
-per line (``#`` comments allowed).
+Round 1 marked the galleries in ``hito_ocr/FLAGGED.md`` ``excluded`` in the jsonl.
+Later rounds label every crop and carry the labeller's ``flag`` per row instead;
+``--drop_flagged`` leaves out every gallery with a flagged row or listed in
+``flagged_galleries_opus*.json`` (round 1's refusals included).
+``--exclude`` drops more: a file with one hito gallery / gelnote image id per line
+(``#`` comments allowed).
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ocr"))
 import manga109 as m109  # noqa: E402
 
-HITO = Path("/media/sorryhyun/new/dataset/hito_ocr/ko/prelabel_opus.jsonl")
+HITO_DIR = Path("/media/sorryhyun/new/dataset/hito_ocr/ko")
 GELNOTE = Path("/media/sorryhyun/new/dataset/gelnote_crops/relabel_opus.jsonl")
 KEEP = {"ok", "ok_fixed"}
 
@@ -40,9 +44,10 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--hito", type=Path, default=HITO)
+    ap.add_argument("--hito_dir", type=Path, default=HITO_DIR)
     ap.add_argument("--gelnote", type=Path, default=GELNOTE)
     ap.add_argument("--exclude", type=Path)
+    ap.add_argument("--drop_flagged", action="store_true")
     ap.add_argument("--out_name", default="opus_relabel")
     a = ap.parse_args()
 
@@ -53,11 +58,12 @@ def main():
             if line:
                 drop.add(line)
 
-    rows = [
-        json.loads(line)
-        for f in (a.hito, a.gelnote)
-        for line in f.open(encoding="utf-8")
-    ]
+    files = sorted(a.hito_dir.glob("prelabel_opus*.jsonl")) + [a.gelnote]
+    rows = [json.loads(line) for f in files for line in f.open(encoding="utf-8") if line.strip()]
+    if a.drop_flagged:
+        drop |= {gallery(r["uid"]) for r in rows if r.get("flag")}
+        for p in a.hito_dir.glob("flagged_galleries_opus*.json"):
+            drop |= set(json.loads(p.read_text()))
     kept = [r for r in rows if r["status"] in KEEP and gallery(r["uid"]) not in drop]
 
     out = []
@@ -97,7 +103,7 @@ def main():
     df.to_parquet(path, index=False)
     by = df.book.str[:2].map({"hi": "hito", "gn": "gelnote"})
     print(
-        f"wrote {path} ({len(df)} rows; dropped by --exclude: "
+        f"wrote {path} ({len(df)} rows; dropped by --exclude/--drop_flagged: "
         f"{sum(r['status'] in KEEP for r in rows) - len(kept)})"
     )
     print(pd.crosstab(by, [r["lang"] for r in kept]).to_string())
