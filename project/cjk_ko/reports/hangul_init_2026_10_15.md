@@ -111,6 +111,18 @@ Paired on exact, cf_pe against cf: trained 10 / 12, next 5 / 7, H 4 / 7
    fell back to sentences the same way. Or 211 is too large a start for a
    weak (cos 0.11 – 0.17) direction.
 
+By eye (`sheet_H_0` – `3`), on H:
+
+- **v4 undercounts cf_pe by one.** cf_pe draws 시 large and correct, and v4
+  reads it as 지. By eye cf_pe is ≈ 8 / 32.
+- **cf_pe alone gets 제 and 세.** cf draws `제언퍼` and 쇄.
+- **The extra letters are text boxes and second bubbles** beside or instead
+  of the syllable: 은, 해, 요, 소, 할, 록 (`세살라존 래언머주`, `세멀어슨
+  러얽미수`). The floor has the same fallback text on 제 and 체; cf_pe falls
+  into it more often.
+- **문 draws the same sentence template in all three arms**
+  (`○질시든 안두`).
+
 Verdict: with the kana arms (`../cjk_anima_reseed/reports/hira_cold_2026_10_14.md`
 § 5), a glyph-predicted start buys loss early and nothing on the renders.
 Here it costs H's precision.
