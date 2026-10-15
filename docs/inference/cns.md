@@ -2,7 +2,7 @@
 
 Training-free SDE sampler plug-in. Replaces the white noise that `ERSDESampler` injects each step with frequency-colored, RMS-normalized noise that dumps the fixed stochastic-energy budget into the radial frequency bands the network has *not yet resolved* at that step. A zero-sum reallocation of a fixed variance budget — not a global noise scale-up.
 
-Paper: [Colored Noise Diffusion Sampling](https://hadardavidson.github.io/CNS/) (Davidson, Issachar, Benaim — Hebrew U., arXiv [2605.30332](https://arxiv.org/abs/2605.30332)). Local PDF at repo root `2605.30332v1.pdf`.
+Paper: [Colored Noise Diffusion Sampling](https://hadardavidson.github.io/CNS/) (Davidson, Issachar, Benaim — Hebrew U., arXiv [2605.30332](https://arxiv.org/abs/2605.30332)). Reference code: [HadarDavidson/colored-noise-sampling](https://github.com/HadarDavidson/colored-noise-sampling) (SiT/ImageNet only — no FLUX/JiT code).
 
 Read first: `_archive/bench/cns/plan.md` (precondition + Phase-0 staircase results + composition tensions). The γ premise is independently corroborated by `project_sigma_signal_resolves_by_045` (base resolves x0 by σ≈0.45; e_low triples in the σ<0.45 tail — that finding is the CNS γ-matrix viewed from the σ axis).
 
@@ -94,18 +94,27 @@ CNS lives at the per-step noise-injection seam (`ERSDESampler._sample_noise`, `l
 | mod-guidance | Orthogonal seam (AdaLN t-embedding), but it changes the v-trajectory → γ should be recalibrated with mod-guidance ON if co-deployed (2nd-order; the shipped γ was calibrated mod-guidance OFF). |
 | LoRA / T-LoRA / Hydra | Orthogonal — no module patching, no extra weights. γ is LoRA-transparent (Phase 0). |
 
-## Faithfulness to the paper, and knobs deliberately omitted
+## Faithfulness to the paper, and the schedule relaxations we leave out
 
-Our `library/inference/corrections/cns.py` is a faithful transcription of Algorithm 1 + Eq. 11: `sqrt(1−γ)` scaling, empirical-std RMS renorm (Alg. 1's literal `w_c/std(w_c)`), dynamic γ(f, t), and strict variance conservation. We additionally σ-interpolate γ each step (robust to step-count / flow_shift mismatch vs the calibration schedule, vs Alg. 1's raw `gamma[i]` indexing) and select the nearest calibrated aspect — both engineering improvements over the reference pseudocode.
+Our `library/inference/corrections/cns_core.py` is a faithful transcription of Algorithm 1 + Eq. 11: `sqrt(1−γ)` scaling, empirical-std RMS renorm (Alg. 1's literal `w_c/std(w_c)`), dynamic γ(f, t), and strict variance conservation. We additionally σ-interpolate γ each step (robust to step-count / flow_shift mismatch vs the calibration schedule, vs Alg. 1's raw `gamma[i]` indexing) and select the nearest calibrated aspect — both engineering improvements over the reference pseudocode.
 
-The authors' reference repo (`colored-noise-sampling/transport/integrators.py::cns_sde`) carries extra knobs used for SiT/ImageNet FID-chasing — `gamma_matrix_divider`, `power_gamma`, `alpha_tilting` (time-varying frequency tilt), `energy_scale`. None are part of the paper's method, and the paper's own ablation (Table 6, FID-10K, CNS = 9.61) argues against their analogs, so we deliberately do not implement them:
+The paper's App. C.2 ("Empirical Schedule Relaxations") adds tuning knobs on top of Eq. 11, and **every headline number uses them** (Tab. 7). The reference repo (`transport/integrators.py`, `__generate_matrix_scaled_noise`) implements them as:
 
-| Omitted repo knob | Closest paper ablation | Verdict |
+| Repo knob | What it does | Authors' settings (Tab. 7 / `run_cns_best_results.sh`) |
 |---|---|---|
-| `energy_scale` ≠ 1.0 | Scale 0.90 → 16.17, Scale 1.05 → 20.46 | violating the normalization constraint hurts; principled value is 1.0 (what we use). |
-| `cns_strength` < 1.0 (white blend) | 50% White Noise → 10.64 | "partial white-noise corruption consistently yields inferior results"; our `strength` < 1 is a safety escape hatch, not a tuning lever. |
-| `alpha_tilting` (parametric tilt) | mBm (time-varying Hurst) → 11.88 | the data-driven γ matrix beats a parametric colored schedule. |
-| `gamma_matrix_divider` / `power_gamma` | (not in paper) | reshape the residual curve; the repo's `divider=25` "gentle" guided config is FID-squeezing on a specific SiT+CFG, not a principle. |
+| `gamma_matrix_divider` c | progression scaling γ̃ = γ/c → `scale = (1 − γ/c)^power` | SiT unguided 1.73; every CFG run 5–25 (SiT CFG 25) |
+| `power_gamma` / `sqrt_gamma` | exponent on the residual (Eq. 11 = 0.5) | 0.5, except SiT unguided 0.75 |
+| `alpha_tilting` | time-varying exponential tilt `exp(α(t)·f_norm)` on the residual | SiT only; unguided 0.15 → −0.5 (late high-freq is *damped*, against the paper's narrative) |
+| `energy_scale` | multiplies the unit-std draw | 0.98–0.999 |
+
+The authors' own logs (`evaluation_logs/`, 250-step Euler-Maruyama, FID-50K) show where the gain comes from. Unguided: white-SDE 8.79 → CNS 6.32, using the full knob set. Guided: 2.04 → 1.97 with divider 25. γ is in [0, 1] (the repo min-max-normalizes it per bin, in `scale_gamma_matrix.ipynb`; ours already runs from ≤0.06 to 1 per bin), so γ/25 ≤ 0.04: the guided draw is within ~2% of white noise in every band.
+
+**We ship Eq. 11 as-is (c = 1, power 0.5), with no tilt and no energy scale.** CLI `--cns auto` and the ComfyUI `er_sde_cns` sampler both run it with nothing to tune. A/B on 2026-10-15 (base DiT, er_sde, cfg 4, 28 steps, 6 prompts × 2 seeds, 1024² / 832×1248, paired noise draws):
+
+- **divider.** With our γ, c ≥ 2 flattens the per-band amplitude to within ±10% of white, and c = 25 is within 0.2%. Any non-white draw re-rolls the er_sde trajectory: c = 5 still moves pixels by a mean |Δ| of ~8/255 versus white, so pixel distance does not measure the effect. Judged by eye, c = 1 beats white: fewer stray props, cleaner hands and SFX kana. c = 2 / 5 behave like white.
+- **power** (at c = 1). Power 0.75 is indistinguishable from 0.5. Power 1.0 drifts further from white and its changes are mixed: some hands and can labels improve, while SFX kana and the artist signature get worse. Nothing broke off-manifold.
+- **energy_scale ≠ 1 and `cns_strength` < 1.** Not adopted. The paper's Tab. 10 / Tab. 6 ablations show large departures hurt (scale 0.90 → 16.17, 1.05 → 20.46; 50% white blend → 10.64 vs CNS 9.61). `cns_strength` is a safety escape hatch, not a tuning lever.
+- **divider < 1 (stronger reallocation).** Not tried. Every band with γ ≥ c is zeroed, which piles the whole budget into the top few bins. That is the single-band "bang-bang" injection App. B.2.3 argues against.
 
 One implementation divergence worth noting: Alg. 1 renormalizes by a single global scalar `std(w_c)`; we renormalize per-channel over the spatial plane (`dim=(-2,-1)`), so each latent channel keeps exactly unit variance like the white noise it replaces. Faithful-or-better, not a gap.
 
@@ -120,7 +129,8 @@ One implementation divergence worth noting: Alg. 1 renormalizes by a single glob
 
 | File | Role |
 |---|---|
-| `library/inference/corrections/cns.py` | `CNSRecolorer` — loads γ, selects aspect, σ-interpolates, fft2 × `sqrt(1−γ)`, ifft2, per-channel RMS-renorm. |
+| `library/inference/corrections/cns_core.py` | `CNSRecolorer` numerics — loads γ, selects aspect, σ-interpolates, fft2 × `sqrt(1−γ)`, ifft2, per-channel RMS-renorm. Vendored verbatim into the ComfyUI Spectrum node (`er_sde_cns`). |
+| `library/inference/corrections/cns.py` | Thin subclass: `--cns auto` / path resolution under the repo home. |
 | `library/inference/sampling.py` | `ERSDESampler._sample_noise` — the recolor seam (white draw → `cns.recolor(white, σ_s)`); injection at `step()`. |
 | `library/inference/generation.py` | `_build_cns_recolorer` — builds from `--cns` / `--cns_strength`, warns if `--sampler` injects no noise. |
 | `inference.py` | `--cns` / `--cns_strength` CLI surface. |
