@@ -52,7 +52,9 @@ def test_off_by_default():
     assert c.dmad_lr == pytest.approx(4e-5)
     assert c.dmad_grad_clip == 0.0
     assert c.dmad_window == 4
-    assert c.dmad_disc_warmup_steps == 50
+    assert c.dmad_disc_warmup_steps == 0
+    assert c.dmad_gap_routing is False
+    assert c.dmad_gap_tau == pytest.approx(2.0)
     assert c.dmad_feature_block_idx == -1
 
 
@@ -209,6 +211,8 @@ def _cfg(**over):
         dmad_feature_block_idx=-1,
         dmad_lr=1e-3,
         dmad_window=4,
+        dmad_gap_routing=False,
+        dmad_gap_tau=2.0,
         seed=0,
     )
     base.update(over)
