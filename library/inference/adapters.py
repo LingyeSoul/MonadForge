@@ -117,7 +117,8 @@ def set_xattn_kbias(model: Any, bias: Optional[torch.Tensor]) -> None:
     """Set (or clear, with ``None``) the cross-attn per-key logit bias.
 
     ``bias`` is a ``(L_ctx,)`` float tensor added to every cross-attn QK^T
-    row (allocation probe). Writes each
+    row (allocation probe), or ``(N_q, L_ctx)`` — one row per image token in
+    the block's flattened order (spatial probe). Writes each
     Block's ``cross_attn._ctx_k_bias`` buffer; ``None`` restores exact
     identity (and the fused flash path — a set bias drops that call to
     SDPA). Same cond-only discipline as :func:`set_xattn_gain`: callers

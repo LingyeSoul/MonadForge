@@ -136,6 +136,11 @@ Reports and probe code in `_archive/`.
 - **idea3 / probe_twin** (10-08): stopped. Glyph identity has no directions
   of its own (cross-fit λ / r 0.96–1.28); the neighbours' rows turn 0.6–0.9
   as much as the row's own.
+- **xattn_box** (10-15, `reports/xattn_box_2026_10_15.md`): a cross-attn
+  logit bias pinning the string's keys to the EN ref's box at σ ≥ 0.85, no
+  training. String keys alone: +19 junk letters a page (the tags letter the
+  page); with the bubble / text tags biased too: in_box +0.067 (p 0.033),
+  every text read n.s., repetition unchanged.
 
 ## 6. Not tried
 

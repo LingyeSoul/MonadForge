@@ -335,10 +335,10 @@ class Attention(nn.Module):
         self.output_dropout = nn.Dropout(dropout) if dropout > 1e-4 else nn.Identity()
 
         if not self.is_selfattn:
-            # Inference-side per-key logit bias on cross-attn QK^T rows.
-            # None = off/identity; a (L_ctx,)
-            # tensor routes this call through SDPA's additive attn_mask. Set
-            # via library.inference.adapters.set_xattn_kbias.
+            # Inference-side logit bias on cross-attn QK^T. None = off/identity;
+            # a (L_ctx,) per-key or (N_q, L_ctx) per-query-key tensor routes
+            # this call through SDPA's additive attn_mask. Set via
+            # library.inference.adapters.set_xattn_kbias.
             self.register_buffer("_ctx_k_bias", None, persistent=False)
 
         self._query_dim = query_dim
@@ -413,9 +413,12 @@ class Attention(nn.Module):
         if ctx_k_bias is not None:
             # Needs SDPA's additive float mask (flash/sage take none), so this
             # call drops to attn_mode="torch" while set.
+            bias = ctx_k_bias.to(q.dtype)
             attn_params = attention_dispatch.AttentionParams(
                 attn_mode="torch",
-                attention_mask=ctx_k_bias.to(q.dtype)[None, None, None, :],
+                attention_mask=(
+                    bias[None, None, None, :] if bias.dim() == 1 else bias[None, None]
+                ),
                 softmax_scale=(
                     attn_params.softmax_scale if attn_params is not None else None
                 ),
