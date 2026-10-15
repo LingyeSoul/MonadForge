@@ -23,9 +23,17 @@ def arm_dirs() -> dict:
         "seed_fixed_1005_stick080": SCALE_OUT / "seed_fixed_1005_stick080",
         **PACK_ARMS.get(VIEW.pack, {}),
     }
-    # the cold hiragana arms (motivation2.md § 8, A / B / C) and their kept saves
+    # the cold hiragana arms (motivation2.md § 8, A / B / C, and A from a random /
+    # stick+ball / stick+predicted-glyph start) and their kept saves
     # (``run.py train --save_every``: ``<run>/s<step>/``) as ``<run>_s<step>``
-    for run in ("hira_cold_hp", "hira_cold_up", "hira_cold_mix"):
+    for run in (
+        "hira_cold_hp",
+        "hira_cold_up",
+        "hira_cold_mix",
+        "hira_cold_rand",
+        "hira_cold_sball",
+        "hira_cold_sglyph",
+    ):
         dirs[run] = OUT / run
         for d in sorted((OUT / run).glob("s[0-9]*")):
             dirs[f"{run}_{d.name}"] = d

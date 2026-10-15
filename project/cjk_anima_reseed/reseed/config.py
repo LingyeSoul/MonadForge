@@ -105,6 +105,17 @@
                                   # bands its data stamped — with ``data_from``, an
                                   # arm on another run's items in other bands
                                   # (``hira_cold_up``; kana_up's knob, 10-04)
+    init = "random"               # optional, cold free rows only: the trained rows
+                                  # start at isotropic random directions at their
+                                  # pack rows' norms, the norm pull centred there
+                                  # (``hira_cold_rand``, user 10-15); "stick_ball":
+                                  # pack row + the seed's stick over the trained rows
+                                  # (their mean offset) + a random ball at the seed's
+                                  # mean spike length (``hira_cold_sball``, user 10-15);
+                                  # "stick_glyph:<set>": the ball each row's predicted
+                                  # glyph component (``probes/glyph_init.py``,
+                                  # ``hira_cold_sglyph``, user 10-15);
+                                  # "" = the pack rows
     pose = true                   # optional: the glyph's ink centred in its scene
                                   # bubble / sign and tilted with it, a grid bubble's
                                   # ink on its centre (``render_into_scene(pose=)``,
@@ -148,6 +159,7 @@ KEYS = (
     "counterfactual",
     "steps",
     "upper_shift",
+    "init",
 )
 # a run's ``seed``: the rows every other row rides frozen at
 SEEDS = ("0930", "1008")
@@ -206,13 +218,18 @@ class Run:
     factor_init: tuple = ()  # (reseed run, scale): the factors' start; () = Δ 0
     factor_from: str = ""  # a factor run: the factors' start; "" = Δ 0
     factor_residual: float | None = None  # the pull on r; None = no residual
-    faces: dict | None = None  # {out, px_min: {face: px}, dirs, legible}; None = every face
+    faces: dict | None = (
+        None  # {out, px_min: {face: px}, dirs, legible}; None = every face
+    )
     pose: bool = False  # text centred / tilted with its bubble
     # counterfactual (cjk_ko, 10-12): {host: form} (``counterfactual.plan``) —
     # the hosts and the CV syllables a final's removal gives are rows too
     cf: dict | None = None
     total_steps: int = 0  # ``steps``: the whole step count; 0 = steps_per_row's
     upper_shift: float = 0.0  # added to every item's upper σ edge at train
+    init: str = (
+        ""  # "random" / "stick_ball": the trained rows' start; "" = the pack rows
+    )
 
     def phrase_file(self) -> str:
         """The dialogue line file, ``LINES[lines]``."""
@@ -467,6 +484,13 @@ def load(run: str) -> Run:
         }
     upper_shift = float(raw.get("upper_shift", 0.0))
     assert 0 <= upper_shift <= 0.3, f"{path}: upper_shift {upper_shift}"
+    init = raw.get("init", "")
+    assert init in ("", "random", "stick_ball") or init.startswith("stick_glyph:"), (
+        f"{path}: init {init!r}"
+    )
+    assert not init or not (rows_from or factor), (
+        f"{path}: init random is cold free rows"
+    )
     rows, cf = tuple(raw["rows"]), None
     if raw.get("counterfactual"):
         import json
@@ -510,4 +534,5 @@ def load(run: str) -> Run:
         cf=cf,
         total_steps=int(raw.get("steps", 0)),
         upper_shift=upper_shift,
+        init=init,
     )

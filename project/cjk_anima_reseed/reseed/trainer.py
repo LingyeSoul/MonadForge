@@ -216,6 +216,7 @@ def train(
     factor_residual: float | None = None,
     upper_shift: float = 0.0,
     save_every: int | None = None,
+    init: str = "",
 ) -> Path:
     """Train ``run`` (a ``reseed.config.Run``: its name, path and rows) on
     ``data`` into ``out``. ``context`` is the warm-from / frozen-context /
@@ -243,6 +244,12 @@ def train(
     ``upper_shift`` moves every item's upper σ edge up by this (capped at
     ``config.UPPER_MAX``) over the bands its data stamped, so an arm can train
     on another run's items in other bands (``hira_cold_up``).
+    ``init = "random"`` (cold only) starts the trained rows at isotropic
+    random directions at their pack rows' norms (``Rows._rand_start``), the
+    norm pull centred there (``hira_cold_rand``); ``"stick_ball"`` starts them
+    at pack row + the context's stick + a random ball (``hira_cold_sball``),
+    ``"stick_glyph:<set>"`` the ball a predicted glyph component
+    (``hira_cold_sglyph``).
     ``save_every`` replaces ``SAVE_EVERY`` and keeps each save as
     ``out/s<step>/trained.pt`` (a dir the ruler reads as an arm) instead of
     overwriting ``trained_partial.pt``.
@@ -360,8 +367,12 @@ def train(
         "rows are deltas over it and cold rows start at it — "
         "ANIMA_VOCAB_PACK=models/vocab_packs/anima_cjk_vocab_pack"
     )
+    assert init in ("", "random", "stick_ball") or init.startswith("stick_glyph:"), init
+    assert not init or (cold and not factor), "a random start is a cold free-row run"
     if cold:
         p.record["cold"] = True
+    if init:
+        p.record["init"] = init
     if free_residual is not None:
         p.record.update(free_residual=float(free_residual), free_residual_override=True)
     rows = Rows(
@@ -376,6 +387,7 @@ def train(
         touched=p.touched,
         frozen=p.frozen,
         context=ctx,
+        rand_init=(SEED, init) if init else None,
     )
     assert rows.n_rows == len(p.idx), (rows.n_rows, len(p.idx))
     jamo = None
@@ -392,7 +404,9 @@ def train(
         ext_syl.update({e: j for j, e in part_rows().items()})
         # a counterfactual host carries its form's code (merge_all writes the
         # host syllable's own composition over it at the save)
-        ext_syl.update({syl_ext[h]: tuple(f["code"]) for h, f in (run.cf or {}).items()})
+        ext_syl.update(
+            {syl_ext[h]: tuple(f["code"]) for h, f in (run.cf or {}).items()}
+        )
         jamo = Jamo(
             rows,
             {e: ext_syl[e] for e in p.idx if e in ext_syl},
@@ -466,7 +480,7 @@ def train(
         f"({spr}/row) × batch {BATCH}, lr {lr:g} {LR_DECAY} warmup {warmup} "
         f"({WARMUP_RATIO:g}), μ {INIT_ANCHOR:g}, box_share {BOX_SHARE} → cap "
         f"{BOX_SHARE_CAP} at {BOX_SHARE_GLYPHS} glyphs (log), grid_box {int(GRID_BOX)}, "
-        + ("cold (pack rows)" if cold else f"warm {ctx}")
+        + (f"cold ({init or 'pack'} rows)" if cold else f"warm {ctx}")
         + (f"; stopping at step {max_steps}" if max_steps else ""),
         flush=True,
     )

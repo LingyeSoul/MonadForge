@@ -81,6 +81,7 @@ def main():
             factor_residual=run.factor_residual,
             upper_shift=run.upper_shift,
             save_every=a.save_every,
+            init=run.init,
         )
 
 

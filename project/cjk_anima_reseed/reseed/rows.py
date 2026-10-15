@@ -75,6 +75,7 @@ class Rows:
         frozen=(),
         context=None,
         row_cap=None,
+        rand_init=None,
     ):
         from common.hooks import ExtDelta
 
@@ -119,6 +120,10 @@ class Rows:
             self._warm_start(warm)
         if frozen:
             self._fill_frozen()
+        self.raw_init = None
+        if rand_init is not None:
+            assert not warm, "a random start is cold"
+            self._rand_start(*rand_init)
         if frozen:
             live = (~self.frozen_mask).float()[:, None]
             self.delta.raw.register_hook(lambda g: g * live)
@@ -215,6 +220,80 @@ class Rows:
             flush=True,
         )
 
+    def _rand_start(self, seed, mode="random"):
+        """The trained rows' start, the norm pull centred on it (``raw_init``),
+        not on the pack row. The directions come from their own generator, so
+        the run's σ / ε draws stay a pack-start run's, and both modes draw the
+        same ones.
+
+        ``random`` (``hira_cold_rand``, user 10-15): every row at an isotropic
+        random direction, at its pack row's norm.
+        ``stick_ball`` (``hira_cold_sball``, user 10-15): pack row + the
+        context's stick over these rows (their mean offset, the 10-03 stick) +
+        a random ball ⟂ the stick at the context's mean spike length — § 7's
+        cold row with ``m_pack`` / ``q_i`` / ``s`` inherited and ``e_i`` random.
+        ``stick_glyph:<set>`` (``hira_cold_sglyph``, user 10-15): the same stick
+        and length, the ball each row's predicted ``e_i`` instead
+        (``probes/glyph_init.py``'s ``OUT/glyph_init/<set>.pt``: a ridge from
+        the glyph's bitmap, fitted on other trained rows), centred over the
+        rows, ⟂ the stick."""
+        live = ~self.frozen_mask
+        g = torch.Generator().manual_seed(int(seed))
+        u = F.normalize(
+            torch.randn(int(live.sum()), self.pack_rows.shape[1], generator=g).to(
+                self.device
+            ),
+            dim=1,
+        )
+        p = self.pack_rows[live]
+        if mode == "random":
+            off = u * p.norm(dim=1, keepdim=True) - p
+            what = "isotropic at their pack row's norm"
+        else:
+            kind, _, gset = mode.partition(":")
+            assert kind in ("stick_ball", "stick_glyph"), mode
+            assert self.context, "a stick start needs the context (seed) rows"
+            src = torch.load(self.context, map_location="cpu", weights_only=False)
+            src_idx = {int(e): i for i, e in enumerate(src["delta"]["ext_ids"])}
+            ids = [int(e) for e, m in zip(self.delta.ext_ids, live.tolist()) if m]
+            miss = [e for e in ids if e not in src_idx]
+            assert not miss, f"{len(miss)} trained rows not in {self.context}"
+            x = src["delta"]["raw"][[src_idx[e] for e in ids]].float()
+            x = (x * float(src["delta"]["row_scale"])).to(self.device)
+            stick = x.mean(0)
+            radius = (x - stick).norm(dim=1).mean()
+            s1 = F.normalize(stick, dim=0)
+            ball = "a random ball"
+            if kind == "stick_glyph":
+                from . import OUT
+
+                gi = torch.load(OUT / "glyph_init" / f"{gset}.pt", weights_only=False)
+                at = {int(e): i for i, e in enumerate(gi["ext_ids"])}
+                miss = [e for e in ids if e not in at]
+                assert not miss, f"{len(miss)} trained rows not in glyph_init {gset}"
+                u = gi["e_hat"][[at[e] for e in ids]].float().to(self.device)
+                u = u - u.mean(0)
+                ball = f"a predicted ball (glyph_init {gset}, train {gi['train']})"
+            u = F.normalize(u - (u @ s1)[:, None] * s1, dim=1)
+            off = stick + radius * u
+            pair = (u @ u.T)[torch.triu(torch.ones_like(u @ u.T), 1).bool()].mean()
+            what = (
+                f"pack row + the context's stick |{float(stick.norm()):.1f}| + {ball} "
+                f"⟂ it at {float(radius):.1f}, pairwise cos {float(pair):.3f}"
+            )
+        r = p + off
+        with torch.no_grad():
+            self.delta.raw[live] = (off / self.row_scale).to(self.delta.raw.dtype)
+        self.raw_init = self.delta.raw.detach().clone()
+        cos = F.cosine_similarity(r, p, dim=1)
+        print(
+            f"rows {mode} start: {int(live.sum())} rows {what} (seed {seed}); "
+            f"|row| mean {float(r.norm(dim=1).mean()):.1f}, cos to the pack row mean "
+            f"{float(cos.mean()):.4f} max {float(cos.abs().max()):.4f}; the norm pull "
+            "centred on the start",
+            flush=True,
+        )
+
     def effective(self) -> torch.Tensor:
         """Every row's effective row: pack + ``raw`` × ``row_scale``."""
         return self.pack_rows + self.delta.raw.detach() * self.row_scale
@@ -251,7 +330,8 @@ class Rows:
             if self.free_residual > 0 and bool(cold.any()):
                 loss = loss + self.free_residual * (raw**2).sum(1)[cold].mean()
         elif self.free_residual > 0 and bool(self.touched_mask.any()):
-            loss = loss + self.free_residual * (raw**2).sum(1)[self.touched_mask].mean()
+            f = raw if self.raw_init is None else raw - self.raw_init
+            loss = loss + self.free_residual * (f**2).sum(1)[self.touched_mask].mean()
         return loss
 
     # -- logging / export ----------------------------------------------------
@@ -272,6 +352,11 @@ class Rows:
             "it_s": step / max(time.time() - t0, 1e-6),
             **(extra or {}),
         }
+        if self.raw_init is not None:
+            e0 = self.pack_rows[live] + self.raw_init[live] * self.row_scale
+            rec["init_cos"] = float(
+                F.cosine_similarity(self.effective()[live], e0, dim=1).mean()
+            )
         if self.raw0 is not None and bool(self.warm_mask.any()):
             r = self.delta.raw.detach()[self.warm_mask]
             r0 = self.raw0[self.warm_mask]
