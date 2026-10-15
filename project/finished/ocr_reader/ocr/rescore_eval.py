@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Re-score stored eval predictions on the **current** `exact_key` (CPU, no model).
 
-    python project/ocr_reader/ocr/rescore_eval.py            # the table
+    python project/finished/ocr_reader/ocr/rescore_eval.py            # the table
     …/rescore_eval.py --write                                         # + rewrite the reports
 
 `exact_key` gained the ellipsis fold (every dot run → one `…`) in acd41d72,

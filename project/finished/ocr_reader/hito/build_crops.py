@@ -14,8 +14,8 @@ artwork untouched, so the lettering is whatever differs. Per work:
 4. Cut each region from both sides, each to its own ink extent (the twin box
    is mapped back to twin coordinates and cut from the original twin page).
 
-    .venv/bin/python project/ocr_reader/hito/build_crops.py --twin ko --workers 8
-    .venv/bin/python project/ocr_reader/hito/build_crops.py --works ie/1701561 --viz 6
+    .venv/bin/python project/finished/ocr_reader/hito/build_crops.py --twin ko --workers 8
+    .venv/bin/python project/finished/ocr_reader/hito/build_crops.py --works ie/1701561 --viz 6
 
 Writes ``<out>/<anchor>/{crops/,viz/,pages.json,regions.jsonl}`` per work and
 skips works whose ``regions.jsonl`` exists (``--force`` redoes them). No GPU.

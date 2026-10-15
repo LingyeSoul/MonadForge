@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """The KO / ZH gate (roadmap P0 K3): any reader over the gelnote hand labels.
 
-    make daemon-run ARGS="project/ocr_reader/ocr/eval_k3.py --reader vl16"                       # stock
+    make daemon-run ARGS="project/finished/ocr_reader/ocr/eval_k3.py --reader vl16"                       # stock
     … --reader vl16 --ckpt output/ocr/vl16_b2_norm4/ep1 --name v3
     … --reader vl16 --ckpt output/ocr/<run>/ep1 --name <run>
-    .venv/bin/python project/ocr_reader/ocr/eval_k3.py --compare stock v3 <run>   # CPU, paired
+    .venv/bin/python project/finished/ocr_reader/ocr/eval_k3.py --compare stock v3 <run>   # CPU, paired
 
 Labels: ``assets/k3_gelnote.tsv`` (``gate/k3_gelnote.py``), 50 KO + 50 ZH
 crops, one per page, whole pages held out of every pseudo draw. ``text`` is the
@@ -48,7 +48,7 @@ import manga109 as m109  # noqa: E402
 import textnorm  # noqa: E402
 
 LABELS = m109.ASSETS / "k3_gelnote.tsv"
-FROZEN = m109.REPO / "project/ocr_reader/eval_data/k3_gelnote"
+FROZEN = m109.REPO / "project/finished/ocr_reader/eval_data/k3_gelnote"
 
 
 def load_labels(path: Path = LABELS) -> pd.DataFrame:

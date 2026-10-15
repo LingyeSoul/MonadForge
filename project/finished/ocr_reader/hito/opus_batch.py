@@ -2,7 +2,7 @@
 """Batches for an Opus hand-label round on the hito low tail, and the merge back
 (``reports/opus_relabel.md``).
 
-    P=project/ocr_reader/hito/opus_batch.py; W=<work dir>
+    P=project/finished/ocr_reader/hito/opus_batch.py; W=<work dir>
     .venv/bin/python $P select    $W --n 1000 --batches 15   # in/, zoom/, items_full.json
     .venv/bin/python $P verify-in $W --batches 6             # vin/ from out/ (status ok)
     .venv/bin/python $P merge     $W --name b2               # ko/prelabel_opus_<name>.jsonl

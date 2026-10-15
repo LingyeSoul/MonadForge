@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """O0 scorer (``plan_ocr.md``): any reader over the Manga109-s crop manifest.
 
-    ANIMA_MANGA109S_ROOT=… make daemon-run ARGS="project/ocr_reader/ocr/eval_manga109.py --reader manga_ocr"
+    ANIMA_MANGA109S_ROOT=… make daemon-run ARGS="project/finished/ocr_reader/ocr/eval_manga109.py --reader manga_ocr"
     … --reader ppocr        # PP-OCRv6 rec ONNX (anime_tools), crop rotated per its own rule
     … --reader vl16         # PaddleOCR-VL-1.6 crop ``OCR:`` (batched, left-padded, use_cache)
     … --reader manga_ocr --ckpt output/ocr/<run>/best    # a tuned model, same report

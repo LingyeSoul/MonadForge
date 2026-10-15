@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Freeze the reader gates' images into ``project/ocr_reader/eval_data/`` (gitignored).
+"""Freeze the reader gates' images into ``project/finished/ocr_reader/eval_data/`` (gitignored).
 
-    ANIMA_MANGA109S_ROOT=… .venv/bin/python project/ocr_reader/gate/build_eval_data.py
+    ANIMA_MANGA109S_ROOT=… .venv/bin/python project/finished/ocr_reader/gate/build_eval_data.py
 
 The sincos gate used to cut its crops on the fly from
 ``post_image_dataset/resized/sincos/``, a training tree that lost 8 label pages
@@ -30,8 +30,8 @@ from pathlib import Path
 import cv2
 import pandas as pd
 
-REPO = Path(__file__).resolve().parents[3]
-LINE = REPO / "project/ocr_reader"
+REPO = Path(__file__).resolve().parents[4]
+LINE = REPO / "project/finished/ocr_reader"
 OUT = LINE / "eval_data"
 SINCOS_LABELS = LINE / "assets/sfx_labels_sincos_597.tsv"
 K3_LABELS = LINE / "assets/k3_gelnote.tsv"

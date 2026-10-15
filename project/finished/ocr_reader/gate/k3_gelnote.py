@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """K3 holdout off the gelnote pool: N KO + N ZH crops, one per page, for hand labels.
 
-    .venv/bin/python project/ocr_reader/gate/k3_gelnote.py [--n 50]
+    .venv/bin/python project/finished/ocr_reader/gate/k3_gelnote.py [--n 50]
 
 Only single-language pages (page tag exactly ``ko`` / ``zh``) are eligible, so
 a gate row's language is not a guess. The **whole page** is held out:
 ``pseudo_label.py --pool gelnote`` drops every crop whose ``image_id`` is in the
 TSV, so no gate page reaches a training manifest through its sibling notes.
 
-Writes ``project/ocr_reader/assets/k3_gelnote.tsv`` with an empty ``text``
+Writes ``project/finished/ocr_reader/assets/k3_gelnote.tsv`` with an empty ``text``
 column for the hand label; ``note_body`` is the gelbooru translation (English),
 kept only as context for the labeller. Refuses to overwrite: the draw is
 built from this file, so a re-cut after a sweep would leak gate pages.
@@ -22,8 +22,8 @@ from pathlib import Path
 
 import pandas as pd
 
-REPO = Path(__file__).resolve().parents[3]
-OUT = REPO / "project/ocr_reader/assets/k3_gelnote.tsv"
+REPO = Path(__file__).resolve().parents[4]
+OUT = REPO / "project/finished/ocr_reader/assets/k3_gelnote.tsv"
 GELNOTE_DEFAULT = "/media/sorryhyun/new/dataset/gelnote_crops"
 
 

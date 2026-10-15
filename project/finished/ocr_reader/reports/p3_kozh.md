@@ -8,7 +8,7 @@ incl. 3 838 pseudo, 38 582 speech). 117 min, peak 12.2 GB.
 
 ```
 ANIMA_MANGA109S_ROOT=… make daemon-run ARGS="--stall-timeout 900 \
-  project/ocr_reader/ocr/finetune_vl16_lora.py --run vl16_p2b_kozh --epochs 1 --bs 8 \
+  project/finished/ocr_reader/ocr/finetune_vl16_lora.py --run vl16_p2b_kozh --epochs 1 --bs 8 \
   --grad_accum 2 --lr 1e-4 --tower_rank 64 --lm_full --lm_lr 1e-5 --skip_stock_val \
   --extra_manifest pseudo_gelnote_ko --extra_manifest pseudo_gelnote_zh --speech_ratio 0.909525"
 ```

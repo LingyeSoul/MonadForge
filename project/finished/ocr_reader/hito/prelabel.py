@@ -2,7 +2,7 @@
 """First-pass reads of the hitocrawl twin crops (``build_crops.py``) with our
 own reader — v4 (``vl16_p2b_kozh_ep2/ep2``) by default.
 
-    make daemon-run ARGS="--stall-timeout 900 project/ocr_reader/hito/prelabel.py --twin ko"
+    make daemon-run ARGS="--stall-timeout 900 project/finished/ocr_reader/hito/prelabel.py --twin ko"
 
 Reads both sides of every region and appends to ``<out>/<twin>/prelabel_<name>.jsonl``
 (``id, side, read, n_tokens, logprob``) in chunks, so a killed run resumes where

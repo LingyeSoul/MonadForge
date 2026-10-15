@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The Opus relabel rows as a training manifest (``reports/opus_relabel.md``).
 
-    ANIMA_MANGA109S_ROOT=… .venv/bin/python project/ocr_reader/hito/opus_manifest.py \\
+    ANIMA_MANGA109S_ROOT=… .venv/bin/python project/finished/ocr_reader/hito/opus_manifest.py \\
         [--exclude ids.txt]
 
 Reads every ``hito_ocr/ko/prelabel_opus*.jsonl`` round (``opus_batch.py merge`` adds

@@ -2,7 +2,7 @@
 """Page mode: a page-level reader over the whole sincos pages, scored as recall
 against the hand labels.
 
-    ANIMA_MANGA109S_ROOT=… make daemon-run ARGS="project/ocr_reader/ocr/eval_page.py --reader ovis"
+    ANIMA_MANGA109S_ROOT=… make daemon-run ARGS="project/finished/ocr_reader/ocr/eval_page.py --reader ovis"
 
 A page reader (OvisOCR2) gives one Markdown document per page with no text
 boxes, so a label row cannot be paired with a span of the output. A row counts

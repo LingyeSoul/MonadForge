@@ -44,7 +44,7 @@ Finished lines are listed in [`finished/README.md`](finished/README.md)
 encoder-side CJK line `cjk_aware_anima` and its DiT-side successor
 `cjk_aware_anima_dit`, both 2026-09-24; the wake line
 `cjk_renderable_anima`, 2026-09-30; its production line `cjk_anima_scale`,
-2026-10-09).
+2026-10-09; the PaddleOCR-VL reader v4 line `ocr_reader`, 2026-10-15).
 
 Active projects:
 
@@ -58,7 +58,3 @@ Active projects:
 
 - [`qwen21_lora/`](qwen21_lora/) — the Qwen-Image-2.1 LoRA line (not Anima;
   `library/qwen21/CLAUDE.md`).
-
-- [`ocr_reader/`](ocr_reader/) — opened 2026-10-10 on branch `ocr-reader`:
-  PaddleOCR-VL reader v4 (JA + KO + ZH), out of
-  `finished/cjk_aware_anima_dit`. Home: `README.md` (state), `roadmap.md`.

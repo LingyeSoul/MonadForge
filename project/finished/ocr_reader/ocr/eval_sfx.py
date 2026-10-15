@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """The doujin gate (``plan_ocr.md`` O0/O2): any reader over the sincos hand labels.
 
-    ANIMA_MANGA109S_ROOT=… make daemon-run ARGS="project/ocr_reader/ocr/eval_sfx.py --reader manga_ocr"
+    ANIMA_MANGA109S_ROOT=… make daemon-run ARGS="project/finished/ocr_reader/ocr/eval_sfx.py --reader manga_ocr"
     … --reader manga_ocr --ckpt output/ocr/<run>/best
     … --reader vl16 [--ckpt output/ocr/<run>/best]       # a peft adapter dir merges onto the base
     … --reader record                                    # the pipeline's current read (no model)
 
-Labels: ``project/ocr_reader/assets/sfx_labels_sincos_597.tsv`` — the finished
+Labels: ``project/finished/ocr_reader/assets/sfx_labels_sincos_597.tsv`` — the finished
 line's ``sfx_labels_sincos.tsv`` minus the 8 pages removed 2026-10-10, so
 **597 SFX** are scored; the 617-row counts below describe the original file.
 One row per AnimeText record (since 2026-09-06 the finished line's
@@ -57,10 +57,10 @@ import manga109 as m109  # noqa: E402
 
 LABELS = m109.ASSETS / "sfx_labels_sincos_597.tsv"
 PAGES = m109.REPO / "post_image_dataset/resized/sincos"
-# Frozen gate images (``project/ocr_reader/gate/build_eval_data.py``): crops cut
+# Frozen gate images (``project/finished/ocr_reader/gate/build_eval_data.py``): crops cut
 # at the default pad, and the pages behind them. Preferred over ``PAGES``, a
 # training tree that lost 8 label pages on 2026-10-10.
-FROZEN = m109.REPO / "project/ocr_reader/eval_data/sincos"
+FROZEN = m109.REPO / "project/finished/ocr_reader/eval_data/sincos"
 FROZEN_PAD = 0.12
 
 

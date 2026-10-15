@@ -2,7 +2,7 @@
 """O2 arm B (``plan_ocr.md``): a peft LoRA on PaddleOCR-VL-1.6's LM for the crop ``OCR:`` task.
 
     ANIMA_MANGA109S_ROOT=… make daemon-run ARGS="--stall-timeout 600 \\
-        project/ocr_reader/ocr/finetune_vl16_lora.py --lr 1e-4 --epochs 2 --run vl16_lr1e-4"
+        project/finished/ocr_reader/ocr/finetune_vl16_lora.py --lr 1e-4 --epochs 2 --run vl16_lr1e-4"
     … --smoke                       # 30 steps + a 64-crop val, throughput check
     … --train_tower --tower_lr 1e-5 # O2b: unfreeze the NaViT tower + projector (full FT)
     … --extra_manifest colorized_1024_half_comic   # O3: + the colorized crops (manifest_<name>.parquet)
@@ -27,7 +27,7 @@ copied back each step (a 1e-5 update is below bf16 resolution otherwise).
 The trained tower is saved beside the adapter as ``tower.safetensors`` (bf16,
 base-model key names) and ``Vl16Reader`` loads it after the merge.
 
-``--tower_rank R`` (``project/ocr_reader`` P2b) puts a LoRA (α = 2R) on the
+``--tower_rank R`` (``project/finished/ocr_reader`` P2b) puts a LoRA (α = 2R) on the
 tower's attention / MLP Linears and the projector's two Linears instead.
 ``--lm_full`` drops the LM LoRA and trains the 18 LM decoder layers (255 M) in
 full through the same fp32-master path at ``--lm_lr``; embed_tokens, the final

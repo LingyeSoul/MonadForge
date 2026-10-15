@@ -7,8 +7,8 @@ choosing the hitocrawl JA triage thresholds (``hito/prelabel.py``).
 table is rebuilt from the stored reads on CPU with no flag. Scoring is
 ``eval_sfx``'s: ``ev.score`` exact (strict) and the heart-blind key.
 
-    make daemon-run ARGS="project/ocr_reader/gate/sfx_calibration.py read"
-    .venv/bin/python project/ocr_reader/gate/sfx_calibration.py
+    make daemon-run ARGS="project/finished/ocr_reader/gate/sfx_calibration.py read"
+    .venv/bin/python project/finished/ocr_reader/gate/sfx_calibration.py
 
 SFX only — the sincos speech rows carry PP-OCRv6 text, not hand labels.
 """

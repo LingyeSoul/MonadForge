@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Iterator
 
 HERE = Path(__file__).resolve().parent
-LINE = HERE.parent  # project/ocr_reader
-REPO = LINE.parents[1]
+LINE = HERE.parent  # project/finished/ocr_reader
+REPO = LINE.parents[2]
 ASSETS = LINE / "assets"
 SPLIT_PATH = ASSETS / "coo_split_manga109s.json"
 COO_SPLIT_URL = (

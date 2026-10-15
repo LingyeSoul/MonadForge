@@ -13,8 +13,8 @@ read) can be counted. Candidates:
 ``read`` (GPU, through the daemon) stores every reader's string + logprob; the
 table is rebuilt from the stored reads on CPU with no flag.
 
-    make daemon-run ARGS="project/ocr_reader/gate/k3_agreement.py read"
-    .venv/bin/python project/ocr_reader/gate/k3_agreement.py
+    make daemon-run ARGS="project/finished/ocr_reader/gate/k3_agreement.py read"
+    .venv/bin/python project/finished/ocr_reader/gate/k3_agreement.py
 
 n = 48 per language: read only large gaps.
 """

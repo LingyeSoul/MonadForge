@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The confident half of the hito v4 self-labels as a training manifest.
 
-    ANIMA_MANGA109S_ROOT=… .venv/bin/python project/ocr_reader/hito/v4_manifest.py \\
+    ANIMA_MANGA109S_ROOT=… .venv/bin/python project/finished/ocr_reader/hito/v4_manifest.py \\
         [--quantile 0.5] [--drop_flagged] [--exclude ids.txt]
 
 Reads ``prelabel_v4lp.jsonl`` (``hito/prelabel.py``) and keeps, per side, the reads

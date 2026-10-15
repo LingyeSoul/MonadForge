@@ -1,9 +1,30 @@
 # ocr_reader — PaddleOCR-VL reader v4 (JA + KO + ZH)
 
 Opened 2026-10-10 on branch `ocr-reader`, out of
-[`finished/cjk_aware_anima_dit`](../finished/cjk_aware_anima_dit/README.md)
+[`finished/cjk_aware_anima_dit`](../cjk_aware_anima_dit/README.md)
 (the reader half: `findings.md` § "Settled — the SFX reader", `eval.md`,
 `ocr/`).
+
+## Verdict (closed 2026-10-15)
+
+Shipped: **v4 = `vl16_p2b_kozh_ep2`** — tower r64 LoRA + LM decoder full FT
+(P2b) on Manga109-s COO + speech + gelnote KO/ZH pseudo rows, 2 epochs. It is
+Hub `sorryhyun/paddleocr-vl-1.6-manga-lora` `v4/`, pinned by `anime_tools`
+v0.7.12 (`anime_tools.ocr.sfx`). Against v3 it wins sincos SFX (289 → 346 /
+597 strict), COO SFX, and brings KO/ZH back to stock level (v3: KO 1 / 48).
+
+Ceiling: **neither more labels nor more data moved it.** The hitocrawl ja↔ko
+twins (Opus relabel of the low tail, 1 224 rows, plus 15 830 confident v4
+self-labels) trained as `vl16_p2b_kozh_hito` do not beat v4 (sincos strict
+−17, z −2.1; COO flat; K3 KO 26 → 25) — [`reports/p3_kozh_hito.md`](reports/p3_kozh_hito.md).
+OvisOCR2 is not a candidate ([`reports/ovisocr2.md`](reports/ovisocr2.md)).
+
+Left open (not run): seed 2 of P2b / P3, the P2b attribution arm, a KO tier
+check on hito crops, speech calibration on COO test, a licence-clean KO/ZH
+hand-lettered SFX source to clear stock. The hito crops and Opus labels stay
+at `/media/sorryhyun/new/dataset/hito_ocr/` (licence unclear — never ship
+from them). Code runs by path from here (`ocr/`, `gate/`, `hito/`); the state
+table below is the record as of close.
 
 ## Why
 
@@ -44,7 +65,7 @@ Plan and gates: [`roadmap.md`](roadmap.md). Open questions:
 ## The gate — sincos 597
 
 This line scores sincos with
-**`--labels project/ocr_reader/assets/sfx_labels_sincos_597.tsv`** (933 rows,
+**`--labels project/finished/ocr_reader/assets/sfx_labels_sincos_597.tsv`** (933 rows,
 597 scored SFX). It is the finished line's 617-row file minus the 8 pages that
 were deliberately removed from the dataset (2026-10-10). Every arm, v3
 included, is scored on it. Never mix it with the `/ 617` figures in
@@ -52,14 +73,14 @@ included, is scored on it. Never mix it with the `/ 617` figures in
 
 ```
 ANIMA_MANGA109S_ROOT=/media/sorryhyun/new/dataset/manga109s/Manga109s_released_2026_05_21 make daemon-run ARGS="--stall-timeout 900 \
-  project/ocr_reader/ocr/eval_sfx.py --reader vl16 --ckpt output/ocr/<run>/ep1 \
-  --name <run>_597 --labels project/ocr_reader/assets/sfx_labels_sincos_597.tsv"
+  project/finished/ocr_reader/ocr/eval_sfx.py --reader vl16 --ckpt output/ocr/<run>/ep1 \
+  --name <run>_597 --labels project/finished/ocr_reader/assets/sfx_labels_sincos_597.tsv"
 ```
 
 ## Gate images — `eval_data/` (gitignored)
 
 Labels stay in the tracked `assets/` TSVs. The images every gate reads are
-frozen under `project/ocr_reader/eval_data/` by `gate/build_eval_data.py`:
+frozen under `project/finished/ocr_reader/eval_data/` by `gate/build_eval_data.py`:
 
 - `sincos/crops/<row>.png` + `index.tsv`: the 933 label rows cut at pad 0.12,
   the same cut `eval_sfx.py` makes. `sincos/pages/` holds the 155 pages behind

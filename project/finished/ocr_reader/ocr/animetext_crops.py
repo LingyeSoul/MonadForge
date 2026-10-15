@@ -3,7 +3,7 @@
 ``ssl_tower_simmim.py`` (tower domain adaptation, 2026-09-08).
 
     ANIMA_ANIMETEXT_ROOT=<dir with the split parquets> \\
-        python project/ocr_reader/ocr/animetext_crops.py \\
+        python project/finished/ocr_reader/ocr/animetext_crops.py \\
             [--split test|valid|train] [--shard N] [--limit 2000]
 
 ``deepghs/AnimeText`` (CC-BY-NC-SA — research build only) is detection-only:
