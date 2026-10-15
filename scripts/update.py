@@ -6,6 +6,8 @@ temp dir, then merges over the working tree using a 3-way reconciliation
 of (baseline / user / new) sha256 hashes:
 
   - Datasets, outputs, models, caches, .venv: never touched.
+  - project/ (research lines) is not in the archive (``.gitattributes``
+    export-ignore): an unmodified copy from an older release is pruned.
   - User configs (``CONFLICT_GLOBS``): prompt on conflict
     (keep yours / overwrite / backup-and-overwrite / show diff).
   - Code files (library/, scripts/, train.py, etc.) AND configs/base.toml:

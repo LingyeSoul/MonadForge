@@ -1,0 +1,3 @@
+# Research lines stay out of the release archive (GitHub tarball / zip, so
+# `make update` never ships them); live code reads nothing under project/.
+project/ export-ignore
