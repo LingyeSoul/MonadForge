@@ -19,18 +19,37 @@ fitted on katakana / kanji / both, and read against 0930's own hiragana
 row among the 81 (chance mean 41). Controls: the same ridge on shuffled
 targets, and the mean ``e`` of the 5 bitmap-nearest training glyphs.
 
+``--features`` (user 10-15, after ``hira_cold_sglyph``: the misses keep the
+base glyph and lose the mark) swaps the bitmap for a PE tower's features on
+the same glyphs, drawn black on white at the tower's native size (em box
+scaled with it), averaged over the faces, row-L2'd, then the same PCA /
+ridge / read: ``pe_core`` (PE-Core's attn-pooled embedding), ``pe_core_grid`` /
+``pe_spatial`` / ``pe_spatial_l`` (the patch tokens average-pooled to a
+``GRID``² grid). PE kinds need the GPU (run through the daemon); their
+features are cached under ``OUT/glyph_init/feats/``. Every set is also read
+**composed**: a (han)dakuten hiragana's prediction + the mark's mean ``e``
+step over 0930's katakana pairs (バ − ハ), so the mark comes from another
+script; ``oracle_base`` puts the step on the true base row instead (leaks
+hiragana, diagnostic only). The rank is read on predictions centred over the
+81, as the init starts them.
+
 The predictions land in ``OUT/glyph_init/<train set>.pt`` (``ext_ids``,
 ``e_hat`` in effective units, ``beta`` — the scale cross-validated on the
-training rows), for ``init = "stick_glyph"``.
+training rows), for ``init = "stick_glyph"``; a non-bitmap kind writes
+``<kind>-<set>.pt`` and the composed one ``…+comp.pt``.
 
     .venv/bin/python project/cjk_anima_reseed/probes/glyph_init.py
+    make daemon-run ARGS="project/cjk_anima_reseed/probes/glyph_init.py \
+        --features bitmap,pe_core,pe_core_grid,pe_spatial,pe_spatial_l"
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -45,6 +64,15 @@ FONT_DIR = HOME / "assets" / "fonts"
 CANVAS, EM, BLUR = 48, 40, 1.0
 N_PC = 128
 SHUFFLE_SEED = 0
+GRID = 4  # the PE patch tokens' pooled grid
+# kind → (registry name in ``library.vision.encoders``, native px, pooled / grid)
+PE_KINDS = {
+    "pe_core": ("pe", 336, "pooled"),
+    "pe_core_grid": ("pe", 336, "grid"),
+    "pe_spatial": ("pe_spatial", 512, "grid"),
+    "pe_spatial_l": ("pe_spatial_l", 448, "grid"),
+}
+MARKS = ("゙", "゚")  # combining (han)dakuten, NFD's second code point
 
 
 def families(ids: list, text: dict) -> dict:
@@ -91,6 +119,107 @@ def bitmaps(chars: list) -> np.ndarray:
     return out
 
 
+@torch.no_grad()
+def pe_feats(chars: list, kind: str) -> np.ndarray:
+    """``(n, d)``: each glyph black on white at the tower's native px (the em
+    box scaled from ``EM / CANVAS``), one forward per glyph over the faces that
+    have it, the features averaged over those faces."""
+    from fontTools.ttLib import TTFont
+    from PIL import Image, ImageDraw, ImageFont
+
+    from library.vision.encoder import load_pe_encoder
+
+    name, px, mode = PE_KINDS[kind]
+    em = round(px * EM / CANVAS)
+    faces = []
+    for p in sorted(FONT_DIR.glob("*.[ot]tf")):
+        cmap = TTFont(str(p), lazy=True).getBestCmap() or {}
+        faces.append((ImageFont.truetype(str(p), em), set(cmap)))
+    dev = torch.device("cuda")
+    enc = load_pe_encoder(dev, name=name, dtype=torch.bfloat16).encoder
+    out = None
+    for i, c in enumerate(chars):
+        ims = []
+        for font, cov in faces:
+            if ord(c) not in cov:
+                continue
+            im = Image.new("L", (px, px), 255)
+            ImageDraw.Draw(im).text((px / 2, px / 2), c, 0, font, anchor="mm")
+            ims.append(np.asarray(im, np.float32))
+        x = torch.from_numpy(np.stack(ims)).to(dev) / 127.5 - 1
+        x = x[:, None].expand(-1, 3, -1, -1).to(torch.bfloat16)
+        o = enc(x)
+        if mode == "pooled":
+            f = o.pooler_output
+        else:
+            t = o.last_hidden_state[:, 1:]  # CLS first
+            g = int(round(t.shape[1] ** 0.5))
+            assert g * g == t.shape[1], t.shape
+            t = t.transpose(1, 2).reshape(len(ims), -1, g, g).float()
+            f = torch.nn.functional.adaptive_avg_pool2d(t, GRID).flatten(1)
+        f = f.float().mean(0).cpu().numpy()
+        if out is None:
+            out = np.zeros((len(chars), f.size), np.float32)
+        out[i] = f
+        if i % 200 == 0:
+            print(f"  {kind}: {i} / {len(chars)}", flush=True)
+    return out
+
+
+def features(kind: str, chars: list) -> np.ndarray:
+    """``(n, N_PC)``: the kind's per-glyph features, row-L2'd for a PE kind,
+    PCA'd and scaled by the first PC's std (cached under ``feats/``)."""
+    from sklearn.decomposition import PCA
+
+    if kind == "bitmap":
+        F = bitmaps(chars)
+    else:
+        cache = OUT / "glyph_init" / "feats" / f"{kind}.npz"
+        hit = cache.exists() and list(np.load(cache)["chars"]) == chars
+        if hit:
+            F = np.load(cache)["F"]
+        else:
+            F = pe_feats(chars, kind)
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(cache, F=F, chars=np.array(chars))
+        F = F / np.linalg.norm(F, axis=1, keepdims=True)
+    pca = PCA(N_PC, random_state=0).fit(F)
+    Z = pca.transform(F)
+    print(
+        f"{kind}: features {F.shape}, PCA {N_PC} "
+        f"({pca.explained_variance_ratio_.sum():.3f} var)",
+        flush=True,
+    )
+    return Z / Z[:, :1].std()
+
+
+def mark_steps(chars: list, e: np.ndarray) -> dict:
+    """``{mark: mean e(marked) − e(base)}`` over the pairs inside ``chars``
+    (0930's katakana: バ − ハ, パ − ハ, ヴ − ウ …)."""
+    at = {c: i for i, c in enumerate(chars)}
+    steps = {m: [] for m in MARKS}
+    for c in chars:
+        d = unicodedata.normalize("NFD", c)
+        if len(d) == 2 and d[1] in steps and d[0] in at:
+            steps[d[1]].append(e[at[c]] - e[at[d[0]]])
+    return {m: np.mean(v, 0) for m, v in steps.items() if v}
+
+
+def compose(chars: list, pred: np.ndarray, steps: dict, base=None) -> np.ndarray:
+    """A marked glyph's row + the mark's step: on its own prediction, or with
+    ``base`` (a table of the same glyphs: the oracle read) on its base's row;
+    every other row ``pred``'s. 0930's marked rows are not their base's
+    (cos(e(は), e(ば)) 0.25), but the mean step is shared across the scripts
+    (dakuten: cos 0.67 katakana ↔ hiragana)."""
+    at = {c: i for i, c in enumerate(chars)}
+    out = pred.copy()
+    for i, c in enumerate(chars):
+        d = unicodedata.normalize("NFD", c)
+        if len(d) == 2 and d[1] in steps and d[0] in at:
+            out[i] = (pred[i] if base is None else base[at[d[0]]]) + steps[d[1]]
+    return out
+
+
 def _covered() -> set:
     from fontTools.ttLib import TTFont
 
@@ -111,15 +240,16 @@ def decompose(off: torch.Tensor, pack: torch.Tensor) -> tuple:
 
 
 def read(pred: np.ndarray, true: np.ndarray) -> dict:
-    """cos to the true row, and the true row's rank among the 81."""
+    """cos to the true row, and the true row's rank among the 81; the rank on
+    the prediction centred over the 81 (as ``Rows._rand_start`` starts it)."""
     p = pred / np.linalg.norm(pred, axis=1, keepdims=True)
     t = true / np.linalg.norm(true, axis=1, keepdims=True)
-    sim = p @ t.T
-    rank = (sim > np.diag(sim)[:, None]).sum(1) + 1
-    pc = p - p.mean(0)
+    pc = pred - pred.mean(0)
     pc /= np.linalg.norm(pc, axis=1, keepdims=True)
+    sim = pc @ t.T
+    rank = (sim > np.diag(sim)[:, None]).sum(1) + 1
     return {
-        "cos": round(float(np.diag(sim).mean()), 4),
+        "cos": round(float((p * t).sum(1).mean()), 4),
         "cos_centred": round(float((pc * t).sum(1).mean()), 4),
         "rank_mean": round(float(rank.mean()), 1),
         "top1": int((rank == 1).sum()),
@@ -131,7 +261,6 @@ def read(pred: np.ndarray, true: np.ndarray) -> dict:
 
 
 def main():
-    from sklearn.decomposition import PCA
     from sklearn.linear_model import RidgeCV
     from sklearn.model_selection import cross_val_predict
 
@@ -140,6 +269,14 @@ def main():
     from library.inference.text import ensure_text_strategies
     from reseed.config import load
 
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--features",
+        default="bitmap",
+        help="comma list: bitmap, " + ", ".join(PE_KINDS),
+    )
+    kinds = ap.parse_args().features.split(",")
+    assert all(k == "bitmap" or k in PE_KINDS for k in kinds), kinds
     t0 = time.time()
     ck = default_checkpoints()
     tok, _ = ensure_text_strategies(ck.text_encoder, vocab_pack=ck.vocab_pack)
@@ -189,74 +326,97 @@ def main():
     chars = {f: [text[e] for e in fam[f]] for f in fam}
     print({f: len(v) for f, v in chars.items()}, "drawn", flush=True)
     allc = chars["hira"] + chars["kata"] + chars["kanji"]
-    B = bitmaps(allc)
-    pca = PCA(N_PC, random_state=0).fit(B)
-    Z = pca.transform(B)
-    Z /= Z[:, :1].std()
     n_h, n_k = len(chars["hira"]), len(chars["kata"])
-    X = {"hira": Z[:n_h], "kata": Z[n_h : n_h + n_k], "kanji": Z[n_h + n_k :]}
     Y = {f: E[f].numpy() for f in E}
+    steps = mark_steps(chars["kata"], Y["kata"])
+    n_marked = int((compose(chars["hira"], Y["hira"], steps) != Y["hira"]).any(1).sum())
     print(
-        f"bitmaps {B.shape}, PCA {N_PC} ({pca.explained_variance_ratio_.sum():.3f} var), "
-        f"{time.time() - t0:.0f}s",
+        f"mark steps from {len(chars['kata'])} katakana: {sorted(steps)}; "
+        f"{n_marked} hiragana composed",
         flush=True,
     )
 
     alphas = np.logspace(-1, 4, 16)
-    res = {"geometry": geo, "sets": {}}
-    for name, fs in (
-        ("kata", ("kata",)),
-        ("kanji", ("kanji",)),
-        ("kata_kanji", ("kata", "kanji")),
-    ):
-        Xt = np.concatenate([X[f] for f in fs])
-        Yt = np.concatenate([Y[f] for f in fs])
-        m = RidgeCV(alphas=alphas).fit(Xt, Yt)
-        cvp = cross_val_predict(RidgeCV(alphas=alphas), Xt, Yt, cv=5)
-        beta = float((cvp * Yt).sum() / (cvp * cvp).sum())
-        cv_cos = float(
-            (
-                (cvp / np.linalg.norm(cvp, axis=1, keepdims=True))
-                * (Yt / np.linalg.norm(Yt, axis=1, keepdims=True))
+    res = {"geometry": geo, "marked_hira": n_marked, "sets": {}}
+    for kind in kinds:
+        Z = features(kind, allc)
+        X = {"hira": Z[:n_h], "kata": Z[n_h : n_h + n_k], "kanji": Z[n_h + n_k :]}
+        for name, fs in (
+            ("kata", ("kata",)),
+            ("kanji", ("kanji",)),
+            ("kata_kanji", ("kata", "kanji")),
+        ):
+            Xt = np.concatenate([X[f] for f in fs])
+            Yt = np.concatenate([Y[f] for f in fs])
+            m = RidgeCV(alphas=alphas).fit(Xt, Yt)
+            cvp = cross_val_predict(RidgeCV(alphas=alphas), Xt, Yt, cv=5)
+            beta = float((cvp * Yt).sum() / (cvp * cvp).sum())
+            cv_cos = float(
+                (
+                    (cvp / np.linalg.norm(cvp, axis=1, keepdims=True))
+                    * (Yt / np.linalg.norm(Yt, axis=1, keepdims=True))
+                )
+                .sum(1)
+                .mean()
             )
-            .sum(1)
-            .mean()
-        )
-        ph = m.predict(X["hira"])
-        rng = np.random.default_rng(SHUFFLE_SEED)
-        shuf = (
-            RidgeCV(alphas=alphas)
-            .fit(Xt, Yt[rng.permutation(len(Yt))])
-            .predict(X["hira"])
-        )
-        d = ((X["hira"][:, None] - Xt[None]) ** 2).sum(-1)
-        knn = Yt[np.argsort(d, 1)[:, :5]].mean(1)
-        res["sets"][name] = {
-            "n_train": len(Yt),
-            "alpha": float(m.alpha_),
-            "train_cv_cos": round(cv_cos, 4),
-            "beta": round(beta, 3),
-            "pred_norm": round(float(np.linalg.norm(beta * ph, axis=1).mean()), 1),
-            "hira": read(ph, Y["hira"]),
-            "hira_shuffled": read(shuf, Y["hira"]),
-            "hira_knn5": read(knn, Y["hira"]),
-        }
-        print(name, json.dumps(res["sets"][name], ensure_ascii=False), flush=True)
-        dst = OUT / "glyph_init"
-        dst.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "ext_ids": fam["hira"],
-                "chars": chars["hira"],
-                "e_hat": torch.from_numpy(beta * ph).float(),
-                "beta": beta,
-                "train": list(fs),
-                "seed_rows": str(SEED_ROWS),
-            },
-            dst / f"{name}.pt",
+            ph = m.predict(X["hira"])
+            rng = np.random.default_rng(SHUFFLE_SEED)
+            shuf = (
+                RidgeCV(alphas=alphas)
+                .fit(Xt, Yt[rng.permutation(len(Yt))])
+                .predict(X["hira"])
+            )
+            d = ((X["hira"][:, None] - Xt[None]) ** 2).sum(-1)
+            knn = Yt[np.argsort(d, 1)[:, :5]].mean(1)
+            # composed in effective units: the step is a true-e step
+            pc = compose(chars["hira"], beta * ph, steps)
+            key = name if kind == "bitmap" else f"{kind}-{name}"
+            res["sets"][key] = {
+                "n_train": len(Yt),
+                "alpha": float(m.alpha_),
+                "train_cv_cos": round(cv_cos, 4),
+                "beta": round(beta, 3),
+                "pred_norm": round(float(np.linalg.norm(beta * ph, axis=1).mean()), 1),
+                "hira": read(ph, Y["hira"]),
+                "hira_comp": read(pc, Y["hira"]),
+                "hira_oracle_base": read(
+                    compose(chars["hira"], beta * ph, steps, base=Y["hira"]), Y["hira"]
+                ),
+                "hira_shuffled": read(shuf, Y["hira"]),
+                "hira_knn5": read(knn, Y["hira"]),
+            }
+            print(key, json.dumps(res["sets"][key], ensure_ascii=False), flush=True)
+            dst = OUT / "glyph_init"
+            dst.mkdir(parents=True, exist_ok=True)
+            for suffix, e_hat in (("", beta * ph), ("+comp", pc)):
+                torch.save(
+                    {
+                        "ext_ids": fam["hira"],
+                        "chars": chars["hira"],
+                        "e_hat": torch.from_numpy(e_hat).float(),
+                        "beta": beta,
+                        "train": list(fs),
+                        "features": kind,
+                        "composed": bool(suffix),
+                        "seed_rows": str(SEED_ROWS),
+                    },
+                    dst / f"{key}{suffix}.pt",
+                )
+
+    print(
+        "\nset (centred rank)            top1 / rank / cos   composed: top1 / rank / cos"
+    )
+    for k, v in res["sets"].items():
+        a, c = v["hira"], v["hira_comp"]
+        print(
+            f"  {k:<26} {a['top1']:>3} / {a['rank_mean']:>4} / {a['cos']:.3f}"
+            f"        {c['top1']:>3} / {c['rank_mean']:>4} / {c['cos']:.3f}",
+            flush=True,
         )
 
     rd = HOME / "results" / f"{time.strftime('%Y%m%d-%H%M')}-glyph_init"
+    if kinds != ["bitmap"]:
+        rd = rd.with_name(rd.name + "_" + "+".join(kinds))
     rd.mkdir(parents=True, exist_ok=True)
     (rd / "result.json").write_text(
         json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8"
