@@ -1,10 +1,12 @@
-# cjk_anima_reseed — motivation 2 (2026-10-02)
+# cjk_anima_reseed — motivation 2 (2026-10-02, revised 2026-10-14)
 
-Takes over `motivation.md` (the morning draft: "the seed trained in the wrong
-bands"). This is the record of 09-30 – 10-02 read for what it says about
-re-seeding the JA vocab pack's rows cold. Every number is from a dated report
-under `../cjk_anima_scale/` (`reports/`, `findings.md`, `hypothesis.md`,
-`proposal_seed_synthesis.md`); nothing here is a new read.
+Takes over the morning draft of 10-02 (`motivation.md`, "the seed trained in
+the wrong bands"; withdrawn in verdict 1, deleted 10-14). § 1 – 5 are the
+record of 09-30 – 10-02 read for what it says about re-seeding the JA vocab
+pack's rows cold; every number there is from a dated report under
+`../finished/cjk_anima_scale/` (`reports/`, `findings.md`, `hypothesis.md`,
+`proposal_seed_synthesis.md`). § 6 is what the reseed read after it, § 7 the
+motivation as it stands on 10-14, § 8 the two cold arms it asks for.
 
 **The seed:** `seed_retrain_0930` (`retrain_kana` 174 kana rows cold +
 `retrain_kanji_b1`–`b4` on top, routed). On `sent` (184 renders): official 29,
@@ -25,7 +27,7 @@ The large glyphs in the seed's data were for identity.
    sees, not where it acts. An item trained above where its glyphs resolve
    teaches its layout alone, and that layout overrides every caption the row
    appears in (§ 2). Confirmed three times on warm arms and once cold, and
-   measured on the gradient itself (`reports/grad_identity_2026_10_02.md`):
+   measured on the gradient itself (`_archive/reports/grad_identity_2026_10_02.md`):
    at 0.75–0.93 a 15–28 px item's gradient on a cold row is ≥ 90 % the same
    whichever glyph is drawn. The glyph-dependent share falls with σ, earlier
    the smaller the glyph, and its half point is the EN ceiling's upper edge
@@ -135,7 +137,7 @@ What follows, and what read it:
   the canvases' bubbles (white blobs at σ 1.0 / 0.95) and no string
   (≤ 1 edit 7 / 184; strokes only form at σ ≤ 0.5). At its own band
   (0.6–0.85) the same items keep the banner and read 18.
-- **The gradient, no training** (`reports/grad_identity_2026_10_02.md`; the
+- **The gradient, no training** (`_archive/reports/grad_identity_2026_10_02.md`; the
   grid_44 items, the 81 hiragana rows cold at the pack rows): with the row
   and caption fixed and the glyph drawn in its slot swapped, the share of
   the row's gradient that depends on the glyph is 0.31 / 0.32 / 0.36 at the
@@ -149,7 +151,7 @@ What follows, and what read it:
 
 ## 3. The seed's data, measured against the law
 
-`reports/band_size_2026_10_02.md` § 1, § 4–5; `motivation.md` § 1, § 4.
+`reports/band_size_2026_10_02.md` § 1, § 4–5.
 Every run in the chain drew `builder.TABLE`'s three groups 1 : 1 : 1.
 Drawn px (√(box area / glyphs)), p5 – p50 – p95, `retrain_kana` / `b4`:
 
@@ -222,8 +224,8 @@ cold question.
 
 ## 5. Data properties still unread as causes
 
-From `motivation.md` § 2–3, measured on the data dirs of record; none has a
-cold read behind it.
+From the morning draft's § 2–3, measured on the data dirs of record; none
+has a cold read behind it.
 
 - **Half the scenes are monochrome or line art**: 49.7 % of scene items
   sit on a scene with coloured share < 0.08, 58 % of all items with the
@@ -242,37 +244,130 @@ cold read behind it.
   rectangle 1.15–1.7 × the ink) and `cell_jitter` (the glyph at its cell's
   centre ± 8 %), both off by default in `src/data/grid.py`.
 
-## 6. What the reseed has to answer first
+## 6. What the reseed read after this (10-02 – 10-09)
 
-Running: `grid_small` (`experiments/grid_small`, job `20261002-112155-8e8225`)
-— the 81 hiragana rows cold, 135 / row, no lone glyph above 40 px, grids 60 %
-of 8 100 items at the band law's bands for their px (`g0507` 0.5–0.7 glyph
-25–34 px, `g0305` 0.3–0.5 glyph 12–21 px, `b0507` / `b0305` from
-`builder.TABLE`); no 1×1, `bubble_fit` + `cell_jitter` on. Read:
-`kana_reband`'s (9 words `en`, 8 singles `swap`) against `retrain_kana`'s
-17 / 64 official, 44 contained, and C2's words against `p1_cold` / `p1_mix`.
-The singles are the question: does a grid teach identity when its glyphs are
-small?
+Reports under `_archive/reports/` and `reports/`; `status.md` § 2 – 4 holds
+the tables.
 
-Open after it (`band_size_2026_10_02.md` § Open):
+- **Small-only cold loses.** `grid_small` / `grid_lone` (81 hiragana cold,
+  grids ≥ 45 % of the items, no glyph above 64 px, 135 / 60 a row): words
+  ≤ 1 edit 12 / 14 of 72 against `retrain_kana`'s 33, singles contained
+  31 / 23 of 64 against 44 (`grid_small_lone_2026_10_02.md`).
+- **The bands off the gradient tie the law's** (`grad_bands_2026_10_03.md`):
+  the lower edge at half the identity peak, the upper at its half point —
+  `reseed/table.py`'s `hp` bands.
+- **The reseed table stays under `retrain_kana`.** `reseed_anchor`,
+  `kana_mix`, `kana_big` (81 hiragana + 85 katakana cold, 135 / row): plain
+  words official 9 – 15 of 104 against 33, ≤ 1 edit 34 – 42 against 73.
+  What `kana_mix` lacks is a large glyph trained high: by glyph instance,
+  ≥ 64 px 0.8 % against 19.7 %, ≥ 40 px with a band reaching 0.85 0.0 %
+  against 28.3 %. A 65 px grid at its own gradient band (`kana_big`, 12.5 %
+  of the items, σ 0.65–0.8) does not close it (`grid_64_2026_10_03.md`).
+- **Upper edges + 0.1 is the one data move that read.** `kana_up` (every
+  tier's upper edge + 0.1, capped at 0.9): words ≤ 1 edit 55 vs 34 / 104
+  (p 0.002), the gain in hiragana words (26 / 7); exact words flat
+  (14 vs 11); the scene degrades as `retrain_kana`'s does
+  (`kana_up_2026_10_04.md`).
+- **On dialogue no cold kana arm beats `retrain_kana`** (`ruler_2026_10_05.md`
+  § 3 – 4): `kana_up` ties leaning down (exact 1 / 6, p 0.12);
+  `seed_retrain_0930` is the best table.
+- **Warm has a mode now.** Verdict 5 holds for the 10-02 arms (μ-pulled,
+  on the finished seed); whole-warm with the norm pull off
+  (`free_residual = 0`) ties or gains (`sent_whole`, `sent_kanji_f0`).
+  **L_pres** (λ 10 · the out-of-box match to the frozen DiT under an EN
+  caption, σ 0.8 – 0.9, every 2nd scene step) lifts every page read —
+  `en_match` +0.097 (p 7e-8), text area −33 % — with the text at f0's
+  (g_f1, cer n.s.) and kana recall −0.066 (p 0.09)
+  (`sent_kanji_pres_2026_10_07.md`).
+- **Identity has no row direction of its own** (`probe_twin_2026_10_08.md`,
+  rows at preview51): swapping one glyph turns the neighbours' rows 0.6 – 0.9
+  as much as its own row. The loss gives every row in a box the same
+  credit; `idea.md`.
 
-- `p1_cold`-style rows under a bubble caption — does small-only training
-  write manga-size text when the caption gives it a bubble? Every
-  small-only arm so far was read under `reads as` and drew a banner.
-- Small-text identity by σ: the b0305 mirror at switches 0.7 / 0.65 / 0.6 /
-  0.5 on the same 16 renders. "No leverage below 0.5" was read on banners.
-- A dialogue ruler. `sent` reads a short word as a banner; the 16 b0305
-  renders are training captions; sentence-length captions have no floor.
-- Kanji at 18 px: every small-only read is hiragana.
-- Scene colour and lettering (§ 5) as cold variables, one at a time, only
-  after the recipe's bands and sizes are fixed.
-- The band's lower edge and peak for small text, trained
-  (`reports/grad_bands_2026_10_03.md`): the `grid_lone recap` items rebanded
-  from the gradient read (`reports/grad_identity_2026_10_02.md`). With no
-  lower edge the arm reads under the law's bands (singles official 1 vs 12
-  of 64); with the lower edge at half the identity peak it ties them
-  (12 vs 12; words ≤ 1 edit 16 vs 14 of 72). The law's bands stand for
-  15–36 px. Still open from the gradient read: the 44 px tiers, which it
-  puts 0.1–0.15 under the law's 0.7–0.9; whether a lone 1×1 should take the
-  box share; pass 2 on trained rows (the bubble tiers are read: the same px
-  law, and a window pays every row for every slot).
+## 7. The motivation (10-14)
+
+1. **Glyph size is bound to the items that taught identity.**
+   `retrain_kana`'s identity came with its σ 0.7 – 0.9 large items
+   (`grid_82`, `lone_190`, `bubble1_52`), and so did its rendered size: the
+   lone tier scales the banner glyph 75 → 87 → 131 px (§ 3), the seed draws
+   a ≈ 78 px banner. The reseed took those items out and lost the identity
+   with them (§ 6).
+2. **The bands are older observations.** The band law (the EN ceiling
+   table) and the gradient read (step 0, cold rows at the pack) were both
+   read on banners, not on the dialogue target; the one recipe past them
+   (`kana_up`) moved the read.
+3. **The page is the warm pass's job now.** L_pres fixes the page warm
+   without costing the text (§ 6), and it stays warm-only (user 10-14). So
+   the cold pass can be judged on identity alone: rows whose identity does
+   not ride on one glyph size, every row at even exposure. Asked with it:
+   does that cold pass need fewer steps than `retrain_kana`'s 135 / row?
+
+**Exposure, measured** (10-14, `output/cjk_anima_scale/retrain_kana/data/`,
+23 490 steps × batch 4 over 17 400 items = 5.4 epochs). A hiragana row is
+drawn 2 465 times on average (median 1 987, 788 – 7 209): 75 % in windows
+(`bubbleN_18` 1 086, `bubbleN_34` 760 a row), 18 % in the large grids
+(444), the rest single glyphs (bubble1 156, flat 1×1 20). Windows follow
+the dialogue's frequency; a grid or lone deck deals every row alike.
+`retrain_kana`'s items: windows 56.7 %, grids 13.3 %, bubble1 26.7 %,
+flat 1×1 3.4 %; glyphs an item 4.4 (windows), 6.19 (grids), 1.
+
+## 8. The two cold arms
+
+Both: the 81 hiragana rows (`retrain_kana`'s 80 + ゔ) cold from the pack,
+every other row frozen at `seed = "0930"` (so the pair against
+`retrain_kana` differs in those 81 rows only, as `ball_rk_bubble` /
+`gs_rkstick` did), `reseed/table.py`'s tiers. The mix (user 10-14) — grid
+50 / lone 10 / bubbleN 20 / bubble1 20 — split inside each form by
+`TABLE`'s own ratios unless set otherwise:
+
+| tier | share | A: `hp` band | B: upper + 0.1 (cap 0.9) |
+|---|---|---|---|
+| `grid_44` | 10 | 0.55–0.75 | 0.55–0.85 |
+| `grid_29` | 20 | 0.4–0.7 | 0.4–0.8 |
+| `grid_16` | 20 | 0.2–0.6 | 0.2–0.7 |
+| `lone_44` / `lone_28` / `lone_16` | 3.3 / 3.3 / 3.4 | 0.45–0.8 / 0.35–0.65 / 0.2–0.5 | 0.45–0.9 / 0.35–0.75 / 0.2–0.6 |
+| `bubbleN_34` / `bubbleN_18` | 8.2 / 11.8 | 0.45–0.7 / 0.2–0.5 | 0.45–0.8 / 0.2–0.6 |
+| `bubble1_52` / `bubble1_32` | 11.1 / 8.9 | 0.55–0.8 / 0.35–0.6 | 0.55–0.9 / 0.35–0.7 |
+
+- **Steps.** Glyphs an item ≈ 4.2 – 4.3 (grid 6.25 over 2×2 / 3×3 / 2×3 /
+  3×2, windows 3.6 – 4.5, singles 1). `retrain_kana`'s mean exposure is
+  81 × 2 465 / (4 × 4.25) ≈ 11 750 steps (145 / row); the arms take
+  `steps_per_row = 150` (12 150 steps, ≈ 95 – 100 min each). A row is then
+  drawn ≈ 1 850 times in grids (4× `retrain_kana`'s large grids), ≈ 60 lone,
+  ≈ 120 in bubble1 (single glyphs 30 % of the items, as `retrain_kana`),
+  ≈ 470 in windows (¼ of `retrain_kana`'s).
+- **B needs its knob back.** `upper_shift` (kana_up's) was pruned from
+  `reseed/config.py`; its config is in `_archive/configs/kana_up.toml`
+  (freeze point `b3dee68e`). `UPPER_MAX = 0.9` already caps it.
+- **The package is ahead on `cjk-ko`** (cjk_ko's tiers and knobs on
+  `reseed/`): build and train from that tree, or merge it here first.
+
+**Reads.** The dialogue ruler (`criteria.md`, `ruler.py run`) against the
+cached `retrain_kana` / `seed_retrain_0930` renders: g_f1, exact, cer,
+short kana exact. The steps question on the same ruler from checkpoints
+(`trainer.SAVE_EVERY`, 5 000 now, lowered to read ≈ 50 / 100 / 150 a row).
+Singles and the kana run's 13 words as diagnosis, not as the verdict.
+Size binding has no read yet: the rendered glyph px against the bubble the
+prompt asks for is the candidate.
+
+**Risks.**
+- `grid_small` was grid-heavy too and lost; it had no glyph above 40 px and
+  nothing over σ 0.7. A has `grid_44` at 0.75; B takes it to 0.85.
+- In-word exposure falls to ¼ of `retrain_kana`'s, and composition came
+  from the in-word items (`p1_lone` 9 / 128, C2). Words and `dup` decide,
+  not singles.
+- `kana_up`'s gain was near misses, not exact words, and it cost the scene.
+
+**After.** The arm that holds against `retrain_kana` goes warm on
+`sent_kanji_pres`'s recipe (whole-warm, `free_residual = 0`, L_pres).
+
+**Read (10-14, `reports/hira_cold_2026_10_14.md`).** Both arms ran as
+`hira_cold_hp` (A) and `hira_cold_up` (B, A's items with `upper_shift = 0.1`)
+and were read on a 50-render identity grid (`probes/identity.py`). Both lose
+to `seed_retrain_0930`: words exact 10 / 26 against 19, singles 6 / 11 against
+18. The rows letter their glyph (singles contained 17 – 18 against 19), but
+they repeat it (dup 12 – 17 against 1): the risk above, in-word exposure at ¼.
+Words keep improving at every save up to 150 a row, so the step count does not
+come down. The scene holds: en_cos_out is at the floor on words and above it on
+singles. Neither arm draws its glyph large or centred, and A leans over B on
+the scene. Neither arm goes warm.

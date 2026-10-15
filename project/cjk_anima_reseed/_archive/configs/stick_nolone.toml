@@ -1,0 +1,14 @@
+# stick_nolone — stick_full without the lone tiers (user, 10-04): does the
+# stick the rest of kana_up's mix picks for its spikes keep the word fit
+# up_rkstick showed without the white canvas. bubble1_52 keeps the σ 0.8–0.9
+# items (probe_split: the layout is set above 0.85).
+rows = [
+    "chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをん",
+    "chars:ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロワヲン・ー",
+    "chars:ヴヶゔヵ",
+]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0921"
+steps_per_row = 12
+stick_from = "kana_up"
+drop_tiers = ["lone_44", "lone_28", "lone_16"]

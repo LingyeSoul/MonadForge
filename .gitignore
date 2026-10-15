@@ -82,5 +82,5 @@ workspace/
 *.ttc
 !gui/fonts/*.ttf
 
-# ocr_reader gate images (labels stay tracked in project/ocr_reader/assets/)
-project/ocr_reader/eval_data/
+# ocr_reader gate images (labels stay tracked in project/finished/ocr_reader/assets/)
+project/finished/ocr_reader/eval_data/

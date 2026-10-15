@@ -1,0 +1,16 @@
+# stick_rk_full_band — stick_rk_nolonegrid with every item at σ 0–0.99 (user,
+# 10-04): the default sigmoid draw over the whole range, no tier band. stick_nlg_high
+# (σ 0.75–0.95 alone) moved the stick and took the bubble layout; here the low and
+# high σ pull on the stick together.
+rows = [
+    "chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをん",
+    "chars:ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロワヲン・ー",
+    "chars:ヴヶゔヵ",
+]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0921"
+steps_per_row = 12
+stick_from = "kana_up"
+rows_from = "retrain_kana"
+drop_tiers = ["lone_44", "lone_28", "lone_16", "grid_44", "grid_29", "grid_16", "grid_64"]
+band = [0.0, 0.99]

@@ -189,7 +189,7 @@ loss_dmd.backward()                                   # walks x_θ → steps 2..
 > **The sign of this term is load-bearing and was once inverted.** Before the
 > 2026-05-27 fix the student gradient pointed the wrong way (anti-distill). The tell
 > is subtle: inverted-sign runs look like *"base few-step blur / never trained,"*
-> not a blow-up. See [[project_turbo_dmd_sign_fix]].
+> not a blow-up.
 
 ---
 
@@ -243,7 +243,7 @@ Two reasons this is correctness work, not just memory hygiene:
 2. Peak activations stay at one forward. The two losses share no graph, so a
    single combined backward would pay 2× activation memory for nothing. Severing lets
    grad-ckpt stay *optional* at small $N$ — the unroll it tames is the $N{-}1$-step DMD
-   chain, not the freed step-0 graph (see [[project_custom_down_autograd_distill_lever]]).
+   chain, not the freed step-0 graph.
 
 With the detach off (A/B only) the graphs are entangled and the diversity term
 must ride the single combined backward at assembly time.
@@ -369,16 +369,16 @@ grid-anchored), so it can integrate better at more Euler steps than its trained
 grid. If a checkpoint looks better at more steps than it was trained for, that's the
 tell that distillation hasn't reached a true N-step map yet — train longer or raise
 `student_steps`. Always keep `--cfg 1.0` (CFG is baked; don't
-double-guide). See [[project_sigma_signal_resolves_by_045]] for why the σ≈0.5 band is
-where the extra evaluation matters.
+double-guide). `docs/findings/sigma_signal_where_anima_resolves.md` shows why
+the σ≈0.5 band is where the extra evaluation matters.
 
 Consequences of the plain-LoRA bake (the load-bearing constraint):
 
 - Composes with concept LoRAs linearly (ranks add), same model surgery as
   LCM-LoRA + style LoRA.
 - Cannot carry anything needing a step-size/per-t input at inference (Shortcut /
-  MeanFlow Δt-conditioning; timestep-conditioned T-LoRA whose mask is training-only,
-  [[project_tlora_inference_full_rank]]). A plain LoRA must average antagonistic
+  MeanFlow Δt-conditioning; timestep-conditioned T-LoRA whose mask is training-only).
+  A plain LoRA must average antagonistic
   per-$t$ corrections — true multi-stride robustness is out of scope.
 - Incompatible with Spectrum (Chebyshev cache assumes ≥16 steps).
 

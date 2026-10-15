@@ -1,16 +1,14 @@
-"""reseed — the JA vocab pack's rows re-seeded cold: the data build.
+"""reseed — the reseed line's run configs and data build.
 
 One table (``table.TABLE``): every tier carries its own glyph px, σ band
-and share; the builder draws each tier once and stamps its band — no band
-gate, no group, no rebuild pass. Built 2026-10-03 from
-``cjk_anima_scale/experiments/reseed_anchor --variant fit`` (the
-``grid_small`` → ``grid_lone`` → ``grid_44`` → ``reseed_recap`` chain
-flattened), without its ！ / ？ marks and EN cells.
+and share; the builder draws each tier once and stamps its band. Where the
+table came from and what it leaves out of the scale builder: ``README.md``.
 
-Shared with ``../cjk_anima_scale`` and read-only from here: its ``src/``
-(renderers, scene pools, fonts, inventory) and ``cjk_scale.{paths, config,
-budget, train}`` (the trainer). Its ``cjk_scale.builder`` / ``recipes``
-rebuild the seed of record and are never imported (``tests/``).
+``src/`` holds the renderers, scene pools, inventory, readers and train
+plumbing, vendored from the scale line's ``src/`` under their top-level
+names (``common`` / ``data`` / ``train`` / ``eval``); the trainer is
+``trainer`` / ``rows`` / ``loss``, ported from ``cjk_scale.{train, rows,
+loss}``. No live file imports ``cjk_scale`` (``tests/test_boundary.py``).
 """
 
 from __future__ import annotations
@@ -20,19 +18,29 @@ import sys
 from pathlib import Path
 
 HOME = Path(__file__).resolve().parents[1]  # project/cjk_anima_reseed
-SCALE = HOME.parent / "cjk_anima_scale"
 REPO = HOME.parents[1]
 OUT = REPO / "output" / "cjk_anima_reseed"
 CONFIGS = HOME / "configs"
+SRC = HOME / "src"
+# the scale line's outputs, read from here: the seed rows, the arms of record,
+# the scene pools, the EN refs; ``pools`` appends to its two scene caches
+# (``experiments/scene_{bubble_check,colorful}.json``)
+SCALE_OUT = REPO / "output" / "cjk_anima_scale"
+# the seed rows ``seed_retrain_0930`` (the singles retrain's, 2 683 rows)
+SEED_ROWS = SCALE_OUT / "seed_retrain_0930" / "trained.pt"
+# the raw pack's digest with its encode fold left out (the seed rows are deltas
+# over it, a cold row starts at it) and the punct pack's (``punct_pack.py``:
+# the raw pack's rows and ids, a ``…`` row appended); the trainer takes either
+RAW_PACK_SHA = "7b9fce0bb57b"
+PUNCT_PACK_SHA = "6c09442810af"
 
 
 def bootstrap() -> None:
-    """``cjk_scale`` importable, its ``src/`` first on ``sys.path`` (its
-    ``train`` must win over the repo's ``train.py``), the pack named."""
+    """``src/`` first on ``sys.path`` (its ``train`` must win over the repo's
+    ``train.py``), then the repo; the pack named."""
     os.environ.setdefault("ANIMA_VOCAB_PACK", "models/vocab_packs/anima_cjk_vocab_pack")
-    s = str(SCALE)
-    if s not in sys.path:
+    for p in (REPO, SRC):
+        s = str(p)
+        if s in sys.path:
+            sys.path.remove(s)
         sys.path.insert(0, s)
-    from cjk_scale.paths import bootstrap as scale_bootstrap
-
-    scale_bootstrap()

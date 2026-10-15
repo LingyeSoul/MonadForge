@@ -1,0 +1,14 @@
+# stick_nlg_high — stick_nolonegrid with every item at σ 0.75–0.95 (user, 10-04):
+# the stick fit where the layout is set (probe_split § 3: region by 0.95, slots
+# and glyph size at 0.85–0.8), on scene layouts only.
+rows = [
+    "chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをん",
+    "chars:ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロワヲン・ー",
+    "chars:ヴヶゔヵ",
+]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0921"
+steps_per_row = 12
+stick_from = "kana_up"
+drop_tiers = ["lone_44", "lone_28", "lone_16", "grid_44", "grid_29", "grid_16", "grid_64"]
+band = [0.75, 0.95]

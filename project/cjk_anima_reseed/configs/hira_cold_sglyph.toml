@@ -1,0 +1,12 @@
+# hira_cold_sglyph — arm A from stick + predicted glyph (user 10-15): hira_cold_sball's
+# start with the random ball replaced by each row's predicted glyph component
+# (probes/glyph_init.py: a ridge from the glyph's bitmap to e_i, fitted on 0930's
+# trained katakana + kanji rows; centred over the 81, ⟂ the stick, at 0930's mean
+# spike length); data, bands, 150 / row and seed context are hira_cold_hp's.
+rows = ["chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをんゔ"]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0930"
+steps_per_row = 150
+shares = { grid_44 = 10, grid_29 = 20, grid_16 = 20, lone_44 = 3.3, lone_28 = 3.3, lone_16 = 3.4, bubbleN_34 = 8.2, bubbleN_18 = 11.8, bubble1_52 = 11.1, bubble1_32 = 8.9 }
+data_from = "hira_cold_hp"
+init = "stick_glyph:kata_kanji"

@@ -43,16 +43,24 @@ Finished lines are listed in [`finished/README.md`](finished/README.md)
 (the ResShift SR sidecar, 2026-08-22; mod guidance, 2026-08-24; the
 encoder-side CJK line `cjk_aware_anima` and its DiT-side successor
 `cjk_aware_anima_dit`, both 2026-09-24; the wake line
-`cjk_renderable_anima`, 2026-09-30).
+`cjk_renderable_anima`, 2026-09-30; its production line `cjk_anima_scale`,
+2026-10-09; the PaddleOCR-VL reader v4 line `ocr_reader`, 2026-10-15).
 
 Active projects:
 
-- [`cjk_anima_scale/`](cjk_anima_scale/) — opened 2026-09-23 out of
-  `finished/cjk_renderable_anima`: the production line for the JA pack
-  (`preview3`, `preview4`). Home: `README.md` (state), `plan_retrain.md` (the
-  live plan); its `band_experiment_results.md` is the **vocab band law**
-  (band keyed on glyph count, px sets the floor, nothing above 0.9 — all
-  measured, not theory).
+- [`cjk_anima_reseed/`](cjk_anima_reseed/) — opened 2026-10-02 out of the
+  scale line (now `finished/cjk_anima_scale`): the JA pack's rows re-seeded
+  cold on one tier table, then trained warm on dialogue lines; shipped
+  `seed_1008` = `anima_cjk_vocab_pack_jp_v1`. The home for cold row training
+  (the scale trainer was ported into `reseed/`). Home: `README.md`,
+  `status.md` (state). Its live work is on the `cjk-reseed` branch; the
+  Hangul jamo line it opened moved to `cjk_ko/` (10-14).
+
+- [`cjk_ko/`](cjk_ko/) — opened 2026-10-11 out of the reseed line's
+  `proposal_jamo.md` § 4 (the proposal and its phase 1 now live here): Hangul rows warm from `jamo_j256_ko` on KO
+  dialogue (songys Chatbot_data), built and trained through reseed's
+  `reseed/` package. Home: `README.md`. Its live work is on the `cjk-ko`
+  branch.
 
 - [`qwen21_lora/`](qwen21_lora/) — the Qwen-Image-2.1 LoRA line (not Anima;
   `library/qwen21/CLAUDE.md`).

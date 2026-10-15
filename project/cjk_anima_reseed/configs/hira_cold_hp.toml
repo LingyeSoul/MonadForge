@@ -1,0 +1,11 @@
+# hira_cold_hp — cold arm A (motivation2.md § 8, user 10-14): the 81 hiragana rows
+# (retrain_kana's 80 + ゔ) cold from the pack, every other row frozen at
+# seed_retrain_0930, so the pair against retrain_kana differs in those rows only.
+# Grid-heavy mix (grid 50 / lone 10 / bubbleN 20 / bubble1 20, split inside each
+# form by the table's ratios) so every row sees even exposure; each tier at the
+# table's hp band. 150 / row ≈ retrain_kana's mean exposure (145).
+rows = ["chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをんゔ"]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0930"
+steps_per_row = 150
+shares = { grid_44 = 10, grid_29 = 20, grid_16 = 20, lone_44 = 3.3, lone_28 = 3.3, lone_16 = 3.4, bubbleN_34 = 8.2, bubbleN_18 = 11.8, bubble1_52 = 11.1, bubble1_32 = 8.9 }

@@ -1,0 +1,10 @@
+# hira_cold_up — cold arm B (motivation2.md § 8, user 10-14): hira_cold_hp's items
+# (its data), every item's upper σ edge 0.1 higher at train (capped at 0.9) —
+# kana_up's knob on the grid-heavy mix; the pair against A differs in the bands only.
+rows = ["chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをんゔ"]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0930"
+steps_per_row = 150
+shares = { grid_44 = 10, grid_29 = 20, grid_16 = 20, lone_44 = 3.3, lone_28 = 3.3, lone_16 = 3.4, bubbleN_34 = 8.2, bubbleN_18 = 11.8, bubble1_52 = 11.1, bubble1_32 = 8.9 }
+data_from = "hira_cold_hp"
+upper_shift = 0.1

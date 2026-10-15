@@ -39,6 +39,7 @@ it carried no information; otherwise the fact it was wrapping must survive.
   read one field."* → document the command that *is* right and stop there.
 - Headers that editorialise (`## Asking the queue a question`) → say the thing
   (`## Reading the queue`).
+- *"bit-exact"* → drop it; keep what was compared, if anything was.
 
 **2. Strawman / defensive prose → nothing.** Text that argues with a reader who
 is not in the room:

@@ -1,0 +1,12 @@
+# hira_cold_spe — hira_cold_sglyph with the predicted glyph read off PE-Spatial-B16
+# (user 10-15, after glyph_init --features: the true row ranks 2.3 / 81, top-1 45,
+# against the bitmap's 8.6 / 19): the ridge on PE-Spatial's patch tokens pooled 4×4,
+# fitted on 0930's katakana + kanji rows; stick, length, data, bands, 150 / row and
+# seed context are sglyph's, so the pair against it differs in the ball only.
+rows = ["chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをんゔ"]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0930"
+steps_per_row = 150
+shares = { grid_44 = 10, grid_29 = 20, grid_16 = 20, lone_44 = 3.3, lone_28 = 3.3, lone_16 = 3.4, bubbleN_34 = 8.2, bubbleN_18 = 11.8, bubble1_52 = 11.1, bubble1_32 = 8.9 }
+data_from = "hira_cold_hp"
+init = "stick_glyph:pe_spatial-kata_kanji"

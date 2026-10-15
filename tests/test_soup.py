@@ -129,6 +129,13 @@ class TestTruncatedSoup:
         want = torch.stack([_delta_w(sd, module) for sd in sds]).mean(0)
         torch.testing.assert_close(_delta_w(soup, module), want, rtol=1e-4, atol=1e-4)
 
+    def test_rank_capped_at_the_ingredients(self):
+        # A module trained at a lower rank (adaln_rank) keeps it under a larger --rank.
+        soup, _ = truncated_soup([_make_sd(0), _make_sd(1)], rank=4 * RANK)
+        module = "lora_unet_blocks_0_attn_q_proj"
+        assert soup[f"{module}.lora_down.weight"].shape == (RANK, IN)
+        assert float(soup[f"{module}.alpha"]) == RANK
+
     def test_truncation_is_best_rank_r(self):
         sds = [_make_sd(0), _make_sd(1), _make_sd(2)]
         soup, energy = truncated_soup(sds, rank=RANK)

@@ -2,8 +2,7 @@
 
 > **STATUS (2026-07-27).** TRAP (measurement methodology) + the fix LANDED the
 > same day: `--deterministic` (train.py) produces bit-identical checkpoints
-> across runs, twin-validated over full compiled 1200-step runs. Memory:
-> [[project_deterministic_flag_chaos_floor]]. Data:
+> across runs, twin-validated over full compiled 1200-step runs. Data:
 > `_archive/sigma_lowres/bench/report.md` §"Twin controls".
 
 ## The trap
@@ -70,8 +69,8 @@ flash backward trades atomics for extra recompute/semaphores. Same
 GPU/driver/library assumed (determinism is per-environment, not portable).
 
 Scope caveat: train.py path only. Bespoke loops (turbo / spd / mod-distill /
-RSD) do not inherit it — the standing mirroring rule
-([[project_daemon_wiring_pattern]]) applies before running a paired A/B there.
+RSD) do not inherit it — mirror the `--deterministic` wiring into the loop before
+running a paired A/B there.
 
 ## What this buys — and what it doesn't
 

@@ -1,0 +1,15 @@
+# sent_stick — sent_ball_lr2's reverse (user, 10-05, after rand_turn): the 163 kana
+# rows warm at preview51's (seed_fixed_1005_stick080), their spikes held, the stick
+# (their mean) trained alone on sent_ball's data at lr 2e-4, same seed and batches.
+rows = [
+    "chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをんゔ",
+    "chars:ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロワヲンヴー",
+]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0930"  # unused: the rows are rows_from's
+steps_per_row = 40
+shares = { grid_44 = 0, grid_29 = 0, grid_16 = 0, lone_44 = 0, lone_28 = 0, lone_16 = 0, bubble1_52 = 2, bubble1_32 = 3, bubbleN_34 = 15, bubbleN_18 = 10, grid_64 = 0, sent_34 = 40, sent_22 = 30 }
+stick_from = "sent_ball"
+rows_from = "seed_fixed_1005_stick080"
+pack = "punct"
+lr = 2e-4
