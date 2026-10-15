@@ -68,4 +68,49 @@ b starts at 0. The start: scale × 4.60, radius 211.0, |composed mean| 106.1
 - Train job: `20261015-161623-6109d5`.
 - Read (`probes/micro_read.py`, floor / cf / cf_pe; trained, next, held, H):
   render `…-7f6fdb`, score `…-532879`.
-- Result: pending.
+### Training
+
+Train 101 min. In-box sits under cf from the first step: −0.009 over steps
+0 – 1 000, −0.005 to 2 000, −0.001 from 3 000, −0.0004 by 6 850. Out-box
+matches cf at every logged step. |row| starts 100 above cf and closes to
+≈ 10 (427 against 417).
+
+### Read
+
+`results/20261015-1807-micro-read/`, seed 0, one render an item. drawn is the
+mean letters read an image, and the target is one syllable.
+
+| arm | group | exact | drawn | glyph F1 | jamo P / R / F1 |
+|---|---|---|---|---|---|
+| floor (j256_ko) | trained | 21 / 64 | 2.75 | 0.218 | 0.364 / 0.594 / 0.407 |
+| cf | trained | 20 / 64 | 2.98 | 0.251 | 0.407 / 0.620 / 0.449 |
+| cf_pe | trained | 18 / 64 | **4.08** | 0.233 | 0.364 / 0.651 / 0.407 |
+| floor | next | 9 / 64 | 3.23 | 0.144 | 0.273 / 0.508 / 0.320 |
+| cf | next | 13 / 64 | 3.59 | 0.172 | 0.355 / 0.586 / 0.396 |
+| cf_pe | next | 11 / 64 | **4.39** | 0.160 | 0.306 / 0.568 / 0.350 |
+| floor | H | 6 / 32 | 3.12 | 0.268 | 0.369 / 0.667 / 0.423 |
+| cf | H | **10 / 32** | 2.38 | **0.326** | 0.469 / 0.693 / 0.516 |
+| cf_pe | H | 7 / 32 | **3.62** | 0.149 | 0.328 / 0.620 / 0.376 |
+
+Held strings: 0 / 27 for both, as for every J arm. Jamo F1 against the other
+targets (chance) is flat at 0.10 – 0.12 in every row.
+
+Paired on exact, cf_pe against cf: trained 10 / 12, next 5 / 7, H 4 / 7
+(p 0.55 – 0.83).
+
+1. **The glyph start does not help, and it leans the wrong way.** H goes
+   10 → 7 and glyph F1 0.326 → 0.149. None of the exact differences is
+   significant on one seed.
+2. **What moves is how much it draws.** cf_pe reads 3.6 – 4.4 letters an
+   image against cf's 2.4 – 3.6, in every group. It loses precision and not
+   recall (jamo R holds at 0.57 – 0.65). On H a lone syllable becomes a line
+   of text: 은 → `센질거존자여.`, 해 → `랑인드 대`. This is the kana arms'
+   `dup` / Latin-filler failure, and the start makes it worse here.
+3. **Untested causes.** The start carries a common part |106| that b does
+   not hold, in a direction read off the JP rows; the cold `rand` kana arm
+   fell back to sentences the same way. Or 211 is too large a start for a
+   weak (cos 0.11 – 0.17) direction.
+
+Verdict: with the kana arms (`../cjk_anima_reseed/reports/hira_cold_2026_10_14.md`
+§ 5), a glyph-predicted start buys loss early and nothing on the renders.
+Here it costs H's precision.
