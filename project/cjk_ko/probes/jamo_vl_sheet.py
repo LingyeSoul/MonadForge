@@ -14,7 +14,7 @@ one token that never matches), so 식 for 시 scores P 2/3, R 1.
 The chance line, ``jamo_f1_other``: the same reads scored against every other
 target of the group (the jamo two syllables share by chance: ㅇ, ㅏ, no final).
 
-    .venv/bin/python project/cjk_anima_reseed/probes/jamo_vl_sheet.py \\
+    .venv/bin/python project/cjk_ko/probes/jamo_vl_sheet.py \\
         results/20261011-1409-jamo-vl-score --arms jamo_j64,jamo_j96,jamo_j128
 
 → ``results/<ts>-jamo-vl-sheet/``: ``sheet_<group>_<i>.png``, ``reads.md``,
@@ -30,9 +30,10 @@ import unicodedata
 from collections import Counter
 from pathlib import Path
 
-HOME = Path(__file__).resolve().parents[1]
+KO = Path(__file__).resolve().parents[1]
+HOME = KO.parent / "cjk_anima_reseed"  # the reseed package and its assets
 sys.path.insert(0, str(HOME))
-sys.path.insert(0, str(HOME / "probes"))
+sys.path.insert(0, str(KO / "probes"))
 
 from jamo_vl import RENDER  # noqa: E402
 
@@ -168,7 +169,7 @@ def main() -> None:
     p.add_argument("--groups", default="H,words")
     a = p.parse_args()
     src = Path(a.score_dir)
-    src = src if src.is_absolute() else HOME / src
+    src = src if src.is_absolute() else KO / src
     arms = a.arms.split(",")
     recs, order = {}, {}
     for line in open(src / "reads.jsonl"):
@@ -177,7 +178,7 @@ def main() -> None:
         order.setdefault(r["group"], [])
         if r["text"] not in order[r["group"]]:
             order[r["group"]].append(r["text"])
-    out = make_run_dir("cjk_anima_reseed", label="jamo-vl-sheet", root=HOME / "results")
+    out = make_run_dir("cjk_ko", label="jamo-vl-sheet", root=KO / "results")
     md = [
         f"# v4 free reads, by glyph — `{src.name}`",
         "",

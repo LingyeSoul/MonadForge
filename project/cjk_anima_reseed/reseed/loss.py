@@ -134,15 +134,17 @@ def _len_bin(n: int) -> str:
 def en_caption(rec: dict, k: int) -> str:
     """The item's caption with its JA string swapped for an EN line of its
     length bin (picked by ``k``, the item's index in its data dir) and the
-    language named EN."""
+    language (JA, or a ``lang`` run's KO / ZH) named EN."""
     pool = EN_LINES[_len_bin(glyph_count(rec["text"]))]
     q = f'"{rec["text"]}"'
     cap = rec["caption"]
     assert q in cap, (rec["text"], cap)
     cap = cap.replace(q, f'"{pool[k % len(pool)]}"')
-    return cap.replace("Japanese text", "English text").replace(
-        "japanese text", "english text"
-    )
+    for lang in ("Japanese", "Korean", "Chinese"):
+        cap = cap.replace(f"{lang} text", "English text").replace(
+            f"{lang.lower()} text", "english text"
+        )
+    return cap
 
 
 def out_mask(shape, recs, device, grid_box: bool = False):

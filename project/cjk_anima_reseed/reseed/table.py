@@ -4,7 +4,8 @@ which σ band, how much of it.
 A tier is ``<form>_<px>``: ``lone`` (one glyph alone on its canvas),
 ``grid`` (2×2 – 3×3, one glyph per cell), ``bubble1`` (one glyph in a scene
 bubble), ``bubbleN`` (a 2–6 glyph window in one, routed per glyph),
-``sent`` (a dialogue line in 2–3 columns of one); the number is the median
+``sent`` (a dialogue line in 2–3 columns of one), ``sentko`` (a KO line in
+horizontal lines broken at its spaces); the number is the median
 ink px (√(box area / glyphs)) the kana build drew.
 
 The values are ``reseed_anchor fit``'s (``run1003_reseed_anchor_fit``):
@@ -59,6 +60,8 @@ SENT_FILL = (0.65, 0.9)  # the share of the region the block's fit takes (0.5 le
 # small text afloat in a big bubble, user 10-05)
 SENT_MIN_LETTERS = 6  # kana + kanji (the scale line's sentence floor)
 SENT_FRAMES_OUT = {"sign"}  # dialogue goes in bubbles, not on a held sign
+SENT_H_LINES = 4  # a KO line: at most this many horizontal lines (cjk_ko, 10-11)
+SENT_H_LEFT = 0.7  # of the KO lines: left-aligned, the rest centred (user, 10-11)
 
 # mark rows (user, 10-05): their windows hold the seed's trained letters
 # (seed_retrain_0930 = preview4's bake); a heart is synthesised into dialogue
@@ -180,5 +183,85 @@ TABLE = (
         0.0,
         (0.3, 0.6),
         {"glyph_px": [16, 22], "lengths": [8, 14], "scene_pools": [SMALL_POOL]},
+    ),
+    # opt-in: a KO dialogue line (a ``lines`` file in ``LINE_LANG``) in 1–4
+    # horizontal lines broken at its spaces (cjk_ko, 10-11), at sent_34 /
+    # sent_22's font px and bands; lengths in cells (spaces not counted)
+    Tier(
+        "sentko_34",
+        "sent",
+        0.0,
+        (0.45, 0.7),
+        {"glyph_px": [26, 36], "lengths": [4, 12], "horizontal": True},
+    ),
+    Tier(
+        "sentko_22",
+        "sent",
+        0.0,
+        (0.3, 0.6),
+        {
+            "glyph_px": [16, 22],
+            "lengths": [6, 20],
+            "horizontal": True,
+            "scene_pools": [SMALL_POOL],
+        },
+    ),
+    # opt-in: the partial forms (``jamo.PART_SPELL``: a vowel or a final with
+    # its initial left out, in its in-syllable form), alone or in a grid of
+    # them on a flat canvas (cjk_ko, 10-12: a bubble fitted to a final's ink is
+    # a sliver), at font px 40–72 — the part is a share of that; the band spans
+    # grid_29 / grid_44's (not measured)
+    Tier(
+        "partial",
+        "grid",
+        0.0,
+        (0.3, 0.75),
+        {
+            "grids": f"{LONE},{GRIDS}",
+            "glyph_px": [40, 72],
+            "bubble_frac": 0.0,
+            "cell_jitter": CELL_JITTER,
+            "parts": True,
+        },
+    ),
+    # opt-in: the counterfactual syllables (``counterfactual``: a trained
+    # syllable less its initial or its vowel, the rest where it sits), drawn
+    # as ``partial`` is (cjk_ko, 10-12)
+    Tier(
+        "counterfactual",
+        "grid",
+        0.0,
+        (0.3, 0.75),
+        {
+            "grids": f"{LONE},{GRIDS}",
+            "glyph_px": [40, 72],
+            "bubble_frac": 0.0,
+            "cell_jitter": CELL_JITTER,
+            "cf": True,
+        },
+    ),
+    # opt-in: the counterfactual syllables in a scene bubble, as bubble1_52 /
+    # bubble1_32 draw a glyph (cjk_ko, 10-13)
+    Tier(
+        "cf_bubble1_52",
+        "bubble1",
+        0.0,
+        (0.55, 0.8),
+        {"fit": 0.7, "min_glyph": 28, "cf": True},
+        px_keep=(40, None),
+    ),
+    Tier(
+        "cf_bubble1_32",
+        "bubble1",
+        0.0,
+        (0.35, 0.6),
+        {
+            "glyph_px": [28, 40],
+            "fill": [0.5, 0.8],
+            "min_glyph": 12,
+            "scene_pools": [SMALL_POOL],
+            "cf": True,
+        },
+        px_keep=(None, 40),
     ),
 )

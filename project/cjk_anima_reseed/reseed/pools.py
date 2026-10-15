@@ -36,6 +36,11 @@ class Pools:
     # the rows drawn alone (bubble1 / grid): a row whose lone quoted spelling
     # encodes to it (``…`` alone is T5's ``...``); ``None`` = every single
     lone: list | None = None
+    # the partial forms among the rows (``jamo.PART_SPELL``): drawn by the
+    # ``partial`` tier only, never alone or in a grid of syllables
+    parts: list = field(default_factory=list)
+    # counterfactual (``Run.cf``): host → form; its hosts are ``parts``
+    cf: dict = field(default_factory=dict)
     synth: list = field(default_factory=list)  # synthesised dialogue lines (hearts)
     used: Counter = field(default_factory=Counter)  # scene → items drawn on it
     tier_used: Counter = field(
@@ -46,6 +51,7 @@ class Pools:
     lang: dict = field(default_factory=dict)  # glyph → language (a ``lang`` run's rows)
     px_min: dict = field(default_factory=dict)  # face path → font px it is drawn from
     pose: bool = False  # config.Run.pose
+    legible: dict | None = None  # ``faces.legible``: {median, p10, from_px}
 
     def fonts_at(self, px: float | None) -> list:
         """The faces drawn at ``px`` font px (``px_min``; every face without a
@@ -53,6 +59,19 @@ class Pools:
         if px is None or not self.px_min:
             return self.fonts
         return [f for f in self.fonts if px >= self.px_min.get(f, 0)] or self.fonts
+
+    def fonts_for(self, text: str, px: float | None, fonts: list | None = None) -> list:
+        """``fonts`` (default ``fonts_at(px)``) less the faces that fuse
+        ``text``'s strokes at ``px`` (``legible``; off, or no px: all)."""
+        fonts = self.fonts_at(px) if fonts is None else fonts
+        if self.legible is None or px is None:
+            return fonts
+        from common.render.flat import font_covers
+
+        from .legible import pick
+
+        # measured on the faces that draw it (a tofu passes any gap rule)
+        return pick([f for f in fonts if font_covers(f, text)] or fonts, text, px, self.legible)
 
 
 def _quietly(fn, *args):
@@ -70,14 +89,21 @@ def _quietly(fn, *args):
 
 
 def build_pools(
-    rows: list, rng: random.Random, lang: dict | None = None, faces: dict | None = None
+    rows: list,
+    rng: random.Random,
+    lang: dict | None = None,
+    faces: dict | None = None,
+    cf: dict | None = None,
 ) -> Pools:
     """``rows``: ``data.vocabs`` specs (``chars:…``), single glyphs only —
     the stage resolvers on them, so a row means what it meant in every read
     of record (and the eval groups ``eval.json`` carries). ``lang`` (glyph →
     language): the ``KOZH_FONTS`` faces join the fonts (``lang_fonts``);
     ``faces`` (``config.Run.faces``) leaves its ``out`` faces out and floors
-    its ``px_min`` ones."""
+    its ``px_min`` ones; its ``legible`` rule (``legible.py``) drops a face
+    per glyph and px at draw time. ``cf`` (``Run.cf``): the counterfactual hosts — the
+    ``parts``, left out of the face check (no face but ``counterfactual.FACES``
+    draws them)."""
     import tempfile
     from types import SimpleNamespace
 
@@ -118,6 +144,9 @@ def build_pools(
     other = [u for u in pool if len(qpieces(tok, qmap, u)) != 1 or glyph_count(u) != 1]
     assert not other, f"reseed draws single glyphs only: {sorted(set(other))[:10]}"
     singles = list(dict.fromkeys(pool))
+    from .jamo import is_part
+
+    parts = list(cf) if cf else [u for u in singles if is_part(u)]
     if not inv.evals.get("single"):
         srng = random.Random(T.SEED + 47)
         inv.evals["single"] = sorted(srng.sample(singles, min(18, len(singles))))
@@ -148,7 +177,8 @@ def build_pools(
     fonts = find_fonts()
     px_min = {}
     if lang:
-        fonts = lang_fonts(fonts, singles, (faces or {}).get("dirs", ()))
+        drawn = [u for u in singles if u not in (cf or {})]
+        fonts = lang_fonts(fonts, drawn, (faces or {}).get("dirs", ()))
     if faces:
         fonts = [f for f in fonts if Path(f).name not in faces["out"]]
         floors = faces["px_min"]
@@ -170,6 +200,9 @@ def build_pools(
         shapes=ShapePool(T.SHAPES, T.SEED),
         lang=dict(lang or {}),
         px_min=px_min,
+        legible=(faces or {}).get("legible"),
+        parts=parts,
+        cf=dict(cf or {}),
     )
 
 
@@ -466,6 +499,30 @@ def window_pool(glyphs: set, lines, held=(), length: tuple = WINDOW_LEN) -> list
     return sorted(out)
 
 
+def word_pool(glyphs: set, lines, held=(), length: tuple = WINDOW_LEN) -> list:
+    """The whole words of ``lines`` (a KO line file's: split at the spaces,
+    edge ``?!…`` dropped) of ``length`` glyphs, all in ``glyphs``, no glyph
+    repeated, none holding a trigram of a ``held`` string — ``window_pool``'s
+    rules on a word, never a piece of one (user, 10-11)."""
+    grams = set()
+    for h in held:
+        n = min(3, len(h))
+        grams |= {h[i : i + n] for i in range(len(h) - n + 1)}
+    lo, hi = length
+    out = set()
+    for ln in lines:
+        for w in ln.split():
+            w = w.strip("?!…")
+            if (
+                lo <= len(w) <= hi
+                and set(w) <= glyphs
+                and len(set(w)) == len(w)
+                and not any(w[i : i + 3] in grams for i in range(len(w) - 2))
+            ):
+                out.add(w)
+    return sorted(out)
+
+
 # a mark row trains inside words (user, 10-05: the green leaf was `〜` trained
 # lone in grid cells); `・` stays lone (the punct pack writes a lone one `.`)
 MARK_LONE_ONLY = set("・")
@@ -593,8 +650,12 @@ def ext_encoder():
     _, mapping = ext_vocab.load_ext_assets(
         resolve_pack_prefix(checkpoints().vocab_pack)
     )
+    # routed = JA and Hangul tokens per glyph (a KO line's build routes both,
+    # ``build.json`` ``glyph_route_ko``; a JA text has no Hangul token)
     encs = {
-        r: HybridT5Encoder.from_mapping(t5, qw, mapping, glyph_route=r)
+        r: HybridT5Encoder.from_mapping(
+            t5, qw, mapping, glyph_route=r, glyph_route_ko=r
+        )
         for r in (False, True)
     }
 
@@ -653,9 +714,13 @@ def add_windows(
     phrase: str,
     workers: int = 1,
     held: tuple = (),
+    ja_dataset: bool = True,
+    words: bool = False,
 ) -> dict:
     """``pools.windows`` (glyph → its windows) over the dialogue lines (``phrase``) and
-    the training set's own JA text (neither read with ``phrase`` "": a lang run), the read strings and ``held`` held out by
+    the training set's own JA text (neither read with ``phrase`` "": a lang run;
+    the JA text not with ``ja_dataset`` off: a KO line file; with ``words``,
+    the lines' whole words, ``word_pool``), the read strings and ``held`` held out by
     trigram, every window routed to its glyphs' rows and nothing else (else
     dropped). Writes ``windows.json``; returns the stats for ``build.json``."""
     glyphs = window_glyphs(pools.singles)
@@ -667,8 +732,9 @@ def add_windows(
         if phrase
         else []
     )
-    ds = dataset_ja_lines() if phrase else []
-    ws = window_pool(glyphs, lines + ds, (*read, *held))
+    ds = dataset_ja_lines() if phrase and ja_dataset else []
+    pool = word_pool if words else window_pool
+    ws = pool(glyphs, lines + ds, (*read, *held))
     ext = ext_encoder()
     ids = {}
     for c in sorted(glyphs):
@@ -701,6 +767,7 @@ def add_windows(
     n = sorted(len(v) for v in pools.windows.values())
     stats = {
         "length": list(WINDOW_LEN),
+        **({"words": True} if words else {}),
         "held": list(read),
         **({"held_file": len(held)} if held else {}),
         "lines": {"dialogue": len(lines), "dataset": len(ds)},
@@ -833,8 +900,9 @@ def focus_pools(pools: Pools, focus: tuple, window_kanji: int) -> dict:
 _DOT_RUN = re.compile("[・･.．‥…]+")
 _DOTS = {"‥": 2, "…": 3}
 # what a line may hold off the pack's rows: the leader (T5's `...` on the raw
-# pack; its own row on the punct pack) and the marks the fold sends to T5's ! / ?
-SENT_BASE = set("…！？!?")
+# pack; its own row on the punct pack), the marks the fold sends to T5's ! / ?
+# and the space between KO words (no T5 row: the routed stream drops it)
+SENT_BASE = set("…！？!? ")
 
 
 def norm_ellipsis(t: str) -> str | None:
@@ -855,15 +923,23 @@ def norm_ellipsis(t: str) -> str | None:
     return "".join(out) + t[at:]
 
 
+def cells(s: str) -> int:
+    """``s``'s glyph cells: its chars but the spaces between KO words."""
+    return len(s) - s.count(" ")
+
+
 def sentence_ok(s: str, lengths: tuple) -> str | None:
-    """Why ``s`` (normalised) is not a ``sent`` line, else ``None``."""
+    """Why ``s`` (normalised) is not a ``sent`` line, else ``None``. Letters
+    are kana, kanji and Hangul syllables."""
     from common.render.scene import NO_HEAD
     from data.synth import _SENT_DISTINCT, _letters
 
+    from library.anima.ext_vocab import is_hangul_syllable
+
     lo, hi = lengths
-    if not lo <= len(s) <= hi:
+    if not lo <= cells(s) <= hi:
         return "length"
-    ls = _letters(s)
+    ls = _letters(s) + [c for c in s if is_hangul_syllable(c)]
     if len(ls) < T.SENT_MIN_LETTERS or len(set(ls)) < _SENT_DISTINCT:
         return "letters"
     if s[0] in NO_HEAD:
@@ -928,9 +1004,9 @@ def add_sentences(
             drop[why] += 1
     pools.sentences, pools.sent_marks = {}, {}
     for s in sorted(keep):
-        pools.sentences.setdefault(len(s), []).append(s)
+        pools.sentences.setdefault(cells(s), []).append(s)
         for m in sorted({mark_of[i] for c in s if (i := ext.glyph_row(c)) in mark_of}):
-            pools.sent_marks.setdefault(m, {}).setdefault(len(s), []).append(s)
+            pools.sent_marks.setdefault(m, {}).setdefault(cells(s), []).append(s)
     stats = {
         "lengths": list(lengths),
         "lines": len(lines),

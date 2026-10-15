@@ -143,7 +143,7 @@ From `_archive/idea.md` (10-05 review; its dialogue-length data became the
 `sent` tiers):
 
 - Per-occurrence credit: a glyph's local loss backpropagated only through
-  its own occurrence's embedding lookup.
+  its own occurrence's embedding lookup (`idea.md`, 10-14).
 - An OCR / spelling loss on decoded x̂₀ text crops.
 - A quote-scoped sequence adapter over the quoted string's adapter outputs
   (needs a runtime component; not a static pack).
@@ -182,26 +182,26 @@ row_i = m_pack + s + (1 − α_i)·q_i + e_i
 each script grows its own stick ~57° off both seed sticks, its spikes sit
 outside both seed balls (0.09–0.12 of their energy in the seed balls' top-40
 vs 0.28–0.30 held-out); hanzi 6 / 8 exact, Hangul 2 / 8 exact with the other
-6 one jamo off. Then `proposal_jamo.md` phase 1
-(`reports/jamo_phase1_2026_10_10.md`): jamo factors carry the glyph form
+6 one jamo off. Then `../cjk_ko/proposal_jamo.md` phase 1
+(`../cjk_ko/reports/jamo_phase1_2026_10_10.md`): jamo factors carry the glyph form
 and the jamo positions to untrained syllables, not their identity (exact
-~6 % of H at J64–J128). The jamo curriculum (`reports/jamo_curriculum_2026_10_11.md`,
+~6 % of H at J64–J128). The jamo curriculum (`../cjk_ko/reports/jamo_curriculum_2026_10_11.md`,
 user 10-11): the 51 standalone jamo trained alone draw 31 / 51 (no final
 cluster); J64's factors started at them draw one glyph on 10 / 32 of H vs
 J64's 17, exact 2 vs 1 — J64 cold's factors sit orthogonal to the standalone
 rows (cos ~0), so a jamo's lone row is not its block component.
 At J128's total steps J64 falls back (`jamo_j64_112`: H jamo F1 0.17 vs
-J64's 0.25 and J128's 0.27, chance ~0.13; `reports/jamo_vl_reads_2026_10_11.md`
+J64's 0.25 and J128's 0.27, chance ~0.13; `../cjk_ko/reports/jamo_vl_reads_2026_10_11.md`
 § 4): more syllables, not more steps a row. D128 (common syllables, the
 most varied jamo pairs) at the same budget ties J128 on H (exact 1 vs 3,
-jamo F1 0.30 vs 0.27; `reports/jamo_d128_2026_10_11.md`). J256 (J128 +
+jamo F1 0.30 vs 0.27; `../cjk_ko/reports/jamo_d128_2026_10_11.md`). J256 (J128 +
 the next 128, 14 336 steps) is the first step that moves precision, not
 recall: exact 5 vs 3, jamo P 0.27 vs 0.20, glyph P 0.14 vs 0.05, jamo R flat
-(`reports/jamo_j256_2026_10_11.md`).
+(`../cjk_ko/reports/jamo_j256_2026_10_11.md`).
 The same J256 on `jamo_j128_ko`'s data build (faces out / floored, the
 `ko_extra` faces, `pose`) moves both: exact 8 vs 5, jamo P 0.39 vs 0.27,
 jamo R 0.74 vs 0.55, chance flat at 0.13
-(`reports/jamo_j256_ko_2026_10_11.md`).
+(`../cjk_ko/reports/jamo_j256_ko_2026_10_11.md`).
 
 From `_archive/task_report.md` § 2 / § 4:
 

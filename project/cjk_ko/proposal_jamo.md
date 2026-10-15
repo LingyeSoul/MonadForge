@@ -17,7 +17,7 @@ Settled on the way: R3 keeps `C × cls` over plain `C`; F64's free rows hold
 no additive jamo structure; the KO reader is v4 (`probes/jamo_vl.py`, 71 %
 on font-drawn H); `jamo_vl_sheet.py` scores glyph / jamo P / R / F1.
 Hangul per-glyph routing (`glyph_route_ko`) and `factor = "jamo"` are in
-(`reseed/jamo.py`, `reseed/trainer.py`).
+(`../cjk_anima_reseed/reseed/jamo.py`, `../cjk_anima_reseed/reseed/trainer.py`).
 
 ## 1. Why
 
@@ -28,8 +28,8 @@ Hangul per-glyph routing (`glyph_route_ko`) and `factor = "jamo"` are in
   (U+C000–C03F, 쀀–쀿; 쀼 the only one in KS X 1001). The fragment ones are
   regrouped per char onto `char` rows (8 660). One T5-side row per syllable,
   routed or not (`ext_encoder`, checked 10-09).
-- **kozh16's Hangul misses are jamo misses** (`reports/kozh16_2026_10_09.md`,
-  sheet `results/20261009-1414-kozh16-render/`, read by eye 10-09). Of 7
+- **kozh16's Hangul misses are jamo misses** (`../cjk_anima_reseed/reports/kozh16_2026_10_09.md`,
+  sheet `../cjk_anima_reseed/results/20261009-1414-kozh16-render/`, read by eye 10-09). Of 7
   syllables + ㄹ, cold at 225 steps each, 가 and ㄹ are exact. The other 6
   are one jamo off: 힝→항, 몹→믑, 없→잆, 양→앙, 한→환 (the vowel), 감→갈
   (the final). **The initial is right in all 8.** The rows learned "a
@@ -119,7 +119,7 @@ vs 84), with no rare blocks (its rarest: 뉘 뷔 뚫 흙 몫 얘; J128's: 챦 �
 94 vs 102; ㄳ, ㄵ and ㅒ are seen once.
 
 - **Arm**: `jamo_d128`, `factor = "jamo"` at 56 steps a row (7 168 = J128's
-  total, ~50 min). The set into `assets/jamo_sets.json` as `D128`; its own
+  total, ~50 min). The set into `../cjk_anima_reseed/assets/jamo_sets.json` as `D128`; its own
   data build (Hangul only, as `jamo_j64`).
 - **Read**: H and the words, v4 free (`jamo_read.py render --held`,
   `jamo_vl.py score`, `jamo_vl_sheet.py`), against J128 at the same
@@ -143,7 +143,7 @@ vs 84), with no rare blocks (its rarest: 뉘 뷔 뚫 흙 몫 얘; J128's: 챦 �
   not at the pack row (`sent_kanji`: under AdamW the pull walks a rare warm
   row back to the pack).
 - **Data**: a KO dialogue corpus for the `sent` tier and windows. Candidates
-  (`status.md` § KO / ZH): songys Chatbot_data (MIT, 11.8 k pairs),
+  (`../cjk_anima_reseed/status.md` § KO / ZH): songys Chatbot_data (MIT, 11.8 k pairs),
   SmileStyle (CC BY-NC), OpenSubtitles ko (unclear). Lettering:
   **horizontal first**, since KO manga / webtoon dialogue is mostly
   horizontal. `HORIZONTAL_FRAC = 0.3` and the `tategaki` windows are

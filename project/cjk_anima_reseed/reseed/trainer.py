@@ -212,6 +212,11 @@ def train(
     pres: tuple | None = None,
     factor: str = "",
     factor_init: tuple = (),
+    factor_from: Path | None = None,
+    factor_residual: float | None = None,
+    upper_shift: float = 0.0,
+    save_every: int | None = None,
+    init: str = "",
 ) -> Path:
     """Train ``run`` (a ``reseed.config.Run``: its name, path and rows) on
     ``data`` into ``out``. ``context`` is the warm-from / frozen-context /
@@ -236,6 +241,18 @@ def train(
     σ ~ U(σ_lo, σ_hi), outside the dilated text box. The pass draws σ and ε
     from its own generator, so the data term's draws stay the run's without
     it; the EN captions are TE-cached in ``out/te_en``.
+    ``upper_shift`` moves every item's upper σ edge up by this (capped at
+    ``config.UPPER_MAX``) over the bands its data stamped, so an arm can train
+    on another run's items in other bands (``hira_cold_up``).
+    ``init = "random"`` (cold only) starts the trained rows at isotropic
+    random directions at their pack rows' norms (``Rows._rand_start``), the
+    norm pull centred there (``hira_cold_rand``); ``"stick_ball"`` starts them
+    at pack row + the context's stick + a random ball (``hira_cold_sball``),
+    ``"stick_glyph:<set>"`` the ball a predicted glyph component
+    (``hira_cold_sglyph``).
+    ``save_every`` replaces ``SAVE_EVERY`` and keeps each save as
+    ``out/s<step>/trained.pt`` (a dir the ruler reads as an arm) instead of
+    overwriting ``trained_partial.pt``.
     A data dir built with windows (``build.json`` ``glyph_route``) is
     trained routed: ``ANIMA_VOCAB_GLYPH_ROUTE=1`` is set in-process before
     the TE cache (whose key carries it); ``glyph_route_ko`` likewise sets
@@ -244,7 +261,11 @@ def train(
     syllables composed from jamo factors each step; ``trained.pt`` carries
     every syllable's composed row and the factors (``jamo``);
     ``factor_init`` = (trained.pt, scale) starts them at that run's
-    compatibility-jamo rows (``Jamo.init_from``)."""
+    compatibility-jamo rows (``Jamo.init_from``); (glyph .pt, radius, "glyph")
+    at a glyph prediction's factors (``Jamo.init_glyph``); ``factor_from`` (a factor
+    run's trained.pt) at that run's factors (``Jamo.init_state``), so a warm
+    run's factor rows start where its context has them; ``factor_residual``
+    (the pull on ``r``) adds a per-syllable residual (``Jamo``, cjk_ko B′)."""
     from common.models import checkpoints, dit_forward, gen_args
     from library.anima.ext_vocab import pack_digest
     from library.anima.vocab_pack import attached_pack_rows, strategy_pack
@@ -258,6 +279,12 @@ def train(
     torch.manual_seed(SEED)
     out.mkdir(parents=True, exist_ok=True)
     recs, ev, vocabs = load_items(data)
+    if upper_shift:
+        from .config import UPPER_MAX
+
+        for r in recs:
+            lo, hi = r["band"]
+            r["band"] = [lo, round(min(hi + upper_shift, UPPER_MAX), 4)]
     bj = data / "build.json"
     build = json.loads(bj.read_text(encoding="utf-8")) if bj.exists() else {}
     route, route_ko = (
@@ -341,8 +368,12 @@ def train(
         "rows are deltas over it and cold rows start at it — "
         "ANIMA_VOCAB_PACK=models/vocab_packs/anima_cjk_vocab_pack"
     )
+    assert init in ("", "random", "stick_ball") or init.startswith("stick_glyph:"), init
+    assert not init or (cold and not factor), "a random start is a cold free-row run"
     if cold:
         p.record["cold"] = True
+    if init:
+        p.record["init"] = init
     if free_residual is not None:
         p.record.update(free_residual=float(free_residual), free_residual_override=True)
     rows = Rows(
@@ -357,20 +388,51 @@ def train(
         touched=p.touched,
         frozen=p.frozen,
         context=ctx,
+        rand_init=(SEED, init) if init else None,
     )
     assert rows.n_rows == len(p.idx), (rows.n_rows, len(p.idx))
     jamo = None
     if factor:
-        from .jamo import Jamo, syllable_rows
+        from .jamo import Jamo, part_rows, syllable_rows
 
         assert factor == "jamo", factor
         assert not row_step_scale, "factor rows take no row_lr"
-        assert cold, "factor rows start cold (Δ 0)"
+        assert cold or factor_from, "factor rows start cold (Δ 0) or at factor_from"
+        assert not (factor_init and factor_from), "factor_init or factor_from"
         syl_ext = syllable_rows()
         ext_syl = {e: s for s, e in syl_ext.items()}
-        jamo = Jamo(rows, {e: ext_syl[e] for e in p.idx}, lr)
-        p.record.update(factor=factor, factor_vectors=Jamo.N_VECTORS)
-        if factor_init:
+        # partial forms (jamo.PART_SPELL) compose like a syllable, absent parts 0
+        ext_syl.update({e: j for j, e in part_rows().items()})
+        # a counterfactual host carries its form's code (merge_all writes the
+        # host syllable's own composition over it at the save)
+        ext_syl.update(
+            {syl_ext[h]: tuple(f["code"]) for h, f in (run.cf or {}).items()}
+        )
+        jamo = Jamo(
+            rows,
+            {e: ext_syl[e] for e in p.idx if e in ext_syl},
+            lr,
+            residual=factor_residual is not None,
+            pull=factor_residual or 0.0,
+        )
+        p.record.update(
+            factor=factor, factor_vectors=Jamo.N_VECTORS, factor_own_rows=jamo.n_own
+        )
+        if factor_residual is not None:
+            p.record["factor_residual"] = {"pull": float(factor_residual)}
+        if factor_from:
+            sd0 = torch.load(factor_from, map_location="cpu", weights_only=False)
+            assert "jamo" in sd0, f"factor_from {factor_from}: no factors"
+            norms = jamo.init_state(sd0["jamo"], sd0["delta"]["row_scale"])
+            p.record["factor_from"] = {"from": str(factor_from), **norms}
+            print(f"factor from: {factor_from} — {norms}", flush=True)
+        if factor_init and factor_init[-1] == "glyph":
+            src, radius, _ = factor_init
+            g = torch.load(src, map_location="cpu", weights_only=False)
+            norms = jamo.init_glyph(g["factors"], radius)
+            p.record["factor_init"] = {"glyph": str(src), "radius": radius, **norms}
+            print(f"factor init: glyph {src} at radius {radius} — {norms}", flush=True)
+        elif factor_init:
             from .jamo import compat_rows
 
             src, scale = factor_init
@@ -385,9 +447,9 @@ def train(
             p.record["factor_init"] = {"from": str(src), "scale": scale, **norms}
             print(f"factor init: {src} × {scale} — {norms}", flush=True)
         print(
-            f"factor: {len(p.idx)} syllable rows composed from {Jamo.N_VECTORS} "
+            f"factor: {len(p.idx) - jamo.n_own} syllable rows composed from {Jamo.N_VECTORS} "
             f"jamo vectors (b + C[cho, cls] + V + F); trained.pt carries all "
-            f"{len(syl_ext)} syllables' rows",
+            f"{len(syl_ext)} syllables' rows; {jamo.n_own} rows free (no syllable)",
             flush=True,
         )
 
@@ -413,6 +475,8 @@ def train(
             "seed": PRES_SEED,
         }
     steps, warmup, record = p.steps, p.warmup, p.record
+    if upper_shift:
+        record["upper_shift"] = upper_shift
     spr = (
         p.steps_per_row
         if not isinstance(p.steps_per_row, dict)
@@ -423,7 +487,7 @@ def train(
         f"({spr}/row) × batch {BATCH}, lr {lr:g} {LR_DECAY} warmup {warmup} "
         f"({WARMUP_RATIO:g}), μ {INIT_ANCHOR:g}, box_share {BOX_SHARE} → cap "
         f"{BOX_SHARE_CAP} at {BOX_SHARE_GLYPHS} glyphs (log), grid_box {int(GRID_BOX)}, "
-        + ("cold (pack rows)" if cold else f"warm {ctx}")
+        + (f"cold ({init or 'pack'} rows)" if cold else f"warm {ctx}")
         + (f"; stopping at step {max_steps}" if max_steps else ""),
         flush=True,
     )
@@ -495,6 +559,8 @@ def train(
             pred, target, brecs, bs, BOX_SHARE_CAP, BOX_SHARE_GLYPHS, GRID_BOX
         )
         loss = rows.regularized(loss_fm)
+        if jamo is not None:
+            loss = loss + jamo.penalty()
         if is_scene:
             split.add(pred, target, brecs, ts)
         opt.zero_grad(set_to_none=True)
@@ -541,7 +607,11 @@ def train(
                 pres_acc[:] = [0.0, 0]
             log.append(rec)
             print(json.dumps(rec), flush=True)
-        if SAVE_EVERY and step % SAVE_EVERY == 0 and step < steps:
+        if save_every and step % save_every == 0 and step < steps:
+            (out / f"s{step}").mkdir(exist_ok=True)
+            save(out / f"s{step}" / "trained.pt", step)
+            (out / "train_log.json").write_text(json.dumps(log, indent=1))
+        elif SAVE_EVERY and step % SAVE_EVERY == 0 and step < steps:
             save(out / "trained_partial.tmp", step)
             os.replace(out / "trained_partial.tmp", out / "trained_partial.pt")
             (out / "train_log.json").write_text(json.dumps(log, indent=1))

@@ -4,6 +4,7 @@
     .venv/bin/python project/cjk_anima_reseed/run.py <run> data              # CPU
     .venv/bin/python project/cjk_anima_reseed/run.py <run> data --frac 0.02  # a look at the sizes
     make daemon-run ARGS="project/cjk_anima_reseed/run.py <run> train"
+    make daemon-run ARGS="project/cjk_anima_reseed/run.py <run> train --save_every 4050"  # kept saves
     # a smoke: another data dir / out dir, a short schedule, an early stop
     make daemon-run ARGS="project/cjk_anima_reseed/run.py <run> train --data <dir> --out <dir> --steps_per_row 1 --max_steps 400"
 
@@ -39,6 +40,12 @@ def main():
         "--steps_per_row", type=int, default=None, help="train: the config's replaced"
     )
     p.add_argument("--max_steps", type=int, default=None, help="train: stop here")
+    p.add_argument(
+        "--save_every",
+        type=int,
+        default=None,
+        help="train: keep a save every this many steps as <out>/s<step>/trained.pt",
+    )
     a = p.parse_args()
     from reseed.config import load
 
@@ -60,7 +67,9 @@ def main():
             context=run.seed_rows(),
             cold=not run.rows_from,
             max_steps=a.max_steps,
-            steps_per_row=None if run.focus else a.steps_per_row or run.steps_per_row,
+            steps_per_row=None
+            if run.focus or run.cf or run.total_steps
+            else a.steps_per_row or run.steps_per_row,
             steps=run.steps(a.steps_per_row),
             lr=run.lr or None,
             row_step_scale=run.row_step_scale(),
@@ -68,6 +77,11 @@ def main():
             pres=run.pres,
             factor=run.factor,
             factor_init=run.factor_init_rows(),
+            factor_from=run.factor_from_rows(),
+            factor_residual=run.factor_residual,
+            upper_shift=run.upper_shift,
+            save_every=a.save_every,
+            init=run.init,
         )
 
 

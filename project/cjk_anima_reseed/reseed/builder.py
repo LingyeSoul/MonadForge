@@ -62,17 +62,31 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
     (out / "img").mkdir(parents=True, exist_ok=True)
     workers = default_workers() if workers is None else max(1, int(workers))
     rng = random.Random(T.SEED)
-    pools = build_pools(list(run.rows), rng, run.lang, run.faces)
+    pools = build_pools(list(run.rows), rng, run.lang, run.faces, run.cf)
     pools.pose = run.pose
     # a run whose every row is lettered in another language (``lang``) draws
-    # no window — no JA line spells a KO / ZH row — so it reads no lines
+    # no window — no JA line spells a KO / ZH row — so it reads no lines,
+    # unless its line file is in that language (``LINE_LANG``)
+    line_lang = run.line_lang()
     phrase = (
-        "" if run.lang and set(pools.singles) <= set(run.lang) else run.phrase_file()
+        ""
+        if not line_lang and run.lang and set(pools.singles) <= set(run.lang)
+        else run.phrase_file()
     )
     held = run.held_strings()
-    win = add_windows(pools, run.read, out, phrase, workers, held)
+    win = add_windows(
+        pools,
+        run.read,
+        out,
+        phrase,
+        workers,
+        held,
+        ja_dataset=not line_lang,
+        words=line_lang == "korean",
+    )
     focus = focus_pools(pools, run.focus, run.focus_kanji[1]) if run.focus else None
-    n_rows = len(run.focus) if run.focus else len(pools.singles)
+    # the counterfactual hosts: drawn by their tier only, not counted
+    n_rows = len(run.focus) if run.focus else len(pools.singles) - len(pools.cf)
     table = run.table()
     plan = [(t, int(round(T.ITEMS_PER_ROW * n_rows * t.share * frac))) for t in table]
     plan = [(t, n) for t, n in plan if n]  # a share-0 tier is not drawn
@@ -141,11 +155,15 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
         "pack": os.environ.get("ANIMA_VOCAB_PACK", ""),
         "frac": frac,
         "glyph_route": True,
+        # KO lines: Hangul tokens routed per syllable too (the trainer sets
+        # ANIMA_VOCAB_GLYPH_ROUTE_KO from it)
+        **({"glyph_route_ko": True} if line_lang == "korean" else {}),
         "lines": phrase,  # the windows: train.py routes the captions per glyph
         "windows": win,
         **({"focus": focus} if focus else {}),
         **({"held": run.held} if run.held else {}),
         **({"lang": run.lang, "dropped_tiers": dropped} if run.lang else {}),
+        **({"counterfactual": run.cf} if run.cf else {}),
         **({"sentences": sents} if sents else {}),
         "scenes": {
             "pools": T.SCENES,
@@ -187,10 +205,11 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
 def _lang_plan(run: Run, plan: list, pools, n_rows: int, frac: float):
     """A ``lang`` run's plan: a ``bubbleN`` tier with no window for any row
     drops (no dialogue line spells KO / ZH rows), the other tiers' shares
-    scaled back to the plan's Σ so the items per row stay. No ``sent`` tier:
-    its lines are JA dialogue. Returns ``(plan, dropped tier names)``."""
-    assert not any(t.recipe == "sent" for t, _n in plan), (
-        f"{run.name}: a lang run draws no sent tier (no KO / ZH dialogue lines)"
+    scaled back to the plan's Σ so the items per row stay. A ``sent`` tier
+    only on a line file in the run's language (``LINE_LANG``): the default
+    lines are JA dialogue. Returns ``(plan, dropped tier names)``."""
+    assert run.line_lang() or not any(t.recipe == "sent" for t, _n in plan), (
+        f"{run.name}: a lang run draws a sent tier only on its language's lines"
     )
     drop = {t.name for t, _n in plan if t.recipe == "bubbleN" and not pools.windows}
     if not drop:

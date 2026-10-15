@@ -102,8 +102,9 @@ for its glyph sizes — every arm that moved a px above its ceiling window
 lost identity, `kana_reband` (the kana run's hiragana items at 0.75–0.93,
 cold) included — and the target is manga-size dialogue, not the `sent`
 banner. Identity does not need large glyphs (`p1_cold`); `grid_small` (small
-glyphs only, grids 60 %) is training. A reseed draft sits in
-`../../cjk_anima_reseed/_archive/motivation.md` (archived 10-05).
+glyphs only, grids 60 %) is training. The reseed's
+motivation is `../../cjk_anima_reseed/motivation2.md` (the 10-02 draft's
+rewrite; the draft itself deleted 10-14).
 
 ## Running a run
 

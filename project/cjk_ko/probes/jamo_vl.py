@@ -34,8 +34,8 @@ arms (``jamo_read.py`` / ``kozh_render.py``, seed 0): H and the words under
 J64 / J96 / J128 / F64-reg / J64-lone, the trained 64 under J64 / F64, the 51
 jamo under jamo_lone / seed_1008.
 
-    make daemon-run ARGS="--stall-timeout 900 project/cjk_anima_reseed/probes/jamo_vl.py cal"
-    make daemon-run ARGS="--stall-timeout 900 project/cjk_anima_reseed/probes/jamo_vl.py score"
+    make daemon-run ARGS="--stall-timeout 900 project/cjk_ko/probes/jamo_vl.py cal"
+    make daemon-run ARGS="--stall-timeout 900 project/cjk_ko/probes/jamo_vl.py score"
 
 → ``results/<ts>-jamo-vl-<mode>/``: ``reads.jsonl`` (every image: crops'
 free reads, the forced top-5 per reader), ``result.json`` (the tables).
@@ -51,9 +51,10 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-HOME = Path(__file__).resolve().parents[1]
+KO = Path(__file__).resolve().parents[1]
+HOME = KO.parent / "cjk_anima_reseed"  # the reseed package and its assets
 sys.path.insert(0, str(HOME))
-sys.path.insert(0, str(HOME / "probes"))
+sys.path.insert(0, str(KO / "probes"))
 from reseed import bootstrap  # noqa: E402
 
 bootstrap()
@@ -85,6 +86,10 @@ RENDER = {
     "jamo_d128": ("jamo_j64", ("H", "words")),
     "jamo_j256": ("jamo_j64", ("H", "words")),
     "jamo_j256_ko": ("jamo_j64", ("H", "words")),
+    # cjk_ko's micro_read renders (seed 0, same Renderer / bubble): H, no words
+    "jamo_j1024_ko": ("../cjk_ko/micro_read", ("H",)),
+    "jamo_j256_ko_g44": ("../cjk_ko/micro_read", ("H",)),
+    "jamo_j256_ko_cf": ("../cjk_ko/micro_read", ("H",)),
     "jamo_lone": ("jamo_lone", ("jamo",)),
     "seed_1008": ("jamo_lone", ("jamo",)),
 }
@@ -350,7 +355,6 @@ def main() -> None:
     from ko_reader_cal import crops
 
     from bench._common import make_run_dir
-    from reseed import HOME as RH
 
     p = argparse.ArgumentParser()
     p.add_argument("mode", choices=("cal", "score"))
@@ -378,7 +382,7 @@ def main() -> None:
     print(f"{len(items)} images, {len(flat)} crops", flush=True)
     recs = [dict(m) for m, _ in items]
     out = make_run_dir(
-        "cjk_anima_reseed", label=f"jamo-vl-{a.mode}", root=RH / "results"
+        "cjk_ko", label=f"jamo-vl-{a.mode}", root=KO / "results"
     )
     done = []
     for rd in a.readers.split(","):

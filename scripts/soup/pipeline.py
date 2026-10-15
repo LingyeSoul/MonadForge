@@ -533,6 +533,14 @@ def main() -> None:
     ap.add_argument("--preset", default="default")
     ap.add_argument("--dry_run", action="store_true")
     args, ft_extra = ap.parse_known_args()
+    # Each phase names its own checkpoint; a passthrough --output_name lands
+    # after the per-seed one, so every ingredient overwrites one file and
+    # phase 3 finds none of them.
+    if any(a == "--output_name" or a.startswith("--output_name=") for a in ft_extra):
+        raise SystemExit(
+            "--output_name is set per phase by the soup pipeline; "
+            "use --name to choose the soup slug."
+        )
 
     # Fine-tune selection: an explicit CLI flag wins, then the config's
     # artists_shard / path_pattern. The two are mutually exclusive at every
