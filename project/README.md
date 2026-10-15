@@ -44,7 +44,7 @@ Finished lines are listed in [`finished/README.md`](finished/README.md)
 encoder-side CJK line `cjk_aware_anima` and its DiT-side successor
 `cjk_aware_anima_dit`, both 2026-09-24; the wake line
 `cjk_renderable_anima`, 2026-09-30; its production line `cjk_anima_scale`,
-2026-10-09).
+2026-10-09; the PaddleOCR-VL reader v4 line `ocr_reader`, 2026-10-15).
 
 Active projects:
 

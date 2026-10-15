@@ -4,7 +4,7 @@
 
 Readers: ``stock`` (PaddleOCR-VL 1.6, ``common.readers.StockVl16``) and
 ``v4`` (anime_tools 0.7.10's ``SfxReader``: the manga reader, tower LoRA +
-fine-tuned decoder, trained with KO / ZH SFX crops — ``project/ocr_reader``).
+fine-tuned decoder, trained with KO / ZH SFX crops — ``project/finished/ocr_reader``).
 Every image is cut as the ruler cuts it (``ko_reader_cal.crops``: each
 detector box padded 12 %, then the whole image). By default ``v4`` reads
 free only (``--readers v4,stock`` / ``--forced`` add the others; ``--forced``

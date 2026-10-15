@@ -21,8 +21,10 @@ it (`rg --no-ignore-dot`). What stays visible is what live code outside
 `finished/` reads or runs: `sr/`, `mod_guidance/`, `cjk_aware_anima/{assets,
 datasets,probes}/` (the reseed line's and `scripts/distill_cjk`'s eval prompts,
 `tests/test_cjk_ocr_captions.py`, `bench/grad_init`'s `blind_pairs.py`) and
-`cjk_aware_anima_dit/{ocr,render}/` (`tests/test_ocr_textnorm.py`, the
-`render_*` targets in `scripts/tasks/training.py`). A new outside reference
+`cjk_aware_anima_dit/render/` (the `render_*` targets in
+`scripts/tasks/training.py`) and `ocr_reader/ocr/` (`tests/test_ocr_textnorm.py`;
+the reader's train / eval code). `cjk_aware_anima_dit/ocr/` is hidden: its
+newer copy is `ocr_reader/ocr/`. A new outside reference
 into a hidden path means narrowing that line's `.ignore`.
 
 A finished line's whole working tree may move here when its top-level surface
@@ -97,3 +99,11 @@ Finished lines:
   runnable by path (`project/finished/cjk_anima_scale/scale.py`). Its outputs
   stay at `output/cjk_anima_scale/` (reseed reads the seed rows, scene pools
   and EN refs there). Digest: [`cjk_anima_scale/README.md`](cjk_anima_scale/README.md).
+- [`ocr_reader/`](ocr_reader/) — the PaddleOCR-VL reader v4 (JA + KO + ZH),
+  opened 2026-10-10 out of `cjk_aware_anima_dit`'s reader half, moved here
+  2026-10-15. Shipped: v4 = `vl16_p2b_kozh_ep2` (tower LoRA + LM full FT,
+  gelnote KO/ZH pseudo rows, 2 epochs) on the Hub reader repo's `v4/`, pinned
+  by `anime_tools` v0.7.12. Ceiling: more labels and more data (hitocrawl
+  twins, Opus relabel + v4 self-labels) did not beat v4. Gates and code
+  runnable by path (`ocr/`, `gate/`, `hito/`); gate images in the gitignored
+  `eval_data/`. Digest: [`ocr_reader/README.md`](ocr_reader/README.md).
