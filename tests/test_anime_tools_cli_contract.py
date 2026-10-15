@@ -413,6 +413,10 @@ def test_preprocess_resize_builds_resize_request_from_config_and_args(
     monkeypatch.setattr(
         preprocess, "_curation_decisions_path", lambda: tmp_path / "none"
     )
+    # the checkout's own workspace/_excluded ledger would land in skip
+    from library.datasets import curation_actions
+
+    monkeypatch.setattr(curation_actions, "workspace_excluded_rels", lambda: ())
     for name in ("TARGET_RES", "PREPROCESS_PATH_PATTERN", "FREEFIT_MAX_RATIO"):
         monkeypatch.delenv(name, raising=False)
 

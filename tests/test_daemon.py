@@ -657,7 +657,7 @@ def test_reconcile_orphan_requeue_adopt(tmp_path, monkeypatch):
 
     assert mgr.get("dead").state == jobs.STATE_ERROR
     assert mgr.get("dead").status_detail == "orphaned"
-    assert mgr._queue.get_nowait() == "pend"  # re-enqueued
+    assert mgr._queue.get_nowait()[-1] == "pend"  # re-enqueued (prio, seq, id)
     assert "live" in mgr._adopt  # re-attached for monitoring
 
 
