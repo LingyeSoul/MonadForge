@@ -513,6 +513,170 @@ def build_argparser() -> argparse.ArgumentParser:
         "per iteration. Default: TOML (cdm.weight, default 0).",
     )
 
+    # DMAD Phase −1 premise probe (measure-only; off by default).
+    parser.add_argument(
+        "--dmad_probe",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Train a side discriminator (own LoRA stack + head T, balanced BCE on "
+        "teacher vs student samples) and log how its generator gradient aligns "
+        "with the DM signal. Never applied to the student; training numerics are "
+        "unchanged. docs/proposal/turbo_dmad.md Phase −1. Default: TOML "
+        "(dmad_probe.enabled, default false).",
+    )
+    parser.add_argument(
+        "--dmad_probe_lr",
+        type=float,
+        default=None,
+        help="Probe disc LR (LoRA stack + head, constant). Default: TOML "
+        "(dmad_probe.lr, default 5e-5).",
+    )
+    parser.add_argument(
+        "--dmad_probe_grad_clip",
+        type=float,
+        default=None,
+        help="Probe disc grad-norm clip; 0 disables. Default: TOML "
+        "(dmad_probe.grad_clip, default the run's optim.grad_clip).",
+    )
+    parser.add_argument(
+        "--dmad_probe_r1_weight",
+        type=float,
+        default=None,
+        help="Approximate-R1 (APT) weight on the probe disc's teacher branch: "
+        "MSE between its logits at x and x + r1_alpha·δ; 0 disables. Default: "
+        "TOML (dmad_probe.r1_weight, default 0).",
+    )
+    parser.add_argument(
+        "--dmad_probe_cold_start",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Start the probe disc stack from zero-init LoRA instead of "
+        "fake_init_weights. Default: TOML (dmad_probe.warm_start, default true).",
+    )
+    parser.add_argument(
+        "--dmad_probe_disc_steps",
+        type=int,
+        default=None,
+        help="Probe disc updates per step, each at a fresh (τ, ε) on the same "
+        "teacher/student pair. Default: TOML (dmad_probe.disc_steps, default 1).",
+    )
+    parser.add_argument(
+        "--dmad_probe_window",
+        type=int,
+        default=None,
+        help="Probe disc batch: each update accumulates over the newest this-many "
+        "teacher/student pairs (a replay window, one fresh (τ, ε) per pair). "
+        "Default: TOML (dmad_probe.window, default 1).",
+    )
+    parser.add_argument(
+        "--dmad_probe_scalar_logit",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Average the token head's logits into one logit per sample before "
+        "the BCE (Prop. 1's sample-level log-ratio) instead of a BCE per token. "
+        "Default: TOML (dmad_probe.scalar_logit, default false).",
+    )
+    parser.add_argument(
+        "--dmad_probe_stop_on_collapse",
+        type=int,
+        default=None,
+        help="Stop the run once the probe disc's |margin| < 1e-2 for this many "
+        "consecutive steps; 0 = never. Default: TOML "
+        "(dmad_probe.stop_on_collapse, default 0).",
+    )
+
+    # DMAD Phase 0: a discriminator replaces the DM term and the critic (off by
+    # default; docs/proposal/turbo_dmad.md § Phase 0).
+    parser.add_argument(
+        "--dmad",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Replace the DM term and the fake critic with DMAD: a balanced-BCE "
+        "disc (cold LoRA stack on the teacher + head T: teacher samples vs "
+        "student, head R: real latents vs student), whose input gradient, "
+        "RMS-normalized per sample, is the student's grad_signal (and L_CDM's "
+        "when cdm.weight > 0). Needs gan.weight_gen = 0. Default: TOML "
+        "(dmad.enabled, default false).",
+    )
+    parser.add_argument(
+        "--dmad_lambda_t",
+        type=float,
+        default=None,
+        help="Head T weight in the student signal; 0 drops head T and its disc "
+        "branch. Default: TOML (dmad.lambda_t, default 150).",
+    )
+    parser.add_argument(
+        "--dmad_lambda_r",
+        type=float,
+        default=None,
+        help="Head R weight in the student signal; 0 drops head R and its "
+        "real-data branch. Default: TOML (dmad.lambda_r, default 150).",
+    )
+    parser.add_argument(
+        "--dmad_signal_rms",
+        type=float,
+        default=None,
+        help="Per-sample RMS the disc gradient is normalized to before it is used "
+        "as grad_signal; 0 = off (raw lambda-weighted gradient, as the paper). "
+        "Default: TOML (dmad.signal_rms, default 0.18).",
+    )
+    parser.add_argument(
+        "--dmad_lr",
+        type=float,
+        default=None,
+        help="Disc LR (LoRA stack + heads, constant). Default: TOML (dmad.lr, "
+        "default 4e-5).",
+    )
+    parser.add_argument(
+        "--dmad_grad_clip",
+        type=float,
+        default=None,
+        help="Disc grad-norm clip; 0 = unclipped. Default: TOML (dmad.grad_clip, "
+        "default 0).",
+    )
+    parser.add_argument(
+        "--dmad_window",
+        type=int,
+        default=None,
+        help="Replay pairs per disc update (newest first, a fresh (τ, ε) each). "
+        "Default: TOML (dmad.window, default 4).",
+    )
+    parser.add_argument(
+        "--dmad_disc_warmup_steps",
+        type=int,
+        default=None,
+        help="Disc-only updates before the main loop (student untouched). "
+        "Default: TOML (dmad.disc_warmup_steps, default 0).",
+    )
+    parser.add_argument(
+        "--dmad_gap_routing",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Gap routing (official DMAD): head T's weight per critic-σ decile "
+        "band is sigmoid((median − gap_b)/gap_tau) / E_w, with gap_b the "
+        "bias-corrected EMA (0.99) of h_R(real) − h_R(teacher). Engages once 5 "
+        "bands have >= 10 updates; weight 1 before that. Default: TOML "
+        "(dmad.gap_routing, default false).",
+    )
+    parser.add_argument(
+        "--dmad_gap_tau",
+        type=float,
+        default=None,
+        help="Gap-routing temperature. Default: TOML (dmad.gap_tau, default 2.0).",
+    )
+    parser.add_argument(
+        "--dmad_feature_block_idx",
+        type=int,
+        default=None,
+        help="Block whose tokens the heads read; -1 = middle block. Default: "
+        "TOML (dmad.feature_block_idx, default -1).",
+    )
+
     # f-distill reweighting (needs the GAN disc).
     parser.add_argument(
         "--f_div",
@@ -699,6 +863,34 @@ class TurboConfig:
     activation_memory_budget: (
         float  # compile partitioner saved-act fraction (<1 → recompute)
     )
+
+    # DMAD Phase −1 premise probe (scripts/distill_turbo/dmad_probe.py)
+    dmad_probe: bool = False
+    dmad_probe_lr: float = 5e-5
+    dmad_probe_grad_clip: float = 1.0  # 0 → unclipped
+    dmad_probe_disc_steps: int = 1  # disc updates per step on one pair
+    dmad_probe_window: int = 1  # pairs accumulated per disc update
+    dmad_probe_scalar_logit: bool = False  # mean token logits before the BCE
+    dmad_probe_r1_weight: float = 0.0
+    dmad_probe_r1_alpha: float = 0.1
+    dmad_probe_warm_start: bool = True  # stack from fake_init_weights
+    dmad_probe_stop_on_collapse: int = 0  # consecutive flat-margin steps; 0 → off
+    dmad_probe_feature_block_idx: int = -1  # -1 → middle block
+    dmad_probe_head: str = "token"  # "pooled" | "token"
+    dmad_probe_ceiling: bool = True  # second independent DM draw per probe
+
+    # DMAD Phase 0 (scripts/distill_turbo/dmad.py): disc replaces DM + critic
+    dmad: bool = False
+    dmad_lambda_t: float = 150.0  # 0 → no head T / teacher branch
+    dmad_lambda_r: float = 150.0  # 0 → no head R / real branch
+    dmad_signal_rms: float = 0.18  # per-sample RMS of the student signal; 0 = raw
+    dmad_lr: float = 4e-5
+    dmad_grad_clip: float = 0.0  # 0 → unclipped
+    dmad_window: int = 4  # replay pairs per disc update
+    dmad_disc_warmup_steps: int = 0
+    dmad_gap_routing: bool = False  # head T weight per σ band from the h_R gap
+    dmad_gap_tau: float = 2.0
+    dmad_feature_block_idx: int = -1  # -1 → middle block
 
 
 def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
@@ -1051,6 +1243,171 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
             f"softness={softrank_softness}, pool_size={softrank_pool_size} "
             f"(~{softrank_pool_size} MiB), warmup_ratio={softrank_warmup_ratio}."
         )
+    dmad_probe = bool(_pick(args.dmad_probe, cfg, "dmad_probe.enabled", False))
+    dmad_probe_lr = float(_pick(args.dmad_probe_lr, cfg, "dmad_probe.lr", 5e-5))
+    dmad_probe_grad_clip = float(
+        _pick(args.dmad_probe_grad_clip, cfg, "dmad_probe.grad_clip", grad_clip)
+    )
+    dmad_probe_disc_steps = int(
+        _pick(args.dmad_probe_disc_steps, cfg, "dmad_probe.disc_steps", 1)
+    )
+    dmad_probe_window = int(_pick(args.dmad_probe_window, cfg, "dmad_probe.window", 1))
+    dmad_probe_scalar_logit = bool(
+        _pick(args.dmad_probe_scalar_logit, cfg, "dmad_probe.scalar_logit", False)
+    )
+    dmad_probe_r1_weight = float(
+        _pick(args.dmad_probe_r1_weight, cfg, "dmad_probe.r1_weight", 0.0)
+    )
+    dmad_probe_r1_alpha = float(_flatten(cfg, "dmad_probe.r1_alpha", 0.1))
+    dmad_probe_warm_start = (
+        False
+        if args.dmad_probe_cold_start
+        else bool(_flatten(cfg, "dmad_probe.warm_start", True))
+    )
+    dmad_probe_stop_on_collapse = int(
+        _pick(args.dmad_probe_stop_on_collapse, cfg, "dmad_probe.stop_on_collapse", 0)
+    )
+    dmad_probe_feature_block_idx = int(
+        _flatten(cfg, "dmad_probe.feature_block_idx", -1)
+    )
+    dmad_probe_head = str(_flatten(cfg, "dmad_probe.head", "token"))
+    dmad_probe_ceiling = bool(_flatten(cfg, "dmad_probe.ceiling", True))
+    if dmad_probe:
+        if base_loss != "dpdmd":
+            raise ValueError(
+                "dmad_probe needs base_loss='dpdmd': its teacher samples finish "
+                "the step-0 anchor rollout."
+            )
+        if int(args.blocks_to_swap) > 0:
+            raise ValueError(
+                "dmad_probe requires blocks_to_swap=0 — the probe's extra "
+                "forwards are unaudited under block swap."
+            )
+        if dmad_probe_r1_weight < 0.0:
+            raise ValueError(
+                f"dmad_probe.r1_weight={dmad_probe_r1_weight}: must be >= 0"
+            )
+        if dmad_probe_disc_steps < 1:
+            raise ValueError(
+                f"dmad_probe.disc_steps={dmad_probe_disc_steps}: must be >= 1"
+            )
+        if dmad_probe_window < 1:
+            raise ValueError(f"dmad_probe.window={dmad_probe_window}: must be >= 1")
+        if dmad_probe_head not in ("pooled", "token"):
+            raise ValueError(
+                f"dmad_probe.head={dmad_probe_head!r}: expected 'pooled' or 'token'"
+            )
+        logger.info(
+            "DMAD Phase −1 probe ON (measure-only): "
+            f"lr={dmad_probe_lr}, grad_clip={dmad_probe_grad_clip}, "
+            f"disc_steps={dmad_probe_disc_steps}, window={dmad_probe_window}, "
+            f"scalar_logit={dmad_probe_scalar_logit}, "
+            f"r1_weight={dmad_probe_r1_weight} (alpha {dmad_probe_r1_alpha}), "
+            f"warm_start={dmad_probe_warm_start}, "
+            f"stop_on_collapse={dmad_probe_stop_on_collapse}, "
+            f"feature_block_idx={dmad_probe_feature_block_idx} "
+            f"(-1 = middle), head={dmad_probe_head}, ceiling={dmad_probe_ceiling}."
+        )
+    dmad = bool(_pick(args.dmad, cfg, "dmad.enabled", False))
+    dmad_lambda_t = float(_pick(args.dmad_lambda_t, cfg, "dmad.lambda_t", 150.0))
+    dmad_lambda_r = float(_pick(args.dmad_lambda_r, cfg, "dmad.lambda_r", 150.0))
+    dmad_signal_rms = float(_pick(args.dmad_signal_rms, cfg, "dmad.signal_rms", 0.18))
+    dmad_lr = float(_pick(args.dmad_lr, cfg, "dmad.lr", 4e-5))
+    dmad_grad_clip = float(_pick(args.dmad_grad_clip, cfg, "dmad.grad_clip", 0.0))
+    dmad_window = int(_pick(args.dmad_window, cfg, "dmad.window", 4))
+    dmad_disc_warmup_steps = int(
+        _pick(args.dmad_disc_warmup_steps, cfg, "dmad.disc_warmup_steps", 0)
+    )
+    dmad_gap_routing = bool(
+        _pick(args.dmad_gap_routing, cfg, "dmad.gap_routing", False)
+    )
+    dmad_gap_tau = float(_pick(args.dmad_gap_tau, cfg, "dmad.gap_tau", 2.0))
+    # -1 is a real value here (middle block), so only None means "unset".
+    dmad_feature_block_idx = int(
+        _pick(
+            args.dmad_feature_block_idx,
+            cfg,
+            "dmad.feature_block_idx",
+            -1,
+            sentinels=(None,),
+        )
+    )
+    if dmad:
+        if base_loss != "dpdmd":
+            raise ValueError(
+                "dmad needs base_loss='dpdmd': its teacher samples finish the "
+                "step-0 anchor rollout."
+            )
+        if f_div != "rkl":
+            raise ValueError(
+                f"dmad refuses f_distill (f_div={f_div!r}): it reweights the DM "
+                "score difference, which dmad removes."
+            )
+        if gan_loss_weight_gen > 0.0:
+            raise ValueError(
+                "dmad requires gan.weight_gen = 0 (head R replaces the [gan] "
+                "real-vs-student disc in this phase)."
+            )
+        if dmad_probe:
+            raise ValueError("dmad and dmad_probe are exclusive: turn one off.")
+        if fake_tau_banks > 1:
+            raise ValueError(
+                f"dmad requires network.fake_tau_banks = 1 (got {fake_tau_banks}): "
+                "no fake critic is built."
+            )
+        if int(args.blocks_to_swap) > 0:
+            raise ValueError(
+                "dmad requires blocks_to_swap=0 — the disc forwards are unaudited "
+                "under block swap."
+            )
+        if bool(args.grad_ckpt):
+            # Same view × deferred-ckpt-recompute class as --grad_ckpt + GAN:
+            # the student-signal disc forward flips the view to teacher before
+            # the student backward recomputes the checkpointed rollout.
+            raise ValueError(
+                "--grad_ckpt with dmad: the rollout's checkpointed student "
+                "forwards would recompute under the disc's teacher view. Turn "
+                "one off."
+            )
+        if resume:
+            raise ValueError(
+                "dmad refuses --resume: the disc is not in the resume bundle in "
+                "this phase."
+            )
+        if dmad_lambda_t < 0.0 or dmad_lambda_r < 0.0:
+            raise ValueError(
+                f"dmad.lambda_t={dmad_lambda_t} / dmad.lambda_r={dmad_lambda_r}: "
+                "must be >= 0"
+            )
+        if dmad_lambda_t == 0.0 and dmad_lambda_r == 0.0:
+            raise ValueError("dmad: lambda_t and lambda_r are both 0 — no head.")
+        if dmad_signal_rms < 0.0:
+            raise ValueError(f"dmad.signal_rms={dmad_signal_rms}: must be >= 0")
+        if dmad_grad_clip < 0.0:
+            raise ValueError(f"dmad.grad_clip={dmad_grad_clip}: must be >= 0")
+        if dmad_window < 1:
+            raise ValueError(f"dmad.window={dmad_window}: must be >= 1")
+        if dmad_disc_warmup_steps < 0:
+            raise ValueError(
+                f"dmad.disc_warmup_steps={dmad_disc_warmup_steps}: must be >= 0"
+            )
+        if dmad_gap_routing and (dmad_lambda_t == 0.0 or dmad_lambda_r == 0.0):
+            raise ValueError(
+                "dmad.gap_routing needs both heads: the gap is h_R(real) − "
+                "h_R(teacher) and it weights head T."
+            )
+        if dmad_gap_tau <= 0.0:
+            raise ValueError(f"dmad.gap_tau={dmad_gap_tau}: must be > 0")
+        logger.info(
+            "DMAD ON (Phase 0): disc replaces the DM term and the fake critic — "
+            f"lambda_t={dmad_lambda_t}, lambda_r={dmad_lambda_r}, "
+            f"signal_rms={dmad_signal_rms}, lr={dmad_lr}, "
+            f"grad_clip={dmad_grad_clip}, window={dmad_window}, "
+            f"disc_warmup_steps={dmad_disc_warmup_steps}, "
+            f"gap_routing={dmad_gap_routing} (tau {dmad_gap_tau}), "
+            f"feature_block_idx={dmad_feature_block_idx} (-1 = middle). "
+            "fake_lr / fake_steps_per_student_step / fake_warmup_steps are unused."
+        )
     if cdm_weight < 0.0:
         raise ValueError(f"cdm.weight={cdm_weight}: must be >= 0")
     if cdm_weight > 0.0:
@@ -1362,6 +1719,30 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
         partitioner_aggressive_recomputation=bool(
             _flatten(cfg, "partitioner_aggressive_recomputation", False)
         ),
+        dmad_probe=dmad_probe,
+        dmad_probe_lr=dmad_probe_lr,
+        dmad_probe_grad_clip=dmad_probe_grad_clip,
+        dmad_probe_disc_steps=dmad_probe_disc_steps,
+        dmad_probe_window=dmad_probe_window,
+        dmad_probe_scalar_logit=dmad_probe_scalar_logit,
+        dmad_probe_r1_weight=dmad_probe_r1_weight,
+        dmad_probe_r1_alpha=dmad_probe_r1_alpha,
+        dmad_probe_warm_start=dmad_probe_warm_start,
+        dmad_probe_stop_on_collapse=dmad_probe_stop_on_collapse,
+        dmad_probe_feature_block_idx=dmad_probe_feature_block_idx,
+        dmad_probe_head=dmad_probe_head,
+        dmad_probe_ceiling=dmad_probe_ceiling,
+        dmad=dmad,
+        dmad_lambda_t=dmad_lambda_t,
+        dmad_lambda_r=dmad_lambda_r,
+        dmad_signal_rms=dmad_signal_rms,
+        dmad_lr=dmad_lr,
+        dmad_grad_clip=dmad_grad_clip,
+        dmad_window=dmad_window,
+        dmad_disc_warmup_steps=dmad_disc_warmup_steps,
+        dmad_gap_routing=dmad_gap_routing,
+        dmad_gap_tau=dmad_gap_tau,
+        dmad_feature_block_idx=dmad_feature_block_idx,
     )
 
 

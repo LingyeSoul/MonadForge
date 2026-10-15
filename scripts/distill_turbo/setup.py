@@ -49,7 +49,7 @@ from library.training.progress import ProgressSink
 from networks.methods.turbo_dmd import TurboDMDNetwork, warm_start_plain_lora
 
 from .config import TurboConfig, snapshot_toml_text, tb_config_text
-from .metrics import TauBinCriticLoss, TurboMetrics
+from .metrics import DmadMetrics, TauBinCriticLoss, TurboMetrics
 from .primitives import PadCache, make_collate, make_scheduler
 from .resume import (
     apply_resume_state,
@@ -97,12 +97,13 @@ class RunContext:
     device: torch.device
     dtype: torch.dtype
 
-    # Optimizers / schedulers (disc pair is None when the GAN is off).
+    # Optimizers / schedulers (disc pair is None when the GAN is off; fake
+    # pair is None under DMAD, which builds no critic).
     student_opt: torch.optim.Optimizer
-    fake_opt: torch.optim.Optimizer
+    fake_opt: torch.optim.Optimizer | None
     disc_opt: torch.optim.Optimizer | None
     student_sched: object
-    fake_sched: object
+    fake_sched: object | None
     disc_sched: object | None
 
     # Data.
@@ -142,6 +143,13 @@ class RunContext:
     val_clean: torch.Tensor | None
 
     start_step: int
+
+    # DMAD Phase −1 premise probe (None when dmad_probe is off).
+    dmad_probe: object | None = None
+
+    # DMAD Phase 0 disc + its metrics (None when dmad is off).
+    dmad: object | None = None
+    dmad_metrics: object | None = None
 
 
 def build_run(args, cfg: TurboConfig) -> RunContext:
@@ -215,6 +223,7 @@ def build_run(args, cfg: TurboConfig) -> RunContext:
         gan_feature_indices=gan_indices,
         gan_disc_hidden=cfg.gan_disc_hidden if cfg.gan_disc_hidden > 0 else None,
         gan_disc_head=cfg.gan_disc_head,
+        build_fake=not cfg.dmad,
     )
     turbo.freeze_dit()
     for pool in turbo.student_pools:
@@ -261,6 +270,22 @@ def build_run(args, cfg: TurboConfig) -> RunContext:
     # casts the bf16 teacher features to float.
     if turbo.disc is not None:
         turbo.disc.to(device=device)
+    # DMAD Phase −1 probe: its disc stack is a LoRA on the DiT, so it must exist
+    # before compile like the other stacks. Off → nothing built, no RNG drawn.
+    dmad_probe = None
+    if cfg.dmad_probe:
+        from .dmad_probe import DmadProbe
+
+        dmad_probe = DmadProbe(
+            cfg, turbo=turbo, model=model, device=device, dtype=dtype
+        )
+    # DMAD Phase 0 disc: a LoRA on the DiT too, so built before compile. Off →
+    # nothing built, no RNG drawn.
+    dmad = None
+    if cfg.dmad:
+        from .dmad import DmadDisc
+
+        dmad = DmadDisc(cfg, turbo=turbo, model=model, device=device, dtype=dtype)
 
     # COMPILE LAST: apply_to above monkey-patches Linears, so compile must trace
     # the adapter forward, not the bare DiT (harness ordering invariant).
@@ -365,24 +390,25 @@ def build_run(args, cfg: TurboConfig) -> RunContext:
         weight_decay=cfg.weight_decay,
         fused=torch.cuda.is_available(),
     )
-    fake_opt = torch.optim.AdamW(
-        turbo.fake_params(),
-        lr=cfg.fake_lr,
-        weight_decay=cfg.weight_decay,
-        fused=torch.cuda.is_available(),
-    )
-
     student_sched = make_scheduler(student_opt, cfg.iterations, cfg.student_lr)
     # Fake scheduler spans main-loop updates (iterations · fake_steps_per_student_step)
     # PLUS fake_warmup_steps head-start updates, stepped through both phases — so
     # the ``0.02·total`` LR warmup overlaps the head-start (fake enters the main
     # loop already at full LR) and the cosine still lands at loop end. Student
     # schedule is independent: ``0.02·iterations``, no head-start offset.
-    fake_sched = make_scheduler(
-        fake_opt,
-        cfg.iterations * cfg.fake_steps_per_student_step + cfg.fake_warmup_steps,
-        cfg.fake_lr,
-    )
+    fake_opt = fake_sched = None
+    if not cfg.dmad:
+        fake_opt = torch.optim.AdamW(
+            turbo.fake_params(),
+            lr=cfg.fake_lr,
+            weight_decay=cfg.weight_decay,
+            fused=torch.cuda.is_available(),
+        )
+        fake_sched = make_scheduler(
+            fake_opt,
+            cfg.iterations * cfg.fake_steps_per_student_step + cfg.fake_warmup_steps,
+            cfg.fake_lr,
+        )
 
     # Disc steps once per fake inner step (FastGen ties it to the fake_score
     # cadence). No head-start, so its scheduler is sized over the main loop only.
@@ -521,6 +547,8 @@ def build_run(args, cfg: TurboConfig) -> RunContext:
     writer, run_log = create_tb_writer(
         cfg.log_dir, tb_config_text(cfg), enabled=not cfg.no_log, logger=logger
     )
+    if dmad_probe is not None:
+        dmad_probe.bind_log_dir(run_log if run_log is not None else cfg.output_dir)
     if run_log is not None:
         # Mirror the snapshot into the run log dir: a self-contained record of
         # "this run + the config that produced it".
@@ -642,12 +670,14 @@ def build_run(args, cfg: TurboConfig) -> RunContext:
     # Fake head-start skipped on resume: the restored critic is already
     # calibrated against the restored student; re-running it here would recreate
     # the pathology this resume path exists to avoid.
+    # Under DMAD the disc head-start replaces this one; it runs once the
+    # RunContext exists (end of this function).
     data_iter = iter(dataloader)
     if start_step > 0:
         logger.info(
             "resume: skipping the fake head-start (critic restored, already warm)."
         )
-    else:
+    elif not cfg.dmad:
         data_iter = run_fake_warmup(
             warmup_steps=cfg.fake_warmup_steps,
             turbo=turbo,
@@ -696,7 +726,9 @@ def build_run(args, cfg: TurboConfig) -> RunContext:
         console_steps = True
     metrics = TurboMetrics(device)
     # Per-τ-bin critic-loss profile; one per fake bank when the τ-split is on.
-    if cfg.fake_tau_banks > 1:
+    if cfg.dmad:
+        tau_profiles = []
+    elif cfg.fake_tau_banks > 1:
         tau_profiles = [
             TauBinCriticLoss(
                 device,
@@ -708,7 +740,7 @@ def build_run(args, cfg: TurboConfig) -> RunContext:
     else:
         tau_profiles = [TauBinCriticLoss(device)]
 
-    return RunContext(
+    ctx = RunContext(
         model=model,
         turbo=turbo,
         device=device,
@@ -744,4 +776,12 @@ def build_run(args, cfg: TurboConfig) -> RunContext:
         val_latent_shape=val_latent_shape,
         val_clean=val_clean,
         start_step=start_step,
+        dmad_probe=dmad_probe,
+        dmad=dmad,
+        dmad_metrics=DmadMetrics(device) if dmad is not None else None,
     )
+    if dmad is not None:
+        from .dmad import run_disc_warmup
+
+        ctx.data_iter = run_disc_warmup(ctx, cfg)
+    return ctx
