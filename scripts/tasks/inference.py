@@ -311,28 +311,6 @@ def cmd_test_easycontrol(extra):
             / "cond_images",
             "empty_prompt": False,
         },
-        # render_<ed>: plan_render bubble-fill probe — ref is a gray-holed panel
-        # from the held-out staging tree; the prompt carries the text clause.
-        "render_en": {
-            "weight": "anima_render_en",
-            "out": "render_en",
-            "ref_dir": ROOT
-            / "post_image_dataset"
-            / "render"
-            / "en"
-            / "heldout_staging",
-            "empty_prompt": False,
-        },
-        "render_ja": {
-            "weight": "anima_render_ja",
-            "out": "render_ja",
-            "ref_dir": ROOT
-            / "post_image_dataset"
-            / "render"
-            / "ja"
-            / "heldout_staging",
-            "empty_prompt": False,
-        },
         # subject: ref is a DIFFERENT image of the character to retrieve; the
         # prompt owns layout/pose, so never force an empty prompt.
         "subject": {

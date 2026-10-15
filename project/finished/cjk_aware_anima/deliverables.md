@@ -64,7 +64,9 @@ Envelopes: `bench/cjk_distill/results/<stamp>-<label>/`; render grids:
 
 ## Eval assets (`assets/`)
 
-`ja_eval_prompts.json` (20 prompts, five registers — the binding grid),
+`ja_eval_prompts.json` (20 prompts, five registers — the binding grid; it and
+its `ko_` / `zh_` twins moved to `scripts/distill_cjk/corpus/assets/` on
+2026-10-15, where `synth_tags.py` reads them),
 `ja_eval_prompts_names_mixed.json`, `ja_eval_prompts_residual.json`
 (name-stripped twins), `grid_labels.json` (eyeball labels, 5 arms × 7–9 prompts),
 `separability_phase02{,_fixed}.json`.

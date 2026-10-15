@@ -3,9 +3,4 @@
 # ripgrep applies anchored rules from a root .ignore only when the search starts
 # at the root. Paths live code outside finished/ reads or runs stay searchable
 # (see ../README.md); moving one into a listed path means narrowing the rule.
-/*.md
-/assets/
-/gate/
-/hito/
-/probes/
-/reports/
+*

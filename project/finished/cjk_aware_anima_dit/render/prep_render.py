@@ -21,8 +21,12 @@ Only ``encode`` and ``text`` touch the GPU — run those through the daemon::
     python project/finished/cjk_aware_anima_dit/render/prep_render.py mask --edition en
     make daemon-run ARGS="project/finished/cjk_aware_anima_dit/render/prep_render.py encode text --edition en --vocab_pack ''"
 
-Via the task runner: ``make easycontrol-staging EASYADAPTER=render_en`` (cut +
-mask) and ``make easycontrol-preprocess EASYADAPTER=render_en`` (encode + text).
+The ``render_*`` EasyControl descriptors that wrapped these stages
+(``make easycontrol-staging`` / ``-preprocess`` / ``easycontrol EASYADAPTER=render_en``)
+left the task runner on 2026-10-15; their TOMLs are in ``configs/`` here. To
+run an arm, restore them from commit 0cc686b3 (``scripts/tasks/training.py``
+``_render_stage`` / ``_render_preprocess`` + the ``_EASY_ADAPTERS`` rows,
+``scripts/tasks/inference.py``'s ``render_*`` test rows).
 """
 
 from __future__ import annotations

@@ -52,20 +52,18 @@ if str(REPO) not in sys.path:
 
 from scripts.distill_cjk.corpus import build_pairs, tag_glossary  # noqa: E402
 
-DEFAULT_PROMPTS = (
-    REPO / "project" / "finished" / "cjk_aware_anima" / "assets" / "ja_eval_prompts.json"
-)
+DEFAULT_PROMPTS = ROOT / "assets" / "ja_eval_prompts.json"
 DEFAULT_PAIRS = REPO / "post_image_dataset" / "cjk_distill" / "pairs_synth.jsonl"
 DEFAULT_CAPTIONS = REPO / "image_dataset"
 REGISTER = "tags_synth_ja"
 SEED_REGISTERS = ("tags", "tags_alt", "names", "names_synth_ja")
 # --lang ko: same machinery, KO surfaces (plan_ko3 M1 loanword-tag widening).
-KO_PROMPTS = REPO / "project" / "finished" / "cjk_aware_anima" / "assets" / "ko_eval_prompts.json"
+KO_PROMPTS = ROOT / "assets" / "ko_eval_prompts.json"
 KO_PAIRS = REPO / "post_image_dataset" / "cjk_distill" / "pairs_synth_ko.jsonl"
 KO_REGISTER = "tags_synth_ko"
 KO_SEED_REGISTERS = ("tags_ko", "tags_alt_ko", "names_ko", "names_synth_ko")
 # --lang zh (plan_zh.md Z1): same machinery, zh surfaces.
-ZH_PROMPTS = REPO / "project" / "finished" / "cjk_aware_anima" / "assets" / "zh_eval_prompts.json"
+ZH_PROMPTS = ROOT / "assets" / "zh_eval_prompts.json"
 ZH_PAIRS = REPO / "post_image_dataset" / "cjk_distill" / "pairs_zh.jsonl"
 ZH_REGISTER = "tags_synth_zh"
 ZH_SEED_REGISTERS = ("tags_zh", "tags_alt_zh", "tags_zh_hant", "names_zh")

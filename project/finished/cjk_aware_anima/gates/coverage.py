@@ -43,7 +43,7 @@ def main() -> None:
     ap.add_argument("--pairs", default="post_image_dataset/cjk_distill/pairs.jsonl")
     ap.add_argument(
         "--prompts",
-        default="project/finished/cjk_aware_anima/assets/ja_eval_prompts.json",
+        default="scripts/distill_cjk/corpus/assets/ja_eval_prompts.json",
     )
     ap.add_argument("--registers", default="tags,tags_alt")
     ap.add_argument("--lang", default="ja", help="prompt-file key holding the native text (ja/ko/zh)")

@@ -49,6 +49,9 @@ first). Premise: ext rows are content-free addresses; what a CJK address
   path (`python project/finished/cjk_aware_anima_dit/ocr/eval_table.py`).
   The hand labels (`assets/sfx_labels_sincos.tsv`, 975 rows / 617 SFX scored)
   are the reader gate's ground truth.
+  `render/configs/` holds the plan_render EasyControl descriptors
+  (`render_en` / `render_ja` / `render_ja_body`), off the task runner since
+  2026-10-15 — `render/prep_render.py`'s docstring says how to restore them.
   **`probes/wake_probe.py` (+ `wake_geometry.py`) here is frozen** — the
   single-file ancestor of the wake instrument, last touched 2026-09-14 when
   the line moved. The live instrument is the split package

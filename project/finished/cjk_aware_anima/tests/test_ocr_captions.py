@@ -6,11 +6,11 @@ import importlib.util
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+HOME = Path(__file__).resolve().parents[1]
 
 
 def _mod():
-    path = ROOT / "project" / "finished" / "cjk_aware_anima" / "datasets" / "cache_te_ext.py"
+    path = HOME / "datasets" / "cache_te_ext.py"
     spec = importlib.util.spec_from_file_location("cache_te_ext", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -57,7 +57,7 @@ def test_tags_format_is_the_c2_shape():
 
 
 def _sfx():
-    path = ROOT / "project" / "finished" / "cjk_aware_anima" / "datasets" / "ocr_sfx.py"
+    path = HOME / "datasets" / "ocr_sfx.py"
     spec = importlib.util.spec_from_file_location("ocr_sfx", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -244,7 +244,7 @@ def test_line_kind_balloon_veto():
 
 # ---- hybrid records (project/finished/cjk_aware_anima/datasets/build_ocr_records.py, B0)
 def _hybrid():
-    path = ROOT / "project" / "finished" / "cjk_aware_anima" / "datasets" / "build_ocr_records.py"
+    path = HOME / "datasets" / "build_ocr_records.py"
     spec = importlib.util.spec_from_file_location("build_ocr_records", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["build_ocr_records"] = mod  # dataclasses resolve annotations here

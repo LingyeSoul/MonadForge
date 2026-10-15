@@ -7,6 +7,5 @@
 /assets/
 /probes/
 /reports/
-/render/judge.py
-/render/vram_probe.py
+/render/
 /ocr/

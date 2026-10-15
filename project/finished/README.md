@@ -15,16 +15,14 @@ pointers, shipped artifacts, and any small open remainder. It does not
 duplicate code or bench tables — canonical sources stay where they live.
 
 **Search.** Each CJK line carries a `.ignore` that hides its record material
-(docs, reports, dead probes; `cjk_renderable_anima/` and `cjk_anima_scale/` whole) from ripgrep, so
+(docs, reports, dead probes; `cjk_renderable_anima/`, `cjk_anima_scale/` and `ocr_reader/` whole) from ripgrep, so
 Grep / Glob / Explore stay on live code; the `archive-explorer` agent searches
-it (`rg --no-ignore-dot`). What stays visible is what live code outside
-`finished/` reads or runs: `sr/`, `mod_guidance/`, `cjk_aware_anima/{assets,
-datasets,probes}/` (the reseed line's and `scripts/distill_cjk`'s eval prompts,
-`tests/test_cjk_ocr_captions.py`, `bench/grad_init`'s `blind_pairs.py`) and
-`cjk_aware_anima_dit/render/` (the `render_*` targets in
-`scripts/tasks/training.py`) and `ocr_reader/ocr/` (`tests/test_ocr_textnorm.py`;
-the reader's train / eval code). `cjk_aware_anima_dit/ocr/` is hidden: its
-newer copy is `ocr_reader/ocr/`. A new outside reference
+it (`rg --no-ignore-dot`). What stays visible is what code outside
+`finished/` reads or runs: `sr/`, `mod_guidance/` and `cjk_aware_anima/{assets,
+probes}/` (the reseed line's eval prompts, `bench/cjk_adapter`'s residual
+prompts, `bench/grad_init`'s `blind_pairs.py`). Live code (`library/`, `scripts/`,
+`tests/`, `configs/`) reads nothing under `project/`; a line's own tests sit in
+its `tests/`. A new outside reference
 into a hidden path means narrowing that line's `.ignore`.
 
 A finished line's whole working tree may move here when its top-level surface
