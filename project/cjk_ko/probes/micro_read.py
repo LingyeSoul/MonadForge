@@ -24,7 +24,7 @@ ranks 961–1024, ``held`` the 92 strings on the 960.
 ``--seeds`` (default 0): one render per item and seed, each read; ``exact``
 and the F1s count every render, the sheets show the first seed.
 Arms (``ARMS``): ``floor`` = jamo_j256_ko (every arm's start), ko_micro_a /
-_b / _bp, jamo_j1024_ko, jamo_j256_ko_g44, jamo_j256_ko_part, jamo_j256_ko_cf, jamo_j1024_ko_cf, ko_warm_cf_a / _b / _bp (the micro arms on jamo_j1024_ko_cf, plan_warm_cf.md), ko_mix2_cf_a / _b / _bp (the same on plan § 3 option 2's mix), ko_mix3_cf_bp (B′ on bubble1 40 / bubbleN 30 / sentko 30), ko_x5_cf_bp (mix3 B′ on 960 rows); ``--arms`` picks some. ``--groups`` (default the
+_b / _bp, jamo_j1024_ko, jamo_j256_ko_g44, jamo_j256_ko_part, jamo_j256_ko_cf, jamo_j256_ko_cf_pe (cf from the PE glyph factors), jamo_j1024_ko_cf, ko_warm_cf_a / _b / _bp (the micro arms on jamo_j1024_ko_cf, plan_warm_cf.md), ko_mix2_cf_a / _b / _bp (the same on plan § 3 option 2's mix), ko_mix3_cf_bp (B′ on bubble1 40 / bubbleN 30 / sentko 30), ko_x5_cf_bp (mix3 B′ on 960 rows); ``--arms`` picks some. ``--groups`` (default the
 three above): also ``H`` (the jamo line's 32 held syllables), split as
 ``H_in`` (the 26 of them among the 192, trained by the micro arms) and
 ``H_out`` (the other 6: 성 번 in next, 호 체 록 열 in neither), and ``jamo``
@@ -67,6 +67,7 @@ ARMS = {
     "jamo_j256_ko_g44": KO_OUT / "jamo_j256_ko_g44",
     "jamo_j256_ko_part": KO_OUT / "jamo_j256_ko_part",
     "jamo_j256_ko_cf": KO_OUT / "jamo_j256_ko_cf",
+    "jamo_j256_ko_cf_pe": KO_OUT / "jamo_j256_ko_cf_pe",
     "jamo_j1024_ko_cf": KO_OUT / "jamo_j1024_ko_cf",
     "ko_warm_cf_a": KO_OUT / "ko_warm_cf_a",
     "ko_warm_cf_b": KO_OUT / "ko_warm_cf_b",

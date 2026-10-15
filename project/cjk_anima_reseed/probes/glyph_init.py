@@ -120,10 +120,11 @@ def bitmaps(chars: list) -> np.ndarray:
 
 
 @torch.no_grad()
-def pe_feats(chars: list, kind: str) -> np.ndarray:
+def pe_feats(chars: list, kind: str, face_paths=None) -> np.ndarray:
     """``(n, d)``: each glyph black on white at the tower's native px (the em
     box scaled from ``EM / CANVAS``), one forward per glyph over the faces that
-    have it, the features averaged over those faces."""
+    have it (``face_paths``; default the top-level faces), the features
+    averaged over those faces."""
     from fontTools.ttLib import TTFont
     from PIL import Image, ImageDraw, ImageFont
 
@@ -132,7 +133,7 @@ def pe_feats(chars: list, kind: str) -> np.ndarray:
     name, px, mode = PE_KINDS[kind]
     em = round(px * EM / CANVAS)
     faces = []
-    for p in sorted(FONT_DIR.glob("*.[ot]tf")):
+    for p in face_paths or sorted(FONT_DIR.glob("*.[ot]tf")):
         cmap = TTFont(str(p), lazy=True).getBestCmap() or {}
         faces.append((ImageFont.truetype(str(p), em), set(cmap)))
     dev = torch.device("cuda")

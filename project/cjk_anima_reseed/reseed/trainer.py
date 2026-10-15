@@ -261,7 +261,8 @@ def train(
     syllables composed from jamo factors each step; ``trained.pt`` carries
     every syllable's composed row and the factors (``jamo``);
     ``factor_init`` = (trained.pt, scale) starts them at that run's
-    compatibility-jamo rows (``Jamo.init_from``); ``factor_from`` (a factor
+    compatibility-jamo rows (``Jamo.init_from``); (glyph .pt, radius, "glyph")
+    at a glyph prediction's factors (``Jamo.init_glyph``); ``factor_from`` (a factor
     run's trained.pt) at that run's factors (``Jamo.init_state``), so a warm
     run's factor rows start where its context has them; ``factor_residual``
     (the pull on ``r``) adds a per-syllable residual (``Jamo``, cjk_ko B′)."""
@@ -425,7 +426,13 @@ def train(
             norms = jamo.init_state(sd0["jamo"], sd0["delta"]["row_scale"])
             p.record["factor_from"] = {"from": str(factor_from), **norms}
             print(f"factor from: {factor_from} — {norms}", flush=True)
-        if factor_init:
+        if factor_init and factor_init[-1] == "glyph":
+            src, radius, _ = factor_init
+            g = torch.load(src, map_location="cpu", weights_only=False)
+            norms = jamo.init_glyph(g["factors"], radius)
+            p.record["factor_init"] = {"glyph": str(src), "radius": radius, **norms}
+            print(f"factor init: glyph {src} at radius {radius} — {norms}", flush=True)
+        elif factor_init:
             from .jamo import compat_rows
 
             src, scale = factor_init

@@ -78,7 +78,14 @@
                                   # the jamo curriculum's stage 2 (user 10-11) — C[cho,
                                   # every cls] / V[jung] / F[jong] start at scale × that
                                   # reseed run's compatibility-jamo rows (pack + Δ,
-                                  # centred over the 51), ``b`` at 0
+                                  # centred over the 51), ``b`` at 0;
+                                  # or { glyph = "pe_spatial", radius = 211.0 }: C / V
+                                  # / F start at a glyph prediction's least-squares
+                                  # factors (``../cjk_ko/probes/hangul_init.py`` →
+                                  # ``output/cjk_ko/hangul_init/<glyph>.pt``), scaled so
+                                  # the composed rows' ball (centred over the run's
+                                  # syllables) has that mean radius, ``b`` at 0
+                                  # (``jamo_j256_ko_cf_pe``, user 10-15)
     factor_from = "cjk_anima_reseed/jamo_j256_ko"  # optional, with ``factor``: the
                                   # factors start at that factor run's (its
                                   # ``trained.pt`` ``jamo``; a name or ``<line>/<run>``
@@ -215,7 +222,8 @@ class Run:
     held: str = ""  # strings held out beside ``read`` (a path, $MANGA109S expanded)
     lang: dict | None = None  # glyph → language for the rows not lettered as Japanese
     factor: str = ""  # the rows composed from factors (``FACTORS``); "" = free rows
-    factor_init: tuple = ()  # (reseed run, scale): the factors' start; () = Δ 0
+    factor_init: tuple = ()  # (reseed run, scale) or ("glyph", name, radius): the
+    # factors' start; () = Δ 0
     factor_from: str = ""  # a factor run: the factors' start; "" = Δ 0
     factor_residual: float | None = None  # the pull on r; None = no residual
     faces: dict | None = (
@@ -328,9 +336,13 @@ class Run:
         return (OUT.parent / name if "/" in name else OUT / name) / "trained.pt"
 
     def factor_init_rows(self) -> tuple:
-        """``(trained.pt, scale)`` of ``factor_init``; () without it."""
+        """``(trained.pt, scale)`` of ``factor_init`` (a glyph prediction:
+        ``(its .pt, radius, "glyph")``); () without it."""
         if not self.factor_init:
             return ()
+        if self.factor_init[0] == "glyph":
+            _, name, radius = self.factor_init
+            return OUT.parent / "cjk_ko" / "hangul_init" / f"{name}.pt", radius, "glyph"
         name, scale = self.factor_init
         return OUT / name / "trained.pt", scale
 
@@ -447,10 +459,18 @@ def load(run: str) -> Run:
     fi = raw.get("factor_init")
     if fi is not None:
         assert factor, f"{path}: factor_init needs factor"
-        assert set(fi) == {"from", "scale"}, f"{path}: factor_init {{from, scale}}"
-        assert "/" not in fi["from"], f"{path}: factor_init from names a reseed run"
-        assert 0 < float(fi["scale"]) <= 2, f"{path}: factor_init scale {fi['scale']}"
-        fi = (fi["from"], float(fi["scale"]))
+        if set(fi) == {"glyph", "radius"}:
+            assert 0 < float(fi["radius"]) < 1000, f"{path}: factor_init radius"
+            fi = ("glyph", str(fi["glyph"]), float(fi["radius"]))
+        else:
+            assert set(fi) == {"from", "scale"}, (
+                f"{path}: factor_init {{from, scale}} or {{glyph, radius}}"
+            )
+            assert "/" not in fi["from"], f"{path}: factor_init from names a reseed run"
+            assert 0 < float(fi["scale"]) <= 2, (
+                f"{path}: factor_init scale {fi['scale']}"
+            )
+            fi = (fi["from"], float(fi["scale"]))
     ff, fres = raw.get("factor_from", ""), raw.get("factor_residual")
     assert not ff or (factor and fi is None), (
         f"{path}: factor_from needs factor, not with factor_init"

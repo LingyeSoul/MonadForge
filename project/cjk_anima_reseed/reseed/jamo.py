@@ -259,6 +259,31 @@ class Jamo:
             ),
         }
 
+    @torch.no_grad()
+    def init_glyph(self, fac: dict, radius: float) -> dict:
+        """C / V / F at a glyph prediction's least-squares factors
+        (``../cjk_ko/probes/hangul_init.py``: ``factors`` in effective units),
+        scaled so the composed rows centred over this run's syllables have mean
+        norm ``radius`` (effective units); ``b`` at 0 (user 10-15). Returns the
+        norms for the record."""
+        dev, rs = self.b.device, float(self.rows.row_scale)
+        for n in ("C", "V", "F"):
+            getattr(self, n).copy_(
+                fac[n].float().to(dev).reshape(getattr(self, n).shape)
+            )
+        comp = self.compose(self.code)
+        r0 = float((comp - comp.mean(0)).norm(dim=1).mean())
+        k = float(radius) / r0
+        for n in ("C", "V", "F"):
+            getattr(self, n).mul_(k / rs)
+        comp = self.compose(self.code) * rs
+        return {
+            "scale": round(k, 4),
+            "init_radius": round(float((comp - comp.mean(0)).norm(dim=1).mean()), 1),
+            "init_mean_norm": round(float(comp.mean(0).norm()), 1),
+            "init_delta_norm": round(float(comp.norm(dim=1).mean()), 1),
+        }
+
     def compose(self, code: torch.Tensor) -> torch.Tensor:
         """Δ (raw units) for ``code`` (``codes``' rows); an absent part adds 0."""
         F = torch.cat([torch.zeros_like(self.F[:1]), self.F])
