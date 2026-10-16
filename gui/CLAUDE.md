@@ -34,10 +34,12 @@ must not appear.
 - `app.py::main`: `load_language()` → build + show `MainWindow` →
   `ensure_daemon_quietly()` (deferred via `QTimer.singleShot(0, ...)` so a cold daemon
   boot doesn't block the window) → Qt loop.
-- `make gui-qwen` → `python -m gui.qwen21` — a separate en/cn window for the
-  Qwen-Image-2.1 line (not Anima; see `library/qwen21/CLAUDE.md`). Reuses `theme`,
-  `jobs.daemon`, `DaemonJobMixin`, `widgets` only; its strings live in `gui/qwen21/strings.py`,
-  not `gui/i18n/`.
+- `make gui-qwen` → `python -m gui.qwen21`, `make gui-moss` → `python -m gui.moss` —
+  separate en/cn windows for the non-Anima lines (`library/qwen21/`, `library/moss/`).
+  Both are `gui/lines/window.py::LineWindow` over a `LineSpec` built in
+  `gui/<line>/app.py` (request classes, scan helpers, test passes, strings). Reuses
+  `theme`, `jobs.daemon`, `DaemonJobMixin`, `widgets` only; strings live in
+  `gui/lines/strings.py` + `gui/<line>/strings.py`, not `gui/i18n/`.
 - `make lora-gui GUI_PRESETS=<variant>` trains from `gui-methods/` configs; it does not
   launch the GUI.
 

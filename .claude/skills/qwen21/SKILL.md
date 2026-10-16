@@ -17,7 +17,7 @@ and measured numbers: `project/qwen21_lora/README.md` + `report.md`.
 | `library/qwen21/requests.py` | **torch-free** `CacheRequest` / `TrainRequest` / `GenerateRequest` — the one flag definition |
 | `library/qwen21/scan.py` | torch-free folder/cache counts (GUI) |
 | `scripts/qwen21/{cache,train,generate}.py` | sidecar CLIs: `Request.from_argv()` → `run_*` |
-| `gui/qwen21/` | `make gui-qwen` window (en/cn) |
+| `gui/qwen21/` | `make gui-qwen` window (en/cn): the `LineSpec` + strings over the shared `gui/lines/window.py` (also used by `make gui-moss`) |
 | `project/qwen21_lora/src/` | one-off research scripts (`backward_smoke`, `smoke_t2i`, `bench_accel`) |
 
 `tests/test_qwen21_boundary.py` enforces the island: nothing Anima-side imports

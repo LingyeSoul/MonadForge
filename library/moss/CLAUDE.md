@@ -17,9 +17,11 @@ Nothing Anima-side imports `library.moss`.
 | `spectrum.py` | per-branch feature forecaster (cond and uncond forecast separately) |
 | `lora.py` | adapters held **outside** `layers` (the swapper moves every `.weight` under a block) |
 | `train.py` | `run_train(req)` |
+| `scan.py` | **torch-free** cache file layout (suffixes, stem prefixing) + source/cache counts for the GUI; `cache.py` imports its constants |
 
 Sidecars: `scripts/moss/{cache,generate,train}.py`, thin argparse over the requests,
-submitted through the daemon. Weights: catalog packs `moss-base` / `moss-sft`
+submitted through the daemon; `make gui-moss` (`gui/moss/`) submits the same jobs. User doc:
+`docs/experimental/moss_lora.md`. Weights: catalog packs `moss-base` / `moss-sft`
 (`library/downloads.py`) under `models/moss_image/MOSS-Image-{Base,SFT}`; SFT ships its
 DiT alone, and TE / VAE / tokenizer always load from Base.
 

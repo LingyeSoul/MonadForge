@@ -1,5 +1,7 @@
 # anima_lora
 
+> **New (alpha): [MOSS-Image LoRA](docs/experimental/moss_lora.md).** Train LoRAs for OpenMOSS's 5B [MOSS-Image](https://huggingface.co/OpenMOSS-Team/MOSS-Image-Base) on a 16 GB card, with Spectrum sampling (2.6×) — `make gui-moss`. A separate line from Anima; flags and defaults may still change.
+
 📖 Guidebook: [English](docs/guidelines/guidebook.md) · [한국어](docs/guidelines/가이드북.md) · [日本語](docs/guidelines/ガイドブック.md) · [中文](docs/guidelines/指南书.md)
 
 <p align="center">

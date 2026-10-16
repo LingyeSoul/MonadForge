@@ -39,7 +39,6 @@ relative folder (``sub__dir__stem``).
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -55,11 +54,9 @@ from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
 from library.env import resolve_under_home
+from library.moss.scan import LATENT_SUFFIX, TE_SUFFIX, caption_sha, source_pairs
+from library.moss.scan import LATENT_RE as _LATENT_RE
 
-IMAGE_EXTS = (".webp", ".png", ".jpg", ".jpeg")
-TE_SUFFIX = ".moss_te.safetensors"
-LATENT_SUFFIX = ".moss_latent.safetensors"
-_LATENT_RE = re.compile(r"^(?P<stem>.+)_(?P<w>\d+)x(?P<h>\d+)\.moss_latent\.safetensors$")
 STRIDE = 16
 AREA_TOLERANCE = 1.10
 ENCODER_ID = "Qwen3.5-9B last_hidden_state, chat template add_generation_prompt+enable_thinking"
@@ -166,25 +163,12 @@ def to_pixels(image: Image.Image) -> torch.Tensor:
 def find_pairs(src: Path) -> list[Pair]:
     """Images with a ``.txt`` caption beside them, subfolders included. Stems that
     collide across subfolders get their relative folder as a prefix."""
-    images = sorted(p for p in src.rglob("*") if p.suffix.lower() in IMAGE_EXTS and p.is_file())
-    counts: dict[str, int] = {}
+    images, found = source_pairs(src)
+    captioned = {image for _, image, _ in found}
     for p in images:
-        counts[p.stem] = counts.get(p.stem, 0) + 1
-    pairs = []
-    for p in images:
-        sidecar = p.with_suffix(".txt")
-        if not sidecar.exists():
+        if p not in captioned:
             print(f"skip {p.name}: no caption sidecar", flush=True)
-            continue
-        stem = p.stem
-        if counts[stem] > 1:
-            stem = "__".join((*p.relative_to(src).parent.parts, p.stem))
-        pairs.append(Pair(stem, p, sidecar.read_text(encoding="utf-8").strip()))
-    return pairs
-
-
-def _sha(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return [Pair(stem, image, caption.read_text(encoding="utf-8").strip()) for stem, image, caption in found]
 
 
 def _te_current(path: Path, caption: str, max_tokens: int) -> bool:
@@ -195,7 +179,7 @@ def _te_current(path: Path, caption: str, max_tokens: int) -> bool:
             meta = f.metadata() or {}
     except Exception:
         return False
-    return meta.get("caption_sha256") == _sha(caption) and meta.get("max_text_tokens") == str(max_tokens)
+    return meta.get("caption_sha256") == caption_sha(caption) and meta.get("max_text_tokens") == str(max_tokens)
 
 
 def _latents_for(out_dir: Path, stem: str) -> list[Path]:
@@ -240,7 +224,7 @@ def cache_text(pairs, out_dir, model_dir, device, max_tokens, overwrite) -> dict
             out_dir / f"{p.stem}{TE_SUFFIX}",
             metadata={
                 "caption": p.caption,
-                "caption_sha256": _sha(p.caption),
+                "caption_sha256": caption_sha(p.caption),
                 "n_text": str(n),
                 "max_text_tokens": str(max_tokens),
                 "encoder": ENCODER_ID,

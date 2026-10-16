@@ -381,6 +381,10 @@ COMMANDS = {
         gui.cmd_gui_qwen,
         "Launch the Qwen-Image-2.1 LoRA GUI (preprocess + train only)",
     ),
+    "gui-moss": (
+        gui.cmd_gui_moss,
+        "Launch the MOSS-Image LoRA GUI (alpha: preprocess + train + A/B test)",
+    ),
     "gui-shortcut": (
         gui.cmd_gui_shortcut,
         "Create a Windows desktop shortcut that launches the GUI (no console window)",
