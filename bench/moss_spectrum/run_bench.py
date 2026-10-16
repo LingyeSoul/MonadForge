@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -151,7 +152,8 @@ def main() -> None:
     from library.moss.requests import resolve_model_dir
     from library.moss.spectrum import MossSpectrum
 
-    arms = [parse_arm(a) for a in filter(None, args.arms.split(","))]
+    # A comma starts a new arm only before p<N> / s<N>; others separate knobs.
+    arms = [parse_arm(a) for a in filter(None, re.split(r",(?=[ps]\d)", args.arms))]
     keys = [k for k in args.prompts.split(",") if k]
     models = [m for m in args.models.split(",") if m]
     model_dir = resolve_model_dir(args.model_dir)

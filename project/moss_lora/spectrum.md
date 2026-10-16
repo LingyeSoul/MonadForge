@@ -89,6 +89,13 @@ rel-L2 0.16–0.32 (p50) and 0.23–0.53 (s50). Composition and character are th
 every pair; strands of hair, tie pattern and background lines differ. bf16 kernel
 differences grow over 50 CFG-3 steps, and manga hatching drifts the most.
 
+`--batched` stays slower when compiled: p50 55.0 vs 52.2 s, s50 fw 0.5 20.9 vs 20.0 s,
+peak +0.3 GiB (`results/…-cmp_batched_cudnn`, first image includes its compile).
+Inductor ignores an `sdpa_kernel` priority, so the compiled masked SDPA stays on the
+mem-efficient kernel. Eager does honour it, but cuDNN masked at batch 2 (5.9 ms) is
+still slower than two unmasked flash calls (2 × 2.46 ms), so batching cannot win at
+1024². CFG costs the same compute either way.
+
 ## Not done
 
 - Spectrum at non-square sizes and ~2 MP (the history grows to 2× per observation:
