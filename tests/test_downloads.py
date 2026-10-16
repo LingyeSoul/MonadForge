@@ -49,8 +49,14 @@ def test_every_visible_row_belongs_to_a_listed_pack():
     pack_ids = {p.id for p in DL.PACKS}
     for a in DL.full_catalog():
         assert a.pack in pack_ids, a.id
-    assert DL.PACKS[:3] == DL.TRAINER_PACKS
-    assert [p.id for p in DL.TRAINER_PACKS] == ["anima", "pe", "cjk"]
+    assert DL.PACKS[: len(DL.TRAINER_PACKS)] == DL.TRAINER_PACKS
+    assert [p.id for p in DL.TRAINER_PACKS] == [
+        "anima",
+        "pe",
+        "cjk",
+        "moss-base",
+        "moss-sft",
+    ]
     assert not (set(DL.HIDDEN_PACKS) & pack_ids)
 
 
@@ -103,7 +109,7 @@ def test_by_pack_keeps_pack_order_and_drops_empty_packs():
     assert list(grouped) == [p.id for p in DL.PACKS if p.id in grouped]
     assert all(rows for rows in grouped.values())
     trainer_only = DL.by_pack(DL.catalog())
-    assert list(trainer_only) == ["anima", "pe", "cjk"]
+    assert list(trainer_only) == ["anima", "pe", "cjk", "moss-base", "moss-sft"]
 
 
 def test_resolve_raises_naming_the_unknown_token():
@@ -132,6 +138,24 @@ def test_rows_land_where_the_loaders_look():
         == DL.default_vocab_pack_prefix()
         == anima_home() / "models" / DL.VOCAB_PACK_DIR / DL.VOCAB_PACK_STEM
     )
+
+
+def test_moss_rows_land_where_library_moss_looks():
+    """``library/moss`` reads every part from ``<variant>/<subfolder>``; the TE,
+    VAE and tokenizer only ever from Base, so SFT ships its DiT alone."""
+    from library.moss import requests as moss
+
+    rows = DL.by_id()
+    for variant in moss.VARIANTS:
+        root = moss.variant_dir(None, variant)
+        assert rows[f"moss_{variant}_root"].dest == root
+        assert rows[f"moss_{variant}_transformer"].dest == root / "transformer"
+    base = moss.variant_dir(None, "base")
+    for part in ("text_encoder", "vae", "tokenizer", "scheduler"):
+        assert rows[f"moss_base_{part}"].dest == base / part
+        assert f"moss_sft_{part}" not in rows
+    assert not set(DL.GROUPS["moss-base"]) & set(DL.DEFAULT_SET)
+    assert not set(DL.GROUPS["moss-sft"]) & set(DL.DEFAULT_SET)
 
 
 def test_anima_rows_land_on_the_base_config_defaults():
@@ -294,7 +318,13 @@ def test_the_two_tabs_show_the_two_catalog_halves():
             assert [b.title() for b in boxes] == [
                 _pack_title(DL.PACK_BY_ID[pid]) for pid in expected
             ]
-        assert [pid for pid, _i, _b in anima._packs] == ["anima", "pe", "cjk"]
+        assert [pid for pid, _i, _b in anima._packs] == [
+            "anima",
+            "pe",
+            "cjk",
+            "moss-base",
+            "moss-sft",
+        ]
         # Busy disables every button on *both* tabs: the dialog runs one job.
         dlg._set_busy(True)
         assert not any(b.isEnabled() for p in dlg._panels for _a, _s, b in p._rows)

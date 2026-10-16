@@ -67,6 +67,8 @@ _PACK_KEYS: dict[str, str] = {
     "anima": "models_pack_anima",
     "pe": "models_pack_pe",
     "cjk": "models_pack_cjk",
+    "moss-base": "models_pack_moss_base",
+    "moss-sft": "models_pack_moss_sft",
     "tagger": "models_pack_tagger",
     "tags": "models_pack_tags",
     "masking": "models_pack_masking",

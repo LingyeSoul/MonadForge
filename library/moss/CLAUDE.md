@@ -1,0 +1,48 @@
+# CLAUDE.md — `library/moss/`
+
+**This is not Anima.** MOSS-Image (OpenMOSS, Apache-2.0) is a 5B single-stream DiT on a
+frozen Qwen3.5-9B text encoder and the frozen FLUX.2 VAE. The root `CLAUDE.md`
+invariants describe the Anima DiT; most of them are wrong here. Shared with Anima:
+`library.runtime.offloading`, `library.runtime.dynamo`, `library.env`, the daemon, and
+the pure Spectrum core (`networks/spectrum_forecast.py`, `networks/spectrum_sea.py`).
+Nothing Anima-side imports `library.moss`.
+
+| Module | Role |
+|---|---|
+| `model.py` | vendored `MOSSImageTransformer` / `MOSSImageScheduler` (Apache-2.0, attribution kept; state-dict names unchanged). Reference per-sample `forward`, `forward_batched` (masked text, per-sample `skip_layers`), `head` for Spectrum, `pack_latents` / `unpack_latents` / `encode` / `decode` |
+| `requests.py` | **torch-free** `CacheRequest` / `GenerateRequest` / `TrainRequest`, `to_argv()` / `from_argv()`, model-dir resolution |
+| `loader.py` | phase split: TE (whole decoder layers paged onto the card) → encode → free → DiT; VAE |
+| `cache.py` | TE cache (natural length, never padded) + latent cache (packed, BN-normalised) |
+| `generate.py` | `run_generate(req)`: Euler, CFG + uncond skip-22, Spectrum hook-in |
+| `spectrum.py` | per-branch feature forecaster (cond and uncond forecast separately) |
+| `lora.py` | adapters held **outside** `layers` (the swapper moves every `.weight` under a block) |
+| `train.py` | `run_train(req)` |
+
+Sidecars: `scripts/moss/{cache,generate,train}.py`, thin argparse over the requests,
+submitted through the daemon. Weights: catalog packs `moss-base` / `moss-sft`
+(`library/downloads.py`) under `models/moss_image/MOSS-Image-{Base,SFT}`; SFT ships its
+DiT alone, and TE / VAE / tokenizer always load from Base.
+
+Research line, measured numbers, open questions: `project/moss_lora/`.
+
+## What does NOT carry over
+
+| Root `CLAUDE.md` says | Here |
+|---|---|
+| Latents are 5D `(B,C,T=1,H,W)`, singleton at **dim 2** | **4D packed `(B, 128, H/16, W/16)`**: FLUX.2's 32 ch at /8, 2×2-patchified into 128 ch. No frame axis. Normalisation is the VAE's BatchNorm buffers (`model.pack_latents` / `unpack_latents`) |
+| TE outputs **must** be max-padded; never mask padding | **Never pad.** Each prompt is encoded alone at its true length (Qwen3.5's GDN layers misbehave on padding) and the DiT sees only valid tokens; `forward_batched` masks padded keys. RoPE puts the image block at frame position = text length, so padding shifts the image |
+| Free-fit bucketing via `EDGE_TOKEN_BANDS`, edges 512…1536 | Native aspect, both sides **multiples of 16** |
+| DiT depth probed from the checkpoint (28 vs 40) | Fixed **42** blocks, `num_layers` in `transformer/config.json` |
+| Standard CFG | **CFG 3** and the **uncond branch skips block 22** (still 2 forwards/step); optional SLG third forward. Timestep input is `1000·σ`. Defaults from `pipeline_moss_image.py`, not from Anima habit |
+| Anima's sampler shift | Euler, **shift 5 snapped to the nearest training-grid σ** (`model.snapped_sigmas`) |
+| Adapters live in `networks/`, selected by `network_module` | `networks/` is bound to Anima module names; `lora.py` targets the six bias-free linears per block (`proj.{q,k,v,o,ffn_up_gate,ffn_down}`) |
+| `make lora`, config chain `base → preset → method → CLI`, `masked_loss` | None of it. Flags only, defined once in `requests.py` |
+
+## Standing rules
+
+- **Read the pipeline before setting a sampler knob.** `pipeline_moss_image.py` (in the
+  model folder) is the reference; `model.py` must stay op-for-op with it on the
+  unbatched path.
+- RoPE frequencies stay fp32 (`_RoPE` rebuilds them on every `.to()`).
+- Decode with the DiT off the card: the fp32 VAE decode at ~2 MP does not fit beside it.
+- GPU work goes through the daemon, as everywhere in this repo.

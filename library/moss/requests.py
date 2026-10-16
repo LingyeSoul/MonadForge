@@ -1,0 +1,310 @@
+"""Typed requests for the MOSS-Image jobs — caching, generation, LoRA training.
+
+Torch-free on purpose (a GUI form can be built from these without importing
+torch). Each field carries its CLI help in ``metadata``, so the sidecar CLIs
+(``scripts/moss/``) read one definition:
+
+    req = GenerateRequest(prompt="…", steps=30)
+    argv = req.to_argv()                  # → daemon job argv
+    req = GenerateRequest.from_argv(argv) # ← sidecar CLI
+
+``to_argv`` writes only fields that differ from their defaults.
+
+Model directory: ``--model_dir`` if given, else ``ANIMA_MOSS_MODEL_DIR`` (env or
+``.env``), else ``models/moss_image`` under the repo home. It holds one diffusers
+folder per variant, ``MOSS-Image-Base/`` and ``MOSS-Image-SFT/`` (``transformer/``,
+``text_encoder/``, ``vae/``, ``tokenizer/``, ``scheduler/``); SFT differs from Base
+in ``transformer/`` only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, ClassVar
+
+from library.downloads import MOSS_DIR as MODEL_DIR_NAME
+from library.downloads import MOSS_VARIANT_DIRS as VARIANT_DIRS
+from library.downloads import default_moss_dir
+from library.env import load_dotenv, resolve_under_home
+
+MODEL_DIR_ENV = "ANIMA_MOSS_MODEL_DIR"
+VARIANTS = tuple(VARIANT_DIRS)
+
+
+def default_model_dir() -> Path:
+    """``ANIMA_MOSS_MODEL_DIR`` if set, else ``<repo home>/models/moss_image``."""
+    load_dotenv()
+    override = os.environ.get(MODEL_DIR_ENV)
+    if override:
+        return resolve_under_home(override)
+    return default_moss_dir()
+
+
+def resolve_model_dir(model_dir: str | Path | None) -> Path:
+    """An explicit ``model_dir`` wins; empty/None falls back to the default."""
+    if model_dir:
+        return resolve_under_home(model_dir)
+    return default_model_dir()
+
+
+def variant_dir(model_dir: str | Path | None, variant: str) -> Path:
+    """The diffusers folder of one variant (``base`` / ``sft``)."""
+    return resolve_model_dir(model_dir) / VARIANT_DIRS[variant]
+
+
+def _f(
+    default: Any,
+    help: str,
+    *,
+    choices: tuple | None = None,
+    advanced=False,
+    multiline=False,
+):
+    """A request field: ``help`` / ``choices`` / ``advanced`` / ``multiline``
+    ride in metadata (the last two are GUI layout only)."""
+    meta = {
+        "help": help,
+        "choices": choices,
+        "advanced": advanced,
+        "multiline": multiline,
+    }
+    return field(default=default, metadata=meta)
+
+
+class _Request:
+    """argv round-trip over the dataclass fields.
+
+    Types map to argparse by the field's default: ``bool`` is a flag (``--x`` when
+    the default is False, ``--no-x`` when it is True), ``None`` defaults are
+    typed from the annotation, the rest from the default's own type.
+    """
+
+    SCRIPT: ClassVar[str]
+
+    @classmethod
+    def parser(cls) -> argparse.ArgumentParser:
+        ap = argparse.ArgumentParser(description=cls.__doc__)
+        for f in dataclasses.fields(cls):
+            flag = f"--{f.name}"
+            help = f.metadata.get("help")
+            if isinstance(f.default, bool):
+                ap.add_argument(
+                    flag,
+                    action=argparse.BooleanOptionalAction,
+                    default=f.default,
+                    help=help,
+                )
+                continue
+            ap.add_argument(
+                flag,
+                type=_field_type(f),
+                default=f.default,
+                choices=f.metadata.get("choices"),
+                required=f.default is dataclasses.MISSING,
+                help=help,
+            )
+        return ap
+
+    @classmethod
+    def from_argv(cls, argv: list[str] | None = None):
+        return cls(**vars(cls.parser().parse_args(argv)))
+
+    def to_argv(self) -> list[str]:
+        argv: list[str] = []
+        for f in dataclasses.fields(self):
+            value = getattr(self, f.name)
+            if f.default is not dataclasses.MISSING and value == f.default:
+                continue
+            if isinstance(value, bool):
+                argv.append(f"--{f.name}" if value else f"--no-{f.name}")
+            elif value is not None:
+                argv += [f"--{f.name}", str(value)]
+        return argv
+
+
+def _field_type(f: dataclasses.Field) -> type:
+    annotation = str(f.type)
+    if "int" in annotation:
+        return int
+    if "float" in annotation:
+        return float
+    return str
+
+
+_MODEL_DIR_HELP = f"folder holding MOSS-Image-Base/ and MOSS-Image-SFT/ (default: ${MODEL_DIR_ENV} or models/{MODEL_DIR_NAME})"
+
+
+@dataclass
+class CacheRequest(_Request):
+    """Precache Qwen3.5-9B text embeddings and FLUX.2 VAE latents for a training folder."""
+
+    SCRIPT: ClassVar[str] = "scripts/moss/cache.py"
+
+    src: str = _f(
+        "post_image_dataset/resized",
+        "folder of images + .txt captions, subfolders included (default: the "
+        "Anima resized tree, whose captions are the revised ones)",
+    )
+    out: str = _f("output/moss/cache", "cache folder (two files per image, flat)")
+    resolution: int = _f(
+        1024,
+        "pixel-area cap as a square edge — 1024 means at most ~1024^2 pixels at "
+        "the image's own aspect, both sides multiples of 16; never upscaled",
+    )
+    overwrite: bool = _f(False, "re-encode even when the cache is current")
+    skip_text: bool = _f(False, "skip the text-encoder pass")
+    skip_latents: bool = _f(False, "skip the VAE pass")
+    save_crops: bool = _f(
+        False, "also write the exact pixels each latent was encoded from", advanced=True
+    )
+    vae_dtype: str = _f(
+        "fp32", "VAE encode dtype", choices=("fp32", "bf16"), advanced=True
+    )
+    max_text_tokens: int = _f(
+        4096, "TE truncation length (the model's own limit)", advanced=True
+    )
+    model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
+
+
+@dataclass
+class GenerateRequest(_Request):
+    """Render prompts with MOSS-Image (Base or SFT), optionally with a LoRA."""
+
+    SCRIPT: ClassVar[str] = "scripts/moss/generate.py"
+
+    prompt: str = _f(
+        "An anime illustration of a girl with long silver hair and red eyes, "
+        "wearing a black school uniform, sitting on a classroom windowsill at "
+        "sunset, cherry blossom petals drifting outside the window, detailed cel "
+        "shading, soft rim light.",
+        "prompt (ignored when prompts_file or example is set)",
+        multiline=True,
+    )
+    negative_prompt: str = _f("", "negative prompt (the pipeline default is empty)")
+    model: str = _f("base", "which DiT", choices=VARIANTS)
+    width: int = _f(1024, "multiple of 16")
+    height: int = _f(1024, "multiple of 16")
+    steps: int = _f(50, "denoising steps (the snapped grid can return fewer)")
+    cfg: float = _f(3.0, "CFG scale; 1.0 = no uncond forward")
+    uncond_skip: str = _f(
+        "22",
+        "comma-separated DiT blocks the uncond branch skips ('' = plain CFG); "
+        "the pipeline default replaces the negative with a block-22-skipped "
+        "prediction, still two forwards per step",
+    )
+    seed: int = _f(42, "seed of the first prompt (+1 per prompt); fp32 noise from a CPU generator")
+    out_dir: str = _f("output/moss/test", "images + manifest.json land here")
+    prompts_file: str = _f("", "one prompt per line; overrides prompt", advanced=True)
+    example: str = _f(
+        "",
+        "comma-separated Space gallery parameters.json files to replay; each sets "
+        "its own prompt / negative / size / cfg / seed / uncond skip",
+        advanced=True,
+    )
+    batched: bool = _f(
+        False,
+        "cond + uncond in one masked forward instead of two. Measured ~25%% "
+        "slower at 1024² (the key mask takes SDPA off flash) and not bit-exact "
+        "with the reference",
+        advanced=True,
+    )
+    shift: float = _f(5.0, "scheduler shift (pipeline default)", advanced=True)
+    decode_only: bool = _f(
+        False,
+        "decode every latent already in <out_dir>/latents/ to PNG and exit — no "
+        "text encoder, no DiT",
+        advanced=True,
+    )
+    spectrum: bool = _f(
+        False,
+        "Spectrum: forecast the last block's image tokens on most steps instead of "
+        "running the 42 blocks (library/moss/spectrum.py)",
+    )
+    spectrum_window_size: float = _f(2.0, "initial window N: a full forward every floor(N) steps", advanced=True)
+    spectrum_flex_window: float = _f(
+        0.5,
+        "growth of N after each full forward: 0.25 / 0.5 / 1.0 = 22 / 19 / 16 full "
+        "forwards of 50 steps (bench/moss_spectrum)",
+        advanced=True,
+    )
+    spectrum_warmup: int = _f(6, "leading steps that always run full", advanced=True)
+    spectrum_stop_caching_step: int = _f(
+        -1, "full forwards from this step on (-1 = steps - 3)", advanced=True
+    )
+    spectrum_w: float = _f(0.3, "Chebyshev / Taylor blend (1.0 = pure Chebyshev)", advanced=True)
+    spectrum_m: int = _f(3, "Chebyshev degree", advanced=True)
+    spectrum_lam: float = _f(0.1, "ridge regularisation", advanced=True)
+    model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
+
+
+@dataclass
+class TrainRequest(_Request):
+    """Train a LoRA on a precached folder — flow matching, activation checkpointing."""
+
+    SCRIPT: ClassVar[str] = "scripts/moss/train.py"
+    # The block's six bias-free linears, as a fullmatch over qualified names.
+    TARGETS: ClassVar[str] = r"layers\.\d+\.proj\.(q|k|v|o|ffn_up_gate|ffn_down)"
+
+    cache: str = _f("output/moss/cache", "cache folder written by scripts/moss/cache.py")
+    output: str = _f(
+        "output/moss/lora/moss_lora.safetensors",
+        "LoRA output path (a .json run report lands beside it)",
+    )
+    model: str = _f("base", "which DiT to train on", choices=VARIANTS)
+    epochs: int = _f(8, "passes over the cache")
+    max_steps: int = _f(0, "stop after this many steps (0 = epochs decide)")
+    rank: int = _f(16, "LoRA rank")
+    alpha: float | None = _f(None, "LoRA alpha (default = rank)")
+    lr: float = _f(1e-4, "AdamW learning rate")
+    warmup_ratio: float = _f(0.05, "linear warmup, as a fraction of all steps")
+    save_every_epochs: int = _f(0, "also save every N epochs (0 = final only)")
+    caption_dropout: float = _f(
+        0.0,
+        "probability of training a step on the empty-prompt embedding (CFG's "
+        "uncond); > 0 encodes it once into <cache>/_empty.moss_te.safetensors",
+    )
+    lora_dtype: str = _f(
+        "bf16",
+        "dtype the LoRA is saved in; training keeps fp32 masters and runs the "
+        "rank GEMMs in bf16",
+        choices=("bf16", "fp16", "fp32"),
+    )
+    targets: str = _f(TARGETS, "fullmatch regex over linear names", advanced=True)
+    sigma_mu: float = _f(
+        -1.09,
+        "noise sampling: Z ~ N(mu, s^2), sigma = 1 - sigmoid(Z) (report App. A.2, "
+        "final pretraining interval)",
+        advanced=True,
+    )
+    sigma_s: float = _f(0.95, "noise sampling std of Z", advanced=True)
+    sigma_cutoff: float = _f(
+        0.95,
+        "truncate sigma <= cutoff, then rescale onto the 1/1000 grid (1.0 = off)",
+        advanced=True,
+    )
+    sigma_uniform: float = _f(
+        0.01, "mixture weight of discrete-uniform sigma", advanced=True
+    )
+    max_grad_norm: float = _f(1.0, "gradient clip", advanced=True)
+    grad_checkpointing: bool = _f(True, "per-block activation checkpointing")
+    blocks_to_swap: int = _f(
+        0,
+        "DiT blocks to swap to CPU (-1 = size from free VRAM). The bf16 DiT is "
+        "9.7 GiB resident, so 0 is the default",
+        advanced=True,
+    )
+    compile: bool = _f(
+        True,
+        "torch.compile each block with dynamic shapes (the joint image+text "
+        "length changes with every caption): 2.0 vs 3.1 s/step at ~4.5k joint "
+        "tokens and 0.7 GB lower peak, for ~30 s of compile and one recompile "
+        "(2026-10-16). --no-compile for a quick smoke",
+        advanced=True,
+    )
+    log_every: int = _f(10, "full log line every N steps", advanced=True)
+    seed: int = _f(0, "RNG seed", advanced=True)
+    model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)

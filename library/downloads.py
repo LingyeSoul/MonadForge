@@ -76,9 +76,29 @@ VOCAB_PACK_STEM = "anima_cjk_vocab_pack_jp_v1"
 VOCAB_PACK_DIR = "vocab_packs"
 
 
+# MOSS-Image (OpenMOSS, Apache-2.0) — not Anima; the ``library/moss/`` line.
+# One diffusers folder per variant under ``models/moss_image/``. SFT is a fine-tune
+# of Base with byte-identical TE / VAE / tokenizer, so the SFT pack is its DiT
+# alone and ``library/moss/loader.py`` always reads those three from Base.
+MOSS_DIR = "moss_image"
+MOSS_VARIANT_DIRS = {"base": "MOSS-Image-Base", "sft": "MOSS-Image-SFT"}
+MOSS_REPOS = {
+    "base": "OpenMOSS-Team/MOSS-Image-Base",
+    "sft": "OpenMOSS-Team/MOSS-Image-SFT",
+}
+_MOSS_DIT_SHARDS = 3
+_MOSS_TE_SHARDS = 4
+
+
 def default_pe_core_path() -> Path:
     """``<models_dir>/pe/PE-Core-L14-336.pt`` — what ``library/vision`` loads."""
     return models_dir() / PE_DIR / PE_CORE_FILENAME
+
+
+def default_moss_dir() -> Path:
+    """``<models_dir>/moss_image`` — holds ``MOSS-Image-Base/`` and
+    ``MOSS-Image-SFT/``; ``library/moss/requests.py`` resolves variants under it."""
+    return models_dir() / MOSS_DIR
 
 
 def default_vocab_pack_dir() -> Path:
@@ -117,6 +137,18 @@ TRAINER_PACKS: tuple[Pack, ...] = (
         "prompt spans. On by default since v2; English text is bit-exact "
         "either way.",
     ),
+    Pack(
+        "moss-base",
+        "MOSS-Image Base",
+        "MOSS-Image-Base (not Anima): the 5B DiT, the Qwen3.5-9B text encoder, "
+        "the FLUX.2 VAE and tokenizer — ~27 GB. The MOSS line's LoRA substrate.",
+    ),
+    Pack(
+        "moss-sft",
+        "MOSS-Image SFT",
+        "MOSS-Image-SFT's DiT alone (~10 GB); it reuses the Base pack's text "
+        "encoder, VAE and tokenizer.",
+    ),
 )
 
 # Package packs the trainer does not offer: not listed, resolved or downloaded
@@ -150,6 +182,65 @@ def _anima_row(kind: str, filename: str, title: str, used_by: str) -> Asset:
         used_by=used_by,
         notes="Path is a `configs/base.toml` default; the three together are "
         "~5 GB and every training and inference run needs all of them.",
+    )
+
+
+def _moss_row(variant, part, title, files, used_by, *, optional=(), notes=""):
+    """One subfolder of a MOSS diffusers repo. ``Asset`` flattens into ``dest``,
+    so each subfolder (``transformer/``, ``text_encoder/``…) is its own row with
+    ``subfolder`` set; ``part=""`` is the repo root."""
+    root = default_moss_dir() / MOSS_VARIANT_DIRS[variant]
+    return Asset(
+        id=f"moss_{variant}_{part or 'root'}",
+        pack=f"moss-{variant}",
+        title=title,
+        repo=MOSS_REPOS[variant],
+        files=tuple(files),
+        optional=tuple(optional),
+        subfolder=part,
+        dest=root / part if part else root,
+        used_by=used_by,
+        notes=notes,
+    )
+
+
+def _moss_rows() -> tuple[Asset, ...]:
+    dit = (
+        "config.json",
+        "diffusion_pytorch_model.safetensors.index.json",
+        *(
+            f"diffusion_pytorch_model-{i:05d}-of-{_MOSS_DIT_SHARDS:05d}.safetensors"
+            for i in range(1, _MOSS_DIT_SHARDS + 1)
+        ),
+    )
+    root = ("model_index.json", "pipeline_moss_image.py")
+    used = "library/moss (scripts/moss/*)"
+    return (
+        _moss_row("base", "", "MOSS-Image Base — index + reference pipeline", root,
+                  used, optional=("LICENSE", "README.md"),
+                  notes="pipeline_moss_image.py is the reference library/moss/model.py "
+                  "is vendored from; nothing loads it at run time."),
+        _moss_row("base", "transformer", "MOSS-Image Base DiT (5B)", dit,
+                  f"{used} · the LoRA training substrate", notes="~10.2 GB bf16."),
+        _moss_row("base", "text_encoder", "Qwen3.5-9B text encoder (MOSS)", (
+            "config.json", "model.safetensors.index.json",
+            *(f"model-{i:05d}-of-{_MOSS_TE_SHARDS:05d}.safetensors"
+              for i in range(1, _MOSS_TE_SHARDS + 1)),
+        ), f"{used} · TE caching and prompt encoding (Base and SFT)",
+                  notes="~16.8 GB bf16, layer-offloaded onto the card."),
+        _moss_row("base", "vae", "FLUX.2 VAE (MOSS)",
+                  ("config.json", "diffusion_pytorch_model.safetensors"),
+                  f"{used} · latent caching and decoding (Base and SFT)"),
+        _moss_row("base", "tokenizer", "Qwen3.5 tokenizer (MOSS)",
+                  ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja"),
+                  f"{used} · TE caching and prompt encoding"),
+        _moss_row("base", "scheduler", "MOSS-Image scheduler config",
+                  ("scheduler_config.json",), used),
+        _moss_row("sft", "", "MOSS-Image SFT — index + reference pipeline", root,
+                  used, optional=("LICENSE", "README.md")),
+        _moss_row("sft", "transformer", "MOSS-Image SFT DiT (5B)", dit,
+                  f"{used} · --model sft",
+                  notes="~10.2 GB bf16. TE / VAE / tokenizer come from the Base pack."),
     )
 
 
@@ -209,6 +300,7 @@ def catalog() -> tuple[Asset, ...]:
             "`make preprocess-te ARGS=--overwrite` for CJK captions; EN-only "
             "captions are bit-exact either way.",
         ),
+        *_moss_rows(),
     )
 
 
