@@ -38,12 +38,24 @@ cache.
 
 | entry | size | prompt tokens | CFG | denoise | peak (denoise) | decode peak (DiT off) |
 |---|---|---|---|---|---|---|
-| 004 Blue Archive ensemble | 1776×1184 | 1937 | 5 | RESULT_004 | | |
-| 017 beach panorama | 2880×720 | 2065 | 3 | RESULT_017 | | |
+| 004 Blue Archive ensemble | 1776×1184 | 1937 | 5 | 193 s | 10.8 GiB | 5.9 GiB |
+| 017 beach panorama | 2880×720 | 2065 | 3 | 186 s | 10.8 GiB | 5.9 GiB |
 
-Outputs: `/media/sorryhyun/data/moss_image/samples/space_repro/`.
+Outputs: `/media/sorryhyun/data/moss_image/samples/space_repro/{000_space004_base_s3072627948,001_space017_base_s88}.png`.
+Side by side with the Space's own `image.webp`, both reproduce the gallery composition, characters,
+poses and props. They differ only in fine detail, as expected from different GPUs and kernels.
+At ~2k prompt tokens a step costs 2.6× the 1024²/55-token step (≈3.8 s vs 1.45 s for
+two forwards), because the joint sequence is ~10k tokens. The decode OOM is gone with the DiT off the card
+(5.9 GiB peak for the fp32 decode at 2.1 MP).
 
 ## Notes
+
+- **Every final latent hits disk before any decode**: `<out_dir>/latents/{key}_{model}_s{seed}.safetensors`
+  with the job record (prompt, size, cfg, seed, steps, shift, skip, model, batched, spectrum
+  knobs) in the metadata. A rerun skips jobs whose saved record matches, redoes ones that
+  differ, and decodes only missing PNGs; `--decode_only` decodes whatever is in `latents/`
+  without loading the TE or DiT. A killed job loses at most the image in flight. The Space
+  repro run above was the first job on this path.
 
 - With the TE layer-paging budget now sized from free VRAM (`loader._offload_by_layer`,
   25 of 32 decoder layers resident), encoding the two ~2k-token JSON prompts plus two

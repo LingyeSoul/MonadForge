@@ -1,0 +1,92 @@
+# Phase 2 — light LoRA with activation checkpointing (2026-10-16)
+
+Code: `library/moss/lora.py`, `library/moss/train.py`, `scripts/moss/train.py`, flags in
+`TrainRequest` (`library/moss/requests.py`), tests `tests/test_moss_lora.py` (CPU, tiny
+DiT). Smoke / eval scripts: `project/moss_lora/src/{fit_smoke,lora_ab}.py`.
+
+## What the trainer does
+
+- LoRA on the six bias-free linears per block, `layers.N.proj.{q,k,v,o,ffn_up_gate,ffn_down}`
+  (42 × 6 = 252; rank 16 = 37.2 M params). The adapters are held outside `layers`, and
+  each target's `forward` is patched (the qwen21 construction). Masters are fp32, rank
+  GEMMs run in bf16, the file is saved in bf16 with `rank / alpha / targets / ss_num_blocks`
+  metadata. `load_for_inference(transformer, path, multiplier)` hooks it on; multiplier 0
+  is the base model exactly.
+- Objective per report App. A.2: `z_σ = (1−σ)z0 + σε`, target `ε − z0`, timestep `1000σ`,
+  plain MSE over image tokens. σ uses the final Stage-3 interval exactly: `S = 1 − sigmoid(Z)`,
+  `Z ~ N(−1.09, 0.95²)`, truncated at 0.95 and rescaled onto the 1/1000 grid, with a 1 %
+  uniform mix. This is noise-heavy (median σ ≈ 0.79). No resolution shift: that interval
+  trained at area ≤ 1024², and the cache is ~1 MP.
+- Checkpointing wraps each block's `forward`, not `__call__`, so the swap hooks never
+  re-fire during recompute. Block swap is available (`--blocks_to_swap N|-1`) through
+  `library.qwen21.blockswap`, but the default is 0 and it was not needed.
+- `--compile` (default **on**): `torch.compile(block.forward, dynamic=True)` after
+  `apply_to`. One graph covers the varying joint length, with one recompile at the
+  third distinct shape and none after that (open question 5, answered for training).
+- `--caption_dropout p` trains a step on the empty-prompt embedding (`""` through the
+  chat template, the pipeline's negative), encoded once into
+  `<cache>/_empty.moss_te.safetensors`. The real run used 0.
+
+## Fit (synthetic, `fit_smoke.py`, Base, rank 16, swap 0, checkpointing on)
+
+| sizes | compile | peak alloc / reserved | steady s/step |
+|---|---|---|---|
+| 4473 img + 400 txt (largest), 4096 + 300 | off | 12.65 / 13.22 GiB | 3.1 |
+| same + 4140 + 180 | on | 11.93 / 12.67 GiB | 2.0 (≈30 s compile + 1 recompile up front) |
+
+The gate wants a peak below 15 GiB: **met with 2+ GiB to spare, no swap**.
+
+## Real run — `channel_(caststation)` style set, Base
+
+30 images, Anima-format tag captions (artist tag `@channel (caststation)`), cache
+by fork C: image 4032–4200 tokens, text 127–406.
+`--epochs 20 --rank 16 --lr 1e-4 --save_every_epochs 10` (AdamW, warmup 5 %, clip 1.0,
+compile on). The user cut the plan from 40 epochs to 20.
+
+- **600 steps in 21.0 min**, 2.1 s/step mean (63 s/epoch). Peak was 11.78 GiB allocated
+  (11.50 at step 1, with the 4096 + 406 sample), 2.07 GiB actually free at step 1.
+- The loss is dominated by σ: epoch means are 0.22–0.35 with no clean trend. Binned by σ
+  over 150-step quarters, low σ (< 0.5) fell 0.265 → 0.199, the 0.5–0.85 bins stayed flat
+  (≈ 0.17 / 0.22), and the > 0.85 bin moved 0.36 → 0.35. That is a weak signal, as usual for
+  a style LoRA. The images decide.
+- Output: `output/moss/lora/caststation_r16.safetensors` (= `_e20`), `_e10`, run report
+  `caststation_r16.json` (per-step loss + σ).
+
+## A/B (`lora_ab.py`, 30 steps, CFG 3, skip-22, 1024², seeds 1–2, same noise per pair)
+
+Prompts: (0) a Miku tag bag in the training format, (1) Akita Neru, whom the set never
+shows, (2) a natural-language sentence with the artist tag.
+`output/moss/lora/ab_caststation_r16_30st/` (Base + SFT, ×1.0 / ×0.0) and
+`ab_caststation_r16_e10_30st/` (Base, e10 ×1.0); grids are `grid_<variant>_p<i>_s<seed>.png`.
+
+By eye:
+- **Base ×1.0 vs ×0.0**: the shift points the right way and is consistent. Line art gets
+  thinner and cleaner, fills flatter, the palette moves from saturated glossy cyan to the
+  set's pale aqua, and backgrounds go to white. Faces get the set's round dark eyes and
+  blunt bangs on prompt 2. Pose and composition per seed mostly survive (same noise),
+  and character identity holds, including Neru, who is not in the set. The result is
+  moderate, not overpowering: recognisably "flatter / cleaner, this palette", but I would
+  not call it a sure artist ID from these 1024² headshots.
+- **e10 vs e20**: e10 is a bit looser and more varied (darker clothing, one yellow
+  background). e20 is cleaner and more uniform: frontal, centred upper bodies, white shirts.
+  That is a mild drift toward a house composition. Neither is broken.
+- **Base LoRA on SFT: it transfers.** SFT ×0.0 has its glossy gacha look (heavy
+  saturation, big specular eyes, rendered hair). SFT ×1.0 loses most of it and lands
+  close to Base ×1.0, while keeping a little more SFT background detail (the prompt-2
+  school yard). Open question 3: no SFT-specific LoRA is needed for a style at this
+  strength.
+- The tag-bag captions trained and prompted fine, although the report says MOSS's captions
+  are natural language (open question 1 still stands for character sets and long
+  captions).
+
+## Open
+
+- Recognisability is a by-eye "moderate"; a stronger setting (lr 2e-4 or more steps)
+  and a side-by-side with training crops at matched prompts would settle it.
+- Swap + checkpoint + compile together is untested (swap was never needed).
+- `train.py` imports `library.qwen21.blockswap` for the swapper attachment. It is generic
+  code, but the import crosses research lines; move it under `library/runtime/` if both
+  lines stay.
+- The trainer keeps `MOSSImageTransformer.gradient_checkpointing` off and checkpoints
+  `block.forward` itself (hooks once, compile-compatible). The flag in `model.py` is
+  unused by training.

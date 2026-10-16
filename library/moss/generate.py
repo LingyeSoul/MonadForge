@@ -222,6 +222,8 @@ def _fingerprint(req: GenerateRequest, job: dict) -> dict:
         {k: v for k, v in job.items() if k != "skip"},
         uncond_skip=list(job["skip"]),
         model=req.model,
+        lora=str(resolve_under_home(req.lora)) if req.lora else None,
+        lora_multiplier=req.lora_multiplier if req.lora else None,
         batched=req.batched,
         spectrum=spectrum if req.spectrum else None,
     )
@@ -287,6 +289,11 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
         f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB",
         flush=True,
     )
+    if req.lora:
+        from library.moss.lora import load_for_inference
+
+        load_for_inference(transformer, resolve_under_home(req.lora), req.lora_multiplier)
+        print(f"[lora] {req.lora} x{req.lora_multiplier}", flush=True)
     for j, rec in pending:
         cond, cond_mask = pad_embeds([embeds[j["prompt"]]], device=device)
         uncond = uncond_mask = None

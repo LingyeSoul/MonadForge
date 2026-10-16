@@ -186,6 +186,8 @@ class GenerateRequest(_Request):
     )
     negative_prompt: str = _f("", "negative prompt (the pipeline default is empty)")
     model: str = _f("base", "which DiT", choices=VARIANTS)
+    lora: str = _f("", "LoRA from scripts/moss/train.py (empty = none); a Base LoRA also loads on SFT")
+    lora_multiplier: float = _f(1.0, "LoRA strength; 0.0 is the base model exactly")
     width: int = _f(1024, "multiple of 16")
     height: int = _f(1024, "multiple of 16")
     steps: int = _f(50, "denoising steps (the snapped grid can return fewer)")
