@@ -39,7 +39,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from library.env import resolve_under_home
-from library.moss.loader import empty_cache, free_vram_gb, load_transformer
+from library.moss.loader import compile_blocks, empty_cache, free_vram_gb, load_transformer
 from library.moss.lora import LoRANetwork
 from library.moss.requests import TrainRequest
 
@@ -117,16 +117,6 @@ def checkpoint_blocks(blocks) -> None:
             return checkpoint(_inner, *args, use_reentrant=False, **kwargs)
 
         block.forward = forward
-
-
-def compile_blocks(blocks) -> None:
-    """``torch.compile(dynamic=True)`` on each block's ``forward`` (instance
-    attribute, so swap hooks stay outside the graph). One graph for every joint
-    length; must run after ``LoRANetwork.apply_to``."""
-    limit = max(torch._dynamo.config.recompile_limit, 16)
-    torch._dynamo.config.recompile_limit = limit
-    for block in blocks:
-        block.forward = torch.compile(block.forward, dynamic=True)
 
 
 def place(transformer, device, blocks_to_swap: int, reserve_gb: float):

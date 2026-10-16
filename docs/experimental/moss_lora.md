@@ -58,6 +58,10 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
   trained on natural language, and long or character-heavy captions are untested.
 - **Spectrum** (`--spectrum`, Test panel): 2.6× at 50 steps with the default
   `flex_window 0.5`. At grid scale it is hard to tell apart from the full 50 steps.
+- **`--compile`** (generate, on by default; `--no-compile` for eager): about 1.37× more
+  on top, with or without Spectrum (Spectrum + compile 20 s vs 72 s for plain eager at
+  1024²), for a few seconds of compile once per job. Fine detail drifts from the eager
+  image; composition does not.
 - **Sampler defaults** come from the reference pipeline: CFG 3, the uncond branch skips
   block 22, shift 5. Don't carry Anima habits over.
 

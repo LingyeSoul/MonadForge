@@ -131,6 +131,11 @@ def main() -> None:
     ap.add_argument("--model_dir", default="")
     ap.add_argument("--image_root", default="/media/sorryhyun/data/moss_image/bench")
     ap.add_argument(
+        "--compile",
+        action="store_true",
+        help="torch.compile every block (dynamic shapes) before the warm-up; the warm-up time is reported apart",
+    )
+    ap.add_argument(
         "--decode_only",
         default="",
         help="an existing image dir: decode its saved latents and write the envelope, no DiT",
@@ -141,7 +146,7 @@ def main() -> None:
     from diffusers.image_processor import VaeImageProcessor
 
     from library.moss.generate import _cached_embeds, denoise, initial_noise
-    from library.moss.loader import empty_cache, load_transformer, load_vae, pad_embeds
+    from library.moss.loader import compile_blocks, empty_cache, load_transformer, load_vae, pad_embeds
     from library.moss.model import DEFAULT_UNCOND_SKIP, decode, snapped_sigmas
     from library.moss.requests import resolve_model_dir
     from library.moss.spectrum import MossSpectrum
@@ -170,16 +175,24 @@ def main() -> None:
         # TE outputs are cached per text on disk too (_cached_embeds).
         embeds = _cached_embeds(model_dir, [PROMPTS[k] for k in keys] + [""], Path(args.image_root) / "_te_cache")
         uncond, uncond_mask = pad_embeds([embeds[""]], device=device)
+    warmup_s = {}
     for model in models:
         if not todo[model]:
             print(f"[{model}] all {len(arms) * len(keys)} latents on disk, skipping the DiT", flush=True)
             continue
         print(f"[{model}] {len(todo[model])} to render, {len(arms) * len(keys) - len(todo[model])} resumed", flush=True)
         transformer = load_transformer(model_dir, model, device=device)
-        # Warm the kernels so the first timed image is not the slow one.
+        if args.compile:
+            compile_blocks(transformer.layers)
+        # Warm the kernels (and the compile) so the first timed image is not the slow one.
         cond, cond_mask = pad_embeds([embeds[PROMPTS[keys[0]]]], device=device)
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
         denoise(transformer, initial_noise(0, h, w).to(device), cond, cond_mask, uncond, uncond_mask,
                 snapped_sigmas(50)[:2], cfg=args.cfg, uncond_skip=DEFAULT_UNCOND_SKIP)
+        torch.cuda.synchronize()
+        warmup_s[model] = round(time.perf_counter() - t0, 2)
+        print(f"[{model}] warm-up {warmup_s[model]}s (compile={args.compile})", flush=True)
         for arm, key in todo[model]:
             sigmas = snapped_sigmas(arm["steps"])
             cond, cond_mask = pad_embeds([embeds[PROMPTS[key]]], device=device)
@@ -255,7 +268,8 @@ def main() -> None:
     for k, v in summary.items():
         print(f"{k:>24}: {v}", flush=True)
     write_result(run_dir, script=__file__, args=args, label=args.label, artifacts=artifacts,
-                 metrics=dict(summary=summary, rows=rows, image_dir=str(image_dir)))
+                 metrics=dict(summary=summary, rows=rows, image_dir=str(image_dir),
+                              compile=args.compile, warmup_seconds=warmup_s))
     print(f"result -> {run_dir / 'result.json'}", flush=True)
 
 

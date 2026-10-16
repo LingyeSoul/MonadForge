@@ -69,6 +69,26 @@ bow) and Base zh_fridge (the note), and the Base ja_manga bubble from the first 
 fw 1.0 (3.1×) visibly costs detail. These are 10 images per model at one seed, viewed
 at grid scale with three crops: enough to pick a default, not a quality measurement.
 
+## torch.compile (2026-10-17)
+
+`--compile` (default on) on `scripts/moss/generate.py` (and `run_bench.py --compile`) wraps each
+block's `forward` in `torch.compile(dynamic=True)` after the LoRA load, the same
+`compile_blocks` training uses (now in `loader.py`). Spectrum is untouched by it: a
+forecast step skips the blocks, a full step runs the compiled ones. Base, 1024², 3
+prompts (`results/20261017-0020-cmp_eager`, `…-0026-cmp_compile`):
+
+| arm | eager s | compiled s | peak eager / compiled GiB |
+|---|---|---|---|
+| p50 | 71.7 | 52.2 (1.37×) | 10.06 / 9.84 |
+| s50 fw 0.5 | 27.2 | 20.0 (1.36×) | 10.90 / 10.69 |
+
+Spectrum × compile = 3.6× over eager p50. The two-step warm-up took 7.2 s compiled
+vs 3.3 s eager, with the inductor cache already warm from training runs; a cold
+compile is closer to training's ~30 s. Eager vs compiled final latents differ by
+rel-L2 0.16–0.32 (p50) and 0.23–0.53 (s50). Composition and character are the same in
+every pair; strands of hair, tie pattern and background lines differ. bf16 kernel
+differences grow over 50 CFG-3 steps, and manga hatching drifts the most.
+
 ## Not done
 
 - Spectrum at non-square sizes and ~2 MP (the history grows to 2× per observation:

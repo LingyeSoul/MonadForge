@@ -118,6 +118,16 @@ def load_transformer(model_dir, variant="base", dtype=torch.bfloat16, device=Non
     return tr.to(device) if device is not None else tr
 
 
+def compile_blocks(blocks) -> None:
+    """``torch.compile(dynamic=True)`` on each block's ``forward`` (instance
+    attribute, so swap hooks stay outside the graph). One graph for every joint
+    length; must run after ``LoRANetwork.apply_to`` / ``load_for_inference``."""
+    limit = max(torch._dynamo.config.recompile_limit, 16)
+    torch._dynamo.config.recompile_limit = limit
+    for block in blocks:
+        block.forward = torch.compile(block.forward, dynamic=True)
+
+
 def load_vae(model_dir, dtype=torch.float32, device=None):
     from diffusers import AutoencoderKLFlux2
 

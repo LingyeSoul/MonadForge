@@ -24,6 +24,7 @@ import torch
 from library.env import resolve_under_home
 from library.moss.loader import (
     MAX_SEQUENCE_LENGTH,
+    compile_blocks,
     empty_cache,
     encode_prompts,
     load_transformer,
@@ -294,6 +295,8 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
 
         load_for_inference(transformer, resolve_under_home(req.lora), req.lora_multiplier)
         print(f"[lora] {req.lora} x{req.lora_multiplier}", flush=True)
+    if req.compile:
+        compile_blocks(transformer.layers)
     for j, rec in pending:
         cond, cond_mask = pad_embeds([embeds[j["prompt"]]], device=device)
         uncond = uncond_mask = None
@@ -317,6 +320,7 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
             text_tokens=int(cond.shape[1]),
             denoise_s=round(seconds, 2),
             denoise_peak_gib=round(peak, 2),
+            compiled=req.compile,
         )
         save_latent(_latent_path(out_dir, rec), latent, rec)
         print(

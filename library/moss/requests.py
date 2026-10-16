@@ -221,6 +221,13 @@ class GenerateRequest(_Request):
         "text encoder, no DiT",
         advanced=True,
     )
+    compile: bool = _f(
+        True,
+        "torch.compile each block with dynamic shapes, after the LoRA is applied: "
+        "1.37x at 1024² with or without Spectrum, a few seconds of compile once per "
+        "job (2026-10-17). --no-compile for eager",
+        advanced=True,
+    )
     spectrum: bool = _f(
         False,
         "Spectrum: forecast the last block's image tokens on most steps instead of "
