@@ -32,7 +32,7 @@ import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 
-from library.qwen21 import blockswap
+import library.runtime.blockswap as blockswap
 from library.qwen21.accel import compile_blocks, recompile_report
 from library.qwen21.loader import (
     block_devices,

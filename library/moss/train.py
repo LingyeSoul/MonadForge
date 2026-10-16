@@ -132,7 +132,7 @@ def compile_blocks(blocks) -> None:
 def place(transformer, device, blocks_to_swap: int, reserve_gb: float):
     """Everything on ``device``, or the block swapper for ``blocks_to_swap`` > 0
     (``-1`` sizes it from ``mem_get_info`` free). Returns the attachment or None."""
-    from library.qwen21 import blockswap
+    import library.runtime.blockswap as blockswap
 
     blocks = transformer.layers
     if blocks_to_swap < 0:
@@ -159,7 +159,7 @@ def place(transformer, device, blocks_to_swap: int, reserve_gb: float):
 
 def report_fit(transformer, attached, n_img: int, n_text: int) -> dict:
     """After step 1 (the largest sample): peak against what is actually free."""
-    from library.qwen21 import blockswap
+    import library.runtime.blockswap as blockswap
 
     allocated = torch.cuda.max_memory_allocated() / 1024**3
     reserved = torch.cuda.max_memory_reserved() / 1024**3

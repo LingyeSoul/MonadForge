@@ -40,7 +40,7 @@ from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
 from library.env import resolve_under_home
-from library.qwen21 import blockswap
+import library.runtime.blockswap as blockswap
 from library.qwen21.accel import compile_blocks, recompile_report
 from library.qwen21.loader import (
     TRANSFORMER_BLOCKS,

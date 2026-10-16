@@ -27,6 +27,7 @@ _QWEN21_HOMES = (
 _SHARED = (
     "library.env",
     "library.runtime.offloading",
+    "library.runtime.blockswap",
     "library.runtime.device",
     "library.runtime.dynamo",
 )

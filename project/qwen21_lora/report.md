@@ -10,7 +10,7 @@ differ from the rest of the repo: `CLAUDE.md`.
 | File | Purpose |
 |---|---|
 | `library/qwen21/loader.py` | 33 GB checkpoint on a 16 GB card — phase split, `place()` |
-| `library/qwen21/blockswap.py` | `ModelOffloader` on stock diffusers/transformers block lists |
+| `library/runtime/blockswap.py` | `ModelOffloader` on stock diffusers/transformers block lists |
 | `library/qwen21/accel.py` | attention backend + per-block `torch.compile` |
 | `library/qwen21/lora.py` | adapters held **outside** the swapped blocks; `set_multiplier`, `load_network` |
 | `src/backward_smoke.py` | the fit gate — one training step on random tensors |

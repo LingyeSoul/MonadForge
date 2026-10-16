@@ -3,7 +3,7 @@
 **This is not Anima.** MOSS-Image (OpenMOSS, Apache-2.0) is a 5B single-stream DiT on a
 frozen Qwen3.5-9B text encoder and the frozen FLUX.2 VAE. The root `CLAUDE.md`
 invariants describe the Anima DiT; most of them are wrong here. Shared with Anima:
-`library.runtime.offloading`, `library.runtime.dynamo`, `library.env`, the daemon, and
+`library.runtime.offloading` (+ `library.runtime.blockswap`, also used by `library/qwen21/`), `library.runtime.dynamo`, `library.env`, the daemon, and
 the pure Spectrum core (`networks/spectrum_forecast.py`, `networks/spectrum_sea.py`).
 Nothing Anima-side imports `library.moss`.
 

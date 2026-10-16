@@ -1,13 +1,14 @@
-"""Attach the trainer's block swapper to a stock diffusers/transformers model.
+"""Attach the trainer's block swapper to a model whose block loop we don't own.
 
 ``library.runtime.offloading.ModelOffloader`` is written to be driven from
 inside a model's block loop — ``wait_for_block(i)`` before block *i* runs,
 ``submit_move_blocks(blocks, i)`` after (``library/anima/models.py::_run_blocks``).
-Qwen-Image-2.1's blocks live in upstream diffusers and transformers, whose
-forwards we do not own, so the same two calls are attached as ordinary module
-hooks instead. The swapper itself is unmodified.
+The non-Anima lines (``library/qwen21/``, ``library/moss/``) run upstream or
+vendored forwards, so the same two calls are attached as ordinary module hooks
+instead. The swapper itself is unmodified.
 
-Both heavy modules are homogeneous ``nn.ModuleList``s, which is all it needs:
+Any homogeneous ``nn.ModuleList`` of blocks works. Qwen-Image-2.1, where the
+numbers below were measured:
 
     QwenImage21Transformer2DModel.transformer_blocks   32 x ~0.44 GB
     Qwen3VLForConditionalGeneration

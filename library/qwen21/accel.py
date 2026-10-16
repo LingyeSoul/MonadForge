@@ -1,6 +1,6 @@
 """Attention backend selection and per-block ``torch.compile`` for Qwen-Image-2.1.
 
-Two levers, both independent of the block swapper in ``blockswap.py``.
+Two levers, both independent of the block swapper in ``library/runtime/blockswap.py``.
 
 **Attention backend.** With ``use_kv_cache=True`` (the pipeline default) step 0
 prefills and every later step decodes, so a per-processor backend covers

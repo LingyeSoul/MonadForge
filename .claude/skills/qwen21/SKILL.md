@@ -13,7 +13,7 @@ and measured numbers: `project/qwen21_lora/README.md` + `report.md`.
 
 | Where | What |
 |---|---|
-| `library/qwen21/` | core: `loader` / `blockswap` / `lora` / `accel`, `cache.run_cache(req)`, `train.run_train(req)`, `generate.run_generate(req)` |
+| `library/qwen21/` | core: `loader` / `lora` / `accel` (the swapper attachment is `library/runtime/blockswap.py`), `cache.run_cache(req)`, `train.run_train(req)`, `generate.run_generate(req)` |
 | `library/qwen21/requests.py` | **torch-free** `CacheRequest` / `TrainRequest` / `GenerateRequest` — the one flag definition |
 | `library/qwen21/scan.py` | torch-free folder/cache counts (GUI) |
 | `scripts/qwen21/{cache,train,generate}.py` | sidecar CLIs: `Request.from_argv()` → `run_*` |
@@ -21,7 +21,7 @@ and measured numbers: `project/qwen21_lora/README.md` + `report.md`.
 | `project/qwen21_lora/src/` | one-off research scripts (`backward_smoke`, `smoke_t2i`, `bench_accel`) |
 
 `tests/test_qwen21_boundary.py` enforces the island: nothing Anima-side imports
-`library.qwen21`; it imports only `library.env` / `library.runtime.{offloading,device,dynamo}`;
+`library.qwen21`; it imports only `library.env` / `library.runtime.{offloading,blockswap,device,dynamo}`;
 `requests` and `gui.qwen21.app` stay torch-free.
 
 ## Running
@@ -105,7 +105,7 @@ choices made.
   **0.3 GB + 0.6 MB × (largest image + text token count)** (measured 2026-09-24, affine
   to 6746 tokens, text and image tokens cost the same — `project/qwen21_lora/report.md`
   § Activation cost per token), plus one block of allocator slack
-  (`blockswap.activation_reserve_for_tokens`). That is 3.3 GB at 4096+346 tokens, where
+  (`library.runtime.blockswap.activation_reserve_for_tokens`). That is 3.3 GB at 4096+346 tokens, where
   the old constant 3.5 left 0.5 GB spare and 2.0 OOMed at step 1; ~1.5 GB for 512² data.
   `--activation_reserve_gb` overrides it with a constant.
 - **Block compile is on by default** (`--compile_seq dynamic`, `torch.compile(dynamic=True)`):

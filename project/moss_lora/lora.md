@@ -19,7 +19,7 @@ DiT). Smoke / eval scripts: `project/moss_lora/src/{fit_smoke,lora_ab}.py`.
   trained at area ≤ 1024², and the cache is ~1 MP.
 - Checkpointing wraps each block's `forward`, not `__call__`, so the swap hooks never
   re-fire during recompute. Block swap is available (`--blocks_to_swap N|-1`) through
-  `library.qwen21.blockswap`, but the default is 0 and it was not needed.
+  `library.runtime.blockswap`, but the default is 0 and it was not needed.
 - `--compile` (default **on**): `torch.compile(block.forward, dynamic=True)` after
   `apply_to`. One graph covers the varying joint length, with one recompile at the
   third distinct shape and none after that (open question 5, answered for training).
@@ -84,9 +84,6 @@ By eye:
 - Recognisability is a by-eye "moderate"; a stronger setting (lr 2e-4 or more steps)
   and a side-by-side with training crops at matched prompts would settle it.
 - Swap + checkpoint + compile together is untested (swap was never needed).
-- `train.py` imports `library.qwen21.blockswap` for the swapper attachment. It is generic
-  code, but the import crosses research lines; move it under `library/runtime/` if both
-  lines stay.
 - The trainer keeps `MOSSImageTransformer.gradient_checkpointing` off and checkpoints
   `block.forward` itself (hooks once, compile-compatible). The flag in `model.py` is
   unused by training.

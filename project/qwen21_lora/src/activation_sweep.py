@@ -27,7 +27,7 @@ import torch.utils.checkpoint
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from backward_smoke import flow_matching_step  # noqa: E402
 
-from library.qwen21 import blockswap  # noqa: E402
+import library.runtime.blockswap as blockswap  # noqa: E402
 from library.qwen21.loader import (  # noqa: E402
     TRANSFORMER_BLOCKS,
     empty_cache,

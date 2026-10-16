@@ -3,7 +3,8 @@
 **This is not Anima.** The root `CLAUDE.md` describes the Anima DiT, and its
 invariants are load-bearing *there* — carrying them over here has produced wrong work more
 than once. Qwen-Image-2.1 is a different architecture, VAE, text encoder, rope and sampler
-schedule. What the two share is `library.runtime.offloading` (the block swapper),
+schedule. What the two share is `library.runtime.offloading` (the block swapper) with
+`library.runtime.blockswap` (its hook attachment for block lists we don't own; shared with `library/moss/`),
 `library.runtime.dynamo` (torch config pins), the `library.env` path helpers, and nothing else: the rest of `library/`, `networks/`,
 `configs/` and `train.py` are Anima-only, and nothing Anima-side imports `library.qwen21`.
 
@@ -11,7 +12,6 @@ schedule. What the two share is `library.runtime.offloading` (the block swapper)
 |---|---|
 | `requests.py` | **torch-free** `CacheRequest` / `TrainRequest` — every flag, its default and help; `to_argv()` / `from_argv()`; model-dir resolution |
 | `loader.py` | phase-split loading under a 16 GB budget, `place()`, `load_transformer` |
-| `blockswap.py` | `ModelOffloader` on stock diffusers/transformers block lists |
 | `accel.py` | attention backend + per-block `torch.compile` |
 | `lora.py` | adapters held **outside** the swapped blocks |
 | `cache.py` / `train.py` / `generate.py` | `run_cache` / `run_train` / `run_generate(req)` — sidecars in `scripts/qwen21/` |

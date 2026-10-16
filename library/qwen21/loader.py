@@ -14,7 +14,7 @@ says (2026-09-21) — the weights an ``AlignDevicesHook`` pages in stay on the
 device.
 
 So both heavy modules run on the GPU under the trainer's own block swapper
-(``library.runtime.offloading``, attached by ``blockswap.py``). Weights stay
+(``library.runtime.offloading``, attached by ``library.runtime.blockswap``). Weights stay
 bf16, unquantized.
 
 The phase split is the same one ``train.py`` makes for Anima (text encode →
@@ -140,7 +140,7 @@ def place(
     0 keeps everything resident. Returns the ``Attached`` handle (or None) —
     the caller must ``detach()`` it to give the VRAM back.
     """
-    from library.qwen21 import blockswap
+    import library.runtime.blockswap as blockswap
 
     blocks = blockswap.find_blocks(model, blocks_path)
     if blocks_to_swap is None:
