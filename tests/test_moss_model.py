@@ -55,16 +55,21 @@ def test_features_then_head_is_forward(tiny):
     x, e, mask = _inputs()
     feats = tiny(x, 250.0, e, mask, return_features=True)
     _, head = tiny.time_conditioning(250.0, x.shape[0])
-    out = torch.cat([tiny.head(feats[b : b + 1], head[b : b + 1], 4, 6) for b in range(2)])
+    out = torch.cat(
+        [tiny.head(feats[b : b + 1], head[b : b + 1], 4, 6) for b in range(2)]
+    )
     assert torch.equal(out, tiny(x, 250.0, e, mask).sample)
 
 
 def test_pack_unpack_roundtrip():
     g = torch.Generator().manual_seed(2)
     bn = SimpleNamespace(
-        running_mean=torch.randn(128, generator=g), running_var=torch.rand(128, generator=g) + 0.5
+        running_mean=torch.randn(128, generator=g),
+        running_var=torch.rand(128, generator=g) + 0.5,
     )
-    vae = SimpleNamespace(bn=bn, config=SimpleNamespace(batch_norm_eps=1e-4), dtype=torch.float32)
+    vae = SimpleNamespace(
+        bn=bn, config=SimpleNamespace(batch_norm_eps=1e-4), dtype=torch.float32
+    )
     z = torch.randn(2, 32, 8, 12, generator=g)
     packed = pack_latents(z, vae)
     assert packed.shape == (2, 128, 4, 6)
@@ -97,10 +102,21 @@ def test_denoise_matches_scheduler_loop(tiny, cfg, skip):
             un = tiny(ref, t, ne, nmask, skip_layers=skip).sample.float()
             pred = un + cfg * (pred - un)
         ref = sched.step(pred, t, ref, return_dict=False)[0]
-    ours = denoise(tiny, x, e, mask, ne, nmask, snapped_sigmas(6), cfg=cfg, uncond_skip=skip)
+    ours = denoise(
+        tiny, x, e, mask, ne, nmask, snapped_sigmas(6), cfg=cfg, uncond_skip=skip
+    )
     assert torch.equal(ours, ref)
     batched = denoise(
-        tiny, x, e, mask, ne, nmask, snapped_sigmas(6), cfg=cfg, uncond_skip=skip, batched=True
+        tiny,
+        x,
+        e,
+        mask,
+        ne,
+        nmask,
+        snapped_sigmas(6),
+        cfg=cfg,
+        uncond_skip=skip,
+        batched=True,
     )
     assert torch.allclose(batched, ref, atol=1e-4)
 
@@ -126,7 +142,57 @@ def test_denoise_spectrum_protocol(tiny):
             calls.append(("forecast", i))
             return self.last
 
-    denoise(tiny, x, e, mask, e, mask, snapped_sigmas(4), cfg=2.0, uncond_skip=(1,), spectrum=Hold())
+    denoise(
+        tiny,
+        x,
+        e,
+        mask,
+        e,
+        mask,
+        snapped_sigmas(4),
+        cfg=2.0,
+        uncond_skip=(1,),
+        spectrum=Hold(),
+    )
     assert calls[0] == ("begin", 4)
     assert [c[0] for c in calls[1:]] == ["observe", "forecast", "observe", "forecast"]
     assert calls[1][2] == (2, 24, 96)
+
+
+class _ExactX0:
+    """Stub DiT whose velocity is the exact ``ε − x₀`` for a fixed ``x₀``."""
+
+    def __init__(self, x0):
+        self.x0 = x0
+
+    def __call__(self, latents, t, e, m, skip_layers=(), return_features=True):
+        return latents.clone()
+
+    def time_conditioning(self, t, batch):
+        return None, t / 1000
+
+    def head(self, features, sigma, h, w):
+        return (features - self.x0) / sigma.clamp_min(1e-4)
+
+
+@torch.no_grad()
+@pytest.mark.parametrize("sampler", ["euler", "er_sde"])
+def test_denoise_samplers_land_on_exact_x0(sampler):
+    """With the exact velocity, both samplers integrate to x₀ (er_sde's injected
+    noise cancels against the drift on an exact model)."""
+    g = torch.Generator().manual_seed(2)
+    x0, noise = torch.randn(2, 1, 8, 4, 6, generator=g)
+    e, mask = torch.zeros(1, 3, 4), torch.ones(1, 3, dtype=torch.bool)
+    z = denoise(
+        _ExactX0(x0),
+        noise,
+        e,
+        mask,
+        e,
+        mask,
+        snapped_sigmas(20),
+        cfg=3.0,
+        sampler=sampler,
+        seed=0,
+    )
+    assert torch.allclose(z, x0, atol=1e-5)

@@ -4,7 +4,8 @@
 frozen Qwen3.5-9B text encoder and the frozen FLUX.2 VAE. The root `CLAUDE.md`
 invariants describe the Anima DiT; most of them are wrong here. Shared with Anima:
 `library.runtime.offloading` (+ `library.runtime.blockswap`, also used by `library/qwen21/`), `library.runtime.dynamo`, `library.env`, the daemon, and
-the pure Spectrum core (`networks/spectrum_forecast.py`, `networks/spectrum_sea.py`).
+the pure Spectrum core (`networks/spectrum_forecast.py`, `networks/spectrum_sea.py`), and
+the ER-SDE sampler + CNS core (`library.inference.sampling`, `library.inference.corrections.cns_core`).
 Nothing Anima-side imports `library.moss`.
 
 | Module | Role |
@@ -13,7 +14,8 @@ Nothing Anima-side imports `library.moss`.
 | `requests.py` | **torch-free** `CacheRequest` / `GenerateRequest` / `TrainRequest`, `to_argv()` / `from_argv()`, model-dir resolution |
 | `loader.py` | phase split: TE (whole decoder layers paged onto the card) → encode → free → DiT; VAE |
 | `cache.py` | TE cache (natural length, never padded) + latent cache (packed, BN-normalised) |
-| `generate.py` | `run_generate(req)`: Euler, CFG + uncond skip-22, Spectrum hook-in |
+| `generate.py` | `run_generate(req)`: Euler or ER-SDE (`sampler`, Anima's `ERSDESampler`), CFG + uncond skip-22, Spectrum hook-in |
+| `cns.py` | CNS noise recolor for ER-SDE on the un-patchified 32 ch grid + γ estimator; bench-only so far (`project/moss_lora/sampler.md`) |
 | `spectrum.py` | per-branch feature forecaster (cond and uncond forecast separately) |
 | `lora.py` | adapters held **outside** `layers` (the swapper moves every `.weight` under a block) |
 | `train.py` | `run_train(req)` |

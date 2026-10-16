@@ -64,6 +64,10 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
   image; composition does not.
 - **Sampler defaults** come from the reference pipeline: CFG 3, the uncond branch skips
   block 22, shift 5. Don't carry Anima habits over.
+- **`--sampler er_sde`**: Anima's ER-SDE-Solver-3 on the same σ grid, same speed, and it
+  composes with Spectrum. Base, 3 prompts, one seed: sharper line work and denser
+  detail, but it drifts from some prompt details (sunset light, hair colour). It is
+  a different sample from Euler's at the same seed.
 
 ## More
 

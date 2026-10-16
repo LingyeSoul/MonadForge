@@ -186,19 +186,30 @@ class GenerateRequest(_Request):
     )
     negative_prompt: str = _f("", "negative prompt (the pipeline default is empty)")
     model: str = _f("base", "which DiT", choices=VARIANTS)
-    lora: str = _f("", "LoRA from scripts/moss/train.py (empty = none); a Base LoRA also loads on SFT")
+    lora: str = _f(
+        "",
+        "LoRA from scripts/moss/train.py (empty = none); a Base LoRA also loads on SFT",
+    )
     lora_multiplier: float = _f(1.0, "LoRA strength; 0.0 is the base model exactly")
     width: int = _f(1024, "multiple of 16")
     height: int = _f(1024, "multiple of 16")
     steps: int = _f(50, "denoising steps (the snapped grid can return fewer)")
     cfg: float = _f(3.0, "CFG scale; 1.0 = no uncond forward")
+    sampler: str = _f(
+        "euler",
+        "euler = the pipeline's ODE; er_sde = ER-SDE-Solver-3 on the same σ grid, "
+        "noise seeded by the prompt's seed (sharper line work, no extra forwards)",
+        choices=("euler", "er_sde"),
+    )
     uncond_skip: str = _f(
         "22",
         "comma-separated DiT blocks the uncond branch skips ('' = plain CFG); "
         "the pipeline default replaces the negative with a block-22-skipped "
         "prediction, still two forwards per step",
     )
-    seed: int = _f(42, "seed of the first prompt (+1 per prompt); fp32 noise from a CPU generator")
+    seed: int = _f(
+        42, "seed of the first prompt (+1 per prompt); fp32 noise from a CPU generator"
+    )
     out_dir: str = _f("output/moss/test", "images + manifest.json land here")
     prompts_file: str = _f("", "one prompt per line; overrides prompt", advanced=True)
     example: str = _f(
@@ -233,7 +244,9 @@ class GenerateRequest(_Request):
         "Spectrum: forecast the last block's image tokens on most steps instead of "
         "running the 42 blocks (library/moss/spectrum.py)",
     )
-    spectrum_window_size: float = _f(2.0, "initial window N: a full forward every floor(N) steps", advanced=True)
+    spectrum_window_size: float = _f(
+        2.0, "initial window N: a full forward every floor(N) steps", advanced=True
+    )
     spectrum_flex_window: float = _f(
         0.5,
         "growth of N after each full forward: 0.25 / 0.5 / 1.0 = 22 / 19 / 16 full "
@@ -244,7 +257,9 @@ class GenerateRequest(_Request):
     spectrum_stop_caching_step: int = _f(
         -1, "full forwards from this step on (-1 = steps - 3)", advanced=True
     )
-    spectrum_w: float = _f(0.3, "Chebyshev / Taylor blend (1.0 = pure Chebyshev)", advanced=True)
+    spectrum_w: float = _f(
+        0.3, "Chebyshev / Taylor blend (1.0 = pure Chebyshev)", advanced=True
+    )
     spectrum_m: int = _f(3, "Chebyshev degree", advanced=True)
     spectrum_lam: float = _f(0.1, "ridge regularisation", advanced=True)
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
@@ -258,7 +273,9 @@ class TrainRequest(_Request):
     # The block's six bias-free linears, as a fullmatch over qualified names.
     TARGETS: ClassVar[str] = r"layers\.\d+\.proj\.(q|k|v|o|ffn_up_gate|ffn_down)"
 
-    cache: str = _f("output/moss/cache", "cache folder written by scripts/moss/cache.py")
+    cache: str = _f(
+        "output/moss/cache", "cache folder written by scripts/moss/cache.py"
+    )
     output: str = _f(
         "output/moss/lora/moss_lora.safetensors",
         "LoRA output path (a .json run report lands beside it)",

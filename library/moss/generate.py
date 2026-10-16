@@ -45,7 +45,16 @@ def _features(transformer, latents, t, embeds, mask, skip, batched):
     """Image-token features of the cond rows then the uncond rows, ``(R, H·W, D)``.
     ``embeds`` / ``mask`` / ``skip`` are per-branch lists (one entry = no CFG)."""
     if len(embeds) == 1:
-        return [transformer(latents, t, embeds[0], mask[0], skip_layers=skip[0], return_features=True)]
+        return [
+            transformer(
+                latents,
+                t,
+                embeds[0],
+                mask[0],
+                skip_layers=skip[0],
+                return_features=True,
+            )
+        ]
     if not batched:
         return [
             transformer(latents, t, e, m, skip_layers=s, return_features=True)
@@ -59,8 +68,12 @@ def _features(transformer, latents, t, embeds, mask, skip, batched):
             skips.append(s)
     joint, joint_mask = pad_embeds(rows, device=latents.device)
     feats = transformer.forward_batched(
-        latents.repeat(len(embeds), 1, 1, 1), t, joint, joint_mask,
-        skip_layers=skips, return_features=True,
+        latents.repeat(len(embeds), 1, 1, 1),
+        t,
+        joint,
+        joint_mask,
+        skip_layers=skips,
+        return_features=True,
     )
     return list(feats.chunk(len(embeds)))
 
@@ -79,6 +92,10 @@ def denoise(
     uncond_skip=(22,),
     batched=False,
     spectrum=None,
+    sampler="euler",
+    seed=None,
+    cns=None,
+    on_step=None,
     progress=None,
 ):
     """Euler-integrate ``latents (B,128,h,w)`` over ``sigmas`` (``snapped_sigmas``:
@@ -89,6 +106,12 @@ def denoise(
     then per step ``is_full_step(i)`` → ``observe(i, features)`` after a real
     forward or ``forecast(i)`` instead of one; ``features`` are the image tokens
     after the last block, ``(R, H·W, D)``, cond rows then uncond rows.
+
+    ``sampler="er_sde"`` swaps the Euler update for Anima's ER-SDE-Solver-3
+    (``library.inference.sampling.ERSDESampler``) on the same σ grid, fed
+    ``x̂₀ = x_t − σ·v``; ``seed`` seeds its injected noise and ``cns``
+    (``library.moss.cns.MossCNS``) recolors it. ``on_step(i, x̂₀)`` sees each
+    step's guided x̂₀ (CNS calibration).
     """
     device = latents.device
     batch, _, height, width = latents.shape
@@ -104,6 +127,13 @@ def denoise(
         embeds.append(uncond)
         masks.append(uncond_mask)
         skips.append(skip)
+    er_sde = None
+    if sampler == "er_sde":
+        from library.inference.sampling import ERSDESampler
+
+        er_sde = ERSDESampler(sigma_t, seed=seed, device=device, cns=cns)
+    elif sampler != "euler":
+        raise ValueError(f"unknown sampler {sampler!r}")
     if spectrum is not None:
         spectrum.begin(sigmas)
     for i, t in enumerate(timesteps):
@@ -115,21 +145,32 @@ def denoise(
             branches = list(spectrum.forecast(i).chunk(len(embeds)))
         # The head per branch, as each reference forward applies it.
         _mod, head_mod = transformer.time_conditioning(t, batch)
-        velocity = [transformer.head(f, head_mod, height, width).float() for f in branches]
+        velocity = [
+            transformer.head(f, head_mod, height, width).float() for f in branches
+        ]
         prediction = velocity[0]
         if do_cfg:
             prediction = velocity[1] + cfg * (velocity[0] - velocity[1])
-        latents = latents + (sigma_t[i + 1] - sigma_t[i]) * prediction
+        if on_step is not None:
+            on_step(i, latents - sigma_t[i] * prediction)
+        if er_sde is None:
+            latents = latents + (sigma_t[i + 1] - sigma_t[i]) * prediction
+        else:
+            latents = er_sde.step(latents, latents - sigma_t[i] * prediction, i)
         if progress is not None:
             progress(i, len(timesteps))
     return latents
 
 
-def initial_noise(seed: int, height: int, width: int, channels: int = 128) -> torch.Tensor:
+def initial_noise(
+    seed: int, height: int, width: int, channels: int = 128
+) -> torch.Tensor:
     """fp32 noise from a CPU generator, ``(1, 128, H/16, W/16)`` — what the Space
     and ``randn_tensor(generator=torch.Generator('cpu'))`` draw."""
     gen = torch.Generator("cpu").manual_seed(seed)
-    return torch.randn((1, channels, height // 16, width // 16), generator=gen, dtype=torch.float32)
+    return torch.randn(
+        (1, channels, height // 16, width // 16), generator=gen, dtype=torch.float32
+    )
 
 
 def _jobs(req: GenerateRequest) -> list[dict]:
@@ -142,7 +183,9 @@ def _jobs(req: GenerateRequest) -> list[dict]:
     )
     if req.example:
         jobs = []
-        for n, path in enumerate(filter(None, (p.strip() for p in req.example.split(",")))):
+        for n, path in enumerate(
+            filter(None, (p.strip() for p in req.example.split(",")))
+        ):
             path = resolve_under_home(path)
             p = json.loads(path.read_text(encoding="utf-8"))
             p = p.get("parameters", p)
@@ -164,13 +207,24 @@ def _jobs(req: GenerateRequest) -> list[dict]:
         return jobs
     if req.prompts_file:
         source = resolve_under_home(req.prompts_file)
-        prompts = [ln.strip() for ln in source.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        prompts = [
+            ln.strip()
+            for ln in source.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
     else:
         source, prompts = "prompt", [req.prompt.strip()] if req.prompt.strip() else []
     if not prompts:
         raise SystemExit(f"no prompts in {source}")
     return [
-        dict(base, key=f"{i:03d}", prompt=p, seed=req.seed + i, steps=req.steps, shift=req.shift)
+        dict(
+            base,
+            key=f"{i:03d}",
+            prompt=p,
+            seed=req.seed + i,
+            steps=req.steps,
+            shift=req.shift,
+        )
         for i, p in enumerate(prompts)
     ]
 
@@ -181,7 +235,9 @@ def _cached_embeds(model_dir, texts, cache_dir: Path) -> dict[str, torch.Tensor]
     from safetensors.torch import load_file, save_file
 
     def path(text):
-        digest = hashlib.sha1(f"{MAX_SEQUENCE_LENGTH}\0{text}".encode()).hexdigest()[:16]
+        digest = hashlib.sha1(f"{MAX_SEQUENCE_LENGTH}\0{text}".encode()).hexdigest()[
+            :16
+        ]
         return cache_dir / f"{digest}.safetensors"
 
     out, missing = {}, []
@@ -218,7 +274,9 @@ def _build_spectrum(req: GenerateRequest, job: dict):
 
 def _fingerprint(req: GenerateRequest, job: dict) -> dict:
     """What a saved latent was made from; a resume reuses it only on a match."""
-    spectrum = {k: v for k, v in dataclasses.asdict(req).items() if k.startswith("spectrum")}
+    spectrum = {
+        k: v for k, v in dataclasses.asdict(req).items() if k.startswith("spectrum")
+    }
     return dict(
         {k: v for k, v in job.items() if k != "skip"},
         uncond_skip=list(job["skip"]),
@@ -226,12 +284,15 @@ def _fingerprint(req: GenerateRequest, job: dict) -> dict:
         lora=str(resolve_under_home(req.lora)) if req.lora else None,
         lora_multiplier=req.lora_multiplier if req.lora else None,
         batched=req.batched,
+        sampler=req.sampler,
         spectrum=spectrum if req.spectrum else None,
     )
 
 
 def _latent_path(out_dir: Path, rec: dict) -> Path:
-    return out_dir / "latents" / f"{rec['key']}_{rec['model']}_s{rec['seed']}.safetensors"
+    return (
+        out_dir / "latents" / f"{rec['key']}_{rec['model']}_s{rec['seed']}.safetensors"
+    )
 
 
 def _image_path(out_dir: Path, rec: dict) -> Path:
@@ -245,7 +306,8 @@ def save_latent(path: Path, latent: torch.Tensor, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     save_file(
-        {"latent": latent.contiguous()}, tmp,
+        {"latent": latent.contiguous()},
+        tmp,
         metadata={"record": json.dumps(record, ensure_ascii=False)},
     )
     tmp.replace(path)
@@ -270,7 +332,9 @@ def load_latent(path: Path) -> torch.Tensor:
 def _write_manifest(out_dir: Path, req: GenerateRequest, records: list[dict]) -> Path:
     manifest = out_dir / "manifest.json"
     manifest.write_text(
-        json.dumps({"request": req.to_argv(), "images": records}, indent=2, ensure_ascii=False),
+        json.dumps(
+            {"request": req.to_argv(), "images": records}, indent=2, ensure_ascii=False
+        ),
         encoding="utf-8",
     )
     return manifest
@@ -293,7 +357,9 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
     if req.lora:
         from library.moss.lora import load_for_inference
 
-        load_for_inference(transformer, resolve_under_home(req.lora), req.lora_multiplier)
+        load_for_inference(
+            transformer, resolve_under_home(req.lora), req.lora_multiplier
+        )
         print(f"[lora] {req.lora} x{req.lora_multiplier}", flush=True)
     if req.compile:
         compile_blocks(transformer.layers)
@@ -308,9 +374,19 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
         torch.cuda.synchronize()
         t0 = time.time()
         latent = denoise(
-            transformer, noise, cond, cond_mask, uncond, uncond_mask, sigmas,
-            cfg=j["cfg"], uncond_skip=j["skip"], batched=req.batched,
+            transformer,
+            noise,
+            cond,
+            cond_mask,
+            uncond,
+            uncond_mask,
+            sigmas,
+            cfg=j["cfg"],
+            uncond_skip=j["skip"],
+            batched=req.batched,
             spectrum=_build_spectrum(req, j),
+            sampler=req.sampler,
+            seed=j["seed"],
         ).cpu()
         torch.cuda.synchronize()
         seconds = time.time() - t0
@@ -351,7 +427,10 @@ def _decode_all(model_dir, out_dir, records, device) -> None:
         image = decode(load_latent(_latent_path(out_dir, rec)).to(device), vae)
         processor.postprocess(image, output_type="pil")[0].save(rec["image"])
         rec["decode_peak_gib"] = round(torch.cuda.max_memory_allocated() / 2**30, 2)
-        print(f"[vae] {rec['key']} -> {rec['image']} (peak {rec['decode_peak_gib']} GiB)", flush=True)
+        print(
+            f"[vae] {rec['key']} -> {rec['image']} (peak {rec['decode_peak_gib']} GiB)",
+            flush=True,
+        )
     del vae
     empty_cache()
 
@@ -370,14 +449,22 @@ def run_generate(req: GenerateRequest) -> Path:
     device = torch.device("cuda")
 
     if req.decode_only:
-        records = [r for r in map(read_latent_record, sorted((out_dir / "latents").glob("*.safetensors"))) if r]
+        records = [
+            r
+            for r in map(
+                read_latent_record, sorted((out_dir / "latents").glob("*.safetensors"))
+            )
+            if r
+        ]
         if not records:
             raise SystemExit(f"no latents in {out_dir / 'latents'}")
     else:
         jobs = _jobs(req)
         for j in jobs:
             if j["width"] % 16 or j["height"] % 16:
-                raise SystemExit(f"{j['key']}: {j['width']}x{j['height']} is not a multiple of 16")
+                raise SystemExit(
+                    f"{j['key']}: {j['width']}x{j['height']} is not a multiple of 16"
+                )
         records, pending = [], []
         for j in jobs:
             rec = _fingerprint(req, j)
@@ -388,7 +475,10 @@ def run_generate(req: GenerateRequest) -> Path:
                 records.append(old)
                 continue
             if old is not None:
-                print(f"[resume] {j['key']}: saved latent was made differently, redoing", flush=True)
+                print(
+                    f"[resume] {j['key']}: saved latent was made differently, redoing",
+                    flush=True,
+                )
                 _image_path(out_dir, rec).unlink(missing_ok=True)
             records.append(rec)
             pending.append((j, rec))

@@ -88,6 +88,10 @@ FIELDS_CN_GENERATE: dict[str, tuple[str, str]] = {
     "height": ("高度", "16 的倍数"),
     "steps": ("步数", "去噪步数"),
     "cfg": ("CFG", "CFG 强度；1.0 = 不做无条件前向"),
+    "sampler": (
+        "采样器",
+        "euler = 管线默认的 ODE；er_sde = 同一 σ 网格上的 ER-SDE 随机采样（线条更锐利，不增加前向）",
+    ),
     "uncond_skip": (
         "无条件分支跳过的块",
         "逗号分隔的 DiT 块编号（'' = 普通 CFG）；管线默认跳过第 22 块",
