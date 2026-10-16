@@ -33,7 +33,7 @@ than filtering rows.
 ```bash
 make download-models        # first-run set: DiT, TE, VAE, PE, CJK vocab pack, tagger, tag DB
 make download-list          # every row grouped by pack: installed / MISSING, repo, destination
-make download-model ocr     # by pack, legacy alias, or row id
+make download-model ARGS=ocr # by pack, legacy alias, or row id
 ```
 
 SAM3 (`masking`) and OCR are **opt-in** — not in the first-run set.

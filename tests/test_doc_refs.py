@@ -17,6 +17,7 @@ from scripts.release.check_docs import (
     REPO_ROOT,
     _anchor_family_ref,
     _check_path,
+    _line_root,
     collect_issues,
     known_make_targets,
     tracked_top_level,
@@ -82,6 +83,27 @@ def test_check_path_resolves_relative_to_the_referencing_doc(tmp_path):
     # under neither root is still flagged.
     missing = "bench/this_bench_does_not_exist.py"
     assert _check_path(missing, top, base=line_home) == missing
+
+
+def test_line_root_resolves_line_relative_refs_from_subfolders(tmp_path):
+    """A report under ``project/<line>/reports/`` cites ``configs/x.toml``
+    meaning the line's own ``configs/``, one level above the doc."""
+    assert _line_root(REPO_ROOT / "project" / "a" / "reports" / "r.md") == (
+        REPO_ROOT / "project" / "a"
+    )
+    assert _line_root(REPO_ROOT / "project" / "finished" / "a" / "x" / "r.md") == (
+        REPO_ROOT / "project" / "finished" / "a"
+    )
+    assert _line_root(REPO_ROOT / "project" / "README.md") is None
+    assert _line_root(REPO_ROOT / "docs" / "x.md") is None
+    top = tracked_top_level()
+    line = tmp_path / "line"
+    (line / "configs").mkdir(parents=True)
+    (line / "configs" / "arm.toml").write_text("")
+    reports = line / "reports"
+    reports.mkdir()
+    assert _check_path("configs/arm.toml", top, base=reports) == "configs/arm.toml"
+    assert _check_path("configs/arm.toml", top, base=reports, line_root=line) is None
 
 
 def test_family_refs_anchor_on_their_parent_directory():

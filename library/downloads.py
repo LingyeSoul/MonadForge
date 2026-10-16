@@ -364,7 +364,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
 # Anima base, PE-Spatial (the REPA feature cache), the tagger checkpoint, the
 # tag KB, and the CJK vocab pack, because ``configs/base.toml`` enables it. Not
 # "everything missing": SAM3 is gated and masking is opt-in (``make
-# download-sam3``), the OCR stack is opt-in (``make download-model ocr``), and
+# download-sam3``), the OCR stack is opt-in (``make download-model ARGS=ocr``), and
 # PE-Core only serves CMMD (off by default; its loader fetches it on first use).
 DEFAULT_SET: tuple[str, ...] = (
     "anima_dit",

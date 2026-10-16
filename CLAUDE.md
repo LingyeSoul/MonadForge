@@ -24,7 +24,7 @@ make preprocess            # Resize → post_image_dataset/resized/, cache → p
 ```
 
 Weights are catalog rows, not commands (`library/downloads.py`; `make download-list`
-shows every row, `make download-model <pack|alias|row>` fetches one — SAM3 and OCR are
+shows every row, `make download-model ARGS=<pack|alias|row>` fetches one — SAM3 and OCR are
 opt-in). **Load the `model-catalog` skill** before adding or moving a weight or changing
 a loader's default path.
 

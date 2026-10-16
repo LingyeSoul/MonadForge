@@ -324,7 +324,7 @@ make download-models         # First-run set: DiT + text encoder + VAE + PE-Spat
 make download-list           # What is installed and what is missing, grouped by pack (offline, no network)
 make download-anima          # Retry pieces individually if a download breaks
 make download-sam3           # Masking is opt-in — run this once SAM3 access is approved
-make download-model ocr      # Anything else, by pack (anima pe cjk tagger tags masking ocr grouping) or catalog id
+make download-model ARGS=ocr # Anything else, by pack (anima pe cjk tagger tags masking ocr grouping) or catalog id
 ```
 
 Preprocessing

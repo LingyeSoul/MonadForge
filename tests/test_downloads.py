@@ -98,7 +98,7 @@ def test_resolve_expands_groups_and_dedupes_in_catalog_order():
 
 
 def test_resolve_expands_a_pack_id():
-    """``make download-model ocr`` is the pack, in catalog order."""
+    """``make download-model ARGS=ocr`` is the pack, in catalog order."""
     ids = [a.id for a in DL.resolve(["ocr"])]
     assert ids == [a.id for a in DL.by_pack()["ocr"]]
     assert ids and all(DL.by_id()[i].pack == "ocr" for i in ids)
@@ -260,7 +260,7 @@ def test_every_download_target_resolves(monkeypatch):
 
 
 def test_download_model_accepts_pack_ids(monkeypatch):
-    """The GUI's pack buttons and ``make download-model ocr`` go through the
+    """The GUI's pack buttons and ``make download-model ARGS=ocr`` go through the
     same front door; a pack id must expand there, not only in ``resolve``."""
     import tasks
 

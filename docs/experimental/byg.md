@@ -18,7 +18,7 @@ step and a parameter-free conditioning patch.
 > Status (v1, phased). Training is functional end-to-end and verified
 > (data build → multi-forward step with all four losses + staged identity
 > backward + snapshot bootstrap → plain-LoRA save). Inference is not wired
-> yet — `exp-test-byg` raises with a pointer; the trained checkpoint loads via
+> yet (there is no make target for it); the trained checkpoint loads via
 > the standard `--lora_weight` path but the source-concat conditioning patch
 > still needs installing at generation time. See [Status & next phase](#status--next-phase).
 
@@ -178,7 +178,7 @@ caches by basename, so the sidecar dir is flat. The dataset
 
 ```bash
 make exp-byg-data        # build edit-tuple sidecars first
-make exp-byg             # train (configs/methods/byg.toml)
+python train.py --method byg --preset default   # train (configs/methods/byg.toml)
 ```
 
 Key config (`configs/methods/byg.toml`, read by `BYGMethodAdapter` via args):
@@ -232,9 +232,9 @@ escape hatch for methods whose objective isn't a single FM regression.
 ## Status & next phase
 
 - ✅ Data (`exp-byg-data`) — tag-swap sidecars; now with a tqdm progress bar.
-- ✅ Training (`exp-byg`) — full multi-forward step, all four losses, staged
+- ✅ Training (`train.py --method byg`) — full multi-forward step, all four losses, staged
   identity backward, snapshot bootstrap; saves a plain LoRA.
-- ⛔ Inference (`exp-test-byg`) — not wired. Raises with a pointer. The
+- ⛔ Inference — not wired, no make target. The
   trained weights load via `--lora_weight`, but generation still needs the
   `BYGConditioning` source-concat patch installed and primed with the
   VAE-encoded reference (mirrors the EasyControl KV-prefill path) before edits

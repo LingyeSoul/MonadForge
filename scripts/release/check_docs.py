@@ -212,7 +212,9 @@ def _is_ignored(rel: str) -> bool:
     )
 
 
-def _check_path(tok: str, top: set[str], base: Path | None = None) -> str | None:
+def _check_path(
+    tok: str, top: set[str], base: Path | None = None, line_root: Path | None = None
+) -> str | None:
     """Return the token if it's a broken path reference, else None.
 
     Resolved against the repo root first, then — when ``base`` is given — the
@@ -222,6 +224,9 @@ def _check_path(tok: str, top: set[str], base: Path | None = None) -> str | None
     (see ``project/README.md``), which is a correct reference that a
     root-only resolver reads as broken because ``bench/`` is also a real
     top-level dir. Root-first ordering keeps repo-rooted refs authoritative.
+    ``line_root`` covers the same convention one level down: a report under
+    ``project/<line>/reports/`` citing ``configs/x.toml`` means
+    ``project/<line>/configs/x.toml`` (see ``_line_root``).
     """
     tok = tok.strip().rstrip(".")
     if not tok or tok.startswith(("http", "..", "/", "~", "mailto")):
@@ -238,7 +243,7 @@ def _check_path(tok: str, top: set[str], base: Path | None = None) -> str | None
     first = tok.split("/", 1)[0]
     if first not in top:  # not rooted in the repo (URL / data dir / bare name)
         return None
-    roots = [REPO_ROOT] + ([base] if base is not None else [])
+    roots = [REPO_ROOT] + [r for r in (base, line_root) if r is not None]
     for root in roots:
         if (root / tok).exists():
             return None
@@ -254,6 +259,20 @@ def _check_path(tok: str, top: set[str], base: Path | None = None) -> str | None
         if _is_ignored(str(rel)):
             return None
     return tok
+
+
+def _line_root(doc: Path) -> Path | None:
+    """``project/<line>/`` (or ``project/finished/<line>/``) holding ``doc``."""
+    try:
+        parts = doc.relative_to(REPO_ROOT).parts
+    except ValueError:
+        return None
+    if parts[:1] != ("project",):
+        return None
+    depth = 3 if parts[1:2] == ("finished",) else 2
+    if len(parts) <= depth:
+        return None  # a file directly under project/ or project/finished/
+    return REPO_ROOT.joinpath(*parts[:depth])
 
 
 def _anchor_family_ref(tok: str, next_char: str) -> str | None:
@@ -291,6 +310,7 @@ def collect_issues(include_bench: bool = False) -> list[Issue]:
 
     for doc in doc_files(include_bench):
         rel = str(doc.relative_to(REPO_ROOT))
+        line_root = _line_root(doc)
         in_fence = False
         try:
             text = doc.read_text(encoding="utf-8", errors="ignore")
@@ -309,10 +329,14 @@ def collect_issues(include_bench: bool = False) -> list[Issue]:
             seen: set[str] = set()
             for rx in (_MULTI_RE, _SINGLE_RE):
                 for m in rx.finditer(line):
+                    # The tail of an absolute or home path (``~/anima_lora/output``)
+                    # names another machine's tree, not this checkout.
+                    if line[m.start() - 1 : m.start()] in ("/", "~"):
+                        continue
                     tok = _anchor_family_ref(m.group(0), line[m.end() : m.end() + 1])
                     if tok is None:
                         continue
-                    bad = _check_path(tok, top, base=doc.parent)
+                    bad = _check_path(tok, top, base=doc.parent, line_root=line_root)
                     if bad and bad not in seen:
                         seen.add(bad)
                         issues.append(
