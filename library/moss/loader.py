@@ -54,7 +54,9 @@ def _offload_by_layer(te, device, reserve_gb):
     return paged
 
 
-def load_text_encoder(model_dir: str | Path | None, device="cuda", reserve_gb=2.5, log=print):
+def load_text_encoder(
+    model_dir: str | Path | None, device="cuda", reserve_gb=2.5, log=print
+):
     """``(tokenizer, text_encoder)`` on ``device``, layers that do not fit paged in
     per forward (``reserve_gb`` is left free for activations at 4096 tokens).
     TE and tokenizer are byte-identical between Base and SFT; Base's are used."""
@@ -65,7 +67,9 @@ def load_text_encoder(model_dir: str | Path | None, device="cuda", reserve_gb=2.
     te = AutoModel.from_pretrained(root / "text_encoder", dtype=torch.bfloat16).eval()
     paged = _offload_by_layer(te, torch.device(device), reserve_gb)
     if log:
-        log(f"[te] {len(te.language_model.layers) - paged} decoder layers resident, {paged} paged")
+        log(
+            f"[te] {len(te.language_model.layers) - paged} decoder layers resident, {paged} paged"
+        )
     return tok, te
 
 
@@ -81,11 +85,15 @@ def encode_prompt(tok, te, text: str, device="cuda", max_length=MAX_SEQUENCE_LEN
         add_generation_prompt=True,
         enable_thinking=True,
     )
-    inputs = tok(formatted, return_tensors="pt", truncation=True, max_length=max_length).to(device)
+    inputs = tok(
+        formatted, return_tensors="pt", truncation=True, max_length=max_length
+    ).to(device)
     return te(**inputs, use_cache=False, return_dict=True).last_hidden_state[0]
 
 
-def encode_prompts(model_dir, texts, device="cuda", max_length=MAX_SEQUENCE_LENGTH, log=print):
+def encode_prompts(
+    model_dir, texts, device="cuda", max_length=MAX_SEQUENCE_LENGTH, log=print
+):
     """Load the TE, encode each distinct text once, free it → ``{text: (S,4096) cpu}``."""
     tok, te = load_text_encoder(model_dir, device, log=log)
     out = {}
@@ -124,6 +132,10 @@ def compile_blocks(blocks) -> None:
     length; must run after ``LoRANetwork.apply_to`` / ``load_for_inference``."""
     limit = max(torch._dynamo.config.recompile_limit, 16)
     torch._dynamo.config.recompile_limit = limit
+    # dynamic=True otherwise lifts float attributes (the LoRA's scale ·
+    # multiplier) into 0-dim CPU float64 inputs, and Inductor emits a C++ CPU
+    # kernel for them — which needs cl.exe on Windows (InvalidCxxCompiler).
+    torch._dynamo.config.specialize_float = True
     for block in blocks:
         block.forward = torch.compile(block.forward, dynamic=True)
 
