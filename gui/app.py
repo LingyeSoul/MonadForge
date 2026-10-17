@@ -74,12 +74,12 @@ class MainWindow(QMainWindow):
         main_lay = QVBoxLayout(central)
         main_lay.setContentsMargins(0, 0, 0, 0)
 
-        # Top bar and content frame carry the model mode as a ``mode`` property;
-        # theme._mode_rules paints both in the mode's hue.
+        # The top bar carries the model mode as a ``mode`` property;
+        # theme._mode_rules fills it with the mode's colour.
         self._mode_bar = QFrame()
         self._mode_bar.setObjectName("modeBar")
         lang_bar = QHBoxLayout(self._mode_bar)
-        lang_bar.setContentsMargins(0, 0, 0, 4)
+        lang_bar.setContentsMargins(4, 4, 4, 4)
         if ICON_PATH.exists():
             icon_label = QLabel()
             pix = QPixmap(str(ICON_PATH))
@@ -150,6 +150,13 @@ class MainWindow(QMainWindow):
         self.settings_btn.setToolTip(t("settings_btn_tooltip"))
         self.settings_btn.clicked.connect(self._open_settings)
         lang_bar.addWidget(self.settings_btn)
+        for btn in (
+            self.models_btn,
+            self.update_btn,
+            self.issues_btn,
+            self.settings_btn,
+        ):
+            btn.setProperty("barButton", True)
         main_lay.addWidget(self._mode_bar)
 
         # Overlays share a QStackedWidget with the tab set; all widgets stay alive
@@ -174,16 +181,7 @@ class MainWindow(QMainWindow):
         # Curation comes before caching: the panel's Export feeds Preprocess.
         # Every tab but Config and Preprocess is a LazyTabHolder: built on first
         # open, keeping the launch path to those two.
-        self.tabs.addTab(
-            LazyTabHolder(
-                lambda: AnimeToolsTab(
-                    source_image_dir=lambda: self._preprocess_tab.values().get(
-                        "source_image_dir"
-                    )
-                )
-            ),
-            t("tab_anime_tools"),
-        )
+        self.tabs.addTab(self._anime_tools_holder(), t("tab_anime_tools"))
         self.tabs.addTab(self._preprocess_tab, t("tab_preprocess"))
         self.tabs.addTab(LazyTabHolder(MergeTab), t("tab_merge"))
         # EasyControl keeps a dedicated tab (own preprocess/dataset lifecycle).
@@ -208,13 +206,9 @@ class MainWindow(QMainWindow):
         self.tab_stack.addWidget(self._tb_tab)
         self.tab_stack.addWidget(self._queue_tab)
         self._moss_panel = None
+        self._moss_page = None
         self._mode = "anima"
-        self._mode_frame = QFrame()
-        self._mode_frame.setObjectName("modeFrame")
-        frame_lay = QVBoxLayout(self._mode_frame)
-        frame_lay.setContentsMargins(2, 2, 2, 2)
-        frame_lay.addWidget(self.tab_stack)
-        main_lay.addWidget(self._mode_frame)
+        main_lay.addWidget(self.tab_stack)
 
         # Live GPU utilisation/VRAM footer, always visible below the tab set.
         self._gpu_bar = GpuStatusBar()
@@ -282,8 +276,11 @@ class MainWindow(QMainWindow):
                 cleanup()
         self._tb_tab.cleanup_subprocess()
         self._queue_tab.cleanup_subprocess()
-        if self._moss_panel is not None:
-            self._moss_panel.cleanup_subprocess()
+        if self._moss_page is not None:
+            for i in range(self._moss_page.count()):
+                cleanup = getattr(self._moss_page.widget(i), "cleanup_subprocess", None)
+                if callable(cleanup):
+                    cleanup()
         self._gpu_bar.cleanup()
         super().closeEvent(event)
 
@@ -300,8 +297,17 @@ class MainWindow(QMainWindow):
             btn.blockSignals(False)
             style_fn(False)
 
+    def _anime_tools_holder(self) -> LazyTabHolder:
+        return LazyTabHolder(
+            lambda: AnimeToolsTab(
+                source_image_dir=lambda: self._preprocess_tab.values().get(
+                    "source_image_dir"
+                )
+            )
+        )
+
     def _content(self) -> QWidget:
-        return self._moss_panel if self._mode == "moss" else self.tabs
+        return self._moss_page if self._mode == "moss" else self.tabs
 
     def _set_mode(self, mode: str, persist: bool = True) -> None:
         """Switch the content between Anima and MOSS. View-only: jobs running in
@@ -311,24 +317,20 @@ class MainWindow(QMainWindow):
             from gui.moss.app import SPEC
 
             self._moss_panel = build_panel(SPEC, current_language())
-            self.tab_stack.addWidget(self._moss_panel)
+            # MOSS reads the same curated tree, so it gets its own view on the
+            # anime_tools panel (one server, reused by both views).
+            self._moss_page = QTabWidget()
+            self._moss_page.addTab(self._moss_panel, t("mode_moss"))
+            self._moss_page.addTab(self._anime_tools_holder(), t("tab_anime_tools"))
+            self.tab_stack.addWidget(self._moss_page)
         self._mode = mode
         if persist:
             set_setting("model_mode", mode)
         moss = mode == "moss"
-        # TensorBoard lists train.py runs and the Guidebook covers Anima;
-        # the MOSS trainer writes neither.
-        if moss:
-            self._clear_overlay_toggle(
-                self.tensorboard_btn, self._update_tensorboard_btn_style
-            )
-        self.tensorboard_btn.setVisible(not moss)
-        self.guide_btn.setVisible(not moss)
-        for w in (self._mode_bar, self._mode_frame, self.mode_combo):
-            w.setProperty("mode", mode)
-            w.style().unpolish(w)
-            w.style().polish(w)
-        if not self.queue_btn.isChecked():
+        self._mode_bar.setProperty("mode", mode)
+        self._mode_bar.style().unpolish(self._mode_bar)
+        self._mode_bar.style().polish(self._mode_bar)
+        if not (self.queue_btn.isChecked() or self.tensorboard_btn.isChecked()):
             self.tab_stack.setCurrentWidget(self._content())
         title = t("window_title")
         self.setWindowTitle(f"{title} — {t('mode_moss')}" if moss else title)
@@ -412,7 +414,7 @@ class MainWindow(QMainWindow):
         menu.exec(global_pos)
 
     def _open_guidebook(self):
-        path = _guidebook_path()
+        path = _guidebook_path(self._mode)
         if not path.exists():
             QMessageBox.warning(
                 self, t("guidebook"), t("guidebook_missing", path=str(path))

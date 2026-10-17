@@ -238,6 +238,13 @@ def read_job_label(job_id: str) -> Optional[str]:
     return data.get("method") if data else None
 
 
+def read_job_argv(job_id: str) -> list[str]:
+    """A command job's child argv (``[]`` for a train job or a missing record).
+    Lets a line panel claim a sidecar job the CLI submitted under another label."""
+    data = _read_job_record(job_id)
+    return list(data.get("argv") or []) if data else []
+
+
 def _read_job_record(job_id: str) -> Optional[dict]:
     try:
         return json.loads(

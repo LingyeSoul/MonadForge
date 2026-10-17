@@ -51,25 +51,59 @@ def test_mode_switch_is_lazy_persisted_and_restored(qapp, settings_file, monkeyp
     assert win._mode == "anima" and win._moss_panel is None
     assert not settings_file.exists()  # restoring at launch writes nothing
 
-    win.tensorboard_btn.setChecked(True)
+    assert win._mode_bar.property("mode") == "anima"
     win.mode_combo.setCurrentIndex(1)
     assert win._mode == "moss"
-    assert win.tab_stack.currentWidget() is win._moss_panel
-    assert win._mode_frame.property("mode") == "moss"
-    assert not win.tensorboard_btn.isChecked()
-    assert win.tensorboard_btn.isHidden() and win.guide_btn.isHidden()
+    assert win.tab_stack.currentWidget() is win._moss_page
+    assert win._mode_bar.property("mode") == "moss"
+    assert win._moss_page.widget(0) is win._moss_panel
+    assert win._moss_page.count() == 2  # + the anime_tools view
+    # The menu stays whole in MOSS mode.
+    assert not win.tensorboard_btn.isHidden() and not win.guide_btn.isHidden()
     assert json.loads(settings_file.read_text())["model_mode"] == "moss"
 
     # The queue overlay stays reachable in MOSS mode and returns to the MOSS page.
     win.queue_btn.setChecked(True)
     assert win.tab_stack.currentWidget() is win._queue_tab
     win.queue_btn.setChecked(False)
-    assert win.tab_stack.currentWidget() is win._moss_panel
+    assert win.tab_stack.currentWidget() is win._moss_page
     win.close()
 
     again = app_mod.MainWindow()
     assert again._mode == "moss" and again.mode_combo.currentData() == "moss"
     again.mode_combo.setCurrentIndex(0)
     assert again.tab_stack.currentWidget() is again.tabs
-    assert not again.tensorboard_btn.isHidden()
     again.close()
+
+
+def test_guidebook_follows_mode():
+    from gui import i18n
+    from gui.dialogs.guidebook import _guidebook_path
+
+    i18n.set_language("ko")
+    try:
+        assert _guidebook_path("anima").name == "가이드북.md"
+        assert _guidebook_path("moss").name == "moss-가이드북.md"
+    finally:
+        i18n.set_language("en")
+    assert _guidebook_path("moss").name == "moss-guidebook.md"
+
+
+def test_line_panel_claims_cli_submitted_sidecar_job(qapp, settings_file, monkeypatch):
+    from gui.lines import window
+    from gui.moss.app import SPEC
+
+    panel = window.build_panel(SPEC, "en")
+    jobs = {
+        "gui": ("moss-test", []),
+        "cli": ("train", ["scripts/moss/train.py", "--epochs", "20"]),
+        "other": ("train", ["scripts/qwen21/train.py"]),
+        "anima": ("lora", []),
+    }
+    monkeypatch.setattr(window.gui_daemon, "read_job_label", lambda j: jobs[j][0])
+    monkeypatch.setattr(window.gui_daemon, "read_job_argv", lambda j: jobs[j][1])
+    assert panel._job_line_label("gui") == "moss-test"
+    assert panel._job_line_label("cli") == "moss-train"
+    assert panel._job_line_label("other") is None
+    assert panel._job_line_label("anima") is None
+    panel.cleanup_subprocess()

@@ -77,8 +77,6 @@ class Theme:
       ``ok_bg`` / ``warn_bg`` / ``err_bg`` (banner fills that the matching
       status text reads on).
     * ``scroll_bg`` / ``scroll_handle`` / ``scroll_handle_hover`` scrollbars.
-    * ``mode_moss`` the MOSS-mode frame and top-bar strip (Anima mode uses
-      ``accent``); see :func:`_mode_rules`.
     * ``is_dark`` whether the theme reads as dark (lets callers branch when a
       token isn't enough).
     """
@@ -112,7 +110,6 @@ class Theme:
     scroll_bg: str
     scroll_handle: str
     scroll_handle_hover: str
-    mode_moss: str
 
 
 _DARK = Theme(
@@ -145,7 +142,6 @@ _DARK = Theme(
     scroll_bg="#242424",
     scroll_handle="#b8b8b8",
     scroll_handle_hover="#d0d0d0",
-    mode_moss="#7fb045",
 )
 
 _LIGHT = Theme(
@@ -178,7 +174,6 @@ _LIGHT = Theme(
     scroll_bg="#e0e0e0",
     scroll_handle="#b4b4b4",
     scroll_handle_hover="#909090",
-    mode_moss="#4f8a1f",
 )
 
 _SEPIA = Theme(
@@ -211,7 +206,6 @@ _SEPIA = Theme(
     scroll_bg="#e6dabe",
     scroll_handle="#c0ad88",
     scroll_handle_hover="#a89468",
-    mode_moss="#5f7f2a",
 )
 
 # Saturated *action* button palette — theme-INDEPENDENT (white-on-color reads on
@@ -535,20 +529,26 @@ def _action_button_rules() -> str:
     return "".join(blocks)
 
 
-# Main-window model modes (``MainWindow`` sets ``mode`` on these objects).
+# Main-window model modes (``MainWindow`` sets ``mode`` on the top bar). The bar's
+# fill is theme-independent, like the action palette: black for Anima, purple for
+# MOSS, white labels on both. Plain buttons on the bar (``barButton``) keep the
+# window fill they show elsewhere instead of turning the bar's colour.
 MODES = ("anima", "moss")
+MODE_BAR = {"anima": "#000000", "moss": "#3a1859"}
 
 
 def _mode_rules(t: Theme) -> str:
-    """The frame around the content and the top-bar strip, in the mode's hue:
-    ``accent`` for Anima, ``mode_moss`` for MOSS."""
-    return f"""
-        QFrame#modeBar {{ border: none; border-bottom: 3px solid {t.accent}; }}
-        QFrame#modeBar[mode="moss"] {{ border-bottom-color: {t.mode_moss}; }}
-        QFrame#modeFrame {{ border: 2px solid {t.accent}; }}
-        QFrame#modeFrame[mode="moss"] {{ border-color: {t.mode_moss}; }}
-        QComboBox#modeCombo {{ border: 2px solid {t.accent}; font-weight: bold; }}
-        QComboBox#modeCombo[mode="moss"] {{ border-color: {t.mode_moss}; }}"""
+    rules = "".join(
+        f'QFrame#modeBar[mode="{m}"] {{ background: {c}; }}'
+        for m, c in MODE_BAR.items()
+    )
+    return (
+        rules + "QFrame#modeBar { border: none; }"
+        "QFrame#modeBar QLabel { color: #ffffff; background: transparent; }"
+        "QComboBox#modeCombo { font-weight: bold; }"
+        f'QPushButton[barButton="true"] {{ background: {t.window}; color: {t.text}; }}'
+        f'QPushButton[barButton="true"]:hover {{ background: {t.surface_hover}; }}'
+    )
 
 
 def _build_stylesheet(

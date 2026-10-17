@@ -25,11 +25,18 @@ _GUIDEBOOK_BY_LANG: dict[str, Path] = {
     "cn": _GUIDELINES / "指南书.md",
     "ja": _GUIDELINES / "ガイドブック.md",
 }
-_GUIDEBOOK_FALLBACK = _GUIDEBOOK_BY_LANG["en"]
+# The main window's MOSS mode (gui/app.py) opens the MOSS-Image guidebook.
+_MOSS_GUIDEBOOK_BY_LANG: dict[str, Path] = {
+    "en": _GUIDELINES / "moss-guidebook.md",
+    "ko": _GUIDELINES / "moss-가이드북.md",
+    "cn": _GUIDELINES / "moss-指南书.md",
+    "ja": _GUIDELINES / "moss-ガイドブック.md",
+}
 
 
-def _guidebook_path() -> Path:
-    return _GUIDEBOOK_BY_LANG.get(current_language(), _GUIDEBOOK_FALLBACK)
+def _guidebook_path(mode: str = "anima") -> Path:
+    table = _MOSS_GUIDEBOOK_BY_LANG if mode == "moss" else _GUIDEBOOK_BY_LANG
+    return table.get(current_language(), table["en"])
 
 
 class GuidebookDialog(QDialog):

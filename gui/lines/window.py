@@ -459,6 +459,12 @@ class LinePanel(DaemonJobMixin, QWidget):
         self._rescan()
         self._show_test(self._latest_test_dir())
         QTimer.singleShot(0, self._reattach)
+        # While idle and shown, pick up a line job that started elsewhere (the
+        # CLI's ``make daemon-run``, a queued job reaching the GPU).
+        self._claim_timer = QTimer(self)
+        self._claim_timer.setInterval(3000)
+        self._claim_timer.timeout.connect(self._claim_tick)
+        self._claim_timer.start()
 
     def _page(
         self, form: QWidget, summary: QLabel, buttons: list, extra=None
@@ -698,12 +704,35 @@ class LinePanel(DaemonJobMixin, QWidget):
             )
             self._submit(req, next_label)
 
+    def _job_line_label(self, job_id: str) -> str | None:
+        """This line's label for ``job_id``: the label the panel submitted it
+        under, or the one its sidecar script maps to (a CLI submit labels it
+        ``train`` / ``generate``). ``None`` for another line's job."""
+        label = gui_daemon.read_job_label(job_id)
+        if label in self.spec.labels:
+            return label
+        argv = gui_daemon.read_job_argv(job_id)
+        scripts = [
+            c.SCRIPT
+            for c in (self.spec.cache_cls, self.spec.train_cls, self.spec.test_cls)
+        ]
+        if argv:
+            script = Path(argv[0]).as_posix()
+            for i, s in enumerate(scripts):
+                if script == s or script.endswith("/" + s):
+                    return self.spec.labels[i]
+        return None
+
+    def _claim_tick(self) -> None:
+        if self._job_id is None and self.isVisible():
+            self._reattach()
+
     def _reattach(self) -> None:
         job_id = gui_daemon.active_job_id()
         if not job_id:
             return
-        label = gui_daemon.read_job_label(job_id)
-        if label not in self.spec.labels:
+        label = self._job_line_label(job_id)
+        if label is None:
             return
         self._job_label = label
         self.status.setText(tr("running", label=label, job=job_id))
@@ -714,6 +743,7 @@ class LinePanel(DaemonJobMixin, QWidget):
     def cleanup_subprocess(self) -> None:
         """Stop observing on close; the job itself keeps running in the daemon."""
         self._job_timer.stop()
+        self._claim_timer.stop()
 
 
 class LineWindow(QMainWindow):

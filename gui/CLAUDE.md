@@ -52,13 +52,17 @@ must not appear.
   one tab set in a `QStackedWidget` shared with the Queue and TensorBoard overlays.
   **Model mode**: the top bar's Model dropdown (Anima / MOSS-Image, `theme.MODES`,
   persisted as `model_mode` in `gui_settings.json`) swaps the stack's content page
-  between the tab set and `gui.lines.window.build_panel(gui.moss.app.SPEC, lang)`, built
-  on first switch (en, or cn when the GUI is cn). View-only: daemon jobs keep running
-  and each page keeps its own job observer. MOSS mode hides Guidebook and TensorBoard
-  (the MOSS trainer writes no TB logs); Queue stays. The top bar (`QFrame#modeBar`),
-  the content frame (`#modeFrame`) and the dropdown carry a `mode` property that
-  `theme._mode_rules` paints — `accent` for Anima, the per-theme `mode_moss` token for
-  MOSS. Tabs:
+  between the tab set and a MOSS page built on first switch: a `QTabWidget` of
+  `gui.lines.window.build_panel(gui.moss.app.SPEC, lang)` (en, or cn when the GUI is cn)
+  and a second anime_tools view (the same panel server serves both views). View-only: daemon jobs keep running
+  and each page keeps its own job observer. The top-bar buttons stay in both modes;
+  Guidebook opens `docs/guidelines/moss-*.md` in MOSS mode
+  (`dialogs/guidebook.py::_guidebook_path(mode)`). The top bar (`QFrame#modeBar`)
+  carries a `mode` property that `theme._mode_rules` fills from `theme.MODE_BAR`
+  (theme-independent: black for Anima, purple for MOSS, white labels). The embedded
+  `LinePanel` also claims a line job submitted from the CLI (matched by its sidecar
+  script, since `make daemon-run` labels it `train` / `generate`), polling every 3 s
+  while idle and shown. Tabs:
   Config (MethodsTab over the LoRA family + Turbo), anime_tools, Preprocess, Merge,
   Experimental (MethodsTab over research methods + soup), EasyControl. Theme applied by
   `_dark()` → `theme.apply_theme`.
