@@ -267,6 +267,57 @@ def _canonicalize_lora_fp32_compute_layer(data: dict) -> dict:
     return out
 
 
+def _filter_gui_preset_for_method(preset: dict, method: dict) -> dict:
+    """Keep a preset's LoKr tuning only when the selected variant enables it.
+
+    Older GUI presets contain a copy of the source variant's method fields.
+    Absence of ``use_lokr`` in a different GUI method means plain/non-LoKr,
+    not inheritance from that preset. Method files and their sparse overlays
+    remain authoritative; the toggle-based ``methods`` tree is unaffected.
+    """
+    options = dict(method)
+    for item in method.get("network_args", []) or []:
+        if isinstance(item, str) and "=" in item:
+            key, value = item.split("=", 1)
+            options[key.strip()] = value.strip()
+    lokr = str(options.get("use_lokr", False)).strip().lower() == "true"
+    # decompose_both is shared with GLoKr; it remains valid on that variant.
+    glokr = str(options.get("use_glokr", False)).strip().lower() == "true"
+
+    def _is_lokr_key(key: str) -> bool:
+        return (
+            key == "use_lokr"
+            or (key.startswith("lokr_") and not lokr)
+            or (key == "decompose_both" and not (lokr or glokr))
+        )
+
+    out = {key: value for key, value in preset.items() if not _is_lokr_key(key)}
+    network_args = out.get("network_args")
+    if isinstance(network_args, list):
+        # A copied preset network_args entry must not beat an explicit method
+        # value when train.resolve_network_kwargs builds the actual adapter.
+        method_keys = {
+            key for key in options if key.startswith("lokr_") or key == "decompose_both"
+        }
+        cleaned = [
+            item
+            for item in network_args
+            if not (
+                isinstance(item, str)
+                and "=" in item
+                and (
+                    _is_lokr_key(item.split("=", 1)[0].strip())
+                    or item.split("=", 1)[0].strip() in method_keys
+                )
+            )
+        ]
+        if cleaned:
+            out["network_args"] = cleaned
+        else:
+            out.pop("network_args", None)
+    return out
+
+
 def _load_gui_method_merged(configs_dir: str, method: str) -> tuple[dict, str]:
     """Load a gui-methods variant as ``{**builtin, **overlay}``.
 
@@ -518,18 +569,15 @@ def load_path_overrides(
     configs_dir = str(resolve_under_home(configs_dir))
     out: dict = {}
 
-    # Preprocess-only knobs (source_image_dir, drop_lowres_images, min_pixels)
-    # were split out of base.toml into configs/preprocess.toml. They now live
-    # under configs/custom/ so WebUI edits never dirty the git-tracked repo
-    # copy. Read it FIRST, before base.toml, so any legacy copy of those keys
-    # still sitting in a user's customized base.toml keeps winning (never
-    # regress an existing customization), while a freshly-shipped base.toml —
-    # which no longer carries them — lets the preprocess.toml value through.
-    # preset / method layers below still override per-run. Absent file → no-op.
-    preprocess_path = os.path.join(configs_dir, "custom", "preprocess.toml")
-    if os.path.exists(preprocess_path):
-        with open(preprocess_path, "r", encoding="utf-8") as f:
-            out.update(_flat_scalars(toml.load(f)))
+    # The shipped file supplies defaults; custom/ is a sparse WebUI overlay.
+    # Read both before base so legacy base overrides retain their precedence.
+    for preprocess_path in (
+        os.path.join(configs_dir, "preprocess.toml"),
+        os.path.join(configs_dir, "custom", "preprocess.toml"),
+    ):
+        if os.path.exists(preprocess_path):
+            with open(preprocess_path, "r", encoding="utf-8") as f:
+                out.update(_flat_scalars(toml.load(f)))
 
     # `target_res` is the exception to the "legacy base.toml copy wins" rule
     # above: it's owned by preprocess.toml (user-edited, preserved across
@@ -720,6 +768,8 @@ def _iter_method_preset_layers(
             raise FileNotFoundError(
                 f"Config file not found: {builtin_path} (or overlay {overlay_path})"
             )
+        if method_exists:
+            gui_method, source_path, src_tag = _load_gui_method_merged(configs_dir, method)
     else:
         method_path = _resolve_method_path(configs_dir, methods_subdir, method)
         if require_files and method_path and not os.path.exists(method_path):
@@ -745,23 +795,21 @@ def _iter_method_preset_layers(
             read_model_config_file(pathlib.Path(custom_model_path)),
         )
 
-    if require_files:
+    try:
         section, preset_path, tag = _resolve_preset(preset, configs_dir)
-        yield "preset", preset_path, tag, section
+    except (KeyError, FileNotFoundError, ValueError):
+        if require_files:
+            raise
     else:
-        try:
-            section, preset_path, tag = _resolve_preset(preset, configs_dir)
-        except (KeyError, FileNotFoundError, ValueError):
-            pass
-        else:
-            yield "preset", preset_path, tag, section
+        if is_gui and method_exists:
+            section = _filter_gui_preset_for_method(section, gui_method)
+        yield "preset", preset_path, tag, section
 
     if is_gui:
         if method_exists:
-            merged, source_path, src_tag = _load_gui_method_merged(configs_dir, method)
             # source_path (absolute) feeds _flatten_toml's schema line lookup;
             # src_tag (display) rides along for provenance / print-config.
-            yield "method", source_path, src_tag, merged
+            yield "method", source_path, src_tag, gui_method
     elif method_path and os.path.exists(method_path):
         with open(method_path, "r", encoding="utf-8") as f:
             yield "method", method_path, _display_path(method_path), toml.load(f)
@@ -806,16 +854,18 @@ def load_method_preset(
     # We still seed it here (lowest priority, preset/method/CLI override) so it
     # shows up in the snapshot/provenance for the record. Only this key is pulled
     # in; the other preprocess-only scalars (source_image_dir, …) aren't read.
-    # The preprocess.toml lives under configs/custom/ so WebUI edits don't
-    # dirty the git-tracked repo copy.
-    preprocess_path = os.path.join(configs_dir, "custom", "preprocess.toml")
-    if os.path.exists(preprocess_path):
-        with open(preprocess_path, "r", encoding="utf-8") as f:
-            pp_raw = toml.load(f)
-        for key in ("target_res", "multires_per_image"):
-            if key in pp_raw:
-                merged[key] = pp_raw[key]
-                provenance[key] = _display_path(preprocess_path)
+    # Keep the same shipped-default + sparse-custom layering as preprocessing.
+    for preprocess_path in (
+        os.path.join(configs_dir, "preprocess.toml"),
+        os.path.join(configs_dir, "custom", "preprocess.toml"),
+    ):
+        if os.path.exists(preprocess_path):
+            with open(preprocess_path, "r", encoding="utf-8") as f:
+                pp_raw = toml.load(f)
+            for key in ("target_res", "multires_per_image"):
+                if key in pp_raw:
+                    merged[key] = pp_raw[key]
+                    provenance[key] = _display_path(preprocess_path)
 
     # preprocess.toml owns target_res; a stale copy in base.toml must not clobber
     # the seed above (preset / method / CLI may still override per run).

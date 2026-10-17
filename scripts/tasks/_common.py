@@ -78,9 +78,10 @@ _PATH_OVERRIDES_CACHE: dict | None = None
 # method or hardware preset.  Keep them shared when a GUI task happens to set
 # METHOD/PRESET for the subsequent training command; otherwise changing the
 # method would silently create a second cache run for the same dataset.
+# Source selection follows the selected config/method; replacing it with a
+# shared default would silently switch a chosen dataset back to image_dataset.
 _SHARED_PREPROCESS_KEYS = frozenset(
     {
-        "source_image_dir",
         "resized_image_dir",
         "lora_cache_dir",
         "conditioning_data_dir",

@@ -17,6 +17,21 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def pin_inductor_flag(name: str, value: bool) -> bool:
+    """Pin a canonical Inductor flag in both current and fresh contexts.
+
+    Dotted names such as ``triton.mix_order_reduction`` are keys in the
+    config module itself. Like Dynamo budgets, Inductor overrides are
+    context-local, so backward compiler workers also need the pinned default.
+    """
+    import torch._inductor.config as config
+
+    entry = config._config[name]
+    setattr(config, name, value)
+    entry.default = value
+    return value
+
+
 def pin_dynamo_limit(name: str, value: int) -> int:
     """Raise a dynamo recompile budget so it holds in EVERY execution context.
 

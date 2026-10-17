@@ -1529,8 +1529,8 @@ function waitForTask(taskId: string): Promise<void> {
   font-size: 12px;
 }
 .config-toolbar {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 16px;
   align-items: center;
   padding: 20px 0;
@@ -1538,13 +1538,25 @@ function waitForTask(taskId: string): Promise<void> {
   border-top: 1px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
 }
+.config-toolbar > * {
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 100%;
+}
 .config-toolbar__variant, .config-toolbar__preset, .config-toolbar__actions {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
-.config-toolbar__actions { justify-content: flex-end; }
+.config-toolbar :deep(.v-input) { min-width: 0; }
+.config-toolbar > .config-toolbar__actions {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+.config-toolbar__actions > .v-btn { flex-shrink: 0; }
 .config-filterbar {
   display: flex;
   align-items: center;
@@ -1589,17 +1601,14 @@ function waitForTask(taskId: string): Promise<void> {
 .method-option:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
 .method-option:hover:not(:disabled) .method-option__arrow { transform: translate(2px, -2px); }
 .method-option:disabled { opacity: 0.55; cursor: wait; }
-@media (max-width: 1399px) {
-  .config-toolbar { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
-  .config-toolbar__actions { grid-column: 1 / -1; }
-}
 @media (max-width: 1279px) {
   .config-reference { border-left: 0; border-top: 1px solid var(--border-subtle); }
   .help-panel-sticky { position: static; }
 }
 @media (max-width: 599px) {
-  .config-toolbar { grid-template-columns: 1fr; gap: 16px; padding: 18px 0; }
-  .config-toolbar__actions { flex-wrap: wrap; justify-content: flex-start; }
+  .config-toolbar { gap: 16px; padding: 18px 0; }
+  .config-toolbar > * { flex-basis: 100%; }
+  .config-toolbar > .config-toolbar__actions { flex-basis: 100%; justify-content: flex-start; }
   .config-filterbar { flex-wrap: wrap; }
   .config-field-count { margin-right: auto; }
   .config-search { order: 3; flex-basis: 100%; max-width: none; }

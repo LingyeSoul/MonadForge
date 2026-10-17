@@ -724,6 +724,7 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     'base' | 'preset' | 'method'.
     """
     _safe_variant(variant)
+    from library.config.io import _filter_gui_preset_for_method
     from library.config.model_paths import load_model_config
 
     base = _canonicalize_lora_fp32_compute_layer(_load(CONFIGS_DIR / "base.toml"))
@@ -760,7 +761,7 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
 
     _merge_layer(base, "base")
     _merge_layer(model, "base")
-    _merge_layer(pset, "preset")
+    _merge_layer(_filter_gui_preset_for_method(pset, meth), "preset")
     _merge_layer(meth, "method")
 
     # The V100 FP16 protection is intentionally tri-state. An omitted
