@@ -338,21 +338,24 @@ def test_reconcile_lists_and_deletes_orphan_variant_sidecars(tmp_path):
     (resized / "kept.png").write_bytes(b"")
     (resized / "kept.txt").write_text("c", encoding="utf-8")
     write_variants_sidecar(variants_sidecar_path(resized / "kept.png"), [("v0", "c")])
+    (resized / "kept.layout.txt").write_text("{}", encoding="utf-8")
 
     (resized / "gone.png").write_bytes(b"")
     (resized / "gone.txt").write_text("c", encoding="utf-8")
     write_variants_sidecar(variants_sidecar_path(resized / "gone.png"), [("v0", "c")])
+    (resized / "gone.layout.txt").write_text("{}", encoding="utf-8")
 
     orphans = find_orphan_caches(image_dir, resized, lora, masks)
     orphan_names = {p.name for p in orphans.txt}
-    assert orphan_names == {"gone.txt", "gone.variants.txt"}
+    assert orphan_names == {"gone.txt", "gone.variants.txt", "gone.layout.txt"}
     # kept sidecar/caption must NOT be flagged.
     assert all("kept" not in p.name for p in orphans.txt)
 
     removed = delete_orphans(orphans)
-    assert removed["txt"] == 2
+    assert removed["txt"] == 3
     assert not (resized / "gone.variants.txt").exists()
     assert (resized / "kept.variants.txt").exists()
+    assert (resized / "kept.layout.txt").exists()
 
 
 # ----- position clauses survive the mirror --------------------------------

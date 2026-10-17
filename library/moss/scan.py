@@ -46,6 +46,14 @@ def source_pairs(src: Path) -> tuple[list[Path], list[tuple[str, Path, Path]]]:
     return images, pairs
 
 
+def layout_sidecar(caption: Path) -> Path:
+    """The layout-JSON prompt anime_tools' Export publishes beside ``caption``
+    (``{stem}.txt``) when its caption format is ``layout_json``."""
+    from anime_tools.contract import LAYOUT_JSON_SUFFIX
+
+    return caption.with_suffix(LAYOUT_JSON_SUFFIX)
+
+
 def caption_sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 

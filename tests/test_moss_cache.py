@@ -153,6 +153,38 @@ def test_find_pairs_layout_json(tmp_path, monkeypatch):
     assert pair.source_sha == caption_sha("1girl, hatsune miku, long hair")
 
 
+def test_find_pairs_prefers_a_current_layout_sidecar(tmp_path, monkeypatch):
+    import os
+
+    import library.moss.cache as cache
+
+    monkeypatch.setattr(
+        cache, "caption_converter", lambda fmt: lambda raw: f"converted:{raw}"
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    for stem in ("fresh", "edited", "bare"):
+        Image.new("RGB", (32, 32)).save(src / f"{stem}.png")
+        (src / f"{stem}.txt").write_text(f"{stem} tags", encoding="utf-8")
+    (src / "fresh.layout.txt").write_text('{"summary":{}}', encoding="utf-8")
+    edited = src / "edited.layout.txt"
+    edited.write_text('{"old":1}', encoding="utf-8")
+    t = (src / "edited.txt").stat().st_mtime
+    os.utime(edited, (t - 10, t - 10))  # the caption was edited after the export
+    pairs = {p.stem: p for p in find_pairs(src, "layout_json")}
+    assert pairs["fresh"].caption == '{"summary":{}}'
+    assert pairs["fresh"].source_sha == caption_sha("fresh tags")
+    assert pairs["edited"].caption == "converted:edited tags"
+    assert pairs["bare"].caption == "converted:bare tags"
+    # ``text`` ignores the sidecar.
+    monkeypatch.undo()
+    assert {p.caption for p in find_pairs(src, "text")} == {
+        "fresh tags",
+        "edited tags",
+        "bare tags",
+    }
+
+
 def test_scan_reads_source_sha(tmp_path):
     src, out = tmp_path / "src", tmp_path / "out"
     src.mkdir()

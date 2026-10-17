@@ -380,7 +380,7 @@ requires-dist = [
     { name = "accelerate", specifier = ">=1.13.0" },
     { name = "aiohttp", specifier = ">=3.13.5" },
     { name = "alembic", specifier = ">=1.18.4" },
-    { name = "anime-tools", git = "https://github.com/sorryhyun/anime_tools?tag=v0.7.13" },
+    { name = "anime-tools", git = "https://github.com/sorryhyun/anime_tools?tag=v0.7.14" },
     { name = "av", specifier = ">=17.0.1" },
     { name = "blake3", specifier = ">=1.0.8" },
     { name = "comfy-aimdo", specifier = ">=0.5.6" },
@@ -506,8 +506,8 @@ torch-214 = [
 
 [[package]]
 name = "anime-tools"
-version = "0.7.13"
-source = { git = "https://github.com/sorryhyun/anime_tools?tag=v0.7.13#e315defc00c45e8ccd605795ab53f06d3cbeebc6" }
+version = "0.7.14"
+source = { git = "https://github.com/sorryhyun/anime_tools?tag=v0.7.14#9f0bb42edc3ad3130a39d6ab9f7a5b9b5ddfc527" }
 dependencies = [
     { name = "einops" },
     { name = "fastapi" },

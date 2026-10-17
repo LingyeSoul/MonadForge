@@ -31,8 +31,8 @@ the < 16 px the rounding leaves. Transparent images are composited onto white.
 
 Captions: the ``.txt`` beside each image, stripped, mapped onto MOSS's
 layout-JSON prompt by ``anime_tools.captions.layout_json`` (the default
-``--caption_format layout_json``; ``caption`` / ``caption_sha256`` are the JSON)
-or verbatim with ``--caption_format text``. ``source_sha256`` is always the ``.txt``. Stems must be unique
+``--caption_format layout_json``; ``caption`` / ``caption_sha256`` are the JSON;
+a ``{stem}.layout.txt`` published by anime_tools' Export is read instead) or verbatim with ``--caption_format text``. ``source_sha256`` is always the ``.txt``. Stems must be unique
 in the flat cache; a stem that appears in several subfolders is prefixed with its
 relative folder (``sub__dir__stem``).
 
@@ -58,7 +58,13 @@ from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
 from library.env import resolve_under_home
-from library.moss.scan import LATENT_SUFFIX, TE_SUFFIX, caption_sha, source_pairs
+from library.moss.scan import (
+    LATENT_SUFFIX,
+    TE_SUFFIX,
+    caption_sha,
+    layout_sidecar,
+    source_pairs,
+)
 from library.moss.scan import LATENT_RE as _LATENT_RE
 
 STRIDE = 16
@@ -175,17 +181,37 @@ def to_pixels(image: Image.Image) -> torch.Tensor:
 
 def find_pairs(src: Path, caption_format: str = "text") -> list[Pair]:
     """Images with a ``.txt`` caption beside them, subfolders included. Stems that
-    collide across subfolders get their relative folder as a prefix."""
+    collide across subfolders get their relative folder as a prefix.
+
+    Under ``layout_json`` a ``{stem}.layout.txt`` that anime_tools' Export
+    published beside the caption is used as is, unless the ``.txt`` is newer
+    (edited after the export); every other caption is converted here."""
     images, found = source_pairs(src)
     captioned = {image for _, image, _ in found}
     for p in images:
         if p not in captioned:
             print(f"skip {p.name}: no caption sidecar", flush=True)
-    convert = caption_converter(caption_format)
+    convert = None
     pairs = []
+    from_sidecar = 0
     for stem, image, path in found:
         raw = path.read_text(encoding="utf-8").strip()
-        pairs.append(Pair(stem, image, convert(raw), caption_sha(raw)))
+        caption = None
+        if caption_format == "layout_json":
+            sidecar = layout_sidecar(path)
+            if sidecar.exists() and sidecar.stat().st_mtime >= path.stat().st_mtime:
+                caption = sidecar.read_text(encoding="utf-8").strip()
+                from_sidecar += 1
+        if caption is None:
+            convert = convert or caption_converter(caption_format)
+            caption = convert(raw)
+        pairs.append(Pair(stem, image, caption, caption_sha(raw)))
+    if caption_format == "layout_json":
+        print(
+            f"layout_json: {from_sidecar} from Export's sidecars, "
+            f"{len(pairs) - from_sidecar} converted",
+            flush=True,
+        )
     return pairs
 
 
