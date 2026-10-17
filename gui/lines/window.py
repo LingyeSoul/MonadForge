@@ -339,7 +339,8 @@ class LinePanel(DaemonJobMixin, QWidget):
     """The line's Preprocess / Train / Test forms, log and job observer.
 
     ``LineWindow`` wraps it standalone; the main GUI's MOSS mode embeds it
-    (``build_panel``). ``on_language`` adds the en/cn picker (standalone only).
+    (``build_panel``) and adds its own tabs beside Preprocess / Train
+    (``add_tab``). ``on_language`` adds the en/cn picker (standalone only).
     """
 
     def __init__(
@@ -434,13 +435,17 @@ class LinePanel(DaemonJobMixin, QWidget):
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(5000)
 
-        bottom = QWidget()
+        self._bottom = bottom = QWidget()
         bl = QVBoxLayout(bottom)
         bl.setContentsMargins(0, 0, 0, 0)
         bl.addLayout(status_row)
         bl.addWidget(bar)
         bl.addWidget(self.log, 1)
 
+        self._line_pages = self.tabs.count()
+        self.tabs.currentChanged.connect(
+            lambda i: bottom.setVisible(i < self._line_pages)
+        )
         split = QSplitter(Qt.Vertical)
         split.addWidget(self.tabs)
         split.addWidget(bottom)
@@ -740,10 +745,18 @@ class LinePanel(DaemonJobMixin, QWidget):
         self._set_busy(True)
         self._watch_job(job_id, replay_log=True)
 
+    def add_tab(self, widget: QWidget, label: str) -> None:
+        """A tab after Preprocess / Train; the status and log hide on it."""
+        self.tabs.addTab(widget, label)
+
     def cleanup_subprocess(self) -> None:
         """Stop observing on close; the job itself keeps running in the daemon."""
         self._job_timer.stop()
         self._claim_timer.stop()
+        for i in range(self._line_pages, self.tabs.count()):
+            cleanup = getattr(self.tabs.widget(i), "cleanup_subprocess", None)
+            if callable(cleanup):
+                cleanup()
 
 
 class LineWindow(QMainWindow):

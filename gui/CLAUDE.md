@@ -52,9 +52,11 @@ must not appear.
   one tab set in a `QStackedWidget` shared with the Queue and TensorBoard overlays.
   **Model mode**: the top bar's Model dropdown (Anima / MOSS-Image, `theme.MODES`,
   persisted as `model_mode` in `gui_settings.json`) swaps the stack's content page
-  between the tab set and a MOSS page built on first switch: a `QTabWidget` of
-  `gui.lines.window.build_panel(gui.moss.app.SPEC, lang)` (en, or cn when the GUI is cn)
-  and a second anime_tools view (the same panel server serves both views). View-only: daemon jobs keep running
+  between the tab set and a MOSS page built on first switch:
+  `gui.lines.window.build_panel(gui.moss.app.SPEC, lang)` (en, or cn when the GUI is cn),
+  whose Preprocess / Train row gets a second anime_tools view as a third tab
+  (`LinePanel.add_tab`; the line's status + log hide on it; the same panel server serves
+  both views). View-only: daemon jobs keep running
   and each page keeps its own job observer. The top-bar buttons stay in both modes;
   Guidebook opens `docs/guidelines/moss-*.md` in MOSS mode
   (`dialogs/guidebook.py::_guidebook_path(mode)`). The top bar (`QFrame#modeBar`)

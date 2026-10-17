@@ -206,7 +206,6 @@ class MainWindow(QMainWindow):
         self.tab_stack.addWidget(self._tb_tab)
         self.tab_stack.addWidget(self._queue_tab)
         self._moss_panel = None
-        self._moss_page = None
         self._mode = "anima"
         main_lay.addWidget(self.tab_stack)
 
@@ -276,11 +275,8 @@ class MainWindow(QMainWindow):
                 cleanup()
         self._tb_tab.cleanup_subprocess()
         self._queue_tab.cleanup_subprocess()
-        if self._moss_page is not None:
-            for i in range(self._moss_page.count()):
-                cleanup = getattr(self._moss_page.widget(i), "cleanup_subprocess", None)
-                if callable(cleanup):
-                    cleanup()
+        if self._moss_panel is not None:
+            self._moss_panel.cleanup_subprocess()
         self._gpu_bar.cleanup()
         super().closeEvent(event)
 
@@ -307,7 +303,7 @@ class MainWindow(QMainWindow):
         )
 
     def _content(self) -> QWidget:
-        return self._moss_page if self._mode == "moss" else self.tabs
+        return self._moss_panel if self._mode == "moss" else self.tabs
 
     def _set_mode(self, mode: str, persist: bool = True) -> None:
         """Switch the content between Anima and MOSS. View-only: jobs running in
@@ -319,10 +315,8 @@ class MainWindow(QMainWindow):
             self._moss_panel = build_panel(SPEC, current_language())
             # MOSS reads the same curated tree, so it gets its own view on the
             # anime_tools panel (one server, reused by both views).
-            self._moss_page = QTabWidget()
-            self._moss_page.addTab(self._moss_panel, t("mode_moss"))
-            self._moss_page.addTab(self._anime_tools_holder(), t("tab_anime_tools"))
-            self.tab_stack.addWidget(self._moss_page)
+            self._moss_panel.add_tab(self._anime_tools_holder(), t("tab_anime_tools"))
+            self.tab_stack.addWidget(self._moss_panel)
         self._mode = mode
         if persist:
             set_setting("model_mode", mode)
