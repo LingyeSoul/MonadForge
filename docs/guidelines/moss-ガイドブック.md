@@ -29,7 +29,7 @@ MOSS ラインは **アルファ** 段階です。実際のスタイル学習は
 | テキストエンコーダー | Qwen3 0.6B | Qwen3.5-9B |
 | VAE | QwenImage VAE | FLUX.2 VAE |
 | キャッシュ | `post_image_dataset/lora/` | `output/moss/cache/` |
-| LoRA | `output/ckpt/` | `output/moss/lora/` |
+| LoRA | `output/ckpt/` | `output/ckpt_moss/` |
 | 設定 | variant TOML + Hardware プリセット | パネルの入力欄 |
 
 - キャッシュ、設定、LoRA は互いに共有できません。MOSS の LoRA は Anima では読み込めず、Anima の LoRA も MOSS では読み込めません。Anima のバリアント、プリセット、`make lora` もここでは使いません。
@@ -90,7 +90,7 @@ make download-model ARGS=moss-sft
 | 項目 | デフォルト | 役割 |
 |---|---|---|
 | `cache` | `output/moss/cache` | 前処理の出力 |
-| `output` | `output/moss/lora/moss_lora.safetensors` | LoRA の保存先。隣に `.json` の実行レポート（ステップごとの loss）が保存される |
+| `output` | `output/ckpt_moss/moss_lora.safetensors` | LoRA の保存先。隣に `.json` の実行レポート（ステップごとの loss）が保存される |
 | `model` | `base` | 学習に使う DiT |
 | `epochs` | `8` | キャッシュを回る回数（1 ステップに画像 1 枚） |
 | `save_every_epochs` | `0` | N エポックごとに `<name>_e10.safetensors` などとして追加保存 |
@@ -204,12 +204,13 @@ make download-model ARGS=moss-sft
 
 ## 付録. CLI
 
-GUI が投入するジョブと同じもので、デーモン経由で直接実行することもできます。各スクリプトの `--help` にすべてのフラグが表示されます。
+GUI が投入するジョブと同じもので、デーモン経由で直接実行することもできます。各スクリプトの `--help` にすべてのフラグが表示されます。 `train.py --config configs/moss/lora.toml` でフラグを TOML ファイルから読み込めます（同梱のデフォルト値。コピーしてレシピとして使えます）。コマンドラインで指定したフラグが優先されます。
 
 ```bash
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'output/moss/cache/<set>'"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20"
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/moss/lora/moss_lora.safetensors --spectrum"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
 make daemon-run ARGS="scripts/moss/tune_swap.py --cache output/moss/cache/<set>"
 ```
 

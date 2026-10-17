@@ -29,7 +29,7 @@ MOSS 线目前处于 **alpha** 阶段：迄今只实测过一次真实风格训�
 | 文本编码器 | Qwen3 0.6B | Qwen3.5-9B |
 | VAE | QwenImage VAE | FLUX.2 VAE |
 | 缓存 | `post_image_dataset/lora/` | `output/moss/cache/` |
-| LoRA | `output/ckpt/` | `output/moss/lora/` |
+| LoRA | `output/ckpt/` | `output/ckpt_moss/` |
 | 设置 | variant TOML + Hardware 预设 | 面板中的字段 |
 
 - 缓存、设置和 LoRA 互不通用：MOSS LoRA 不能加载到 Anima 上，Anima LoRA 也不能加载到 MOSS 上。Anima 的变体、预设和 `make lora` 在这里都不适用。
@@ -90,7 +90,7 @@ make download-model ARGS=moss-sft
 | 字段 | 默认值 | 作用 |
 |---|---|---|
 | 缓存文件夹（`cache`） | `output/moss/cache` | 预处理的输出 |
-| 输出（`output`） | `output/moss/lora/moss_lora.safetensors` | LoRA 路径；同目录下写入 `.json` 运行报告（逐步 loss） |
+| 输出（`output`） | `output/ckpt_moss/moss_lora.safetensors` | LoRA 路径；同目录下写入 `.json` 运行报告（逐步 loss） |
 | 模型（`model`） | `base` | 在哪个 DiT 上训练 |
 | 轮数（`epochs`） | `8` | 遍历缓存的次数（每步一张图） |
 | 每 N 轮保存（`save_every_epochs`） | `0` | 每 N 轮额外保存为 `<name>_e10.safetensors` 等 |
@@ -204,12 +204,13 @@ make download-model ARGS=moss-sft
 
 ## 附录. CLI
 
-与 GUI 提交的任务相同，也可以直接通过守护进程运行。各脚本的 `--help` 列出全部参数。
+与 GUI 提交的任务相同，也可以直接通过守护进程运行。各脚本的 `--help` 列出全部参数。 `train.py --config configs/moss/lora.toml` 可从 TOML 文件读取参数（内含默认值，可复制后作为配方保存）；命令行直接给出的参数优先。
 
 ```bash
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'output/moss/cache/<set>'"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20"
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/moss/lora/moss_lora.safetensors --spectrum"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
 make daemon-run ARGS="scripts/moss/tune_swap.py --cache output/moss/cache/<set>"
 ```
 

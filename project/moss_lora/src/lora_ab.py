@@ -10,7 +10,7 @@ per (variant, prompt, seed) into ``--out``. Blocks are compiled after the LoRA i
 attached (``--no-compile`` for eager; grids made before 2026-10-17 16:30 are eager,
 so compare compiled arms only against compiled arms).
 
-    make daemon-run ARGS="project/moss_lora/src/lora_ab.py --lora output/moss/lora/x.safetensors"
+    make daemon-run ARGS="project/moss_lora/src/lora_ab.py --lora output/ckpt_moss/x.safetensors"
 """
 
 import argparse

@@ -10,6 +10,10 @@ must not pull torch in at launch. Each field carries its CLI help in
 
 ``to_argv`` writes only fields that differ from their defaults, so a job record
 reads as the choices that were made.
+
+``--config <file.toml>`` (e.g. ``configs/moss/lora.toml``) is a flat table of
+field names; it replaces the field defaults and the CLI still wins over it:
+``field default → --config → CLI``.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import os
+import tomllib
 from dataclasses import field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -63,32 +68,73 @@ class Request:
     SCRIPT: ClassVar[str]
 
     @classmethod
-    def parser(cls) -> argparse.ArgumentParser:
+    def parser(cls, defaults: dict | None = None) -> argparse.ArgumentParser:
+        """``defaults`` (a loaded ``--config``) replace the field defaults."""
+        defaults = defaults or {}
         ap = argparse.ArgumentParser(description=cls.__doc__)
+        ap.add_argument(
+            "--config",
+            default=None,
+            help="TOML of field defaults (flat table of flag names); CLI flags win",
+        )
         for f in dataclasses.fields(cls):
             flag = f"--{f.name}"
             help = f.metadata.get("help")
+            default = defaults.get(f.name, f.default)
             if isinstance(f.default, bool):
                 ap.add_argument(
                     flag,
                     action=argparse.BooleanOptionalAction,
-                    default=f.default,
+                    default=default,
                     help=help,
                 )
                 continue
             ap.add_argument(
                 flag,
                 type=_field_type(f),
-                default=f.default,
+                default=default,
                 choices=f.metadata.get("choices"),
-                required=f.default is dataclasses.MISSING,
+                required=default is dataclasses.MISSING,
                 help=help,
             )
         return ap
 
     @classmethod
     def from_argv(cls, argv: list[str] | None = None):
-        return cls(**vars(cls.parser().parse_args(argv)))
+        pre = argparse.ArgumentParser(add_help=False)
+        pre.add_argument("--config", default=None)
+        config = pre.parse_known_args(argv)[0].config
+        defaults = cls.load_config(config) if config else None
+        args = vars(cls.parser(defaults).parse_args(argv))
+        args.pop("config")
+        return cls(**args)
+
+    @classmethod
+    def load_config(cls, path: str | Path) -> dict[str, Any]:
+        """A ``--config`` TOML, checked against the fields (names, types, choices)."""
+        path = resolve_under_home(path)
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+        fields = {f.name: f for f in dataclasses.fields(cls)}
+        unknown = sorted(set(data) - set(fields))
+        if unknown:
+            raise ValueError(f"{path}: not {cls.__name__} fields: {unknown}")
+        out = {}
+        for name, value in data.items():
+            f = fields[name]
+            if isinstance(f.default, bool):
+                want = bool
+            else:
+                want = _field_type(f)
+            if want is float and type(value) is int:
+                value = float(value)
+            if type(value) is not want:
+                raise ValueError(f"{path}: {name} = {value!r} is not {want.__name__}")
+            choices = f.metadata.get("choices")
+            if choices and value not in choices:
+                raise ValueError(f"{path}: {name} = {value!r} not in {choices}")
+            out[name] = value
+        return out
 
     def to_argv(self) -> list[str]:
         argv: list[str] = []

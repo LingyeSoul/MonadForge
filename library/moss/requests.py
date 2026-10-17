@@ -211,7 +211,7 @@ class TrainRequest(Request):
         "output/moss/cache", "cache folder written by scripts/moss/cache.py"
     )
     output: str = _f(
-        "output/moss/lora/moss_lora.safetensors",
+        "output/ckpt_moss/moss_lora.safetensors",
         "LoRA output path (a .json run report lands beside it)",
     )
     model: str = _f("base", "which DiT to train on", choices=VARIANTS)

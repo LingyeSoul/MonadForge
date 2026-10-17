@@ -41,10 +41,15 @@ The GUI submits these. Run them through the daemon:
 ```bash
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'output/moss/cache/<set>'"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20"
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/moss/lora/moss_lora.safetensors --spectrum"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
 ```
 
 `--help` on each script lists every flag (one definition: `library/moss/requests.py`).
+
+`--config <file.toml>` sets any flag from a flat TOML of field names (`configs/moss/lora.toml`
+holds the shipped defaults; copy it for a recipe). Order: field default → `--config` → CLI flags.
+Unknown keys, wrong types and values outside a flag's choices are an error.
 
 ## What to expect
 
@@ -95,7 +100,7 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
   ```bash
   make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
   make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
-  make daemon-run ARGS="scripts/moss/generate.py --lora output/moss/lora/moss_lora.safetensors --spectrum"
+  make daemon-run ARGS="scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
   ```
 
   The LoHa lr above is the next arm to try, not a measured setting.

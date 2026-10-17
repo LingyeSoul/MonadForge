@@ -91,6 +91,49 @@ def test_save_load_round_trip(tmp_path):
         load_network(_tiny(layers=4), path)
 
 
+def test_saved_keys_match_comfy_lora_map(tmp_path):
+    # ComfyUI's model_lora_keys_unet maps lora_unet_<weight key, dots → _>;
+    # the loader then reads .lora_down/.lora_up/.alpha under it.
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    model = _tiny()
+    x, e = _inputs()
+    net = LoRANetwork(model, rank=4, alpha=2.0)
+    for adapter in net.adapters.values():
+        torch.nn.init.normal_(adapter.up.weight, std=0.1)
+    path = tmp_path / "l.safetensors"
+    net.save(path, "fp32")
+    comfy = {
+        "lora_unet_" + k.removesuffix(".weight").replace(".", "_")
+        for k in model.state_dict()
+        if k.endswith(".weight")
+    }
+    with safe_open(str(path), framework="pt") as handle:
+        keys = set(handle.keys())
+        meta = handle.metadata()
+        stems = {k.split(".", 1)[0] for k in keys}
+        assert all(handle.get_tensor(s + ".alpha") == 2.0 for s in stems)
+    assert len(stems) == len(net.target_names) and stems <= comfy
+    assert {k.split(".", 1)[1] for k in keys} == {
+        "lora_down.weight",
+        "lora_up.weight",
+        "alpha",
+    }
+
+    # the earlier adapters.<name>.{down,up}.weight layout still loads
+    legacy = tmp_path / "legacy.safetensors"
+    save_file(
+        {k: v.contiguous() for k, v in net.state_dict().items()}, str(legacy), meta
+    )
+    net.apply_to()
+    want = _out(model, x, e)
+    net.restore()
+    fresh = _tiny()
+    load_for_inference(fresh, legacy)
+    assert torch.allclose(_out(fresh, x, e), want, atol=1e-6)
+
+
 @pytest.mark.parametrize("algo", ["lora", "lokr", "loha"])
 def test_one_step_decreases_loss(algo):
     model = _tiny()

@@ -29,7 +29,7 @@ MOSS 라인은 **알파** 단계입니다. 지금까지 실제 스타일 학습�
 | 텍스트 인코더 | Qwen3 0.6B | Qwen3.5-9B |
 | VAE | QwenImage VAE | FLUX.2 VAE |
 | 캐시 | `post_image_dataset/lora/` | `output/moss/cache/` |
-| LoRA | `output/ckpt/` | `output/moss/lora/` |
+| LoRA | `output/ckpt/` | `output/ckpt_moss/` |
 | 설정 | variant TOML + Hardware 프리셋 | 패널의 입력 필드 |
 
 - 캐시, 설정, LoRA는 서로 호환되지 않습니다. MOSS LoRA는 Anima에서 로드되지 않고, Anima LoRA도 MOSS에서 로드되지 않습니다. Anima의 variant, 프리셋, `make lora` 도 여기에는 적용되지 않습니다.
@@ -90,7 +90,7 @@ make download-model ARGS=moss-sft
 | 필드 | 기본값 | 하는 일 |
 |---|---|---|
 | `cache` | `output/moss/cache` | 전처리 결과 폴더 |
-| `output` | `output/moss/lora/moss_lora.safetensors` | LoRA 경로. 옆에 `.json` 실행 리포트(스텝별 loss)가 함께 저장됨 |
+| `output` | `output/ckpt_moss/moss_lora.safetensors` | LoRA 경로. 옆에 `.json` 실행 리포트(스텝별 loss)가 함께 저장됨 |
 | `model` | `base` | 학습할 DiT |
 | `epochs` | `8` | 캐시를 도는 횟수 (스텝당 이미지 1장) |
 | `save_every_epochs` | `0` | N 에폭마다 `<name>_e10.safetensors` 형태로 추가 저장 |
@@ -204,12 +204,13 @@ make download-model ARGS=moss-sft
 
 ## 부록. CLI
 
-GUI가 제출하는 작업과 같으며, 데몬으로 직접 실행할 수도 있습니다. 각 스크립트의 `--help` 에 모든 플래그가 나옵니다.
+GUI가 제출하는 작업과 같으며, 데몬으로 직접 실행할 수도 있습니다. 각 스크립트의 `--help` 에 모든 플래그가 나옵니다. `train.py --config configs/moss/lora.toml` 로 플래그를 TOML 파일에서 읽을 수 있습니다(기본값이 들어 있으니 복사해서 레시피로 쓰세요). 명령줄에 직접 준 플래그가 우선합니다.
 
 ```bash
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'output/moss/cache/<set>'"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20"
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/moss/lora/moss_lora.safetensors --spectrum"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
 make daemon-run ARGS="scripts/moss/tune_swap.py --cache output/moss/cache/<set>"
 ```
 

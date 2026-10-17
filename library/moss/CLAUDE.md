@@ -43,7 +43,7 @@ Research line, measured numbers, open questions: `project/moss_lora/`.
 | Standard CFG | **CFG 3** and the **uncond branch skips block 22** (still 2 forwards/step); optional SLG third forward. Timestep input is `1000·σ`. Defaults from `pipeline_moss_image.py`, not from Anima habit |
 | Anima's sampler shift | Euler, **shift 5 snapped to the nearest training-grid σ** (`model.snapped_sigmas`) |
 | Adapters live in `networks/`, selected by `network_module` | `networks/` is bound to Anima module names; `lora.py` targets the six bias-free linears per block (`proj.{q,k,v,o,ffn_up_gate,ffn_down}`) |
-| `make lora`, config chain `base → preset → method → CLI`, `masked_loss` | None of it. Flags only, defined once in `requests.py` |
+| `make lora`, config chain `base → preset → method → CLI`, `masked_loss` | None of it. Flags defined once in `requests.py`; `--config configs/moss/lora.toml` (flat field-name TOML, `library.lines.requests`) layers field default → TOML → CLI |
 
 ## Standing rules
 

@@ -22,7 +22,7 @@ def main() -> None:
         help="comma list of WxH:text_tokens",
     )
     ap.add_argument("--steps", type=int, default=8)
-    ap.add_argument("--output", default="output/moss/lora/_fit_smoke.safetensors")
+    ap.add_argument("--output", default="output/ckpt_moss/_fit_smoke.safetensors")
     args, rest = ap.parse_known_args()
 
     samples = synthetic_samples(args.sizes)

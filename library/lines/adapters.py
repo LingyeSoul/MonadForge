@@ -11,8 +11,11 @@ replacing the module keeps the swapper's name→shape matching intact.
 
 A line subclasses :class:`LoRANetwork` with its ``BASE_MODEL`` name, its block
 list attribute (``BLOCKS``) and its default target regex
-(``library/{moss,qwen21}/lora.py``). Saved tensors keep the
-``adapters.<module_name>.*`` keys, so a file is tied to its line's module names.
+(``library/{moss,qwen21}/lora.py``). Files are saved in the kohya layout
+ComfyUI's LoRA loader reads — ``lora_unet_<module_name>.{lora_down,lora_up}.weight``
+plus a ``.alpha`` tensor (LyCORIS keys keep their own names under the same
+prefix) — so a file is tied to its line's module names. ``from_file`` also
+reads the earlier ``adapters.<module_name>.{down,up}.weight`` layout.
 
 ``down_init="weight_svd"`` seeds ``down`` with ``V_rᵀ/√3`` from the base weight's
 SVD, as Anima's SVD-Down (``docs/methods/svd-down-lora.md``). The Kaiming draw
@@ -41,6 +44,9 @@ import torch.nn.functional as F
 SAVED_DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
 DOWN_INITS = ("kaiming", "weight_svd")
 ALGOS = ("lora", "lokr", "loha")
+FILE_PREFIX = "lora_unet_"
+_LORA_FILE_KEYS = {"down.weight": "lora_down.weight", "up.weight": "lora_up.weight"}
+_LORA_STATE_KEYS = {v: k for k, v in _LORA_FILE_KEYS.items()}
 
 
 class LoRAAdapter(nn.Module):
@@ -302,9 +308,16 @@ class LoRANetwork(nn.Module):
     def save(self, path, dtype: str = "bf16", **extra_meta) -> None:
         from safetensors.torch import save_file
 
+        state = {}
+        for key, value in self.state_dict().items():
+            name, rest = key.removeprefix("adapters.").split(".", 1)
+            stem = FILE_PREFIX + name
+            state[f"{stem}.{_LORA_FILE_KEYS.get(rest, rest)}"] = value
+            if self.algo == "lora" and rest == "down.weight":
+                state[f"{stem}.alpha"] = torch.tensor(self.alpha)
         state = {
             k: v.detach().to("cpu", SAVED_DTYPES[dtype]).contiguous()
-            for k, v in self.state_dict().items()
+            for k, v in state.items()
         }
         save_file(
             state, str(path), metadata=self.metadata(lora_dtype=dtype, **extra_meta)
@@ -338,7 +351,7 @@ class LoRANetwork(nn.Module):
             algo=meta.get("algo", "lora"),
             factor=int(meta.get("factor", -1)),
         )
-        network.load_state_dict(state)
+        network.load_state_dict(_state_from_file(state, network.algo))
         return network, meta
 
     @classmethod
@@ -355,6 +368,22 @@ class LoRANetwork(nn.Module):
         network.apply_to()
         network.set_multiplier(multiplier)
         return network
+
+
+def _state_from_file(state: dict, algo: str) -> dict:
+    """File keys → ``state_dict`` keys; the pre-kohya layout passes through."""
+    out = {}
+    for key, value in state.items():
+        if not key.startswith(FILE_PREFIX):
+            out[key] = value
+            continue
+        name, rest = key.removeprefix(FILE_PREFIX).split(".", 1)
+        if algo == "lora":
+            if rest == "alpha":
+                continue
+            rest = _LORA_STATE_KEYS[rest]
+        out[f"adapters.{name}.{rest}"] = value
+    return out
 
 
 def _patched_forward(module: nn.Linear, adapter: nn.Module):

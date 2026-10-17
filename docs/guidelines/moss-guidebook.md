@@ -29,7 +29,7 @@ The MOSS line is **alpha**: one real style run has been measured so far (a 30-im
 | Text encoder | Qwen3 0.6B | Qwen3.5-9B |
 | VAE | QwenImage VAE | FLUX.2 VAE |
 | Caches | `post_image_dataset/lora/` | `output/moss/cache/` |
-| LoRAs | `output/ckpt/` | `output/moss/lora/` |
+| LoRAs | `output/ckpt/` | `output/ckpt_moss/` |
 | Settings | variant TOML + Hardware preset | the panel's fields |
 
 - Caches, settings and LoRAs do not cross: a MOSS LoRA does not load on Anima, and an Anima LoRA does not load on MOSS. Anima's variants, presets and `make lora` do not apply here.
@@ -90,7 +90,7 @@ Press **Run preprocessing**. The status line counts images, captions and cached 
 | Field | Default | What it does |
 |---|---|---|
 | `cache` | `output/moss/cache` | The Preprocess output |
-| `output` | `output/moss/lora/moss_lora.safetensors` | LoRA path; a `.json` run report (per-step loss) lands beside it |
+| `output` | `output/ckpt_moss/moss_lora.safetensors` | LoRA path; a `.json` run report (per-step loss) lands beside it |
 | `model` | `base` | Which DiT to train on |
 | `epochs` | `8` | Passes over the cache (one image per step) |
 | `save_every_epochs` | `0` | Also save every N epochs, as `<name>_e10.safetensors` etc. |
@@ -204,12 +204,13 @@ The sampler defaults come from MOSS's reference pipeline; Anima's sampler habits
 
 ## Appendix. CLI
 
-The GUI submits these jobs; they can also be run through the daemon directly. `--help` on each script lists every flag.
+The GUI submits these jobs; they can also be run through the daemon directly. `--help` on each script lists every flag. `train.py --config configs/moss/lora.toml` reads flags from a TOML file (the shipped defaults; copy it to keep a recipe); flags given on the command line still win.
 
 ```bash
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'output/moss/cache/<set>'"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20"
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/moss/lora/moss_lora.safetensors --spectrum"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
 make daemon-run ARGS="scripts/moss/tune_swap.py --cache output/moss/cache/<set>"
 ```
 

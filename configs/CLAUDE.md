@@ -103,6 +103,12 @@ Data-scope is plain flat keys (`sample_ratio`, `artists_shard` — defaults in `
 `sample_ratio=1.0` is inert so per-subset ratios stay authoritative), surfaced as GUI form
 fields; the `[half]` / `[quarter]` presets are CLI shorthand for the same key.
 
+## `moss/` — not the merge chain
+
+`configs/moss/lora.toml` is a flat table of `library.moss.requests.TrainRequest` field
+names, read by `scripts/moss/train.py --config` (`Request.load_config` in
+`library/lines/requests.py`): field default → TOML → CLI. None of the chain above applies.
+
 ## Subset knobs
 
 Subsets accept `cache_dir` — redirects all VAE/TE/PE caches to that dir with
