@@ -29,10 +29,10 @@ Anima resized tree is already on a 16-px grid at ~1.05 MP, so it is not resample
 twice). Otherwise it is LANCZOS-resized to cover the target and centre-cropped by
 the < 16 px the rounding leaves. Transparent images are composited onto white.
 
-Captions: the ``.txt`` beside each image, stripped — verbatim, or with
-``--caption_format layout_json`` mapped onto MOSS's layout-JSON prompt by
-``anime_tools.captions.layout_json`` (``caption`` / ``caption_sha256`` are then
-the JSON; ``source_sha256`` is always the ``.txt``). Stems must be unique
+Captions: the ``.txt`` beside each image, stripped, mapped onto MOSS's
+layout-JSON prompt by ``anime_tools.captions.layout_json`` (the default
+``--caption_format layout_json``; ``caption`` / ``caption_sha256`` are the JSON)
+or verbatim with ``--caption_format text``. ``source_sha256`` is always the ``.txt``. Stems must be unique
 in the flat cache; a stem that appears in several subfolders is prefixed with its
 relative folder (``sub__dir__stem``).
 

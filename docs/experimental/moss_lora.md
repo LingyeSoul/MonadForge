@@ -68,12 +68,16 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
   lands close to Base + LoRA.
 - **Captions**: Anima-style tag captions trained and prompted fine. MOSS itself was
   trained on natural language, and long or character-heavy captions are untested.
-  `caption_format=layout_json` (cache) / `prompt_format=layout_json` (generate) map the
-  Anima caption onto MOSS's layout-JSON prompt (`anime_tools.captions.layout_json`):
-  rating / meta, characters, series and artists get their own `summary` keys, the
-  remaining tags become `summary.caption`, each position clause a `subject` item with
-  its relative position, each OCR line a `text` item. Train and prompt in the same
-  form; switching it re-encodes the TE cache. Untested on a LoRA so far.
+  By default (`caption_format` on the cache, `prompt_format` on generate, both
+  `layout_json`) the Anima caption is mapped onto MOSS's layout-JSON prompt
+  (`anime_tools.captions.layout_json`): rating / meta, characters, series and artists
+  get their own `summary` keys, the remaining tags become `summary.caption`, each
+  position clause a `subject` item with its relative position, each OCR line a `text`
+  item. On a 30-image style set this kept the style strength of plain tags and leaked
+  fewer of the set's attributes onto other characters. Train and prompt in the same
+  form (`text` on both for plain captions); switching it re-encodes the TE cache. In
+  ComfyUI, the **Anima Caption → MOSS Layout JSON** node (in the Anima Tagger pack,
+  `anime_tools`) does the same conversion in front of the text encoder.
 - **Spectrum** (`--spectrum`, Test panel): 2.6× at 50 steps with the default
   `flex_window 0.5`. At grid scale it is hard to tell apart from the full 50 steps.
 - **`--compile`** (generate, on by default; `--no-compile` for eager): about 1.37× more

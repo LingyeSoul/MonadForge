@@ -182,3 +182,10 @@ By eye, 3 prompts × 2 seeds:
 - Base without a LoRA renders the JSON prompts as well as the tag prompts.
 - The NL prompt (p2) passes through the converter as one `summary.caption` string and
   behaves like its plain-text twin.
+
+ER-SDE + Spectrum (the new `lora_ab` default: 50 steps, flex_window 0.5) on the JSON LoRA,
+`ab_caststation_layout_r16_50st/`: the job took 6.1 min against 9.4 min for 30-step
+Euler. Compositions differ from Euler (another sampler, injected noise), so compare
+base vs LoRA within one sampler. The LoRA's shift holds: paler palette, thinner lines;
+Neru keeps a yellow (yellow/black striped) necktie in both seeds. No Spectrum artifacts
+at grid scale. One oddity: Neru seed 1 grew a flat yellow panel behind her.

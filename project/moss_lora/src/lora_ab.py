@@ -68,7 +68,7 @@ def main() -> None:
     )
     ap.add_argument(
         "--prompt_format",
-        default="text",
+        default="layout_json",
         choices=("text", "layout_json"),
         help="encode PROMPTS as typed or mapped to layout JSON (match the LoRA's cache)",
     )
