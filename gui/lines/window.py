@@ -17,6 +17,7 @@ keeps going — the daemon outlives the GUI).
 from __future__ import annotations
 
 import dataclasses
+import html
 import re
 import sys
 import time
@@ -56,7 +57,14 @@ from gui.jobs.mixin import DaemonJobMixin
 from gui.core.paths import ROOT, get_setting, set_setting
 from gui.jobs.progress import TQDM_RE
 from gui.lines.strings import LANGUAGES, UI
-from gui.widgets import _no_wheel, action_button, apply_variant
+from gui.theme import rich_text_pt, tok
+from gui.widgets import (
+    ExplainPanel,
+    _no_wheel,
+    action_button,
+    apply_variant,
+    make_field_label,
+)
 from library.env import resolve_under_home
 
 TEST_THUMB_PX = 360
@@ -75,7 +83,7 @@ class LineSpec:
     test_cls: type
     # (model_dir field text, variant) → the ``model_index.json`` that must exist.
     model_index: Callable[[str | None, str], Path]
-    # Folder shown in the header for a model_dir field text.
+    # Folder shown in the help panel's guide for a model_dir field text.
     resolve_model_dir: Callable[[str | None], Path]
     # (src, out) → object with images / pairs / text_cached / latents_cached /
     # stale_text / duplicates; cache folder → object with text / latents / samples.
@@ -129,9 +137,10 @@ def _base_type(f: dataclasses.Field) -> type:
 
 
 class RequestForm(QWidget):
-    """One widget per request field; ``request()`` reads them back typed."""
+    """One widget per request field; ``request()`` reads them back typed.
+    Clicking a field label calls ``help_cb(label, help_text)``."""
 
-    def __init__(self, cls, parent=None):
+    def __init__(self, cls, help_cb: Callable[[str, str], None], parent=None):
         super().__init__(parent)
         self.cls = cls
         self.widgets: dict[str, QWidget] = {}
@@ -151,8 +160,11 @@ class RequestForm(QWidget):
             label, help_text = field_text(f, cls)
             widget, row = self._make(f)
             widget.setToolTip(help_text)
-            name = QLabel(label)
-            name.setToolTip(help_text)
+            name = make_field_label(
+                label,
+                tooltip=help_text,
+                on_click=lambda _l=label, _h=help_text: help_cb(_l, _h),
+            )
             (advanced if f.metadata.get("advanced") else basic).addRow(name, row)
             self.widgets[f.name] = widget
         layout.addLayout(basic)
@@ -356,11 +368,9 @@ class LinePanel(DaemonJobMixin, QWidget):
 
         root = QVBoxLayout(self)
 
-        top = QHBoxLayout()
-        self.model_label = QLabel()
-        self.model_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        top.addWidget(self.model_label, 1)
         if on_language is not None:
+            top = QHBoxLayout()
+            top.addStretch(1)
             top.addWidget(QLabel(tr("language")))
             self.lang_combo = QComboBox()
             for code, name in LANGUAGES.items():
@@ -370,11 +380,13 @@ class LinePanel(DaemonJobMixin, QWidget):
                 lambda: on_language(self.lang_combo.currentData())
             )
             top.addWidget(self.lang_combo)
-        root.addLayout(top)
+            root.addLayout(top)
 
         self.tabs = QTabWidget()
-        self.cache_form = RequestForm(spec.cache_cls)
-        self.train_form = RequestForm(spec.train_cls)
+        self.cache_explain = ExplainPanel()
+        self.train_explain = ExplainPanel()
+        self.cache_form = RequestForm(spec.cache_cls, self.cache_explain.show_field_help)
+        self.train_form = RequestForm(spec.train_cls, self.train_explain.show_field_help)
         saved = get_setting(self._settings_key, {}) or {}
         self.cache_form.set_values(saved.get("cache", {}))
         self.train_form.set_values(saved.get("train", {}))
@@ -383,7 +395,12 @@ class LinePanel(DaemonJobMixin, QWidget):
         self.cache_summary.setWordWrap(True)
         self.btn_cache = action_button(tr("run_cache"), on_click=self._run_cache)
         self.tabs.addTab(
-            self._page(self.cache_form, self.cache_summary, [self.btn_cache]),
+            self._page(
+                self.cache_form,
+                self.cache_summary,
+                [self.btn_cache],
+                self.cache_explain,
+            ),
             tr("tab_preprocess"),
         )
 
@@ -393,7 +410,7 @@ class LinePanel(DaemonJobMixin, QWidget):
         self.btn_chain = action_button(
             tr("run_chain"), variant="secondary", on_click=self._run_chain
         )
-        self.test_form = RequestForm(spec.test_cls)
+        self.test_form = RequestForm(spec.test_cls, self.train_explain.show_field_help)
         self.test_form.set_values(saved.get("test", {}))
         self.btn_test = action_button(
             tr("run_test"), variant="info", on_click=self._run_test
@@ -416,6 +433,7 @@ class LinePanel(DaemonJobMixin, QWidget):
                 self.train_form,
                 self.train_summary,
                 [self.btn_train, self.btn_chain],
+                self.train_explain,
                 extra=test_box,
             ),
             tr("tab_train"),
@@ -472,7 +490,12 @@ class LinePanel(DaemonJobMixin, QWidget):
         self._claim_timer.start()
 
     def _page(
-        self, form: QWidget, summary: QLabel, buttons: list, extra=None
+        self,
+        form: QWidget,
+        summary: QLabel,
+        buttons: list,
+        explain: ExplainPanel,
+        extra=None,
     ) -> QWidget:
         inner = QWidget()
         v = QVBoxLayout(inner)
@@ -489,7 +512,35 @@ class LinePanel(DaemonJobMixin, QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(inner)
-        return scroll
+        split = QSplitter(Qt.Horizontal)
+        split.addWidget(scroll)
+        split.addWidget(explain)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+        split.setSizes([620, 380])
+        return split
+
+    def _guide_html(self, guide_key: str, model: Path, model_ok: bool) -> str:
+        """The tab's default help: what the tab does, the model folder (red
+        when it is missing), and the click-a-label hint."""
+        dim = tok("text_dim")
+        status = (
+            f"<p style='color:{dim};'>{html.escape(tr('model', path=model))}</p>"
+            if model_ok
+            else f"<p style='color:{tok('err')};'>"
+            + html.escape(tr("model_missing", path=model)).replace("\n", "<br/>")
+            + "</p>"
+        )
+        title = "tab_preprocess" if guide_key == "guide_preprocess" else "tab_train"
+        return (
+            f"<h2 style='margin:0 0 10px 0; font-size:{rich_text_pt(18)};'>"
+            f"{html.escape(tr(title))}</h2>"
+            f"<p style='font-size:{rich_text_pt(15)}; line-height:1.6;'>"
+            f"{html.escape(tr(guide_key))}</p>"
+            f"{status}"
+            f"<p style='color:{dim}; font-style:italic;'>"
+            f"{html.escape(tr('click_field'))}</p>"
+        )
 
     # ── state ────────────────────────────────────────────────────────────
 
@@ -505,9 +556,13 @@ class LinePanel(DaemonJobMixin, QWidget):
     def _rescan(self) -> None:
         model = self.spec.resolve_model_dir(self._model_dir_text())
         ok = self.spec.model_index(self._model_dir_text(), "base").exists()
-        self.model_label.setText(
-            tr("model", path=model) if ok else tr("model_missing", path=model)
-        )
+        # Refresh the guide only; a field's help stays up while it is edited.
+        for explain, key in (
+            (self.cache_explain, "guide_preprocess"),
+            (self.train_explain, "guide_train"),
+        ):
+            if explain.mode is None:
+                explain.show_guide(self._guide_html(key, model, ok))
         scan, cache_counts = self.spec.scan, self.spec.cache_counts
         src = self.cache_form.text_of("src")
         out = self.cache_form.text_of("out")

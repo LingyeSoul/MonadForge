@@ -21,7 +21,18 @@ UI: dict[str, dict[str, str]] = {
         "browse": "Browse…",
         "auto": "auto",
         "language": "Language",
-        "model": "Model: {path}",
+        "model": "Model folder: {path}",
+        "guide_preprocess": "Preprocessing encodes every image in the image folder "
+        "once — its .txt caption through the text encoder, the image through the "
+        "VAE — and writes both to the cache folder. Images that are already cached "
+        "are skipped, so after adding images only the new ones are encoded. "
+        "Training reads the cache folder only.",
+        "guide_train": "Training fits a LoRA on the cached samples; the base model "
+        "stays frozen. \"Preprocess, then train\" runs both in order and starts "
+        "training only if preprocessing succeeds. Test renders the prompt with the "
+        "LoRA and without it at the same seed, so the pair differs by the adapter "
+        "only.",
+        "click_field": "Click a field label to see its explanation here.",
         "scan": "{pairs}/{images} images have captions · text cached {text} · "
         "latents cached {latents}",
         "scan_no_src": "Pick a folder of images with .txt captions.",
@@ -57,7 +68,15 @@ UI: dict[str, dict[str, str]] = {
         "browse": "浏览…",
         "auto": "自动",
         "language": "语言",
-        "model": "模型：{path}",
+        "model": "模型文件夹：{path}",
+        "guide_preprocess": "预处理会把图片文件夹中的每张图片编码一次——.txt 标注经过"
+        "文本编码器，图片经过 VAE——并把结果写入缓存文件夹。已有缓存的图片会被跳过，"
+        "所以新增图片后只会编码新图片。训练只读取缓存文件夹。",
+        "guide_train": "训练在缓存样本上拟合一个 LoRA，基础模型保持冻结。"
+        "「预处理后训练」会依次运行两步，只有预处理成功才开始训练。"
+        "测试会用同一个种子分别在加载和不加载 LoRA 的情况下生成，"
+        "两张图的差别只来自适配器。",
+        "click_field": "点击字段标签可在此处查看说明。",
         "scan": "{images} 张图片中 {pairs} 张有标注 · 已缓存文本 {text} · "
         "已缓存潜变量 {latents}",
         "scan_no_src": "请选择包含图片和 .txt 标注的文件夹。",
