@@ -111,7 +111,8 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   By default (`caption_format` on the cache, `prompt_format` on generate, both
   `layout_json`) the Anima caption is mapped onto MOSS's layout-JSON prompt
   (`anime_tools.captions.layout_json`): rating / meta, characters, series and artists
-  get their own `summary` keys, the remaining tags become `summary.caption`, each
+  (with their `@`) get their own `summary` keys; meta tags that describe the pixels
+  (`cropped`, `scan`, …) and the remaining tags become `summary.caption`, each
   position clause a `subject` item with its relative position, each OCR line a `text`
   item. On a 30-image style set this kept the style strength of plain tags and leaked
   fewer of the set's attributes onto other characters. Train and prompt in the same
