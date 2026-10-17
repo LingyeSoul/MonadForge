@@ -161,3 +161,24 @@ First run, synthetic 1024²:300 on the 5070 Ti, 4.1 min
 - Strict fastest was swap 32 (1.750), within timing noise of 24 (1.770). With the 2 %
   tie rule the tuner recommends **swap 24 / budget 0.2**, the shipped default.
 - The budget predictor is conservative: arms finished with 1.0–3.6 GiB free.
+
+## Layout-JSON captions vs plain tag captions (2026-10-17)
+
+Same 30 images, latents (symlinked), schedule and seed as the real run above; only the
+TE input differs: `--caption_format layout_json` (`anime_tools.captions.layout_json`,
+0.7.13), text 141–455 tokens vs 127–406. Trained with `--blocks_to_swap 12
+--activation_memory_budget 0.1` (no checkpointing): 600 steps in 18.5 min, 1.85 s/step,
+peak 11.51 GiB. Output `output/moss/lora/caststation_layout_r16.safetensors`; A/B
+`ab_caststation_layout_r16_30st/` (Base, the same three prompts converted with
+`--prompt_format layout_json`, 30-step Euler, seeds 1–2) against `ab_caststation_r16_30st/`.
+
+By eye, 3 prompts × 2 seeds:
+- **Style transfer is about the same strength**: thin clean line art, flat fills, pale
+  aqua palette, white backgrounds, blunt bangs on the NL prompt.
+- **Less attribute leakage from the set.** On Neru (not in the set), the tag-caption LoRA
+  turns her yellow necktie green/teal in both seeds (the set's Miku `aqua necktie`); the
+  JSON LoRA keeps it yellow in both. On Miku seed 2 the tag LoRA drifts to a white shirt,
+  the JSON LoRA keeps her grey outfit.
+- Base without a LoRA renders the JSON prompts as well as the tag prompts.
+- The NL prompt (p2) passes through the converter as one `summary.caption` string and
+  behaves like its plain-text twin.

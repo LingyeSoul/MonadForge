@@ -2,9 +2,11 @@
 """LoRA A/B on MOSS-Image Base and SFT: each prompt × seed over ``--arms``.
 
 An arm is ``<sampler>:<multiplier>``; sampler ``euler``, ``er_sde`` or ``cns``
-(er_sde with ``--cns_gamma``'s recolored noise). The default ``euler:1.0,euler:0.0``
-is the plain adapter A/B. Same noise per (prompt, seed), so each row differs by the
-arm only. Writes one row per (variant, prompt, seed) into ``--out``.
+(er_sde with ``--cns_gamma``'s recolored noise). The default is ER-SDE with
+Spectrum at its shipped settings (50 steps, flex_window 0.5), ``er_sde:1.0,er_sde:0.0``;
+``--no-spectrum --steps 30 --arms euler:1.0,euler:0.0`` is the pre-2026-10-17 A/B.
+Same noise per (prompt, seed), so each row differs by the arm only. Writes one row
+per (variant, prompt, seed) into ``--out``.
 
     make daemon-run ARGS="project/moss_lora/src/lora_ab.py --lora output/moss/lora/x.safetensors"
 """
@@ -18,11 +20,18 @@ from PIL import Image, ImageDraw
 from safetensors.torch import load_file, save_file
 
 from library.env import resolve_under_home
+from library.moss.cache import caption_converter
 from library.moss.cns import MossCNS
-from library.moss.generate import _cached_embeds, denoise, initial_noise
+from library.moss.generate import (
+    _build_spectrum,
+    _cached_embeds,
+    denoise,
+    initial_noise,
+)
 from library.moss.loader import empty_cache, load_transformer, load_vae, pad_embeds
 from library.moss.lora import load_for_inference
 from library.moss.model import decode, snapped_sigmas
+from library.moss.requests import GenerateRequest
 
 PROMPTS = [
     # Tag bag in the training captions' own format, characters it saw.
@@ -42,15 +51,27 @@ def main() -> None:
     ap.add_argument("--lora", required=True)
     ap.add_argument("--variants", default="base,sft")
     ap.add_argument("--seeds", default="1,2")
-    ap.add_argument("--steps", type=int, default=30)
+    ap.add_argument("--steps", type=int, default=50)
     ap.add_argument("--cfg", type=float, default=3.0)
     ap.add_argument("--size", default="1024x1024")
     ap.add_argument(
         "--arms",
-        default="euler:1.0,euler:0.0",
+        default="er_sde:1.0,er_sde:0.0",
         help="<euler|er_sde|cns>:<multiplier>, comma-separated",
     )
     ap.add_argument("--cns_gamma", default="output/moss/cns_gamma.npz")
+    ap.add_argument(
+        "--spectrum",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Spectrum at GenerateRequest's defaults",
+    )
+    ap.add_argument(
+        "--prompt_format",
+        default="text",
+        choices=("text", "layout_json"),
+        help="encode PROMPTS as typed or mapped to layout JSON (match the LoRA's cache)",
+    )
     ap.add_argument(
         "--out", default="", help="default: output/moss/lora/ab_<lora stem>_<steps>st"
     )
@@ -63,9 +84,10 @@ def main() -> None:
     )
     out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda")
+    prompts = list(map(caption_converter(args.prompt_format), PROMPTS))
 
     embeds = _cached_embeds(
-        "", [*PROMPTS, ""], resolve_under_home("output/moss/te_cache")
+        "", [*prompts, ""], resolve_under_home("output/moss/te_cache")
     )
     uncond, uncond_mask = pad_embeds([embeds[""]], device)
     sigmas = snapped_sigmas(args.steps)
@@ -77,7 +99,7 @@ def main() -> None:
     jobs = [
         (v, pi, s, a)
         for v in variants
-        for pi in range(len(PROMPTS))
+        for pi in range(len(prompts))
         for s in seeds
         for a in arms
     ]
@@ -85,7 +107,8 @@ def main() -> None:
     def stem(job):
         # Euler keeps the pre-arms names, so earlier runs resume.
         v, pi, s, (sampler, m) = job
-        return f"{v}_p{pi}_s{s}_x{m}" + ("" if sampler == "euler" else f"_{sampler}")
+        name = f"{v}_p{pi}_s{s}_x{m}" + ("" if sampler == "euler" else f"_{sampler}")
+        return name + ("_spec" if args.spectrum else "")
 
     def lat_path(job):
         return lat_dir / f"{stem(job)}.safetensors"
@@ -98,7 +121,7 @@ def main() -> None:
         net = load_for_inference(tr, resolve_under_home(args.lora))
         for job in todo:
             _, pi, seed, (sampler, m) = job
-            cond, cond_mask = pad_embeds([embeds[PROMPTS[pi]]], device)
+            cond, cond_mask = pad_embeds([embeds[prompts[pi]]], device)
             net.set_multiplier(m)
             cns = (
                 MossCNS.from_npz(resolve_under_home(args.cns_gamma))
@@ -117,6 +140,9 @@ def main() -> None:
                 sampler="euler" if sampler == "euler" else "er_sde",
                 seed=seed,
                 cns=cns,
+                spectrum=_build_spectrum(GenerateRequest(spectrum=True), {})
+                if args.spectrum
+                else None,
             )
             save_file({"latent": z.cpu().contiguous()}, str(lat_path(job)))
             print(
@@ -153,7 +179,7 @@ def main() -> None:
             }
         )
     for variant in args.variants.split(","):
-        for pi in range(len(PROMPTS)):
+        for pi in range(len(prompts)):
             for seed in seeds:
                 ims = [
                     Image.open(out / f"{stem((variant, pi, seed, a))}.png")
@@ -170,12 +196,12 @@ def main() -> None:
                     )
                 suffix = (
                     ""
-                    if args.arms == "euler:1.0,euler:0.0"
+                    if args.arms == ap.get_default("arms")
                     else "_" + args.arms.replace(":", "").replace(",", "_")
-                )
+                ) + ("" if args.spectrum else "_nospec")
                 grid.save(out / f"grid_{variant}_p{pi}_s{seed}{suffix}.png")
     (out / "index.json").write_text(
-        json.dumps({"args": vars(args), "prompts": PROMPTS, "rows": rows}, indent=2)
+        json.dumps({"args": vars(args), "prompts": prompts, "rows": rows}, indent=2)
     )
     print(f"wrote {out}", flush=True)
 

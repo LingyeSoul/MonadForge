@@ -319,7 +319,7 @@ class _LineProgress:
             return True
         if kind == "step":
             # The every-20th detail line: keep it in the log, leave the bar to
-            # the per-step progress lines.
+            # the progress lines.
             return False
         self.bar.setFormat(f"{kind} %v/%m")
         return True

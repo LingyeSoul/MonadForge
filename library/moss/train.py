@@ -53,6 +53,7 @@ from library.moss.requests import TrainRequest
 
 EMPTY_TE_NAME = "_empty.moss_te.safetensors"
 NUM_TRAIN_TIMESTEPS = 1000
+PROGRESS_EVERY = 2  # steps per "  progress i/n" line (the GUI bar reads them)
 
 
 @dataclass
@@ -380,12 +381,13 @@ def train(
                 t_start = time.time()  # s/step excludes step 1's allocator warm-up
             per_step = (time.time() - t_start) / max(1, step - 1)
             eta = int(per_step * (total - step))
-            print(
-                f"  progress {step}/{total} epoch {epoch + 1}/{epochs} "
-                f"loss {sum(losses) / len(losses):.4f} "
-                f"eta {eta // 3600}:{eta % 3600 // 60:02d}:{eta % 60:02d}",
-                flush=True,
-            )
+            if step % PROGRESS_EVERY == 0 or step == total:
+                print(
+                    f"  progress {step}/{total} epoch {epoch + 1}/{epochs} "
+                    f"loss {sum(losses) / len(losses):.4f} "
+                    f"eta {eta // 3600}:{eta % 3600 // 60:02d}:{eta % 60:02d}",
+                    flush=True,
+                )
             if step % req.log_every == 0:
                 print(
                     f"  step {step}/{total} loss {value:.4f} |g| {grad_norm.item():.3f} "
