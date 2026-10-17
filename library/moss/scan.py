@@ -1,8 +1,10 @@
 """What a source folder and a cache folder hold — torch-free, for the GUI.
 
 The file layout constants live here so ``cache.py`` and the GUI name files the
-same way. A TE file is current while its ``caption_sha256`` matches the caption
-on disk; the check reads the safetensors JSON header directly, without torch.
+same way. A TE file is current while its ``source_sha256`` (``caption_sha256`` on
+files from before ``caption_format``) matches the caption on disk; the check reads
+the safetensors JSON header directly, without torch. It does not see a
+``caption_format`` switch — ``cache.py`` does, and re-encodes.
 """
 
 from __future__ import annotations
@@ -85,7 +87,8 @@ def scan(src: Path | None, out: Path | None) -> CacheScan:
             te = out / f"{stem}{TE_SUFFIX}"
             if te.exists():
                 sha = caption_sha(caption.read_text(encoding="utf-8").strip())
-                if header_metadata(te).get("caption_sha256") == sha:
+                meta = header_metadata(te)
+                if meta.get("source_sha256", meta.get("caption_sha256")) == sha:
                     text += 1
                 else:
                     stale += 1

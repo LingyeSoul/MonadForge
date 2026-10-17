@@ -19,6 +19,7 @@ from library.moss.cache import (
     target_size,
 )
 from library.moss.model import pack_latents, unpack_latents
+from library.moss.scan import caption_sha, scan
 
 
 def _fake_vae(channels=32):
@@ -27,7 +28,9 @@ def _fake_vae(channels=32):
         running_mean=torch.randn(channels * 4, generator=g),
         running_var=torch.rand(channels * 4, generator=g) + 0.5,
     )
-    return SimpleNamespace(bn=bn, config=SimpleNamespace(batch_norm_eps=1e-4), dtype=torch.float32)
+    return SimpleNamespace(
+        bn=bn, config=SimpleNamespace(batch_norm_eps=1e-4), dtype=torch.float32
+    )
 
 
 def test_pack_is_inverse_of_unpack():
@@ -37,7 +40,9 @@ def test_pack_is_inverse_of_unpack():
     assert packed.shape == (2, 128, 6, 9)
     torch.testing.assert_close(unpack_latents(packed, vae), z, rtol=1e-5, atol=1e-5)
     d = torch.randn(1, 128, 5, 7)
-    torch.testing.assert_close(pack_latents(unpack_latents(d, vae), vae), d, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(
+        pack_latents(unpack_latents(d, vae), vae), d, rtol=1e-5, atol=1e-5
+    )
 
 
 def test_pack_matches_flux2_patchify():
@@ -54,7 +59,16 @@ def test_pack_matches_flux2_patchify():
 
 @pytest.mark.parametrize(
     "size",
-    [(896, 1152), (1024, 1024), (3000, 2000), (1200, 4000), (640, 480), (1023, 1023), (5000, 300), (17, 33)],
+    [
+        (896, 1152),
+        (1024, 1024),
+        (3000, 2000),
+        (1200, 4000),
+        (640, 480),
+        (1023, 1023),
+        (5000, 300),
+        (17, 33),
+    ],
 )
 def test_target_size_invariants(size):
     w, h = size
@@ -78,12 +92,23 @@ def test_fit_exact_size():
 
 
 def test_list_and_load_items(tmp_path):
-    save_file({"latent": torch.randn(128, 72, 56)}, tmp_path / f"a_b_896x1152{LATENT_SUFFIX}")
-    save_file({"embeds": torch.randn(37, 4096).bfloat16()}, tmp_path / f"a_b{TE_SUFFIX}")
-    save_file({"latent": torch.randn(128, 64, 64)}, tmp_path / f"lonely_1024x1024{LATENT_SUFFIX}")
-    save_file({"embeds": torch.randn(5, 4096).bfloat16()}, tmp_path / f"textonly{TE_SUFFIX}")
+    save_file(
+        {"latent": torch.randn(128, 72, 56)}, tmp_path / f"a_b_896x1152{LATENT_SUFFIX}"
+    )
+    save_file(
+        {"embeds": torch.randn(37, 4096).bfloat16()}, tmp_path / f"a_b{TE_SUFFIX}"
+    )
+    save_file(
+        {"latent": torch.randn(128, 64, 64)},
+        tmp_path / f"lonely_1024x1024{LATENT_SUFFIX}",
+    )
+    save_file(
+        {"embeds": torch.randn(5, 4096).bfloat16()}, tmp_path / f"textonly{TE_SUFFIX}"
+    )
     items = list_items(tmp_path)
-    assert [(i.stem, i.width, i.height, i.n_text) for i in items] == [("a_b", 896, 1152, 37)]
+    assert [(i.stem, i.width, i.height, i.n_text) for i in items] == [
+        ("a_b", 896, 1152, 37)
+    ]
     latent, embeds = load_item(items[0])
     assert latent.dtype == torch.float32 and latent.shape == (128, 72, 56)
     assert embeds.dtype == torch.bfloat16 and embeds.shape == (37, 4096)
@@ -93,9 +118,54 @@ def test_find_pairs_prefixes_colliding_stems(tmp_path):
     for sub in ("x", "y"):
         (tmp_path / sub).mkdir()
         Image.new("RGB", (32, 32)).save(tmp_path / sub / "img.png")
-        (tmp_path / sub / "img.txt").write_text(f" caption {sub}, tag \n", encoding="utf-8")
+        (tmp_path / sub / "img.txt").write_text(
+            f" caption {sub}, tag \n", encoding="utf-8"
+        )
     Image.new("RGB", (32, 32)).save(tmp_path / "x" / "solo.png")
     (tmp_path / "x" / "solo.txt").write_text("solo", encoding="utf-8")
     Image.new("RGB", (32, 32)).save(tmp_path / "x" / "nocap.png")
     pairs = {p.stem: p.caption for p in find_pairs(tmp_path)}
-    assert pairs == {"x__img": "caption x, tag", "y__img": "caption y, tag", "solo": "solo"}
+    assert pairs == {
+        "x__img": "caption x, tag",
+        "y__img": "caption y, tag",
+        "solo": "solo",
+    }
+
+
+def test_find_pairs_layout_json(tmp_path, monkeypatch):
+    pytest.importorskip("anime_tools.captions.layout_json")
+    import anime_tools.captions.correction as correction
+
+    csv = tmp_path / "tags.csv"
+    csv.write_text(
+        'name,category,post_count,description\nhatsune_miku,4,10,"[캐릭터 > x] c"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(correction, "find_tag_csv", lambda root=None, lang=None: csv)
+    src = tmp_path / "src"
+    src.mkdir()
+    Image.new("RGB", (32, 32)).save(src / "a.png")
+    (src / "a.txt").write_text("1girl, hatsune miku, long hair\n", encoding="utf-8")
+    (pair,) = find_pairs(src, "layout_json")
+    assert pair.caption == (
+        '{"summary":{"characters":["hatsune miku"],"caption":"1girl, long hair"}}'
+    )
+    assert pair.source_sha == caption_sha("1girl, hatsune miku, long hair")
+
+
+def test_scan_reads_source_sha(tmp_path):
+    src, out = tmp_path / "src", tmp_path / "out"
+    src.mkdir()
+    out.mkdir()
+    for stem, meta in (
+        ("new", {"caption_sha256": "json-sha", "source_sha256": caption_sha("cap")}),
+        ("old", {"caption_sha256": caption_sha("cap")}),
+        ("stale", {"caption_sha256": "x", "source_sha256": "y"}),
+    ):
+        Image.new("RGB", (32, 32)).save(src / f"{stem}.png")
+        (src / f"{stem}.txt").write_text("cap", encoding="utf-8")
+        save_file(
+            {"embeds": torch.zeros(1, 4)}, out / f"{stem}{TE_SUFFIX}", metadata=meta
+        )
+    s = scan(src, out)
+    assert (s.text_cached, s.stale_text) == (2, 1)

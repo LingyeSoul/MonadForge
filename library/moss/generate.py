@@ -216,6 +216,10 @@ def _jobs(req: GenerateRequest) -> list[dict]:
         source, prompts = "prompt", [req.prompt.strip()] if req.prompt.strip() else []
     if not prompts:
         raise SystemExit(f"no prompts in {source}")
+    if req.prompt_format != "text":
+        from library.moss.cache import caption_converter
+
+        prompts = list(map(caption_converter(req.prompt_format), prompts))
     return [
         dict(
             base,

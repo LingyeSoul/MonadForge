@@ -5,7 +5,8 @@ leaves two files per image in one flat folder.
 
     {stem}.moss_te.safetensors
         embeds  (S, 4096) bf16 — ``last_hidden_state`` at the caption's true length
-        metadata: caption, caption_sha256, n_text, max_text_tokens, encoder
+        metadata: caption, caption_sha256, caption_format, source_sha256, n_text,
+                  max_text_tokens, encoder
     {stem}_{W}x{H}.moss_latent.safetensors
         latent  (128, H/16, W/16) fp32 — packed 2×2 and BN-normalised, i.e. exactly
                 what the DiT consumes (``model.encode``, the inverse of the decode)
@@ -28,7 +29,10 @@ Anima resized tree is already on a 16-px grid at ~1.05 MP, so it is not resample
 twice). Otherwise it is LANCZOS-resized to cover the target and centre-cropped by
 the < 16 px the rounding leaves. Transparent images are composited onto white.
 
-Captions: the ``.txt`` beside each image, verbatim (stripped). Stems must be unique
+Captions: the ``.txt`` beside each image, stripped — verbatim, or with
+``--caption_format layout_json`` mapped onto MOSS's layout-JSON prompt by
+``anime_tools.captions.layout_json`` (``caption`` / ``caption_sha256`` are then
+the JSON; ``source_sha256`` is always the ``.txt``). Stems must be unique
 in the flat cache; a stem that appears in several subfolders is prefixed with its
 relative folder (``sub__dir__stem``).
 
@@ -59,7 +63,9 @@ from library.moss.scan import LATENT_RE as _LATENT_RE
 
 STRIDE = 16
 AREA_TOLERANCE = 1.10
-ENCODER_ID = "Qwen3.5-9B last_hidden_state, chat template add_generation_prompt+enable_thinking"
+ENCODER_ID = (
+    "Qwen3.5-9B last_hidden_state, chat template add_generation_prompt+enable_thinking"
+)
 
 
 @dataclass
@@ -76,7 +82,8 @@ class CacheItem:
 class Pair:
     stem: str
     image: Path
-    caption: str
+    caption: str  # what the TE encodes
+    source_sha: str  # of the .txt it came from
 
 
 # ------------------------------------------------------------------ reading
@@ -119,7 +126,11 @@ def target_size(width: int, height: int, resolution: int) -> tuple[int, int]:
     """``(W, H)``: native aspect, multiples of 16, area ≤ ~``resolution²``, never
     larger than the source on either side."""
     cap = resolution * resolution
-    if width % STRIDE == 0 and height % STRIDE == 0 and width * height <= cap * AREA_TOLERANCE:
+    if (
+        width % STRIDE == 0
+        and height % STRIDE == 0
+        and width * height <= cap * AREA_TOLERANCE
+    ):
         return width, height
     area = min(cap, width * height)
     aspect = width / height
@@ -132,7 +143,9 @@ def target_size(width: int, height: int, resolution: int) -> tuple[int, int]:
 
 def load_rgb(path: Path) -> Image.Image:
     image = Image.open(path)
-    if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+    if image.mode in ("RGBA", "LA") or (
+        image.mode == "P" and "transparency" in image.info
+    ):
         rgba = image.convert("RGBA")
         canvas = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
         return Image.alpha_composite(canvas, rgba).convert("RGB")
@@ -160,7 +173,7 @@ def to_pixels(image: Image.Image) -> torch.Tensor:
 # ------------------------------------------------------------------ source
 
 
-def find_pairs(src: Path) -> list[Pair]:
+def find_pairs(src: Path, caption_format: str = "text") -> list[Pair]:
     """Images with a ``.txt`` caption beside them, subfolders included. Stems that
     collide across subfolders get their relative folder as a prefix."""
     images, found = source_pairs(src)
@@ -168,7 +181,32 @@ def find_pairs(src: Path) -> list[Pair]:
     for p in images:
         if p not in captioned:
             print(f"skip {p.name}: no caption sidecar", flush=True)
-    return [Pair(stem, image, caption.read_text(encoding="utf-8").strip()) for stem, image, caption in found]
+    convert = caption_converter(caption_format)
+    pairs = []
+    for stem, image, path in found:
+        raw = path.read_text(encoding="utf-8").strip()
+        pairs.append(Pair(stem, image, convert(raw), caption_sha(raw)))
+    return pairs
+
+
+def caption_converter(caption_format: str):
+    """``raw caption -> what the TE encodes`` for one ``caption_format``."""
+    if caption_format == "text":
+        return lambda raw: raw
+    if caption_format != "layout_json":
+        raise SystemExit(f"unknown caption_format {caption_format!r}")
+    from anime_tools.captions.correction import find_tag_csv, load_tag_knowledge_base
+    from anime_tools.captions.layout_json import layout_json
+
+    from library.env import anima_home
+
+    csv = find_tag_csv(anima_home())
+    if csv is None:
+        raise SystemExit(
+            "layout_json needs the danbooru tag CSV: make download-model ARGS=danbooru_tags"
+        )
+    kb = load_tag_knowledge_base(csv)
+    return lambda raw: layout_json(raw, kb)
 
 
 def _te_current(path: Path, caption: str, max_tokens: int) -> bool:
@@ -179,7 +217,9 @@ def _te_current(path: Path, caption: str, max_tokens: int) -> bool:
             meta = f.metadata() or {}
     except Exception:
         return False
-    return meta.get("caption_sha256") == caption_sha(caption) and meta.get("max_text_tokens") == str(max_tokens)
+    return meta.get("caption_sha256") == caption_sha(caption) and meta.get(
+        "max_text_tokens"
+    ) == str(max_tokens)
 
 
 def _latents_for(out_dir: Path, stem: str) -> list[Path]:
@@ -198,11 +238,16 @@ def glob_escape(text: str) -> str:
 # ------------------------------------------------------------------ passes
 
 
-def cache_text(pairs, out_dir, model_dir, device, max_tokens, overwrite) -> dict:
+def cache_text(
+    pairs, out_dir, model_dir, device, max_tokens, overwrite, caption_format="text"
+) -> dict:
     from library.moss.loader import empty_cache, encode_prompt, load_text_encoder
 
     todo = [
-        p for p in pairs if overwrite or not _te_current(out_dir / f"{p.stem}{TE_SUFFIX}", p.caption, max_tokens)
+        p
+        for p in pairs
+        if overwrite
+        or not _te_current(out_dir / f"{p.stem}{TE_SUFFIX}", p.caption, max_tokens)
     ]
     if not todo:
         print("text: all cached", flush=True)
@@ -214,7 +259,9 @@ def cache_text(pairs, out_dir, model_dir, device, max_tokens, overwrite) -> dict
     t1 = time.time()
     lengths = []
     for i, p in enumerate(todo, 1):
-        embeds = encode_prompt(tok, te, p.caption, device, max_tokens).to("cpu", torch.bfloat16)
+        embeds = encode_prompt(tok, te, p.caption, device, max_tokens).to(
+            "cpu", torch.bfloat16
+        )
         n = embeds.shape[0]
         lengths.append(n)
         note = "  TRUNCATED" if n >= max_tokens else ""
@@ -225,6 +272,8 @@ def cache_text(pairs, out_dir, model_dir, device, max_tokens, overwrite) -> dict
             metadata={
                 "caption": p.caption,
                 "caption_sha256": caption_sha(p.caption),
+                "caption_format": caption_format,
+                "source_sha256": p.source_sha,
                 "n_text": str(n),
                 "max_text_tokens": str(max_tokens),
                 "encoder": ENCODER_ID,
@@ -243,7 +292,9 @@ def cache_text(pairs, out_dir, model_dir, device, max_tokens, overwrite) -> dict
     return {"encoded": len(todo), "load_s": t_load, "encode_s": t_enc, "peak_gib": peak}
 
 
-def cache_latents(pairs, out_dir, model_dir, device, resolution, vae_dtype, overwrite, save_crops) -> dict:
+def cache_latents(
+    pairs, out_dir, model_dir, device, resolution, vae_dtype, overwrite, save_crops
+) -> dict:
     from library.moss.loader import empty_cache, load_vae
     from library.moss.model import encode
 
@@ -292,7 +343,10 @@ def cache_latents(pairs, out_dir, model_dir, device, resolution, vae_dtype, over
         )
         if save_crops:
             fitted.save(crops / f"{p.stem}.png")
-        print(f"  latents {i}/{len(plan)} {p.stem}: {size[0]}x{size[1]} -> {w}x{h}", flush=True)
+        print(
+            f"  latents {i}/{len(plan)} {p.stem}: {size[0]}x{size[1]} -> {w}x{h}",
+            flush=True,
+        )
     t_enc = time.time() - t1
     peak = torch.cuda.max_memory_allocated() / 1024**3
     print(
@@ -302,7 +356,13 @@ def cache_latents(pairs, out_dir, model_dir, device, resolution, vae_dtype, over
     )
     del vae
     empty_cache()
-    return {"encoded": len(plan), "resampled": resampled, "load_s": t_load, "encode_s": t_enc, "peak_gib": peak}
+    return {
+        "encoded": len(plan),
+        "resampled": resampled,
+        "load_s": t_load,
+        "encode_s": t_enc,
+        "peak_gib": peak,
+    }
 
 
 def summarize(out_dir: Path) -> dict:
@@ -316,8 +376,16 @@ def summarize(out_dir: Path) -> dict:
     size = sum(p.stat().st_size for p in out_dir.glob("*.moss_*.safetensors"))
     return {
         "items": len(items),
-        "text_tokens": {"min": min(text), "median": statistics.median(text), "max": max(text)},
-        "image_tokens": {"min": min(image), "median": statistics.median(image), "max": max(image)},
+        "text_tokens": {
+            "min": min(text),
+            "median": statistics.median(text),
+            "max": max(text),
+        },
+        "image_tokens": {
+            "min": min(image),
+            "median": statistics.median(image),
+            "max": max(image),
+        },
         "joint_tokens_max": max(joint),
         "shapes": len({(it.width, it.height) for it in items}),
         "bytes": size,
@@ -332,17 +400,32 @@ def run_cache(req) -> Path:
     out_dir = resolve_under_home(req.out)
     model_dir = resolve_model_dir(req.model_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    pairs = find_pairs(src)
+    pairs = find_pairs(src, req.caption_format)
     if not pairs:
         raise SystemExit(f"no image/caption pairs under {src}")
     print(f"{len(pairs)} pairs from {src}, model {model_dir}", flush=True)
     device = torch.device("cuda")
     report = {"src": str(src), "resolution": req.resolution}
     if not req.skip_text:
-        report["text"] = cache_text(pairs, out_dir, model_dir, device, req.max_text_tokens, req.overwrite)
+        report["text"] = cache_text(
+            pairs,
+            out_dir,
+            model_dir,
+            device,
+            req.max_text_tokens,
+            req.overwrite,
+            req.caption_format,
+        )
     if not req.skip_latents:
         report["latents"] = cache_latents(
-            pairs, out_dir, model_dir, device, req.resolution, req.vae_dtype, req.overwrite, req.save_crops
+            pairs,
+            out_dir,
+            model_dir,
+            device,
+            req.resolution,
+            req.vae_dtype,
+            req.overwrite,
+            req.save_crops,
         )
     report["summary"] = summarize(out_dir)
     (out_dir / "cache_report.json").write_text(json.dumps(report, indent=2))

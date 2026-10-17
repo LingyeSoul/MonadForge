@@ -155,6 +155,13 @@ class CacheRequest(_Request):
         "pixel-area cap as a square edge — 1024 means at most ~1024^2 pixels at "
         "the image's own aspect, both sides multiples of 16; never upscaled",
     )
+    caption_format: str = _f(
+        "text",
+        "what the TE encodes: the .txt verbatim, or the Anima caption mapped onto "
+        "MOSS's layout-JSON prompt (anime_tools.captions.layout_json; needs the "
+        "danbooru tag CSV) — generate with the same form",
+        choices=("text", "layout_json"),
+    )
     overwrite: bool = _f(False, "re-encode even when the cache is current")
     skip_text: bool = _f(False, "skip the text-encoder pass")
     skip_latents: bool = _f(False, "skip the VAE pass")
@@ -185,6 +192,12 @@ class GenerateRequest(_Request):
         multiline=True,
     )
     negative_prompt: str = _f("", "negative prompt (the pipeline default is empty)")
+    prompt_format: str = _f(
+        "text",
+        "text = as typed; layout_json = an Anima-format prompt mapped onto MOSS's "
+        "layout JSON, as the cache's caption_format does (not applied to example)",
+        choices=("text", "layout_json"),
+    )
     model: str = _f("base", "which DiT", choices=VARIANTS)
     lora: str = _f(
         "",
