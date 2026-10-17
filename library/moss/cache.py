@@ -215,14 +215,45 @@ def find_pairs(src: Path, caption_format: str = "text") -> list[Pair]:
     return pairs
 
 
+def is_layout_json(raw: str) -> bool:
+    """``raw`` is already a layout-JSON prompt (an object with ``summary``)."""
+    if not raw.startswith("{"):
+        return False
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(obj, dict) and "summary" in obj
+
+
 def caption_converter(caption_format: str):
-    """``raw caption -> what the TE encodes`` for one ``caption_format``."""
+    """``raw caption -> what the TE encodes`` for one ``caption_format``.
+
+    ``layout_json`` passes a caption that already is layout JSON through as
+    written (converting it again would nest the whole object in
+    ``summary.caption``), and loads the tag CSV only for the first caption that
+    needs converting."""
     if caption_format == "text":
         return lambda raw: raw
     if caption_format != "layout_json":
         raise SystemExit(f"unknown caption_format {caption_format!r}")
+    kb = None
+
+    def convert(raw: str) -> str:
+        nonlocal kb
+        if is_layout_json(raw):
+            return raw
+        from anime_tools.captions.layout_json import layout_json
+
+        if kb is None:
+            kb = _tag_knowledge_base()
+        return layout_json(raw, kb)
+
+    return convert
+
+
+def _tag_knowledge_base():
     from anime_tools.captions.correction import find_tag_csv, load_tag_knowledge_base
-    from anime_tools.captions.layout_json import layout_json
 
     from library.env import anima_home
 
@@ -231,8 +262,7 @@ def caption_converter(caption_format: str):
         raise SystemExit(
             "layout_json needs the danbooru tag CSV: make download-model ARGS=danbooru_tags"
         )
-    kb = load_tag_knowledge_base(csv)
-    return lambda raw: layout_json(raw, kb)
+    return load_tag_knowledge_base(csv)
 
 
 def _te_current(path: Path, caption: str, max_tokens: int) -> bool:
@@ -267,7 +297,13 @@ def glob_escape(text: str) -> str:
 def cache_text(
     pairs, out_dir, model_dir, device, max_tokens, overwrite, caption_format="text"
 ) -> dict:
-    from library.moss.loader import empty_cache, encode_prompt, load_text_encoder
+    from library.moss.loader import (
+        empty_cache,
+        encode_prompt,
+        load_text_encoder,
+        load_tokenizer,
+        prompt_ids,
+    )
 
     todo = [
         p
@@ -279,7 +315,11 @@ def cache_text(
         print("text: all cached", flush=True)
         return {"encoded": 0}
     t0 = time.time()
-    tok, te = load_text_encoder(model_dir, device)
+    tok = load_tokenizer(model_dir)
+    longest = max(
+        prompt_ids(tok, p.caption, max_tokens).input_ids.shape[1] for p in todo
+    )
+    tok, te = load_text_encoder(model_dir, device, longest, tok=tok)
     t_load = time.time() - t0
     torch.cuda.reset_peak_memory_stats()
     t1 = time.time()

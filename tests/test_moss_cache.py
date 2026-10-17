@@ -153,6 +153,20 @@ def test_find_pairs_layout_json(tmp_path, monkeypatch):
     assert pair.source_sha == caption_sha("1girl, hatsune miku, long hair")
 
 
+def test_layout_json_passes_layout_captions_through(monkeypatch):
+    import library.moss.cache as cache
+
+    def no_kb():
+        raise AssertionError("an already-converted caption needs no tag CSV")
+
+    monkeypatch.setattr(cache, "_tag_knowledge_base", no_kb)
+    convert = cache.caption_converter("layout_json")
+    done = '{"summary":{"characters":["hatsune miku"],"caption":"1girl"}}'
+    assert convert(done) == done
+    assert not cache.is_layout_json('{"items":[]}')
+    assert not cache.is_layout_json("{broken, tags")
+
+
 def test_find_pairs_prefers_a_current_layout_sidecar(tmp_path, monkeypatch):
     import os
 

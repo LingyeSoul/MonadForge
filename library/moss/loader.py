@@ -4,8 +4,12 @@
     transformer   5B, 42 single-stream blocks         10.2 GB  (9.7 GiB resident, bf16)
     vae           FLUX.2 AutoencoderKLFlux2            0.25 GB (decoded in fp32)
 
-The TE runs with whole decoder layers paged onto the card one at a time. Leaf-level
-offload hooks break on Qwen3.5's gated-DeltaNet layers, which read
+The TE's 248k-row token embedding (1.9 GB) stays on the CPU — a lookup needs no
+GPU — and the activation reserve is sized to the longest prompt, so at caption
+lengths (< ~1k tokens) all 32 decoder layers (12.9 GB) fit on the card. Layers
+that still do not fit are paged in whole, one at a time, from pinned memory; the
+encode is PCIe-bound while any are (7 paged ran at ~20 % GPU, 2.3 s per caption).
+Leaf-level offload hooks break on Qwen3.5's gated-DeltaNet layers, which read
 ``conv1d.weight`` functionally instead of calling the module.
 """
 
@@ -23,13 +27,47 @@ from library.runtime.device import free_vram_gb
 MAX_SEQUENCE_LENGTH = 4096
 
 
+def _te_reserve_gb(max_tokens: int) -> float:
+    """VRAM left free for the TE's activations: 2.5 GB at 4096 tokens, linear in
+    length above a fixed floor."""
+    return 0.75 + 1.75 * max_tokens / MAX_SEQUENCE_LENGTH
+
+
+def _embed_on_cpu(embed: torch.nn.Module, device) -> None:
+    """Look tokens up on the CPU and hand the rows to ``device``."""
+    embed.register_forward_pre_hook(lambda m, a: (a[0].cpu(),))
+    embed.register_forward_hook(lambda m, a, o: o.to(device))
+
+
+def _page_layer(layer: torch.nn.Module, device) -> None:
+    """Copy ``layer`` onto ``device`` for its own forward from a pinned CPU copy,
+    and drop the device copy after it (no copy back: the weights are unchanged)."""
+    tensors = [*layer.parameters(), *layer.buffers()]
+    host = [t.data.pin_memory() for t in tensors]
+    for t, h in zip(tensors, host):
+        t.data = h
+
+    def load(_m, _a):
+        for t, h in zip(tensors, host):
+            t.data = h.to(device, non_blocking=True)
+
+    def drop(_m, _a, _o):
+        for t, h in zip(tensors, host):
+            t.data = h
+
+    layer.register_forward_pre_hook(load)
+    layer.register_forward_hook(drop)
+
+
 def _offload_by_layer(te, device, reserve_gb):
-    """Non-layer modules and as many leading decoder layers as fit in free VRAM minus
-    ``reserve_gb`` stay resident; the rest page in for their own forward. The vision
-    tower stays on the CPU (unused for T2I)."""
+    """Non-layer modules but the token embedding, and as many leading decoder layers
+    as fit in free VRAM minus ``reserve_gb``, stay resident; the rest page in for
+    their own forward. The vision tower stays on the CPU (unused for T2I)."""
     lm = te.language_model
     for name, child in lm.named_children():
-        if name != "layers":
+        if name == "embed_tokens":
+            _embed_on_cpu(child, device)
+        elif name != "layers":
             child.to(device)
     budget = free_vram_gb(device.index or 0) - reserve_gb
     paged = 0
@@ -40,28 +78,51 @@ def _offload_by_layer(te, device, reserve_gb):
             budget -= size
             continue
         paged += 1
-        layer.register_forward_pre_hook(lambda m, a: (m.to(device), None)[1])
-        layer.register_forward_hook(lambda m, a, o: (m.to("cpu"), None)[1])
+        _page_layer(layer, device)
     return paged
 
 
+def load_tokenizer(model_dir: str | Path | None):
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(variant_dir(model_dir, "base") / "tokenizer")
+
+
 def load_text_encoder(
-    model_dir: str | Path | None, device="cuda", reserve_gb=2.5, log=print
+    model_dir: str | Path | None,
+    device="cuda",
+    max_tokens=MAX_SEQUENCE_LENGTH,
+    log=print,
+    tok=None,
 ):
     """``(tokenizer, text_encoder)`` on ``device``, layers that do not fit paged in
-    per forward (``reserve_gb`` is left free for activations at 4096 tokens).
-    TE and tokenizer are byte-identical between Base and SFT; Base's are used."""
-    from transformers import AutoModel, AutoTokenizer
+    per forward. ``max_tokens`` is the longest prompt the caller will encode (it
+    sizes the activation reserve). TE and tokenizer are byte-identical between
+    Base and SFT; Base's are used."""
+    from transformers import AutoModel
 
     root = variant_dir(model_dir, "base")
-    tok = AutoTokenizer.from_pretrained(root / "tokenizer")
+    tok = tok or load_tokenizer(model_dir)
     te = AutoModel.from_pretrained(root / "text_encoder", dtype=torch.bfloat16).eval()
-    paged = _offload_by_layer(te, torch.device(device), reserve_gb)
+    reserve = _te_reserve_gb(max_tokens)
+    paged = _offload_by_layer(te, torch.device(device), reserve)
     if log:
         log(
-            f"[te] {len(te.language_model.layers) - paged} decoder layers resident, {paged} paged"
+            f"[te] {len(te.language_model.layers) - paged} decoder layers resident, "
+            f"{paged} paged (reserve {reserve:.2f} GB for {max_tokens} tokens)"
         )
     return tok, te
+
+
+def prompt_ids(tok, text: str, max_length=MAX_SEQUENCE_LENGTH):
+    """The pipeline's tokenisation of one prompt (chat template, no padding)."""
+    formatted = tok.apply_chat_template(
+        [{"role": "user", "content": text}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=True,
+    )
+    return tok(formatted, return_tensors="pt", truncation=True, max_length=max_length)
 
 
 @torch.no_grad()
@@ -70,15 +131,7 @@ def encode_prompt(tok, te, text: str, device="cuda", max_length=MAX_SEQUENCE_LEN
     Exactly ``MOSSImagePipeline.encode_prompt``: chat template with
     ``add_generation_prompt=True, enable_thinking=True``, one prompt per forward
     (no padding — the GDN layers misbehave on it)."""
-    formatted = tok.apply_chat_template(
-        [{"role": "user", "content": text}],
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=True,
-    )
-    inputs = tok(
-        formatted, return_tensors="pt", truncation=True, max_length=max_length
-    ).to(device)
+    inputs = prompt_ids(tok, text, max_length).to(device)
     return te(**inputs, use_cache=False, return_dict=True).last_hidden_state[0]
 
 
@@ -86,9 +139,12 @@ def encode_prompts(
     model_dir, texts, device="cuda", max_length=MAX_SEQUENCE_LENGTH, log=print
 ):
     """Load the TE, encode each distinct text once, free it → ``{text: (S,4096) cpu}``."""
-    tok, te = load_text_encoder(model_dir, device, log=log)
+    texts = list(dict.fromkeys(texts))
+    tok = load_tokenizer(model_dir)
+    longest = max(prompt_ids(tok, t, max_length).input_ids.shape[1] for t in texts)
+    tok, te = load_text_encoder(model_dir, device, longest, log=log, tok=tok)
     out = {}
-    for text in dict.fromkeys(texts):
+    for text in texts:
         out[text] = encode_prompt(tok, te, text, device, max_length).cpu()
         if log:
             log(f"[te] {out[text].shape[0]:5d} tokens | {text[:60]!r}")
