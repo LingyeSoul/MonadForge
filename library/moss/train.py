@@ -133,6 +133,40 @@ def checkpoint_blocks(blocks) -> None:
         block.forward = forward
 
 
+# Uncheckpointed, the compiled saved set is ~5.25 MB per joint token at budget
+# 1.0 (128 KiB per block x 42); the constant covers AdamW state and allocator
+# growth (fit to budgets 0.15-0.25 at 4.4k tokens, ~1 GiB above measured).
+_BUDGET_BASE_GB = 3.5
+_BUDGET_MB_PER_TOKEN = 6.0
+
+
+def step_reserve_gb(
+    joint: int, *, grad_checkpointing: bool, budget: float = 1.0
+) -> float:
+    """VRAM one training step needs beyond the placed weights, at ``joint``
+    (image + text) tokens."""
+    if grad_checkpointing:
+        # ~0.6 MB per joint token (qwen21's measured slope, same hidden width
+        # class) plus one recomputed block.
+        return 1.5 + 0.6 * joint / 1024
+    return _BUDGET_BASE_GB + budget * _BUDGET_MB_PER_TOKEN * joint / 1024
+
+
+def budget_for_free(free_gb: float, joint: int, step: float = 0.05) -> float:
+    """The largest budget on a ``step`` grid whose :func:`step_reserve_gb` fits
+    ``free_gb``; 0.0 when not even one ``step`` fits."""
+    room = (free_gb - _BUDGET_BASE_GB) / (_BUDGET_MB_PER_TOKEN * joint / 1024)
+    return min(1.0, math.floor(max(0.0, room) / step + 1e-9) * step)
+
+
+def set_activation_memory_budget(budget: float) -> None:
+    """Inductor's partitioner reads this at compile time: set it before
+    ``compile_blocks`` (and reset ``torch._dynamo`` to change it later)."""
+    import torch._functorch.config as functorch_config
+
+    functorch_config.activation_memory_budget = budget
+
+
 def place(transformer, device, blocks_to_swap: int, reserve_gb: float):
     """Everything on ``device``, or the block swapper for ``blocks_to_swap`` > 0
     (``-1`` sizes it from ``mem_get_info`` free). Returns the attachment or None."""
@@ -253,23 +287,14 @@ def train(
     )
 
     budgeted = req.compile and not req.grad_checkpointing
-    joint = img[-1] + txt[-1]
-    if req.grad_checkpointing:
-        # ~0.6 MB per joint token (qwen21's measured slope, same hidden width
-        # class) plus one recomputed block.
-        reserve_gb = 1.5 + 0.6 * joint / 1024
-    else:
-        # Uncheckpointed, the compiled saved set is ~5.25 MB per joint token
-        # at budget 1.0 (128 KiB per block x 42); the constant covers AdamW
-        # state and allocator growth (fit to budgets 0.15-0.25 at 4.4k tokens).
-        budget = req.activation_memory_budget if budgeted else 1.0
-        reserve_gb = 3.5 + budget * 6.0 * joint / 1024
+    budget = req.activation_memory_budget if budgeted else 1.0
+    reserve_gb = step_reserve_gb(
+        img[-1] + txt[-1], grad_checkpointing=req.grad_checkpointing, budget=budget
+    )
     attached = place(transformer, device, req.blocks_to_swap, reserve_gb)
-    if budgeted and req.activation_memory_budget < 1.0:
-        import torch._functorch.config as functorch_config
-
-        functorch_config.activation_memory_budget = req.activation_memory_budget
-        print(f"activation memory budget {req.activation_memory_budget}", flush=True)
+    if budgeted and budget < 1.0:
+        set_activation_memory_budget(budget)
+        print(f"activation memory budget {budget}", flush=True)
     elif not req.compile and not req.grad_checkpointing:
         print(
             "warning: eager without checkpointing saves ~10 MB per joint token "

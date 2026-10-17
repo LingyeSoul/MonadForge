@@ -9,10 +9,9 @@ Random latents / embeddings at the given sizes, through ``library.moss.train.tra
 
 import argparse
 
-import torch
-
 from library.moss.requests import TrainRequest
-from library.moss.train import Sample, train
+from library.moss.train import train
+from library.moss.tune import synthetic_samples
 
 
 def main() -> None:
@@ -26,22 +25,18 @@ def main() -> None:
     ap.add_argument("--output", default="output/moss/lora/_fit_smoke.safetensors")
     args, rest = ap.parse_known_args()
 
-    samples = []
-    for i, spec in enumerate(args.sizes.split(",")):
-        size, n_text = spec.split(":")
-        w, h = map(int, size.split("x"))
-        n_text = int(n_text)
-
-        def load(w=w, h=h, n_text=n_text, i=i):
-            g = torch.Generator().manual_seed(i)
-            latent = torch.randn(128, h // 16, w // 16, generator=g)
-            embeds = torch.randn(n_text, 4096, generator=g).to(torch.bfloat16)
-            return latent, embeds
-
-        samples.append(Sample(f"synthetic{i}_{w}x{h}", (w // 16) * (h // 16), n_text, load))
+    samples = synthetic_samples(args.sizes)
 
     req = TrainRequest.from_argv(
-        ["--output", args.output, "--max_steps", str(args.steps), "--log_every", "1", *rest]
+        [
+            "--output",
+            args.output,
+            "--max_steps",
+            str(args.steps),
+            "--log_every",
+            "1",
+            *rest,
+        ]
     )
     req.epochs = max(1, -(-args.steps // len(samples)))
     train(req, samples)

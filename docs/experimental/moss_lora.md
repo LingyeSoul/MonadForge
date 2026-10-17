@@ -56,7 +56,14 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
   `--activation_memory_budget 0.2`, which ran at 1.78 s/step (−15 %) on a synthetic
   1024² fit. The best swap count depends on the PCIe link and the GPU: more swap lets
   the budget rise (less recompute) until the transfers stop hiding behind compute.
-  `--grad_checkpointing --blocks_to_swap 0` is the old plan.
+  `--grad_checkpointing --blocks_to_swap 0` is the old plan. To measure your machine's
+  pair (about 4 min, on the cache's largest sample):
+
+  ```bash
+  make daemon-run ARGS="scripts/moss/tune_swap.py --cache output/moss/cache/<set>"
+  ```
+
+  It prints one line per swap count and the flags to train with.
 - **A LoRA trained on Base also works on SFT.** It removes most of SFT's glossy look and
   lands close to Base + LoRA.
 - **Captions**: Anima-style tag captions trained and prompted fine. MOSS itself was

@@ -11,7 +11,7 @@ Nothing Anima-side imports `library.moss`.
 | Module | Role |
 |---|---|
 | `model.py` | vendored `MOSSImageTransformer` / `MOSSImageScheduler` (Apache-2.0, attribution kept; state-dict names unchanged). Reference per-sample `forward`, `forward_batched` (masked text, per-sample `skip_layers`), `head` for Spectrum, `pack_latents` / `unpack_latents` / `encode` / `decode` |
-| `requests.py` | **torch-free** `CacheRequest` / `GenerateRequest` / `TrainRequest`, `to_argv()` / `from_argv()`, model-dir resolution |
+| `requests.py` | **torch-free** `CacheRequest` / `GenerateRequest` / `TrainRequest` / `TuneSwapRequest`, `to_argv()` / `from_argv()`, model-dir resolution |
 | `loader.py` | phase split: TE (whole decoder layers paged onto the card) → encode → free → DiT; VAE |
 | `cache.py` | TE cache (natural length, never padded) + latent cache (packed, BN-normalised) |
 | `generate.py` | `run_generate(req)`: Euler or ER-SDE (`sampler`, Anima's `ERSDESampler`), CFG + uncond skip-22, Spectrum hook-in |
@@ -19,9 +19,10 @@ Nothing Anima-side imports `library.moss`.
 | `spectrum.py` | per-branch feature forecaster (cond and uncond forecast separately) |
 | `lora.py` | adapters held **outside** `layers` (the swapper moves every `.weight` under a block) |
 | `train.py` | `run_train(req)` |
+| `tune.py` | `run_tune(req)`: one process, one arm per swap count at the largest budget that fits, timed on the largest sample → recommended `--blocks_to_swap` / `--activation_memory_budget` |
 | `scan.py` | **torch-free** cache file layout (suffixes, stem prefixing) + source/cache counts for the GUI; `cache.py` imports its constants |
 
-Sidecars: `scripts/moss/{cache,generate,train}.py`, thin argparse over the requests,
+Sidecars: `scripts/moss/{cache,generate,train,tune_swap}.py`, thin argparse over the requests,
 submitted through the daemon; `make gui-moss` (`gui/moss/`) submits the same jobs. User doc:
 `docs/experimental/moss_lora.md`. Weights: catalog packs `moss-base` / `moss-sft`
 (`library/downloads.py`) under `models/moss_image/MOSS-Image-{Base,SFT}`; SFT ships its

@@ -267,7 +267,7 @@ class GenerateRequest(_Request):
 
 @dataclass
 class TrainRequest(_Request):
-    """Train a LoRA on a precached folder — flow matching, activation checkpointing."""
+    """Train a LoRA on a precached folder — flow matching."""
 
     SCRIPT: ClassVar[str] = "scripts/moss/train.py"
     # The block's six bias-free linears, as a fullmatch over qualified names.
@@ -334,7 +334,8 @@ class TrainRequest(_Request):
         24,
         "DiT blocks to swap to CPU (-1 = size from free VRAM). 24 frees the "
         "room budget 0.2 needs at ~4.4k joint tokens on 16 GB; more swap costs "
-        "PCIe time the step cannot hide",
+        "PCIe time the step cannot hide. scripts/moss/tune_swap.py measures "
+        "this machine's pair",
         advanced=True,
     )
     compile: bool = _f(
@@ -346,5 +347,53 @@ class TrainRequest(_Request):
         advanced=True,
     )
     log_every: int = _f(10, "full log line every N steps", advanced=True)
+    seed: int = _f(0, "RNG seed", advanced=True)
+    model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
+
+
+@dataclass
+class TuneSwapRequest(_Request):
+    """Find the --blocks_to_swap / --activation_memory_budget pair to train with on
+    this machine: one arm per swap count at the largest budget that fits, timed
+    on the largest sample."""
+
+    SCRIPT: ClassVar[str] = "scripts/moss/tune_swap.py"
+
+    cache: str = _f(
+        "output/moss/cache",
+        "cache folder; its largest sample (image + text tokens) is the one timed",
+    )
+    sizes: str = _f(
+        "",
+        "synthetic WxH:text_tokens instead of the cache (e.g. 1024x1024:300)",
+    )
+    model: str = _f("base", "which DiT to time", choices=VARIANTS)
+    rank: int = _f(16, "LoRA rank (the adapters and AdamW state take VRAM too)")
+    swap_grid: str = _f(
+        "8,12,16,20,24,28,32,36,40",
+        "swap counts to try, ascending (at most num_layers - 2)",
+    )
+    patience: int = _f(
+        2, "stop after this many arms in a row slower than the best so far"
+    )
+    margin_gb: float = _f(
+        1.0,
+        "free VRAM an arm must leave at its peak to be recommended (real runs "
+        "vary in length and grow the allocator)",
+    )
+    tolerance: float = _f(
+        0.02,
+        "arms this close to the fastest count as tied; the least swap among "
+        "them is recommended (the curve is flat below the PCIe knee)",
+    )
+    reference: bool = _f(
+        True, "also time the checkpointed plan (--grad_checkpointing, swap 0)"
+    )
+    budget_step: float = _f(0.05, "budget grid", advanced=True)
+    warmup: int = _f(2, "untimed steps per arm (compile lands here)", advanced=True)
+    steps: int = _f(5, "timed steps per arm", advanced=True)
+    output: str = _f(
+        "output/moss/tune/tune_swap.json", "JSON report path", advanced=True
+    )
     seed: int = _f(0, "RNG seed", advanced=True)
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)

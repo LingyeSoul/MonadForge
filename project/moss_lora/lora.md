@@ -129,3 +129,35 @@ s/step excludes step 1; free = `mem_get_info` at step 1:
   graph, but the synthetic |g| spread is too wide to show that.
 - The optimum swap depends on the machine (PCIe generation and lanes, GPU speed), so a
   16 GB card on a narrower link may want less swap and a lower budget.
+
+## Swap tuner (`scripts/moss/tune_swap.py`, 2026-10-17)
+
+`library/moss/tune.py`: the DiT loads once. Each arm places it with N blocks swapped,
+takes the largest budget on a 0.05 grid that `step_reserve_gb` fits into the free VRAM
+(`train.budget_for_free`), resets dynamo, recompiles, and times 5 steps after 2 warm-up
+steps on the largest sample. An OOM retries one budget step lower. The sweep stops 2 arms
+past the fastest. The recommendation is the least swap within 2 % of the fastest arm
+that leaves ≥ 1 GiB free. Report: JSON with GPU, PCIe link and every arm.
+
+First run, synthetic 1024²:300 on the 5070 Ti, 4.1 min
+(`output/moss/tune/tune_swap_synth1024.json`):
+
+| arm | budget | s/step | peak reserved | free |
+|---|---|---|---|---|
+| ckpt, swap 0 | — | 2.104 | 12.29 | 2.00 |
+| swap 8 | 0.1 | 1.821 | 13.28 | 1.00 |
+| swap 12 | 0.1 | 1.844 | 12.43 | 1.85 |
+| swap 16 | 0.15 | 1.803 | 12.61 | 1.70 |
+| swap 20 | 0.2 | 1.794 | 12.70 | 1.50 |
+| **swap 24** | 0.2 | **1.770** | 11.86 | 2.47 |
+| swap 28 | 0.25 | 1.756 | 12.42 | 1.90 |
+| swap 32 | 0.3 | 1.750 | 11.62 | 2.70 |
+| swap 36 | 0.3 | 1.772 | 10.78 | 3.56 |
+| swap 40 | 0.35 | 2.341 | 11.01 | 3.33 |
+
+- **The curve is flat from swap 8 to 36 (1.75–1.84) and falls off a cliff at 40.** Budget
+  0.1–0.3 barely moves the step, so the speed-up is almost all from dropping the
+  checkpoint recompute. Below the knee, swap count is a VRAM choice, not a speed choice.
+- Strict fastest was swap 32 (1.750), within timing noise of 24 (1.770). With the 2 %
+  tie rule the tuner recommends **swap 24 / budget 0.2**, the shipped default.
+- The budget predictor is conservative: arms finished with 1.0–3.6 GiB free.
