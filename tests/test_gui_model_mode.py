@@ -1,0 +1,75 @@
+"""Main-window model mode: the Anima / MOSS dropdown, its persistence, and the
+embedded MOSS panel (``gui.lines.window.build_panel``)."""
+
+from __future__ import annotations
+
+import json
+import os
+
+import pytest
+
+
+@pytest.fixture
+def qapp():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture
+def settings_file(tmp_path, monkeypatch):
+    import gui.core.paths as paths
+
+    path = tmp_path / "gui_settings.json"
+    monkeypatch.setattr(paths, "GUI_SETTINGS_FILE", path)
+    return path
+
+
+def test_build_panel_maps_language_and_leaves_main_i18n(qapp, settings_file):
+    from gui import i18n
+    from gui.lines import window
+    from gui.moss.app import SPEC
+
+    i18n.set_language("ko")
+    try:
+        panel = window.build_panel(SPEC, "ko")
+        assert window._lang == "en"
+        assert i18n.current_language() == "ko"
+        assert not hasattr(panel, "lang_combo")
+        window.build_panel(SPEC, "cn")
+        assert window._lang == "cn"
+    finally:
+        i18n.set_language("en")
+
+
+def test_mode_switch_is_lazy_persisted_and_restored(qapp, settings_file, monkeypatch):
+    import gui.app as app_mod
+
+    monkeypatch.setattr(app_mod, "check_for_update_async", lambda *a: None)
+    win = app_mod.MainWindow()
+    assert win._mode == "anima" and win._moss_panel is None
+    assert not settings_file.exists()  # restoring at launch writes nothing
+
+    win.tensorboard_btn.setChecked(True)
+    win.mode_combo.setCurrentIndex(1)
+    assert win._mode == "moss"
+    assert win.tab_stack.currentWidget() is win._moss_panel
+    assert win._mode_frame.property("mode") == "moss"
+    assert not win.tensorboard_btn.isChecked()
+    assert win.tensorboard_btn.isHidden() and win.guide_btn.isHidden()
+    assert json.loads(settings_file.read_text())["model_mode"] == "moss"
+
+    # The queue overlay stays reachable in MOSS mode and returns to the MOSS page.
+    win.queue_btn.setChecked(True)
+    assert win.tab_stack.currentWidget() is win._queue_tab
+    win.queue_btn.setChecked(False)
+    assert win.tab_stack.currentWidget() is win._moss_panel
+    win.close()
+
+    again = app_mod.MainWindow()
+    assert again._mode == "moss" and again.mode_combo.currentData() == "moss"
+    again.mode_combo.setCurrentIndex(0)
+    assert again.tab_stack.currentWidget() is again.tabs
+    assert not again.tensorboard_btn.isHidden()
+    again.close()

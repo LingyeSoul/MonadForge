@@ -11,6 +11,8 @@ from PySide6.QtCore import QEvent, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -24,13 +26,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui import get_setting
+from gui import get_setting, set_setting
 from gui.jobs import daemon as gui_daemon
 from gui import theme as gui_theme
 from gui.dialogs.guidebook import GuidebookDialog, _guidebook_path
 from gui.widgets.gpu_status import GpuStatusBar
 from gui.widgets import LazyTabHolder, action_button, wrap_tooltip
-from gui.i18n import load_language, t
+from gui.i18n import current_language, load_language, t
 from gui.dialogs.settings import SettingsDialog
 from gui.tabs.anime_tools_tab import AnimeToolsTab
 from gui.tabs.easycontrol_tab import EasyControlTab
@@ -72,7 +74,12 @@ class MainWindow(QMainWindow):
         main_lay = QVBoxLayout(central)
         main_lay.setContentsMargins(0, 0, 0, 0)
 
-        lang_bar = QHBoxLayout()
+        # Top bar and content frame carry the model mode as a ``mode`` property;
+        # theme._mode_rules paints both in the mode's hue.
+        self._mode_bar = QFrame()
+        self._mode_bar.setObjectName("modeBar")
+        lang_bar = QHBoxLayout(self._mode_bar)
+        lang_bar.setContentsMargins(0, 0, 0, 4)
         if ICON_PATH.exists():
             icon_label = QLabel()
             pix = QPixmap(str(ICON_PATH))
@@ -86,6 +93,13 @@ class MainWindow(QMainWindow):
                 )
             icon_label.setContentsMargins(4, 0, 6, 0)
             lang_bar.addWidget(icon_label)
+        lang_bar.addWidget(QLabel(t("mode_label")))
+        self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("modeCombo")
+        self.mode_combo.setToolTip(t("mode_tooltip"))
+        for mode in gui_theme.MODES:
+            self.mode_combo.addItem(t(f"mode_{mode}"), mode)
+        lang_bar.addWidget(self.mode_combo)
         self.guide_btn = action_button(
             t("guidebook"),
             variant="success",
@@ -136,7 +150,7 @@ class MainWindow(QMainWindow):
         self.settings_btn.setToolTip(t("settings_btn_tooltip"))
         self.settings_btn.clicked.connect(self._open_settings)
         lang_bar.addWidget(self.settings_btn)
-        main_lay.addLayout(lang_bar)
+        main_lay.addWidget(self._mode_bar)
 
         # Overlays share a QStackedWidget with the tab set; all widgets stay alive
         # across switches so subprocess state and log buffers survive toggling.
@@ -187,11 +201,20 @@ class MainWindow(QMainWindow):
 
         self._queue_tab = QueueTab()
 
+        # One stack for both modes' content and the overlays. The MOSS page
+        # (gui/lines over library/moss) is built on first switch.
         self.tab_stack = QStackedWidget()
         self.tab_stack.addWidget(self.tabs)
         self.tab_stack.addWidget(self._tb_tab)
         self.tab_stack.addWidget(self._queue_tab)
-        main_lay.addWidget(self.tab_stack)
+        self._moss_panel = None
+        self._mode = "anima"
+        self._mode_frame = QFrame()
+        self._mode_frame.setObjectName("modeFrame")
+        frame_lay = QVBoxLayout(self._mode_frame)
+        frame_lay.setContentsMargins(2, 2, 2, 2)
+        frame_lay.addWidget(self.tab_stack)
+        main_lay.addWidget(self._mode_frame)
 
         # Live GPU utilisation/VRAM footer, always visible below the tab set.
         self._gpu_bar = GpuStatusBar()
@@ -206,6 +229,14 @@ class MainWindow(QMainWindow):
 
         self._update_tensorboard_btn_style(False)
         self._update_queue_btn_style(False)
+        saved_mode = get_setting("model_mode", "anima")
+        self._set_mode(
+            saved_mode if saved_mode in gui_theme.MODES else "anima", persist=False
+        )
+        self.mode_combo.setCurrentIndex(gui_theme.MODES.index(self._mode))
+        self.mode_combo.currentIndexChanged.connect(
+            lambda: self._set_mode(self.mode_combo.currentData())
+        )
 
         # Uniform right-click + wrapped tooltips, filtered on each top-level QWindow
         # (this one and every dialog, picked up as it takes focus) — not app-wide.
@@ -251,6 +282,8 @@ class MainWindow(QMainWindow):
                 cleanup()
         self._tb_tab.cleanup_subprocess()
         self._queue_tab.cleanup_subprocess()
+        if self._moss_panel is not None:
+            self._moss_panel.cleanup_subprocess()
         self._gpu_bar.cleanup()
         super().closeEvent(event)
 
@@ -267,12 +300,45 @@ class MainWindow(QMainWindow):
             btn.blockSignals(False)
             style_fn(False)
 
+    def _content(self) -> QWidget:
+        return self._moss_panel if self._mode == "moss" else self.tabs
+
+    def _set_mode(self, mode: str, persist: bool = True) -> None:
+        """Switch the content between Anima and MOSS. View-only: jobs running in
+        the daemon keep going, and each page keeps its own job observer."""
+        if mode == "moss" and self._moss_panel is None:
+            from gui.lines.window import build_panel
+            from gui.moss.app import SPEC
+
+            self._moss_panel = build_panel(SPEC, current_language())
+            self.tab_stack.addWidget(self._moss_panel)
+        self._mode = mode
+        if persist:
+            set_setting("model_mode", mode)
+        moss = mode == "moss"
+        # TensorBoard lists train.py runs and the Guidebook covers Anima;
+        # the MOSS trainer writes neither.
+        if moss:
+            self._clear_overlay_toggle(
+                self.tensorboard_btn, self._update_tensorboard_btn_style
+            )
+        self.tensorboard_btn.setVisible(not moss)
+        self.guide_btn.setVisible(not moss)
+        for w in (self._mode_bar, self._mode_frame, self.mode_combo):
+            w.setProperty("mode", mode)
+            w.style().unpolish(w)
+            w.style().polish(w)
+        if not self.queue_btn.isChecked():
+            self.tab_stack.setCurrentWidget(self._content())
+        title = t("window_title")
+        self.setWindowTitle(f"{title} — {t('mode_moss')}" if moss else title)
+
     def _toggle_tensorboard(self, on: bool):
         if on:
             self._clear_overlay_toggle(self.queue_btn, self._update_queue_btn_style)
             self.tab_stack.setCurrentWidget(self._tb_tab)
         else:
-            self.tab_stack.setCurrentWidget(self.tabs)
+            self.tab_stack.setCurrentWidget(self._content())
         self._update_tensorboard_btn_style(on)
 
     def _update_tensorboard_btn_style(self, on: bool):
@@ -287,7 +353,7 @@ class MainWindow(QMainWindow):
             )
             self.tab_stack.setCurrentWidget(self._queue_tab)
         else:
-            self.tab_stack.setCurrentWidget(self.tabs)
+            self.tab_stack.setCurrentWidget(self._content())
         self._update_queue_btn_style(on)
 
     def _update_queue_btn_style(self, on: bool):
@@ -367,6 +433,8 @@ class MainWindow(QMainWindow):
         is shown before the old closes so quitOnLastWindowClosed never fires."""
         global _WINDOW
         new = MainWindow()
+        if self._moss_panel is not None and new._moss_panel is not None:
+            new._moss_panel._pending = self._moss_panel._pending
         new.setGeometry(self.geometry())
         new.show()
         _WINDOW = new

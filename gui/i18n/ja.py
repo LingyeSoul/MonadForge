@@ -302,6 +302,10 @@ STRINGS: dict[str, str] = {
     # Settings dialog
     "settings_btn": "⚙ 設定",
     "settings_btn_tooltip": "アプリ設定 — 言語、環境設定、MCP サーバー登録",
+    "mode_label": "モデル",
+    "mode_tooltip": "このウィンドウで学習・テストするモデルです。Anima と MOSS-Image はキャッシュ、設定、LoRA を別々に持ちます。切り替えは表示だけが変わり、実行中のジョブは止まりません。",
+    "mode_anima": "Anima",
+    "mode_moss": "MOSS-Image",
     "settings_title": "設定",
     "settings_prefs_header": "環境設定",
     "settings_theme": "テーマ:",

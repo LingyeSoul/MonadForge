@@ -335,32 +335,40 @@ class _LineProgress:
         self.bar.setVisible(False)
 
 
-class LineWindow(DaemonJobMixin, QMainWindow):
-    def __init__(self, spec: LineSpec):
+class LinePanel(DaemonJobMixin, QWidget):
+    """The line's Preprocess / Train / Test forms, log and job observer.
+
+    ``LineWindow`` wraps it standalone; the main GUI's MOSS mode embeds it
+    (``build_panel``). ``on_language`` adds the en/cn picker (standalone only).
+    """
+
+    def __init__(
+        self, spec: LineSpec, on_language: Callable[[str], None] | None = None
+    ):
         super().__init__()
         self.spec = spec
         self.label_cache, self.label_train, self.label_test = spec.labels
-        self.setWindowTitle(tr("window_title"))
-        self.resize(900, 820)
         self._init_job_observer()
         self._job_label: str | None = None
         # (request, label) submitted one by one as each job succeeds.
         self._pending: list[tuple[Any, str]] = []
 
-        central = QWidget()
-        root = QVBoxLayout(central)
+        root = QVBoxLayout(self)
 
         top = QHBoxLayout()
         self.model_label = QLabel()
         self.model_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         top.addWidget(self.model_label, 1)
-        top.addWidget(QLabel(tr("language")))
-        self.lang_combo = QComboBox()
-        for code, name in LANGUAGES.items():
-            self.lang_combo.addItem(name, code)
-        self.lang_combo.setCurrentIndex(list(LANGUAGES).index(_lang))
-        self.lang_combo.currentIndexChanged.connect(self._change_language)
-        top.addWidget(self.lang_combo)
+        if on_language is not None:
+            top.addWidget(QLabel(tr("language")))
+            self.lang_combo = QComboBox()
+            for code, name in LANGUAGES.items():
+                self.lang_combo.addItem(name, code)
+            self.lang_combo.setCurrentIndex(list(LANGUAGES).index(_lang))
+            self.lang_combo.currentIndexChanged.connect(
+                lambda: on_language(self.lang_combo.currentData())
+            )
+            top.addWidget(self.lang_combo)
         root.addLayout(top)
 
         self.tabs = QTabWidget()
@@ -439,7 +447,6 @@ class LineWindow(DaemonJobMixin, QMainWindow):
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
         root.addWidget(split, 1)
-        self.setCentralWidget(central)
 
         self._rescan_timer = QTimer(self)
         self._rescan_timer.setSingleShot(True)
@@ -704,21 +711,34 @@ class LineWindow(DaemonJobMixin, QMainWindow):
         self._set_busy(True)
         self._watch_job(job_id, replay_log=True)
 
-    # ── language ─────────────────────────────────────────────────────────
+    def cleanup_subprocess(self) -> None:
+        """Stop observing on close; the job itself keeps running in the daemon."""
+        self._job_timer.stop()
 
-    def _change_language(self) -> None:
-        code = self.lang_combo.currentData()
+
+class LineWindow(QMainWindow):
+    """``make gui-qwen`` / ``make gui-moss``: one ``LinePanel`` in its own window."""
+
+    def __init__(self, spec: LineSpec):
+        super().__init__()
+        self.spec = spec
+        self.setWindowTitle(tr("window_title"))
+        self.resize(900, 820)
+        self.panel = LinePanel(spec, on_language=self._change_language)
+        self.setCentralWidget(self.panel)
+
+    def _change_language(self, code: str) -> None:
         if code == _lang:
             return
-        self._persist()
+        self.panel._persist()
         set_setting(f"{self.spec.key}_language", code)
         _set_language(code)
         # Rebuild in place: every label is set at construction.
         global _WINDOW
         geometry = self.saveGeometry()
-        self._job_timer.stop()
+        self.panel.cleanup_subprocess()
         _WINDOW = LineWindow(self.spec)
-        _WINDOW._pending = self._pending
+        _WINDOW.panel._pending = self.panel._pending
         _WINDOW.restoreGeometry(geometry)
         _WINDOW.show()
         self.close()
@@ -732,6 +752,15 @@ def _set_language(code: str) -> None:
 
 
 _WINDOW: LineWindow | None = None
+
+
+def build_panel(spec: LineSpec, main_lang: str) -> LinePanel:
+    """The line's panel for embedding in the main GUI: cn when the main GUI is
+    cn, else en. Leaves the main GUI's i18n table alone."""
+    global _spec, _lang
+    _spec = spec
+    _lang = "cn" if main_lang == "cn" else "en"
+    return LinePanel(spec)
 
 
 def run(spec: LineSpec) -> None:

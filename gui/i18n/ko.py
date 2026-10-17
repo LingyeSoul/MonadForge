@@ -343,6 +343,10 @@ STRINGS: dict[str, str] = {
     # Settings dialog
     "settings_btn": "⚙ 설정",
     "settings_btn_tooltip": "앱 설정 — 언어, 환경설정, MCP 서버 등록",
+    "mode_label": "모델",
+    "mode_tooltip": "창에서 학습·테스트할 모델입니다. Anima와 MOSS-Image는 캐시, 설정, LoRA를 따로 씁니다. 전환은 화면만 바꾸며 실행 중인 작업은 계속됩니다.",
+    "mode_anima": "Anima",
+    "mode_moss": "MOSS-Image",
     "settings_title": "설정",
     "settings_prefs_header": "환경설정",
     "settings_theme": "테마:",

@@ -77,6 +77,8 @@ class Theme:
       ``ok_bg`` / ``warn_bg`` / ``err_bg`` (banner fills that the matching
       status text reads on).
     * ``scroll_bg`` / ``scroll_handle`` / ``scroll_handle_hover`` scrollbars.
+    * ``mode_moss`` the MOSS-mode frame and top-bar strip (Anima mode uses
+      ``accent``); see :func:`_mode_rules`.
     * ``is_dark`` whether the theme reads as dark (lets callers branch when a
       token isn't enough).
     """
@@ -110,6 +112,7 @@ class Theme:
     scroll_bg: str
     scroll_handle: str
     scroll_handle_hover: str
+    mode_moss: str
 
 
 _DARK = Theme(
@@ -142,6 +145,7 @@ _DARK = Theme(
     scroll_bg="#242424",
     scroll_handle="#b8b8b8",
     scroll_handle_hover="#d0d0d0",
+    mode_moss="#7fb045",
 )
 
 _LIGHT = Theme(
@@ -174,6 +178,7 @@ _LIGHT = Theme(
     scroll_bg="#e0e0e0",
     scroll_handle="#b4b4b4",
     scroll_handle_hover="#909090",
+    mode_moss="#4f8a1f",
 )
 
 _SEPIA = Theme(
@@ -206,6 +211,7 @@ _SEPIA = Theme(
     scroll_bg="#e6dabe",
     scroll_handle="#c0ad88",
     scroll_handle_hover="#a89468",
+    mode_moss="#5f7f2a",
 )
 
 # Saturated *action* button palette — theme-INDEPENDENT (white-on-color reads on
@@ -529,6 +535,22 @@ def _action_button_rules() -> str:
     return "".join(blocks)
 
 
+# Main-window model modes (``MainWindow`` sets ``mode`` on these objects).
+MODES = ("anima", "moss")
+
+
+def _mode_rules(t: Theme) -> str:
+    """The frame around the content and the top-bar strip, in the mode's hue:
+    ``accent`` for Anima, ``mode_moss`` for MOSS."""
+    return f"""
+        QFrame#modeBar {{ border: none; border-bottom: 3px solid {t.accent}; }}
+        QFrame#modeBar[mode="moss"] {{ border-bottom-color: {t.mode_moss}; }}
+        QFrame#modeFrame {{ border: 2px solid {t.accent}; }}
+        QFrame#modeFrame[mode="moss"] {{ border-color: {t.mode_moss}; }}
+        QComboBox#modeCombo {{ border: 2px solid {t.accent}; font-weight: bold; }}
+        QComboBox#modeCombo[mode="moss"] {{ border-color: {t.mode_moss}; }}"""
+
+
 def _build_stylesheet(
     t: Theme, font_family: str = "", font_size: int = DEFAULT_FONT_SIZE
 ) -> str:
@@ -607,6 +629,7 @@ def _build_stylesheet(
         QMenu::item:disabled {{ color: {t.text_dim}; }}
         QMenu::separator {{ height: 1px; background: {t.border_dim}; margin: 4px 8px; }}
         {_action_button_rules()}
+        {_mode_rules(t)}
     """
 
 

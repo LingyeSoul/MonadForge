@@ -295,6 +295,10 @@ STRINGS: dict[str, str] = {
     # Settings dialog
     "settings_btn": "⚙ 设置",
     "settings_btn_tooltip": "应用设置 —— 语言、偏好设置、MCP 服务器注册",
+    "mode_label": "模型",
+    "mode_tooltip": "此窗口训练和测试的模型。Anima 与 MOSS-Image 的缓存、设置和 LoRA 各自独立；切换只改变界面，正在运行的任务会继续。",
+    "mode_anima": "Anima",
+    "mode_moss": "MOSS-Image",
     "settings_title": "设置",
     "settings_prefs_header": "偏好设置",
     "settings_theme": "主题:",

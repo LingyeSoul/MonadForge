@@ -356,6 +356,10 @@ STRINGS: dict[str, str] = {
     # Settings dialog
     "settings_btn": "⚙ Settings",
     "settings_btn_tooltip": "Application settings — language, preferences, MCP server registration",
+    "mode_label": "Model",
+    "mode_tooltip": "Which model the window trains and tests. Anima and MOSS-Image keep separate caches, settings and LoRAs; switching only changes the view, running jobs keep going.",
+    "mode_anima": "Anima",
+    "mode_moss": "MOSS-Image",
     "settings_title": "Settings",
     "settings_prefs_header": "Preferences",
     "settings_theme": "Theme:",

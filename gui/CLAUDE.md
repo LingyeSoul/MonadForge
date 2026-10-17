@@ -36,10 +36,11 @@ must not appear.
   boot doesn't block the window) → Qt loop.
 - `make gui-qwen` → `python -m gui.qwen21`, `make gui-moss` → `python -m gui.moss` —
   separate en/cn windows for the non-Anima lines (`library/qwen21/`, `library/moss/`).
-  Both are `gui/lines/window.py::LineWindow` over a `LineSpec` built in
-  `gui/<line>/app.py` (request classes, scan helpers, test passes, strings). Reuses
-  `theme`, `jobs.daemon`, `DaemonJobMixin`, `widgets` only; strings live in
-  `gui/lines/strings.py` + `gui/<line>/strings.py`, not `gui/i18n/`.
+  Both are `gui/lines/window.py::LineWindow` (a window around one `LinePanel`) over a
+  `LineSpec` built in `gui/<line>/app.py` (request classes, scan helpers, test passes,
+  strings). Reuses `theme`, `jobs.daemon`, `DaemonJobMixin`, `widgets` only; strings
+  live in `gui/lines/strings.py` + `gui/<line>/strings.py`, not `gui/i18n/`. The same
+  MOSS panel also runs inside `make gui` (MOSS mode, below).
 - `make lora-gui GUI_PRESETS=<variant>` trains from `gui-methods/` configs; it does not
   launch the GUI.
 
@@ -48,7 +49,16 @@ must not appear.
 - **`app.py::MainWindow`** — top bar (Guidebook / Models / Update / Queue + TensorBoard
   overlay toggles / ⚙ Settings → `dialogs/settings.py::SettingsDialog`: language, theme,
   MCP registration; a language change offers an in-place rebuild via `_reload_ui`) over
-  one tab set in a `QStackedWidget` shared with the Queue and TensorBoard overlays. Tabs:
+  one tab set in a `QStackedWidget` shared with the Queue and TensorBoard overlays.
+  **Model mode**: the top bar's Model dropdown (Anima / MOSS-Image, `theme.MODES`,
+  persisted as `model_mode` in `gui_settings.json`) swaps the stack's content page
+  between the tab set and `gui.lines.window.build_panel(gui.moss.app.SPEC, lang)`, built
+  on first switch (en, or cn when the GUI is cn). View-only: daemon jobs keep running
+  and each page keeps its own job observer. MOSS mode hides Guidebook and TensorBoard
+  (the MOSS trainer writes no TB logs); Queue stays. The top bar (`QFrame#modeBar`),
+  the content frame (`#modeFrame`) and the dropdown carry a `mode` property that
+  `theme._mode_rules` paints — `accent` for Anima, the per-theme `mode_moss` token for
+  MOSS. Tabs:
   Config (MethodsTab over the LoRA family + Turbo), anime_tools, Preprocess, Merge,
   Experimental (MethodsTab over research methods + soup), EasyControl. Theme applied by
   `_dark()` → `theme.apply_theme`.
