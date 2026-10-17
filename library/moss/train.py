@@ -1,4 +1,4 @@
-"""Train a LoRA on a precached folder — flow matching, batch 1, activation checkpointing.
+"""Train a LoRA on a precached folder — flow matching, batch 1.
 
 Reads only what ``cache.py`` wrote (latents + text embeddings), so neither the
 Qwen3.5-9B TE nor the VAE is loaded; the one exception is ``--caption_dropout``,
@@ -16,9 +16,12 @@ interval trained at area ≤ 1024², which is the size the cache targets, so no
 resolution shift is added. Median σ ≈ 0.75 — noise-heavy, matching an inference
 grid that spends most of its steps at high σ under shift 5.
 
-Checkpointing wraps each block's ``forward`` (not ``__call__``), so the block
-swapper's forward hooks fire once per step and never again during the
-recompute; ``MOSSImageTransformer.gradient_checkpointing`` is left off.
+Default memory plan: no checkpointing, 24 blocks swapped, and the compiled
+blocks' saved set capped by ``activation_memory_budget`` (0.2), which is faster
+than checkpointing on 16 GB (``project/moss_lora/lora.md`` § Swap + budget).
+``--grad_checkpointing`` wraps each block's ``forward`` (not ``__call__``), so
+the block swapper's forward hooks fire once per step and never again during
+the recompute; ``MOSSImageTransformer.gradient_checkpointing`` is left off.
 
     make daemon-run ARGS="scripts/moss/train.py --cache output/moss/cache/<set> --epochs 8"
 """
@@ -229,10 +232,30 @@ def train(req: TrainRequest, samples: list[Sample], empty: torch.Tensor | None =
         flush=True,
     )
 
-    # A checkpointed step holds ~0.6 MB per joint token (qwen21's measured
-    # slope, same hidden width class) plus one recomputed block.
-    reserve_gb = 1.5 + 0.6 * (img[-1] + txt[-1]) / 1024
+    budgeted = req.compile and not req.grad_checkpointing
+    joint = img[-1] + txt[-1]
+    if req.grad_checkpointing:
+        # ~0.6 MB per joint token (qwen21's measured slope, same hidden width
+        # class) plus one recomputed block.
+        reserve_gb = 1.5 + 0.6 * joint / 1024
+    else:
+        # Uncheckpointed, the compiled saved set is ~5.25 MB per joint token
+        # at budget 1.0 (128 KiB per block x 42); the constant covers AdamW
+        # state and allocator growth (fit to budgets 0.15-0.25 at 4.4k tokens).
+        budget = req.activation_memory_budget if budgeted else 1.0
+        reserve_gb = 3.5 + budget * 6.0 * joint / 1024
     attached = place(transformer, device, req.blocks_to_swap, reserve_gb)
+    if budgeted and req.activation_memory_budget < 1.0:
+        import torch._functorch.config as functorch_config
+
+        functorch_config.activation_memory_budget = req.activation_memory_budget
+        print(f"activation memory budget {req.activation_memory_budget}", flush=True)
+    elif not req.compile and not req.grad_checkpointing:
+        print(
+            "warning: eager without checkpointing saves ~10 MB per joint token "
+            "per step; add --grad_checkpointing unless the card has room",
+            flush=True,
+        )
     if req.compile:
         compile_blocks(transformer.layers)
     if req.grad_checkpointing:

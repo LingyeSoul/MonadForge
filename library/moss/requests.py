@@ -316,11 +316,25 @@ class TrainRequest(_Request):
         0.01, "mixture weight of discrete-uniform sigma", advanced=True
     )
     max_grad_norm: float = _f(1.0, "gradient clip", advanced=True)
-    grad_checkpointing: bool = _f(True, "per-block activation checkpointing")
+    grad_checkpointing: bool = _f(
+        False,
+        "per-block activation checkpointing. Off by default: the activation "
+        "budget plus block swap below run 1.78 vs 2.09 s/step at ~4.4k joint "
+        "tokens on 16 GB (2026-10-17). Turn it on with --no-compile, or with "
+        "--blocks_to_swap 0 to keep the whole DiT on the card",
+    )
+    activation_memory_budget: float = _f(
+        0.2,
+        "cap on the compiled blocks' saved-for-backward set (Inductor's min-cut "
+        "partitioner recomputes the rest); applies with --compile and "
+        "--no-grad_checkpointing, ignored otherwise",
+        advanced=True,
+    )
     blocks_to_swap: int = _f(
-        0,
-        "DiT blocks to swap to CPU (-1 = size from free VRAM). The bf16 DiT is "
-        "9.7 GiB resident, so 0 is the default",
+        24,
+        "DiT blocks to swap to CPU (-1 = size from free VRAM). 24 frees the "
+        "room budget 0.2 needs at ~4.4k joint tokens on 16 GB; more swap costs "
+        "PCIe time the step cannot hide",
         advanced=True,
     )
     compile: bool = _f(

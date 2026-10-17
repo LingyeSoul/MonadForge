@@ -48,10 +48,15 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
 
 ## What to expect
 
-- **Training** (5070 Ti, Base, rank 16, compiled, no block swap): 30 images × 20 epochs
-  took 21 min at about 2.1 s/step, with an 11.8 GiB peak. The LoRA moved line work and
-  palette toward the set. Character identity held, including characters the set does
-  not contain.
+- **Training** (5070 Ti, Base, rank 16, compiled, checkpointed, no block swap): 30
+  images × 20 epochs took 21 min at about 2.1 s/step, with an 11.8 GiB peak. The LoRA
+  moved line work and palette toward the set. Character identity held, including
+  characters the set does not contain.
+- **Memory plan**: the default is no checkpointing, 24 blocks swapped to CPU and
+  `--activation_memory_budget 0.2`, which ran at 1.78 s/step (−15 %) on a synthetic
+  1024² fit. The best swap count depends on the PCIe link and the GPU: more swap lets
+  the budget rise (less recompute) until the transfers stop hiding behind compute.
+  `--grad_checkpointing --blocks_to_swap 0` is the old plan.
 - **A LoRA trained on Base also works on SFT.** It removes most of SFT's glossy look and
   lands close to Base + LoRA.
 - **Captions**: Anima-style tag captions trained and prompted fine. MOSS itself was

@@ -83,7 +83,49 @@ By eye:
 
 - Recognisability is a by-eye "moderate"; a stronger setting (lr 2e-4 or more steps)
   and a side-by-side with training crops at matched prompts would settle it.
-- Swap + checkpoint + compile together is untested (swap was never needed).
+- Swap + checkpoint + compile together is untested. Swap + budget + compile without
+  checkpointing is the default now (§ Swap + budget).
 - The trainer keeps `MOSSImageTransformer.gradient_checkpointing` off and checkpoints
   `block.forward` itself (hooks once, compile-compatible). The flag in `model.py` is
   unused by training.
+
+## Swap + budget instead of checkpointing (2026-10-17)
+
+Question: does swapping blocks to CPU free enough VRAM to turn checkpointing off, and is
+that faster? Turning checkpointing off saves up to a third of a step (frozen base
+weights: backward computes dX only, so forward ≈ backward, and ckpt adds one forward).
+
+Saved-for-backward per block (one real-width block + LoRA r16 on CPU, saved-tensor
+hooks, linear in L from 512 to 1024 tokens, no L² term): **235 KiB/token eager,
+128 KiB/token compiled** (budget 1.0). × 42 blocks at 4.4k joint tokens that is
+**22.6 GiB compiled**, against ~12 GiB free even at swap 40, so swap alone never fits
+1024². `--activation_memory_budget` (`torch._functorch.config`, set before
+`compile_blocks`) caps the rest.
+
+`fit_smoke.py --sizes 1024x1024:300 --steps 12`, Base, rank 16, compile on, synthetic;
+s/step excludes step 1; free = `mem_get_info` at step 1:
+
+| arm | ckpt | swap | budget | s/step | vs A | peak alloc / reserved | free |
+|---|---|---|---|---|---|---|---|
+| A | on | 0 | — | 2.09 | — | 11.52 / 12.48 | 1.60 |
+| B | off | 40 | 0.5 | 2.29 | −10 % | 12.72 / 13.94 | — |
+| C | off | 40 | 0.35 | 2.43 | −16 % | 9.53 / 10.97 | 2.95 |
+| E | off | 12 | 0.15 | 1.77 | +15 % | 12.15 / 13.35 | 0.73 |
+| **D** | off | 24 | 0.2 | **1.78** | **+15 %** | 10.63 / 11.75 | **2.26** |
+| G | off | 24 | 0.25 | 1.73 | +17 % | 11.66 / 13.09 | 1.06 |
+| F | off | 0 | 0.1 | OOM | | | |
+
+- **PCIe is the limit, not recompute.** 40 swapped blocks (~17 GB across the bus per
+  step) do not hide behind compute, even with the budget raised to 0.5. Lower budgets at
+  moderate swap win.
+- **D is the default** (`--no-grad_checkpointing` default, `--blocks_to_swap 24`,
+  `--activation_memory_budget 0.2`). G is 0.05 s faster with only 1.06 GiB free, and real
+  sets run up to ~4.9k joint tokens, so D keeps the margin.
+- Step memory, measured as free VRAM before training minus free at step 1: 6.51 / 7.38 /
+  8.78 GiB at budget 0.15 / 0.2 / 0.25 (4.4k tokens). `--blocks_to_swap -1` sizes from
+  `3.5 + budget · 6.0 MB · joint tokens`, ~1 GiB above those measurements.
+- Not yet checked: a real-cache run with varying lengths (dynamic compile under the
+  budget), and loss parity against checkpointing. Recompute is numerically the same
+  graph, but the synthetic |g| spread is too wide to show that.
+- The optimum swap depends on the machine (PCIe generation and lanes, GPU speed), so a
+  16 GB card on a narrower link may want less swap and a lower budget.
