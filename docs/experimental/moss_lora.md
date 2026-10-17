@@ -52,9 +52,11 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
   images × 20 epochs took 21 min at about 2.1 s/step, with an 11.8 GiB peak. The LoRA
   moved line work and palette toward the set. Character identity held, including
   characters the set does not contain.
-- **Memory plan**: the default is no checkpointing, 24 blocks swapped to CPU and
-  `--activation_memory_budget 0.2`, which ran at 1.78 s/step (−15 %) on a synthetic
-  1024² fit. The best swap count depends on the PCIe link and the GPU: more swap lets
+- **Memory plan**: the default is no checkpointing, 12 blocks swapped to CPU and
+  `--activation_memory_budget 0.15`: 1.77 s/step (−15 % against checkpointing) with
+  ~0.7 GiB free on a synthetic 1024² fit at 4.4k joint tokens. `--blocks_to_swap 24`
+  leaves more room for longer captions at the same speed; budgets 0.1–0.3 barely move
+  the step. The best swap count depends on the PCIe link and the GPU: more swap lets
   the budget rise (less recompute) until the transfers stop hiding behind compute.
   `--grad_checkpointing --blocks_to_swap 0` is the old plan. To measure your machine's
   pair (about 4 min, on the cache's largest sample):
@@ -86,8 +88,8 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
   image; composition does not.
 - **Sampler defaults** come from the reference pipeline: CFG 3, the uncond branch skips
   block 22, shift 5. Don't carry Anima habits over.
-- **`--sampler er_sde`**: Anima's ER-SDE-Solver-3 on the same σ grid, same speed, and it
-  composes with Spectrum. Base, 3 prompts, one seed: sharper line work and denser
+- **`--sampler er_sde`** (the default; `--sampler euler` is the pipeline's ODE):
+  Anima's ER-SDE-Solver-3 on the same σ grid, same speed, and it composes with Spectrum. Base, 3 prompts, one seed: sharper line work and denser
   detail, but it drifts from some prompt details (sunset light, hair colour). It is
   a different sample from Euler's at the same seed.
 

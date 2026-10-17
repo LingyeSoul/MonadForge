@@ -11,6 +11,11 @@ Default targets are the six bias-free linears of every block,
 ``layers.N.proj.{q,k,v,o,ffn_up_gate,ffn_down}`` (42 × 6 = 252). The fused
 ``ffn_up_gate`` gets one adapter over its full 2·ffn_dim output, so the hidden
 and the gate halves share the rank.
+
+``down_init="weight_svd"`` seeds ``down`` with ``V_rᵀ/√3`` from the base weight's
+SVD, as Anima's SVD-Down (``docs/methods/svd-down-lora.md``). The Kaiming draw
+still runs first, so the global RNG stream (and the training noise drawn after
+it) is the same under either init.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from library.moss.requests import TrainRequest
 
 DEFAULT_TARGETS = TrainRequest.TARGETS
 SAVED_DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
+DOWN_INITS = ("kaiming", "weight_svd")
 
 
 class LoRAAdapter(nn.Module):
@@ -45,6 +51,18 @@ class LoRAAdapter(nn.Module):
         nn.init.zeros_(self.up.weight)
         self.scale = alpha / rank
         self.multiplier = 1.0
+
+    @torch.no_grad()
+    def init_down_weight_svd(self, base: nn.Linear) -> None:
+        """``down = V_rᵀ / √3``: the base weight's top-r right singular vectors,
+        at the Kaiming default's expected row norm. Computed on the card when
+        there is one (an fp32 eigh of a 3072² Gram per linear)."""
+        from networks.lora_modules.lora import _top_right_singular_vectors
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        weight = base.weight.detach().to(device, torch.float32)
+        basis = _top_right_singular_vectors(weight, self.down.out_features)
+        self.down.weight.copy_(basis.T / math.sqrt(3.0))
 
     def forward(self, x: torch.Tensor, base_out: torch.Tensor) -> torch.Tensor:
         if self.multiplier == 0.0:
@@ -69,21 +87,30 @@ class LoRANetwork(nn.Module):
         alpha: float | None = None,
         targets: str = DEFAULT_TARGETS,
         dtype: torch.dtype = torch.float32,
+        down_init: str = "kaiming",
     ):
         super().__init__()
+        if down_init not in DOWN_INITS:
+            raise ValueError(
+                f"down_init must be one of {DOWN_INITS}, not {down_init!r}"
+            )
         pattern = re.compile(targets)
         self.rank = rank
         self.alpha = float(rank if alpha is None else alpha)
         self.targets = targets
+        self.down_init = down_init
         self.num_blocks = len(model.layers)
         self.adapters = nn.ModuleDict()
         self._targets: list[tuple[str, nn.Linear]] = []
         for name, module in model.named_modules():
             if not isinstance(module, nn.Linear) or not pattern.fullmatch(name):
                 continue
-            self.adapters[name.replace(".", "_")] = LoRAAdapter(
+            adapter = LoRAAdapter(
                 module.in_features, module.out_features, rank, self.alpha, dtype
             )
+            if down_init == "weight_svd":
+                adapter.init_down_weight_svd(module)
+            self.adapters[name.replace(".", "_")] = adapter
             self._targets.append((name, module))
         if not self._targets:
             raise ValueError(f"no nn.Linear matched {targets!r}")
@@ -102,7 +129,9 @@ class LoRANetwork(nn.Module):
         if self._applied:
             raise RuntimeError("already applied")
         for name, module in self._targets:
-            module.forward = _patched_forward(module, self.adapters[name.replace(".", "_")])
+            module.forward = _patched_forward(
+                module, self.adapters[name.replace(".", "_")]
+            )
         self._applied = True
         return len(self._targets)
 
@@ -124,6 +153,7 @@ class LoRANetwork(nn.Module):
             "rank": str(self.rank),
             "alpha": str(self.alpha),
             "targets": self.targets,
+            "down_init": self.down_init,
             # A LoRA is depth-specific: module names carry the block index.
             "ss_num_blocks": str(self.num_blocks),
         }
@@ -137,7 +167,9 @@ class LoRANetwork(nn.Module):
             k: v.detach().to("cpu", SAVED_DTYPES[dtype]).contiguous()
             for k, v in self.state_dict().items()
         }
-        save_file(state, str(path), metadata=self.metadata(lora_dtype=dtype, **extra_meta))
+        save_file(
+            state, str(path), metadata=self.metadata(lora_dtype=dtype, **extra_meta)
+        )
 
 
 def _patched_forward(module: nn.Linear, adapter: LoRAAdapter):
@@ -177,7 +209,9 @@ def load_network(model: nn.Module, path, dtype=None) -> tuple[LoRANetwork, dict]
     return network, meta
 
 
-def load_for_inference(transformer: nn.Module, path, multiplier: float = 1.0) -> LoRANetwork:
+def load_for_inference(
+    transformer: nn.Module, path, multiplier: float = 1.0
+) -> LoRANetwork:
     """Load a LoRA onto ``transformer`` (hooked, not merged), on its device, at
     ``multiplier``. Call before compiling the blocks. ``network.set_multiplier``
     switches strength later; ``0.0`` is the base model exactly, ``restore()``

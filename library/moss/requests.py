@@ -212,9 +212,9 @@ class GenerateRequest(_Request):
     steps: int = _f(50, "denoising steps (the snapped grid can return fewer)")
     cfg: float = _f(3.0, "CFG scale; 1.0 = no uncond forward")
     sampler: str = _f(
-        "euler",
-        "euler = the pipeline's ODE; er_sde = ER-SDE-Solver-3 on the same σ grid, "
-        "noise seeded by the prompt's seed (sharper line work, no extra forwards)",
+        "er_sde",
+        "er_sde = ER-SDE-Solver-3 on the same σ grid, noise seeded by the prompt's "
+        "seed (sharper line work, no extra forwards); euler = the pipeline's ODE",
         choices=("euler", "er_sde"),
     )
     uncond_skip: str = _f(
@@ -301,6 +301,12 @@ class TrainRequest(_Request):
     max_steps: int = _f(0, "stop after this many steps (0 = epochs decide)")
     rank: int = _f(16, "LoRA rank")
     alpha: float | None = _f(None, "LoRA alpha (default = rank)")
+    down_init: str = _f(
+        "kaiming",
+        "lora down-projection init: kaiming, or weight_svd (the base weight's "
+        "top-r right singular vectors / sqrt 3, Anima's SVD-Down)",
+        choices=("kaiming", "weight_svd"),
+    )
     lr: float = _f(1e-4, "AdamW learning rate")
     warmup_ratio: float = _f(0.05, "linear warmup, as a fraction of all steps")
     save_every_epochs: int = _f(0, "also save every N epochs (0 = final only)")
@@ -340,17 +346,17 @@ class TrainRequest(_Request):
         "--blocks_to_swap 0 to keep the whole DiT on the card",
     )
     activation_memory_budget: float = _f(
-        0.2,
+        0.15,
         "cap on the compiled blocks' saved-for-backward set (Inductor's min-cut "
         "partitioner recomputes the rest); applies with --compile and "
         "--no-grad_checkpointing, ignored otherwise",
         advanced=True,
     )
     blocks_to_swap: int = _f(
-        24,
-        "DiT blocks to swap to CPU (-1 = size from free VRAM). 24 frees the "
-        "room budget 0.2 needs at ~4.4k joint tokens on 16 GB; more swap costs "
-        "PCIe time the step cannot hide. scripts/moss/tune_swap.py measures "
+        12,
+        "DiT blocks to swap to CPU (-1 = size from free VRAM). 12 fits budget "
+        "0.15 at ~4.4k joint tokens on 16 GB with ~0.7 GB to spare (24 for more "
+        "room); more swap costs PCIe time the step cannot hide. scripts/moss/tune_swap.py measures "
         "this machine's pair",
         advanced=True,
     )

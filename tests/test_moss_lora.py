@@ -1,12 +1,18 @@
 """MOSS-Image LoRA + trainer pieces on a tiny random DiT (CPU)."""
 
+import math
 import re
 from collections import Counter
 
 import pytest
 import torch
 
-from library.moss.lora import DEFAULT_TARGETS, LoRANetwork, load_for_inference, load_network
+from library.moss.lora import (
+    DEFAULT_TARGETS,
+    LoRANetwork,
+    load_for_inference,
+    load_network,
+)
 from library.moss.model import MOSSImageTransformer
 from library.moss.train import checkpoint_blocks, sample_sigma, training_loss
 
@@ -14,7 +20,12 @@ from library.moss.train import checkpoint_blocks, sample_sigma, training_loss
 def _tiny(layers=3):
     torch.manual_seed(0)
     return MOSSImageTransformer(
-        dim=96, ffn_dim=128, num_heads=4, num_layers=layers, text_dim=32, latent_channels=8
+        dim=96,
+        ffn_dim=128,
+        num_heads=4,
+        num_layers=layers,
+        text_dim=32,
+        latent_channels=8,
     ).eval()
 
 
@@ -31,7 +42,9 @@ def _out(model, x, e):
 def test_targets_six_per_block():
     model = _tiny(layers=4)
     net = LoRANetwork(model, rank=4)
-    per_block = Counter(int(re.match(r"layers\.(\d+)\.", n)[1]) for n in net.target_names)
+    per_block = Counter(
+        int(re.match(r"layers\.(\d+)\.", n)[1]) for n in net.target_names
+    )
     assert per_block == {i: 6 for i in range(4)}
     assert all(re.fullmatch(DEFAULT_TARGETS, n) for n in net.target_names)
 
@@ -68,7 +81,9 @@ def test_save_load_round_trip(tmp_path):
     loaded = load_for_inference(fresh, path, multiplier=1.0)
     assert torch.allclose(_out(fresh, x, e), want, atol=1e-6)
     _, meta = load_network(_tiny(), path)
-    assert meta["rank"] == "4" and meta["alpha"] == "2.0" and meta["ss_num_blocks"] == "3"
+    assert (
+        meta["rank"] == "4" and meta["alpha"] == "2.0" and meta["ss_num_blocks"] == "3"
+    )
     loaded.set_multiplier(0.0)
     assert torch.equal(_out(fresh, x, e), _out(_tiny(), x, e))
     with pytest.raises(ValueError, match="block"):
@@ -105,3 +120,31 @@ def test_sigma_grid_and_bias():
     # sigma = 1 - sigmoid(Z), mu = -1.09: noise-heavy, median ~0.75 before the
     # /0.95 rescale (~0.79 after).
     assert 0.72 < draws.median().item() < 0.85
+
+
+def test_weight_svd_down_init():
+    model = _tiny()
+    x, e = _inputs()
+    base = _out(model, x, e)
+    torch.manual_seed(5)
+    kaiming = LoRANetwork(model, rank=4)
+    after_kaiming = torch.rand(())
+    torch.manual_seed(5)
+    net = LoRANetwork(model, rank=4, down_init="weight_svd")
+    assert torch.equal(torch.rand(()), after_kaiming)  # same RNG stream either way
+    assert net.metadata()["down_init"] == "weight_svd"
+    for name, module in net._targets:
+        down = net.adapters[name.replace(".", "_")].down.weight
+        gram = down @ down.T * 3.0
+        assert torch.allclose(gram, torch.eye(4), atol=1e-4)
+        exact = torch.linalg.svd(module.weight.float(), full_matrices=False).Vh[:4]
+        # Same subspace as the exact top-4 right singular vectors.
+        proj = exact @ (down.T * math.sqrt(3.0))
+        assert torch.allclose(proj @ proj.T, torch.eye(4), atol=1e-3)
+        assert not torch.equal(
+            down, kaiming.adapters[name.replace(".", "_")].down.weight
+        )
+    net.apply_to()
+    assert torch.equal(_out(model, x, e), base)
+    with pytest.raises(ValueError):
+        LoRANetwork(model, rank=4, down_init="pissa")

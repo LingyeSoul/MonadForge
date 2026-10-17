@@ -59,6 +59,10 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
     "max_steps": ("最大步数", "达到此步数后停止（0 = 由轮数决定）"),
     "rank": ("秩", "LoRA 秩"),
     "alpha": ("alpha", "LoRA alpha（默认等于秩）"),
+    "down_init": (
+        "down 初始化",
+        "kaiming = 默认随机初始化；weight_svd = 用基础权重前 r 个右奇异向量 / √3 初始化（Anima 的 SVD-Down）",
+    ),
     "lr": ("学习率", "AdamW 学习率"),
     "warmup_ratio": ("预热比例", "线性预热占总步数的比例"),
     "save_every_epochs": ("每 N 轮保存", "每 N 轮额外保存一次（0 = 只保存最终结果）"),
@@ -90,7 +94,7 @@ FIELDS_CN_GENERATE: dict[str, tuple[str, str]] = {
     "cfg": ("CFG", "CFG 强度；1.0 = 不做无条件前向"),
     "sampler": (
         "采样器",
-        "euler = 管线默认的 ODE；er_sde = 同一 σ 网格上的 ER-SDE 随机采样（线条更锐利，不增加前向）",
+        "er_sde = 同一 σ 网格上的 ER-SDE 随机采样（线条更锐利，不增加前向）；euler = 管线默认的 ODE",
     ),
     "uncond_skip": (
         "无条件分支跳过的块",

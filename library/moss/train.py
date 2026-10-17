@@ -16,8 +16,8 @@ interval trained at area ≤ 1024², which is the size the cache targets, so no
 resolution shift is added. Median σ ≈ 0.75 — noise-heavy, matching an inference
 grid that spends most of its steps at high σ under shift 5.
 
-Default memory plan: no checkpointing, 24 blocks swapped, and the compiled
-blocks' saved set capped by ``activation_memory_budget`` (0.2), which is faster
+Default memory plan: no checkpointing, 12 blocks swapped, and the compiled
+blocks' saved set capped by ``activation_memory_budget`` (0.15), which is faster
 than checkpointing on 16 GB (``project/moss_lora/lora.md`` § Swap + budget).
 ``--grad_checkpointing`` wraps each block's ``forward`` (not ``__call__``), so
 the block swapper's forward hooks fire once per step and never again during
@@ -278,11 +278,12 @@ def train(
         alpha=req.alpha,
         targets=req.targets,
         dtype=torch.float32,
+        down_init=req.down_init,
     )
     patched = network.apply_to()
     network.to(device)
     print(
-        f"lora: rank {req.rank} alpha {network.alpha} on {patched} linears, "
+        f"lora: rank {req.rank} alpha {network.alpha} ({req.down_init} down) on {patched} linears, "
         f"{network.num_parameters / 1e6:.1f}M params (fp32 masters, saved {req.lora_dtype})",
         flush=True,
     )

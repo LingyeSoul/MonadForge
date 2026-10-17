@@ -1,7 +1,7 @@
 # ER-SDE and CNS on MOSS-Image (2026-10-17)
 
 `denoise(sampler="er_sde")` runs Anima's `ERSDESampler` on MOSS's snapped shift-5 grid,
-fed `x̂₀ = x_t − σ·v`. Shipped as `GenerateRequest.sampler` (default `euler`). CNS
+fed `x̂₀ = x_t − σ·v`. Shipped as `GenerateRequest.sampler` (default `er_sde` since 2026-10-17, was `euler`). CNS
 (`library/moss/cns.py`) recolors its noise. It stays a bench knob (`sde=1,cns=1`).
 
 All runs: Base, 1024², CFG 3, uncond skip 22, 50 steps, compiled, seed 42. The image dir is

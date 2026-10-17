@@ -56,7 +56,7 @@ from gui.jobs.mixin import DaemonJobMixin
 from gui.core.paths import ROOT, get_setting, set_setting
 from gui.jobs.progress import TQDM_RE
 from gui.lines.strings import LANGUAGES, UI
-from gui.widgets import action_button, apply_variant
+from gui.widgets import _no_wheel, action_button, apply_variant
 from library.env import resolve_under_home
 
 TEST_THUMB_PX = 360
@@ -166,12 +166,12 @@ class RequestForm(QWidget):
             w.setChecked(bool(default))
             return w, w
         if f.metadata.get("choices"):
-            w = QComboBox()
+            w = _no_wheel(QComboBox())
             w.addItems(list(f.metadata["choices"]))
             w.setCurrentText(str(default))
             return w, w
         if kind is int and default is not None:
-            w = QSpinBox()
+            w = _no_wheel(QSpinBox())
             # -1 is a sentinel on some fields ("auto", "steps - 3").
             w.setRange(min(-1, default), 1_000_000)
             w.setValue(default)
