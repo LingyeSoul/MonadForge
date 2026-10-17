@@ -81,6 +81,15 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
   LoRA's 1.77). `tune_swap.py` measures a LoRA only. `--down_init` applies to `lora`.
   On the caststation set at lr 1e-4, LoKr f8 came close to the LoRA and LoHa r16
   overshot (palette shift, costume leakage onto other characters); try LoHa lower.
+  In the GUI, `algo` and `factor` sit on the Train step; on the CLI:
+
+  ```bash
+  make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
+  make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
+  make daemon-run ARGS="scripts/moss/generate.py --lora output/moss/lora/moss_lora.safetensors --spectrum"
+  ```
+
+  The LoHa lr above is the next arm to try, not a measured setting.
 - **A LoRA trained on Base also works on SFT.** It removes most of SFT's glossy look and
   lands close to Base + LoRA.
 - **Captions**: Anima-style tag captions trained and prompted fine. MOSS itself was
