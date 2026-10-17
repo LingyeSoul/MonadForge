@@ -189,3 +189,33 @@ Euler. Compositions differ from Euler (another sampler, injected noise), so comp
 base vs LoRA within one sampler. The LoRA's shift holds: paler palette, thinner lines;
 Neru keeps a yellow (yellow/black striped) necktie in both seeds. No Spectrum artifacts
 at grid scale. One oddity: Neru seed 1 grew a flat yellow panel behind her.
+
+## weight_svd vs kaiming down init (2026-10-17)
+
+`--down_init weight_svd` (`LoRAAdapter.init_down_weight_svd`, Anima's Gram-routed
+`_top_right_singular_vectors`, `V_rᵀ/√3`). The Kaiming draw still runs first, so a
+weight_svd run at seed 0 sees the kaiming run's σ / noise / order step for step (σ 0.710 /
+0.679 at steps 10 / 20 in both; loss 0.1803 vs 0.1804 at step 10).
+
+Arms on the layout-JSON caststation cache, 20 epochs, rank 16, lr 1e-4, swap 12:
+kaiming seed 0 (the earlier `caststation_layout_r16`, budget 0.1), weight_svd seed 0
+(`caststation_layout_r16_svd`, budget 0.1, 18.2 min), kaiming seed 1 as the seed-twin
+floor (`caststation_layout_r16_s1`, budget 0.2). A/B: `lora_ab.py --variants base
+--seeds 1,2,3,4`, ER-SDE + Spectrum 50 steps, CFG 3, the same noise across arms;
+`output/moss/lora/ab_initcmp/<run>/`.
+
+Mean |Δ| at 256 px over 3 prompts × 4 seeds:
+
+| pair | mean \|Δ\| |
+|---|---|
+| kaiming s0 vs weight_svd s0 | 0.121 |
+| kaiming s0 vs kaiming s1 | 0.121 |
+| weight_svd s0 vs kaiming s1 | 0.155 |
+| LoRA vs base: kaiming s0 / s1 / weight_svd | 0.145 / 0.148 / 0.166 |
+
+- The init picks a different sample, as far from kaiming as a seed change. All three
+  shift the same way (thin clean lines, flat pale fills, white backgrounds); Neru keeps a
+  yellow tie in all three.
+- weight_svd sits ~13 % further from base by pixel L1, a coarse, composition-dominated
+  measure on 12 images. The user's read: weight_svd keeps the caststation style better.
+  **`down_init` defaults to `weight_svd`** on that read.

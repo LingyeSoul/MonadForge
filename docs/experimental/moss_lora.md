@@ -66,6 +66,10 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
   ```
 
   It prints one line per swap count and the flags to train with.
+- **`--down_init weight_svd`** (the default; `kaiming` is the random init): the LoRA's
+  down projection starts on the base weight's top-r right singular vectors. On the
+  caststation set it kept the artist's style better by eye than Kaiming; the two
+  inits land different samples at the same seed, as far apart as a seed change.
 - **A LoRA trained on Base also works on SFT.** It removes most of SFT's glossy look and
   lands close to Base + LoRA.
 - **Captions**: Anima-style tag captions trained and prompted fine. MOSS itself was

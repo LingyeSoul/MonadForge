@@ -302,9 +302,10 @@ class TrainRequest(_Request):
     rank: int = _f(16, "LoRA rank")
     alpha: float | None = _f(None, "LoRA alpha (default = rank)")
     down_init: str = _f(
-        "kaiming",
-        "lora down-projection init: kaiming, or weight_svd (the base weight's "
-        "top-r right singular vectors / sqrt 3, Anima's SVD-Down)",
+        "weight_svd",
+        "lora down-projection init: weight_svd (the base weight's top-r right "
+        "singular vectors / sqrt 3, Anima's SVD-Down; kept the caststation style "
+        "better by eye, 2026-10-17) or kaiming",
         choices=("kaiming", "weight_svd"),
     )
     lr: float = _f(1e-4, "AdamW learning rate")
