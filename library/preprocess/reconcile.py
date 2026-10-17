@@ -1,7 +1,7 @@
 """Reconcile resized/latent/PE/mask caches against a target_res bucket layout.
 
 Each image's *correct* bucket is recomputed from its native size + the active
-``target_res`` tiers (the same ``choose_edge`` → nearest-aspect-bucket rule
+``target_res`` tiers (the same ``choose_edge`` → ``freefit_bucket`` rule
 ``process_image`` uses). Any cache that disagrees is stale and can be removed so
 the next resize / latent / PE / mask pass regenerates it cleanly:
 
@@ -36,7 +36,7 @@ from library.datasets.buckets import (
     freefit_bucket,
 )
 from library.io.walk import safe_walk
-from library.preprocess.caption_variants import VARIANTS_SIDECAR_SUFFIX
+from library.curation_compat.contract import CAPTION_SIDECAR_SUFFIXES
 
 NPZ_RE = re.compile(r"^(?P<stem>.+)_(?P<w>\d{4})x(?P<h>\d{4})_anima\.npz$")
 TE_RE = re.compile(r"^(?P<stem>.+)_anima_te\.safetensors$")
@@ -76,8 +76,7 @@ def _correct_bucket(
 ) -> tuple[int, int]:
     """Mirror ``process_image`` under free-fit: ``choose_edge`` → ``freefit_bucket``.
 
-    Uses the raw native size (margins are not reconstructed here — same limitation
-    the snap-era reconcile carried). ``max_ratio`` should match the value used at
+    Uses the raw native size (margins are not reconstructed here). ``max_ratio`` should match the value used at
     preprocess time (``freefit_max_ratio``); the default matches preprocess.toml.
     """
     edge = choose_edge(w, h, target_res)
@@ -124,7 +123,7 @@ class OrphanCaches:
     pe: list[Path] = field(default_factory=list)
     png: list[Path] = field(default_factory=list)
     mask: list[Path] = field(default_factory=list)
-    # Resized-dir caption sidecars ({stem}.txt + {stem}.variants.txt) whose
+    # Resized-dir caption sidecars ({stem}.txt + {stem}.variants.txt / .layout.txt) whose
     # source image is gone — the corrected caption / variant preview is dead
     # weight without the image it described.
     txt: list[Path] = field(default_factory=list)
@@ -195,10 +194,12 @@ def find_orphan_caches(
         if ext.lower() == ".png":
             if (rel, stem) not in native:
                 orphans.png.append(Path(dirpath) / fn)
-        elif fn.endswith(VARIANTS_SIDECAR_SUFFIX):
-            # {stem}.variants.txt — the image stem is the name minus the marker
-            # double-suffix, not splitext's stem ({stem}.variants).
-            img_stem = fn[: -len(VARIANTS_SIDECAR_SUFFIX)]
+        elif suffix := next(
+            (x for x in CAPTION_SIDECAR_SUFFIXES if fn.lower().endswith(x)), None
+        ):
+            # {stem}.variants.txt / {stem}.layout.txt / … — the image stem is the
+            # name minus the double suffix, not splitext's stem ({stem}.variants).
+            img_stem = fn[: -len(suffix)]
             if (rel, img_stem) not in native:
                 orphans.txt.append(Path(dirpath) / fn)
         elif ext.lower() == ".txt" and (rel, stem) not in native:

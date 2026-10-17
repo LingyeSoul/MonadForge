@@ -1,0 +1,4 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>LoRA</h2>
+<p>Classic low-rank adaptation. Adds small trainable matrices (down &times; up) to existing weight layers.<br>
+<code>y = x + (x @ down @ up) &times; scale &times; multiplier</code><br>
+Fully bakeable into the base DiT. For low VRAM, pick a lighter profile in the <b>Hardware</b> dropdown.</p>

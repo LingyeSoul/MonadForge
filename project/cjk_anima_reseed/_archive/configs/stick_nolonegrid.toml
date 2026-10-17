@@ -1,0 +1,14 @@
+# stick_nolonegrid — stick_full on the scene tiers only (user, 10-04): grids are
+# flat canvases too (recipes.grid: white / tint, half with a bare bubble), so
+# stick_nolone still trained the stick on scene-less pictures. Bubble tiers at
+# their kana_up bands.
+rows = [
+    "chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをん",
+    "chars:ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロワヲン・ー",
+    "chars:ヴヶゔヵ",
+]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0921"
+steps_per_row = 12
+stick_from = "kana_up"
+drop_tiers = ["lone_44", "lone_28", "lone_16", "grid_44", "grid_29", "grid_16", "grid_64"]

@@ -277,6 +277,7 @@ def test_eager_lokr_cuda_stays_within_fp32_merge_tolerance():
         assert torch.allclose(actual, expected, rtol=2e-4, atol=2e-3)
 
 
+@pytest.mark.training_step
 def test_eager_lokr_backward_handles_frozen_residual_inputs():
     factors, in_features, out_features = _factors("full", torch.float16)
     base_leaf = torch.zeros(

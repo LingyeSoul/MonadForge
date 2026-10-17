@@ -11,11 +11,13 @@ Centralizes:
 
 from __future__ import annotations
 
+import json
 import os
 import random
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,13 +30,10 @@ _REF_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 def _python_exe() -> str:
     """Resolve the venv's ``python.exe`` even if this process runs as pythonw.exe.
 
-    Why python.exe and not just ``sys.executable``: when the GUI is launched
-    via the desktop shortcut, sys.executable is pythonw.exe. pythonw children
-    don't surface a working ``sys.stdout``/``sys.stderr`` to inherited pipes
-    the way python.exe does — tqdm progress (which writes to stderr) silently
-    drops, breaking the GUI's progress bar. python.exe + ``CREATE_NO_WINDOW``
-    (set in ``run()`` when this process has no console) gives us both no
-    console popup AND working stdio for grandchildren.
+    pythonw children don't surface a working ``sys.stdout``/``sys.stderr`` to
+    inherited pipes the way python.exe does — tqdm progress silently drops,
+    breaking the GUI's progress bar. python.exe + ``CREATE_NO_WINDOW`` (set in
+    ``run()``) gives both no console popup and working stdio for grandchildren.
     """
     if sys.platform == "win32":
         cand = Path(sys.executable).with_name("python.exe")
@@ -50,63 +49,7 @@ def _preset(default: str = "default") -> str:
     return os.environ.get("PRESET", default)
 
 
-def explicit_option_value(args, option: str) -> str | None:
-    """Return the last explicit value for a single-value ``--option`` in ``args``.
-
-    Accepts both ``--option value`` and ``--option=value`` forms; raises
-    ``ValueError`` when the flag is present without a value (a following
-    ``--``-token counts as missing). ``None`` when the flag is absent.
-    """
-    prefix = option + "="
-    for index in range(len(args) - 1, -1, -1):
-        token = args[index]
-        if token.startswith(prefix):
-            value = token[len(prefix) :]
-            if not value:
-                raise ValueError(f"{option} requires a value")
-            return value
-        if token == option:
-            if index + 1 >= len(args) or args[index + 1].startswith("--"):
-                raise ValueError(f"{option} requires a value")
-            return args[index + 1]
-    return None
-
-
 _PATH_OVERRIDES_CACHE: dict | None = None
-
-# These values describe the on-disk preprocessing contract, not a training
-# method or hardware preset.  Keep them shared when a GUI task happens to set
-# METHOD/PRESET for the subsequent training command; otherwise changing the
-# method would silently create a second cache run for the same dataset.
-# Source selection follows the selected config/method; replacing it with a
-# shared default would silently switch a chosen dataset back to image_dataset.
-_SHARED_PREPROCESS_KEYS = frozenset(
-    {
-        "resized_image_dir",
-        "lora_cache_dir",
-        "conditioning_data_dir",
-        "conditioning_resized_dir",
-        "target_res",
-        "multires_per_image",
-        "drop_lowres_images",
-        "min_pixels",
-        "preprocess_path_pattern",
-        "caption_shuffle_variants",
-        "caption_tag_dropout_rate",
-        "caption_tag_randomize_rate",
-        "caption_correct_order",
-        "caption_insert_no_artist",
-        "caption_trigger_word",
-        "caption_trigger_at_front",
-        "resize_crop_anchor",
-        "resize_bucket_resos",
-        "resize_crop_margins",
-        "freefit_max_ratio",
-        "multires_image_dir",
-        "conditioning_multires_dir",
-        "curation_decisions",
-    }
-)
 
 
 def _path_overrides() -> dict:
@@ -163,18 +106,13 @@ def _path(key: str, default: str) -> str:
 
 def bespoke_preset_flags(preset: str) -> list[str]:
     """Translate ``configs/presets.toml[<preset>]`` into CLI flags for the
-    bespoke distillation loops (``scripts/distill_mod/distill.py`` / ``scripts/distill_turbo/distill.py``)
+    bespoke distillation loops (``scripts/distill_turbo``/``scripts/distill_cjk``)
     that bypass ``train.py``'s config merge chain.
 
-    Honored keys:
-      - ``blocks_to_swap`` → ``--blocks_to_swap N``
-      - ``gradient_checkpointing`` (bool) → ``--grad_ckpt`` / ``--no_grad_ckpt``
-      - ``sample_ratio`` → ``--sample_ratio R`` (per-bucket subsample; makes
-        ``PRESET=debug/half/quarter/tenth`` actually run on a small slice).
-
-    When the preset omits ``gradient_checkpointing`` we default to
-    ``--no_grad_ckpt`` (the trainable footprints here are tiny; ckpt is a perf
-    loss when VRAM isn't tight). Other preset keys are silently dropped.
+    Honored keys: ``blocks_to_swap`` → ``--blocks_to_swap N``;
+    ``gradient_checkpointing`` (bool) → ``--grad_ckpt``/``--no_grad_ckpt``
+    (defaults to ``--no_grad_ckpt`` when omitted);
+    ``sample_ratio`` → ``--sample_ratio R``. Other preset keys are dropped.
     """
     try:
         from library.config.io import load_preset_section
@@ -224,7 +162,8 @@ def latest_output(prefix: str = "", exclude: str | None = None) -> Path:
 
 def latest_lora() -> Path:
     # Exclude pooled_text_proj heads: not LoRAs (resolved separately by MOD=1),
-    # but a blind newest-`.safetensors` pick would grab them after `make distill-mod`.
+    # but a blind newest-`.safetensors` pick would grab them after a mod-guidance
+    # distill (`project/finished/mod_guidance/`).
     return latest_output(exclude="pooled_text_proj")
 
 
@@ -259,10 +198,9 @@ def latest_hydra() -> Path:
 def _random_ref_image(directory: Path) -> str | None:
     """Pick a random image under ``directory`` (recursive), or ``None`` if empty.
 
-    Source layouts (``post_image_dataset/resized/``, ``easycontrol-dataset/``)
-    nest images under per-artist subdirs, so recurse rather than only scanning
-    top-level files. Shared by the EasyControl / IP-Adapter / DirectEdit test
-    commands as the fallback reference when no REF_IMAGE is supplied.
+    Recurses because source layouts nest images under per-artist subdirs.
+    Shared by the EasyControl/IP-Adapter/DirectEdit test commands as the
+    fallback reference when no REF_IMAGE is supplied.
     """
     if not directory.is_dir():
         return None
@@ -288,27 +226,6 @@ def _has_console() -> bool:
         return bool(ctypes.windll.kernel32.GetConsoleWindow())
     except Exception:  # noqa: BLE001 — err on the safe side: keep output visible
         return True
-
-
-def _stdout_is_regular_file() -> bool:
-    """True iff ``sys.stdout`` is a regular file (not a pipe / TTY / DEVNULL).
-
-    The training daemon launches this process with stdout redirected to
-    ``<job_dir>/stdout.log`` (``spawn_detached``). In that case the
-    grandchild's stdout is a regular file, not a pipe — so tqdm's
-    high-volume redraws won't fill an OS pipe buffer and stall the
-    trainer. The legacy pipe-based callers (QProcess / WebUI direct
-    subprocess) keep their stdout as a pipe; for those we still want
-    to swallow the grandchild's stdout to avoid the stall.
-    """
-    import os
-    import stat
-
-    try:
-        st = os.fstat(sys.stdout.fileno())
-    except (AttributeError, OSError, ValueError):
-        return False
-    return stat.S_ISREG(st.st_mode)
 
 
 def run(cmd: list[str], **kwargs):
@@ -392,20 +309,16 @@ def _nsys_wrapper() -> tuple[list[str], Path] | tuple[None, None]:
     """Build an ``nsys profile`` prefix when PROFILE_STEPS is set.
 
     Returns ``(prefix, out_path)`` when active so the caller can both wrap the
-    launch AND run ``nsys stats`` against the resulting report afterward.
-    Returns ``(None, None)`` when PROFILE_STEPS is unset. Honors NSYS_OUT for
-    the report path (default ``output/nsys/profile.nsys-rep``).
+    launch AND run ``nsys stats`` afterward; ``(None, None)`` when unset.
+    Honors NSYS_OUT for the report path (default ``output/nsys/profile.nsys-rep``).
 
-    Why ``--capture-range-end=stop`` (not ``stop-shutdown``) and ``--wait=primary``:
-    the wrapped tree is ``nsys → accelerate launcher → train.py worker``. With
-    ``stop-shutdown`` nsys SIGTERMs the launcher the moment ``cuProfilerStop``
-    fires, the launcher dies before reaping the worker, the worker gets
-    reparented to init, and the default ``--wait=all`` blocks forever waiting
-    for it. Instead: the worker calls ``cuProfilerStop`` and then voluntarily
-    ``sys.exit(0)`` (see ``library/training/loop.py`` ``_profiler_step_end``),
-    the launcher exits naturally, and ``--wait=primary`` lets nsys finalize
-    the report as soon as the launcher (its primary target) is gone — no
-    leftover ``/tmp/*.qdstrm``.
+    GOTCHA: must use ``--capture-range-end=stop`` (NOT ``stop-shutdown``) with
+    ``--wait=primary`` — ``stop-shutdown`` SIGTERMs the accelerate launcher the
+    moment ``cuProfilerStop`` fires, before it reaps the train.py worker, which
+    then gets reparented and the default ``--wait=all`` hangs forever. The
+    worker instead calls ``cuProfilerStop`` then voluntarily exits (see
+    ``library/training/loop.py`` ``_profiler_step_end``), letting the launcher
+    exit naturally so ``--wait=primary`` finalizes cleanly.
     """
     if not os.environ.get("PROFILE_STEPS"):
         return None, None
@@ -423,11 +336,9 @@ def _nsys_wrapper() -> tuple[list[str], Path] | tuple[None, None]:
         out_path = ROOT / out_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"  > nsys report -> {out_path}")
-    # Profile config tuned for kernel + bottleneck analysis (GPU perf counters,
-    # CUDA-graph node timing, mem tracking, Python sampling, sqlite stats).
-    # Symbol-resolution is OFF (--resolve-symbols=false + the *=none flags):
-    # otherwise nsys finalize stalls for minutes reaching NVIDIA's symbol servers
-    # while VRAM stays reserved. None of the enabled data needs symbol resolution.
+    # Profile config tuned for kernel + bottleneck analysis. Symbol-resolution
+    # is OFF: otherwise nsys finalize stalls for minutes reaching NVIDIA's
+    # symbol servers while VRAM stays reserved.
     metrics_set = os.environ.get("NSYS_GPU_METRICS_SET")
     cmd = [
         nsys,
@@ -473,9 +384,9 @@ def _nsys_gpu_metrics_available(nsys: str) -> bool:
     """Probe whether nsys can collect GPU metrics on this host.
 
     nsys validates ``--gpu-metrics-devices`` at argv-parse time and aborts the
-    whole run if the perf-counter ioctl is restricted to root (the default on
-    most distros — see ERR_NVGPUCTRPERM). Probing first lets us silently skip
-    the flag instead of crashing the training task.
+    whole run if the perf-counter ioctl is restricted to root (default on
+    most distros — ERR_NVGPUCTRPERM). Probing first lets us skip the flag
+    instead of crashing the training task.
     """
     try:
         out = subprocess.run(
@@ -509,10 +420,8 @@ _NSYS_STATS_REPORTS = (
 def _nsys_run_stats(rep_path: Path) -> None:
     """Generate textual ``nsys stats`` reports next to the .nsys-rep.
 
-    Writes one ``<stem>_<report>.txt`` per report into the same directory as
-    the .nsys-rep. Best-effort: if the .nsys-rep didn't materialize (e.g. nsys
-    aborted before finalizing) or stats fails, prints a warning and returns —
-    a missing summary shouldn't fail the training task itself.
+    Writes one ``<stem>_<report>.txt`` per report. Best-effort: a missing
+    .nsys-rep or a stats failure just warns — shouldn't fail the training task.
     """
     if not rep_path.exists():
         print(
@@ -616,12 +525,11 @@ def build_launch_cmd(*args: str, python_exe: str | None = None) -> list[str]:
 def accelerate_launch(*args: str):
     """Launch training via accelerate with extra CLI args forwarded (blocking).
 
-    Builds the command via ``build_launch_cmd`` then runs it through ``run``
-    (blocking, exits on failure). When PROFILE_STEPS is set, wraps the launch
-    with ``nsys profile`` so ``make <method> PROFILE_STEPS=3-5`` produces a
-    navigable Nsight report at ``output/nsys/profile.nsys-rep`` (override with
-    NSYS_OUT). After the run, generates per-report textual summaries via
-    ``nsys stats`` next to the .nsys-rep.
+    Builds the command via ``build_launch_cmd`` then runs it through ``run``.
+    When PROFILE_STEPS is set, wraps the launch with ``nsys profile`` so
+    ``make <method> PROFILE_STEPS=3-5`` produces a navigable Nsight report at
+    ``output/nsys/profile.nsys-rep`` (override with NSYS_OUT), then generates
+    textual summaries via ``nsys stats``.
     """
     cmd = build_launch_cmd(*args)
     nsys_prefix, nsys_out = _nsys_wrapper()
@@ -644,10 +552,8 @@ def build_method_args(
     """Assemble the ``["--method", m, "--preset", p, ...]`` train.py arg list.
 
     Pure — no env reads, no subprocess. Shared by the CLI ``train()`` path and
-    the training daemon (``scripts/daemon``) so the daemon doesn't duplicate the
-    ARTIST / PROFILE_STEPS handling. ``extra`` is appended verbatim; ``artist`` /
-    ``profile_steps`` add their flags only when the caller didn't already pass
-    them in ``extra``.
+    the training daemon. ``artist``/``profile_steps`` add their flags only
+    when the caller didn't already pass them in ``extra``.
     """
     extra = list(extra or [])
     args = ["--method", method, "--preset", preset]
@@ -660,52 +566,163 @@ def build_method_args(
     return [*args, *extra]
 
 
-def _queue_submit(
-    method: str,
-    *,
-    preset: str,
-    methods_subdir: str | None,
-    extra: list[str],
-    artist: str | None,
-    profile_steps: str | None,
-) -> None:
-    """Enqueue a training job on the local daemon instead of running it inline.
+# --- attach-by-default run modes ---------------------------------------------
+# Every GPU-touching CLI target routes through the daemon by default: submit,
+# then stream the job's stdout to this terminal (attach). Three modes,
+# resolved by _resolve_run_mode:
+#   attach (default) — submit + stream + exit with the job's exit code; ctrl-C
+#                      DETACHES (job survives), it never kills the run.
+#   detach           — submit + return (the --queue behaviour, for overnight sweeps).
+#   inline           — run the child directly, no daemon (the debugging path:
+#                      pdb / py-spy / faulthandler / nsys all want a direct
+#                      child). Forced automatically for PROFILE_STEPS / accelerate.
+_RUN_MODE_FLAGS = {
+    "--inline": "inline",
+    "--queue": "detach",
+    "--detach": "detach",
+    "--attach": "attach",
+}
 
-    The ``--queue`` path (``make lora --queue``, ``make lora-gui <v> --queue``)
-    turns the CLI into a job *producer*: it auto-starts the daemon if needed
-    and POSTs the same method/preset/methods_subdir the inline path would have
-    built, then returns immediately. Submit ×N to drain an overnight sweep
-    serially.
 
-    ARTIST / PROFILE_STEPS are folded into ``extra`` as explicit flags here
-    because the daemon's own ``build_method_args`` call doesn't read those env
-    vars — without folding, a queued artist run would silently train the full
-    dataset.
+def _resolve_run_mode(extra: list[str]) -> tuple[str, list[str]]:
+    """Pop any run-mode flag from ``extra`` and return ``(mode, extra)``.
+
+    Precedence: explicit ``--inline/--queue/--detach/--attach`` flag > the
+    ``ANIMA_RUN_MODE`` env var > attach default. When implicit,
+    ``PROFILE_STEPS``/``ANIMA_ACCELERATE_LAUNCH`` force inline so the default
+    attach path never silently drops them.
     """
     extra = list(extra)
-    if artist and "--artist_filter" not in extra:
-        extra += ["--artist_filter", artist]
-    if profile_steps and "--profile_steps" not in extra:
-        extra += ["--profile_steps", profile_steps]
+    flagged: str | None = None
+    for flag, mode in _RUN_MODE_FLAGS.items():
+        while flag in extra:
+            extra.remove(flag)
+            flagged = mode
+    if flagged is not None:
+        return flagged, extra
+    mode = os.environ.get("ANIMA_RUN_MODE") or "attach"
+    if mode not in ("attach", "detach", "inline"):
+        mode = "attach"
+    if mode != "inline" and (
+        os.environ.get("PROFILE_STEPS") or os.environ.get("ANIMA_ACCELERATE_LAUNCH")
+    ):
+        mode = "inline"
+    return mode, extra
 
-    from scripts.daemon import client as _daemon_client
 
-    cl = _daemon_client.ensure_daemon()
-    resp = cl.submit(
-        method=method,
-        preset=preset,
-        methods_subdir=methods_subdir,
-        extra=extra,
+def _safe_job(cl, job_id: str) -> dict | None:
+    try:
+        return cl.get(job_id)
+    except Exception:  # noqa: BLE001 — a down/racing daemon is expected here
+        return None
+
+
+def _attach_hints(job_id: str) -> str:
+    return (
+        f"  make daemon-attach JOB={job_id}   # re-attach to this job\n"
+        f"  make daemon-kill JOB={job_id}     # stop it\n"
+        f"  make daemon-jobs                  # queue overview"
     )
-    job_id = resp.get("job_id")
+
+
+# Whether this process has already printed the queued-job hints; later submits
+# print only their own `queued job` line.
+_QUEUED_HINTS_SHOWN = False
+
+
+def _print_queued(cl, job_id: str, desc: str) -> None:
+    global _QUEUED_HINTS_SHOWN
+    line = f"queued job {job_id} ({desc}). daemon: {cl.base}"
+    if _QUEUED_HINTS_SHOWN:
+        print(line)
+        return
+    _QUEUED_HINTS_SHOWN = True
     print(
-        f"queued job {job_id} (method={method}, preset={preset}). "
-        f"daemon: {cl.base}\n"
-        f"  python tasks.py daemon-attach JOB={job_id}   # follow this job's output\n"
-        f"  python tasks.py daemon-attach                # follow queue/lifecycle events\n"
-        f"  python tasks.py daemon-kill JOB={job_id}     # cancel it\n"
-        f"  python tasks.py daemon-terminate             # stop the daemon + discard queue"
+        f"{line}\n"
+        f"  make daemon-attach JOB={job_id}   # follow this job's output\n"
+        f"  make daemon-attach                # follow queue/lifecycle events\n"
+        f"  make daemon-kill JOB={job_id}     # cancel it\n"
+        f"  make daemon-terminate             # stop the daemon + discard queue"
     )
+
+
+def _exit_code_for(cl, job_id: str, *, settle: float = 10.0) -> int:
+    """The job's exit code once terminal: its OS ``returncode`` when known,
+    else done→0/other→1. A signal death (negative rc) maps to ``128+N`` so
+    ``&&`` chains see a normal nonzero."""
+    deadline = time.time() + settle
+    job = _safe_job(cl, job_id)
+    while job and job.get("state") in ("queued", "running") and time.time() < deadline:
+        time.sleep(0.3)
+        job = _safe_job(cl, job_id)
+    if job is None:
+        return 1
+    rc = job.get("returncode")
+    if isinstance(rc, int):
+        return 128 + (-rc) if rc < 0 else rc
+    return 0 if job.get("state") == "done" else 1
+
+
+def _attach_and_wait(cl, job_id: str) -> int:
+    """Stream a submitted job's stdout to this terminal; return its exit code.
+
+    Ctrl-C DETACHES — the job keeps running (same contract as
+    ``make daemon-attach``); prints the re-attach one-liners and returns 0.
+    Tolerates a daemon restart mid-stream: on a dropped stream it re-resolves
+    the pidfile and re-attaches, skipping lines already printed (the on-disk
+    ``stdout.log`` replays from the start).
+    """
+    from anima_daemon.client import DaemonClient
+
+    # flush: stdout to a pipe is block-buffered; an unflushed banner looks like a hang.
+    print(
+        f"\nattached to job {job_id} ({cl.base}) — ctrl-C detaches "
+        "(the job keeps running)\n",
+        flush=True,
+    )
+    emitted = 0  # log lines already printed, across reconnects
+    try:
+        while True:
+            seen = 0
+            got_eof = False
+            try:
+                for payload in cl.stream_logs(job_id):
+                    # The tail SSE ends with a {"ev":"eof","state":…} sentinel.
+                    if payload.startswith("{") and '"eof"' in payload:
+                        try:
+                            obj = json.loads(payload)
+                        except ValueError:
+                            obj = None
+                        if isinstance(obj, dict) and obj.get("ev") == "eof":
+                            got_eof = True
+                            break
+                    seen += 1
+                    if seen <= emitted:
+                        continue  # replayed line from before a reconnect
+                    emitted = seen
+                    print(payload, flush=True)
+            except KeyboardInterrupt:
+                raise
+            except Exception:  # noqa: BLE001 — socket drop / daemon restart
+                pass
+            if got_eof:
+                break
+            # Stream ended without eof: either the job is terminal (stop) or the
+            # daemon restarted. Re-resolve its port and re-check; re-attach only
+            # while the job is still live.
+            job = _safe_job(cl, job_id)
+            if job is None:
+                cl = DaemonClient()  # port may have moved on restart
+                job = _safe_job(cl, job_id)
+            if job is None or job.get("state") not in ("queued", "running"):
+                break
+            time.sleep(0.5)
+            cl = DaemonClient()
+    except KeyboardInterrupt:
+        print(f"\ndetached (job {job_id} continues).")
+        print(_attach_hints(job_id))
+        return 0
+    return _exit_code_for(cl, job_id)
 
 
 def queue_command(
@@ -722,7 +739,7 @@ def queue_command(
     (``["-m", "scripts.distill_turbo.distill", ...]``). Preset/CLI flags must be
     baked into ``argv`` here: the command-job path does no config merging.
     """
-    from scripts.daemon import client as _daemon_client
+    from anima_daemon import client as _daemon_client
 
     cl = _daemon_client.ensure_daemon()
     resp = cl.submit_command(label=label, argv=list(argv), stall_timeout=stall_timeout)
@@ -736,35 +753,46 @@ def queue_command(
     )
 
 
-# ``tasks.py`` command names whose body is ``train(...)`` — i.e. they run
-# ``train.py`` (via ``accelerate_launch`` / ``build_launch_cmd``) and therefore
-# honor ``--progress_jsonl``. Bespoke-loop commands (``turbo``, ``exp-spd``,
-# ``distill-*``) bypass ``train.py`` and never read that flag, so they're
-# excluded. Single source of truth shared by:
-#   - scripts/daemon/manager.py::_command_runs_train  (injects --progress_jsonl)
-#   - webui/services/task_service.py::_commandRunsTraining (watches the jsonl)
-# Keep both delegating here so the two surfaces can't drift — a prior drift
-# (only ``lora``/``lora-gui``/``easycontrol``) left exp-chimera / exp-soft-tokens
-# / exp-byg falling back to the shared cross-run progress file.
-_TRAIN_COMMANDS = frozenset(
-    {
-        "lora",
-        "lora-gui",
-        "staged-train",
-        "easycontrol",
-        "exp-chimera",
-        "exp-soft-tokens",
-        "exp-byg",
-    }
-)
+def run_command(
+    label: str,
+    argv: list[str],
+    *,
+    mode: str = "attach",
+    stall_timeout: float | None = None,
+) -> None:
+    """Run a GPU command job through the daemon, attach-by-default.
 
+    The generic chokepoint for non-train GPU work (bench/``test-*``/``gen``):
+    submit a ``kind="command"`` job and stream its stdout to this terminal,
+    exiting with the job's exit code (ctrl-C detaches, the run survives).
+    Same three modes as ``train`` (``_resolve_run_mode``): ``attach``
+    (default), ``detach`` (``--queue``), ``inline`` (no daemon; debugging path).
 
-def command_runs_training(command: str | None) -> bool:
-    """True iff the ``tasks.py`` command ``command`` runs through ``train.py``.
+    ``argv`` is the child argv **without** the interpreter — the daemon
+    prepends its resolved venv python, and the inline path prepends ``PY``.
+    The daemon exports ``ANIMA_DAEMON_JOB_DIR`` so a script that emits a bench
+    envelope / generation manifest gets result-lifted; inline it's a plain run.
 
-    See :data:`_TRAIN_COMMANDS` for the contract + the two call sites.
+    ``stall_timeout`` overrides the daemon's 120s command-job stall budget for
+    this job (0 disables it) for a loop that legitimately prints nothing for
+    minutes.
     """
-    return command in _TRAIN_COMMANDS
+    if mode == "inline":
+        run([PY, *argv])
+        return
+
+    from anima_daemon import client as _daemon_client
+
+    cl = _daemon_client.ensure_daemon()
+    job_id = cl.submit_command(
+        label=label, argv=list(argv), stall_timeout=stall_timeout
+    ).get("job_id")
+    if mode == "detach":
+        _print_queued(cl, job_id, f"command={label}")
+        return
+    rc = _attach_and_wait(cl, job_id)
+    if rc:
+        sys.exit(rc)
 
 
 def train(
@@ -773,25 +801,24 @@ def train(
     """Launch training for a given method + preset (PRESET env overrides default).
 
     `methods_subdir` selects the folder under `configs/` that holds the method
-    file (default ``"methods"``; pass ``"gui-methods"`` for the clean per-variant
-    files used by the `lora-gui` path).
+    file (default ``"methods"``; pass ``"gui-methods"`` for the clean
+    per-variant files used by the `lora-gui` path).
 
-    ARTIST env var trains an artist-only LoRA — equivalent to passing
+    ARTIST env var trains an artist-only LoRA — equivalent to
     `--artist_filter <name>` (filters dataset to `@<name>`-tagged captions and
     redirects output to `output/ckpt-artist/`).
 
-    ``--queue`` anywhere in ``extra`` enqueues the job on the local training
-    daemon and returns immediately instead of running it inline (the overnight
-    sweep path — see ``_queue_submit``).
+    Run mode: see ``_resolve_run_mode`` and the attach-by-default block above.
     """
     preset = preset or _preset()
     extra = list(extra or [])
     artist = os.environ.get("ARTIST")
     profile_steps = os.environ.get("PROFILE_STEPS")
 
-    if "--queue" in extra:
-        extra.remove("--queue")
-        _queue_submit(
+    mode, extra = _resolve_run_mode(extra)
+
+    if mode == "inline":
+        args = build_method_args(
             method,
             preset=preset,
             methods_subdir=methods_subdir,
@@ -799,31 +826,45 @@ def train(
             artist=artist,
             profile_steps=profile_steps,
         )
+        accelerate_launch(*args)
         return
 
-    args = build_method_args(
-        method,
+    # Daemon paths (attach/detach). Fold ARTIST/PROFILE_STEPS into extra as
+    # explicit flags: the daemon's own build_method_args doesn't read env
+    # vars, so without folding a queued artist run would silently train the
+    # full dataset.
+    if artist and "--artist_filter" not in extra:
+        extra += ["--artist_filter", artist]
+    if profile_steps and "--profile_steps" not in extra:
+        extra += ["--profile_steps", profile_steps]
+
+    from anima_daemon import client as _daemon_client
+
+    cl = _daemon_client.ensure_daemon()
+    job_id = cl.submit(
+        method=method,
         preset=preset,
         methods_subdir=methods_subdir,
         extra=extra,
-        artist=artist,
-        profile_steps=profile_steps,
-    )
-    accelerate_launch(*args)
+    ).get("job_id")
+
+    if mode == "detach":
+        _print_queued(cl, job_id, f"method={method}, preset={preset}")
+        return
+    rc = _attach_and_wait(cl, job_id)
+    if rc:
+        sys.exit(rc)
 
 
 INFERENCE_BASE = [
     PY,
     "inference.py",
     "--dit",
-    _path(
-        "pretrained_model_name_or_path",
-        "models/diffusion_models/anima-base-v1.0.safetensors",
-    ),
+    "models/diffusion_models/anima-base-v1.0.safetensors",
     "--text_encoder",
-    _path("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),
+    "models/text_encoders/qwen_3_06b_base.safetensors",
     "--vae",
-    _path("vae", "models/vae/qwen_image_vae.safetensors"),
+    "models/vae/qwen_image_vae.safetensors",
     "--vae_chunk_size",
     "64",
     "--vae_disable_cache",
@@ -865,3 +906,219 @@ def override_arg(argv: list[str], flag: str, value: str) -> list[str]:
         return argv + [flag, value]
     i = argv.index(flag)
     return argv[:i] + [flag, value] + argv[i + 2 :]
+
+
+# ---------------------------------------------------------------------------
+# anime_tools stages: build a request, run it in-process or as a child
+# ---------------------------------------------------------------------------
+
+DAEMON_JOB_DIR_ENV = "ANIMA_DAEMON_JOB_DIR"
+
+
+def in_daemon_job() -> bool:
+    """Is this process a daemon job's child (the GUI path, ``--queue``,
+    ``make daemon-run ARGS="tasks.py …"``)?"""
+    return bool(os.environ.get(DAEMON_JOB_DIR_ENV))
+
+
+def stage_by_id(stage_id: str):
+    """The ``anime_tools`` registry entry for a stage id (``"autotag"``,
+    ``"masks_sam"``, …) — request class and runner resolved lazily by it."""
+    from anime_tools.stages.registry import BY_ID
+
+    return BY_ID[stage_id]
+
+
+def execute_stage(stage, req) -> None:
+    """Run one curation stage as its request object.
+
+    Under a daemon job the stage's runner is called **in this interpreter**
+    (``Stage.runner()``): one process for a whole chain, and the package's
+    per-process model caches (``load_anima_tagger`` / ``load_sam3``) carry
+    across consecutive stages. The package anchors bare relative defaults on
+    ``ANIMA_HOME``, which ``run()`` exports for a child; pin it the same way
+    here so an in-process run resolves identically. From a plain shell each
+    stage is a ``python -m <stage.module>`` child with ``req.to_argv()``, so
+    the model is released between stages and on exit.
+    """
+    if not in_daemon_job():
+        run([PY, "-m", stage.module, *req.to_argv()])
+        return
+    os.environ.setdefault("ANIMA_HOME", str(ROOT))
+    print(f"  > [in-process] {stage.module} {' '.join(req.to_argv())}")
+    try:
+        stage.runner()(req)
+    except FileNotFoundError as exc:
+        # What the CLI shell turns into SystemExit — keep the same message.
+        sys.exit(str(exc))
+
+
+STAGE_VALUES_ENV = "PREPROCESS_STAGES_JSON"
+"""The GUI's stage forms (``resize``, ``correct``), one ``{dest: value}`` dict
+per stage id, as JSON. Written by
+``gui/tabs/preprocess/tab.py::preprocess_env`` (``stage_form.STAGE_VALUES_ENV``
+is the same name); ``request_from_form`` turns one into a request."""
+
+
+def gui_stage_values() -> dict:
+    """The stage forms a GUI-submitted job carries (``{}`` from a plain shell)."""
+    raw = os.environ.get(STAGE_VALUES_ENV)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid {STAGE_VALUES_ENV}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"Invalid {STAGE_VALUES_ENV}: expected an object")
+    return data
+
+
+def request_from_form(
+    stage_id: str,
+    values: dict,
+    *,
+    roots: dict | None = None,
+    settings: dict | None = None,
+    report_root: str | None = None,
+    mask_root: str | None = None,
+    apply: bool = False,
+    **overrides,
+):
+    """A stage form (``{dest: value}``) as the stage's request.
+
+    Goes through the package's ``anime_tools.gui.stages.build_argv`` — the
+    same path its own web GUI takes: each value coerced by the field's kind,
+    the bound roots / settings / report and mask tails filled from the
+    keyword arguments (never from the form, so a stale saved path cannot win
+    over the trainer's directories), the request's own ``__post_init__``
+    validation run, and the argv spelled back and re-parsed by the stage's
+    generated parser. ``overrides`` are the dests the trainer's chain owns
+    (``recursive``, the variant sidecar knobs, …), applied with
+    ``dataclasses.replace`` so validation runs again. A bad value is a
+    ``SystemExit`` naming the stage, before any model loads.
+    """
+    import dataclasses
+
+    from anime_tools.gui.stages import BY_ID, build_argv, load_parser, schema
+
+    stage = BY_ID[stage_id]
+    try:
+        argv = build_argv(
+            schema(stage),
+            values,
+            apply=apply,
+            roots=roots,
+            settings=settings,
+            report_root=report_root,
+            mask_root=mask_root,
+        )
+        req = stage.request_class().from_namespace(load_parser(stage).parse_args(argv))
+        if overrides:
+            req = dataclasses.replace(req, **overrides)
+    except ValueError as exc:
+        raise SystemExit(f"{stage_id} form: {exc}") from exc
+    return req
+
+
+def request_with_args(req, extra, *, prog: str | None = None):
+    """``req`` with the user's ``ARGS`` applied through the request's own
+    generated parser — so ``make caption-autotag ARGS="--mode merge"`` still
+    reaches every flag the stage has, and an unknown one fails the way the
+    child would have (usage + exit 2). The trainer's own fields are the
+    parser defaults here (``req.to_argv()``), so ``extra`` overrides them.
+    """
+    extra = list(extra or ())
+    if not extra:
+        return req
+    cls = type(req)
+    return cls.from_argv(cls.parser(prog=prog), [*req.to_argv(), *extra])
+
+_SHARED_PREPROCESS_KEYS = frozenset(
+    {
+        "resized_image_dir",
+        "lora_cache_dir",
+        "conditioning_data_dir",
+        "conditioning_resized_dir",
+        "target_res",
+        "multires_per_image",
+        "drop_lowres_images",
+        "min_pixels",
+        "preprocess_path_pattern",
+        "caption_shuffle_variants",
+        "caption_tag_dropout_rate",
+        "caption_tag_randomize_rate",
+        "caption_correct_order",
+        "caption_insert_no_artist",
+        "caption_trigger_word",
+        "caption_trigger_at_front",
+        "resize_crop_anchor",
+        "resize_bucket_resos",
+        "resize_crop_margins",
+        "freefit_max_ratio",
+        "multires_image_dir",
+        "conditioning_multires_dir",
+        "curation_decisions",
+    }
+)
+
+_TRAIN_COMMANDS = frozenset(
+    {
+        "lora",
+        "lora-gui",
+        "staged-train",
+        "easycontrol",
+        "exp-chimera",
+        "exp-soft-tokens",
+        "exp-byg",
+    }
+)
+
+
+def explicit_option_value(args, option: str) -> str | None:
+    """Return the last explicit value for a single-value ``--option`` in ``args``.
+
+    Accepts both ``--option value`` and ``--option=value`` forms; raises
+    ``ValueError`` when the flag is present without a value (a following
+    ``--``-token counts as missing). ``None`` when the flag is absent.
+    """
+    prefix = option + "="
+    for index in range(len(args) - 1, -1, -1):
+        token = args[index]
+        if token.startswith(prefix):
+            value = token[len(prefix) :]
+            if not value:
+                raise ValueError(f"{option} requires a value")
+            return value
+        if token == option:
+            if index + 1 >= len(args) or args[index + 1].startswith("--"):
+                raise ValueError(f"{option} requires a value")
+            return args[index + 1]
+    return None
+
+def _stdout_is_regular_file() -> bool:
+    """True iff ``sys.stdout`` is a regular file (not a pipe / TTY / DEVNULL).
+
+    The training daemon launches this process with stdout redirected to
+    ``<job_dir>/stdout.log`` (``spawn_detached``). In that case the
+    grandchild's stdout is a regular file, not a pipe — so tqdm's
+    high-volume redraws won't fill an OS pipe buffer and stall the
+    trainer. The legacy pipe-based callers (QProcess / WebUI direct
+    subprocess) keep their stdout as a pipe; for those we still want
+    to swallow the grandchild's stdout to avoid the stall.
+    """
+    import os
+    import stat
+
+    try:
+        st = os.fstat(sys.stdout.fileno())
+    except (AttributeError, OSError, ValueError):
+        return False
+    return stat.S_ISREG(st.st_mode)
+
+def command_runs_training(command: str | None) -> bool:
+    """True iff the ``tasks.py`` command ``command`` runs through ``train.py``.
+
+    See :data:`_TRAIN_COMMANDS` for the contract + the two call sites.
+    """
+    return command in _TRAIN_COMMANDS

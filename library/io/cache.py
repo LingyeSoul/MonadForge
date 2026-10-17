@@ -18,8 +18,8 @@ import torch
 from safetensors.torch import load_file
 
 # Suffix conventions live in the torch-free leaf so torch-free consumers (the
-# GUI) share one definition. Re-exported here for back-compat with the many
-# call sites importing them from ``library.io.cache``.
+# GUI) share one definition. Re-exported for call sites importing them from
+# ``library.io.cache``.
 from library.io.cache_names import (  # noqa: F401
     DEFAULT_PE_ENCODER,
     LATENT_CACHE_SUFFIX,
@@ -44,16 +44,11 @@ def resolve_cache_path(
 ) -> str:
     """Build a cache file path from a source image path + suffix.
 
-    Sidecar default (``cache_dir=None``) preserves the legacy behavior of
-    writing the cache next to the image. With ``cache_dir`` set, the cache
-    is redirected into that directory.
-
-    When ``image_dir`` is also provided, the relative subpath from
-    ``image_dir`` to ``image_abs_path`` is mirrored under ``cache_dir`` so
-    nested source layouts (``image_dataset/charA/img1.png``) produce nested
-    caches (``cache_dir/charA/img1{suffix}``). Without ``image_dir`` the
-    legacy flat layout is preserved — used by callers that don't know the
-    source root.
+    ``cache_dir=None`` writes the cache next to the image (legacy sidecar
+    layout). With ``cache_dir`` set, the cache is redirected there; if
+    ``image_dir`` is also given, the relative subpath from ``image_dir`` to
+    ``image_abs_path`` is mirrored under ``cache_dir`` so nested source
+    layouts produce nested caches instead of flattening.
     """
     src = str(image_abs_path)
     stem = os.path.splitext(os.path.basename(src))[0]
@@ -66,11 +61,8 @@ def resolve_cache_path(
             rel = os.path.relpath(os.path.dirname(src), os.fspath(image_dir))
         except ValueError:
             rel = ""
-        # relpath returns "." when the image is directly under image_dir;
-        # treat that as "no subdir" so the flat layout is preserved. Bail to
-        # flat when the image escapes the supplied root (rel starts with
-        # ".."), since persisting cache files outside cache_dir would be
-        # surprising and the lookup-side scanners wouldn't see them anyway.
+        # "." means directly under image_dir (flat); ".." means escaped the
+        # root, so also fall back to flat rather than write outside cache_dir.
         if rel and rel != "." and not rel.startswith(".."):
             rel_dir = rel
     target_dir = os.path.join(cache_dir_path, rel_dir) if rel_dir else cache_dir_path
@@ -306,9 +298,8 @@ def parse_latent_cache_name(path: str | os.PathLike) -> LatentCacheFile | None:
     """Parse a ``{stem}_{W}x{H}_anima.npz`` path into its parts.
 
     Returns ``(path, stem, W_px, H_px)`` or ``None`` if the basename doesn't
-    match the bucketed-latent convention. The single source of truth for the
-    pixel-dim filename pattern — bench probes should use this instead of
-    re-compiling their own ``_FNAME_RE`` / ``_RES_RE`` / ``_bucket_of``.
+    match the bucketed-latent convention. Bench probes should use this rather
+    than their own filename regex.
     """
     p = Path(path)
     m = _LATENT_PIXEL_RE.match(p.name)
@@ -322,14 +313,10 @@ def discover_latents_by_stem(
 ) -> dict[str, list[LatentCacheFile]]:
     """Group every cached latent NPZ under ``cache_dir`` by image stem.
 
-    Recursive by default — the lora cache is nested by artist. Each value is the
-    stem's bucket file(s), stable-sorted by path (a stem re-cached at multiple
-    aspect ratios has several). Non-matching files are skipped.
-
-    Sits next to :func:`discover_cached_pairs` but answers the "give me *all*
-    buckets per stem, TE or not" question (artist grouping, per-stem bucket
-    selection) where ``discover_cached_pairs`` is the TE-gated, first-bucket
-    variant.
+    Recursive by default — the lora cache is nested by artist. Each value is
+    the stem's bucket file(s) (a stem re-cached at multiple aspect ratios has
+    several). Unlike :func:`discover_cached_pairs` this isn't TE-gated and
+    returns every bucket, not just the first.
     """
     root = Path(cache_dir)
     pattern = "*" + LATENT_CACHE_SUFFIX
@@ -341,7 +328,7 @@ def discover_latents_by_stem(
     return out
 
 
-# Bucketed sample discovery (promoted from bench/_anima.py).
+# Bucketed sample discovery.
 def discover_bucketed_samples(
     data_dir: Path,
     bucket: str | None,
@@ -353,31 +340,14 @@ def discover_bucketed_samples(
     """Scan ``data_dir`` for (latent npz, TE sidecar) pairs grouped by bucket.
 
     Filename convention: ``{stem}_{Wpix}x{Hpix}_anima.npz`` paired with
-    ``{stem}_anima_te.safetensors``. Items without a matching TE sidecar
-    are skipped. ``latents_{WxH}`` keys inside the npz define the bucket
-    string.
+    ``{stem}_anima_te.safetensors``; items without a TE sidecar are skipped.
+    ``latents_{WxH}`` keys inside the npz define the bucket string (latent
+    dims, not pixel dims). Used by bench/probe harnesses that need a fixed
+    same-shape batch. ``bucket=None`` picks the most populous bucket;
+    ``allow_replace`` resamples with replacement (logged) when the pool is
+    smaller than ``num_samples``, else raises ``SystemExit``.
 
-    Sits next to :func:`discover_cached_images` / :func:`discover_cached_pairs`
-    but answers a different question: pick a *bucket* and draw ``num_samples``
-    random members of it. Used by the bench/probe harnesses that need a fixed
-    same-shape batch for σ-schedule and rollout experiments.
-
-    Args:
-        data_dir: e.g. ``Path("post_image_dataset/lora")``.
-        bucket: Bucket string like ``"128x192"`` (latent dims, not pixel
-            dims). If None, the most populous bucket is chosen.
-        num_samples: How many samples to return.
-        seed: For the np.random.choice.
-        allow_replace: If True and the pool is smaller than
-            ``num_samples``, resample with replacement (logs a warning).
-            If False (default), raises.
-
-    Returns:
-        ``(chosen_bucket, [(stem, latent_key, npz_path, te_path), ...])``.
-
-    Raises:
-        SystemExit: if no pairs are found, the requested bucket is empty,
-            or the pool is too small and ``allow_replace=False``.
+    Returns ``(chosen_bucket, [(stem, latent_key, npz_path, te_path), ...])``.
     """
     npz_paths = sorted(glob.glob(str(data_dir / "*_anima.npz")))
     if not npz_paths:

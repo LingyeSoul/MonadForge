@@ -1,12 +1,9 @@
 """Shared training/validation context dataclasses.
 
-``TrainCtx``/``ValCtx`` are frozen bundles built once at the top of
-``train()`` and threaded through per-step / per-batch methods on the trainer
-plus the loop runner in :mod:`library.training.loop`. ``RuntimeState`` is the
-mutable counterpart -- per-run feature state that methods mutate as training
-progresses. All live here (rather than in ``train.py``) so ``loop.py`` and any
-future trainer entrypoints can import them directly instead of receiving them
-as injected class parameters.
+``TrainCtx``/``ValCtx`` are frozen bundles built once in ``train()`` and
+threaded through per-step/per-batch methods; ``RuntimeState`` is the mutable
+per-run counterpart. Live here (not train.py) so ``loop.py`` and other
+entrypoints can import them directly.
 """
 
 from __future__ import annotations
@@ -20,10 +17,9 @@ from accelerate import Accelerator
 
 @dataclass(frozen=True)
 class TrainCtx:
-    """Training-wide state built once near the top of ``train()`` and passed to
-    per-step / per-batch methods instead of 15-arg parameter lists. Fields here
-    are fixed for the whole training run -- per-call values (epoch, global_step,
-    progress_bar, logging keys, …) stay explicit at call sites."""
+    """Training-wide state, fixed for the whole run, passed to per-step /
+    per-batch methods. Per-call values
+    (epoch, global_step, progress_bar, …) stay explicit at call sites."""
 
     args: Any
     accelerator: Accelerator
@@ -45,9 +41,8 @@ class TrainCtx:
 
 @dataclass(frozen=True)
 class ValCtx:
-    """Validation-wide state fixed for the entire training run. The per-call
-    val_loss_recorder (step vs epoch) stays explicit since it differs per call
-    site; everything else here is shared."""
+    """Validation-wide state fixed for the entire run. ``val_loss_recorder``
+    (step vs epoch) stays explicit per call site; everything else is shared."""
 
     dataloader: Any
     sigmas: list
@@ -56,9 +51,8 @@ class ValCtx:
     train_loss_recorder: Any
     original_t_min: float
     original_t_max: float
-    # The val DatasetGroup itself. Held so CMMD-style validation can enumerate
-    # held-out items (absolute_path, caption, bucket_reso, text_encoder_outputs_npz)
-    # for paired sample generation against the cached PE reference pool.
+    # Held so CMMD-style validation can enumerate held-out items for paired
+    # sample generation against the cached PE reference pool.
     dataset_group: Any = None
 
 
@@ -128,34 +122,22 @@ class AcceleratedBundle:
 
 @dataclass
 class RuntimeState:
-    """Per-run mutable state that's threaded across trainer methods.
+    """Per-run mutable state threaded across trainer methods (unlike the
+    frozen ``*Ctx`` bundles above)."""
 
-    Unlike the frozen ``*Ctx`` bundles above, these fields are mutated as
-    training progresses. Grouped together so the lifecycle of each feature's
-    state is documented in one place rather than scattered as bare attributes.
-    """
-
-    # Per-step aux dict -- adapters' ``extra_forwards`` returns are merged
-    # here in ``get_noise_pred_and_target`` and consumed by the loss composer
-    # in ``_process_batch_inner``.
+    # Merged from adapters' `extra_forwards` in get_noise_pred_and_target;
+    # consumed by the loss composer in _process_batch_inner.
     extras_for_step: dict = field(default_factory=dict)
-    # EMA λ state, mutated by the flow_matching_vr loss handler each step. The
-    # "frozen reference" for the AsymFlow §5.2 control variate is just the
-    # trainable DiT with ``network.set_multiplier(0)`` — see the VR block in
-    # ``get_noise_pred_and_target``.
+    # EMA λ for the flow_matching_vr AsymFlow §5.2 control variate (frozen
+    # reference = trainable DiT with network.set_multiplier(0)).
     vr: dict = field(default_factory=lambda: {"lambda_ema": None})
-    # T5("") crossattn sidecar (shape ``(1, S, 1024)`` bf16 on device).
-    # Populated via ``library.preprocess.uncond.ensure_uncond_crossattn`` when
-    # caption dropout is enabled; consumed by ``prepare_text_conds`` so dropped
-    # rows match Anima's CFG-uncond inference path instead of falling back to
-    # zeros.
+    # T5("") crossattn sidecar (1, S, 1024) bf16, staged by
+    # ensure_uncond_crossattn when caption dropout is on; prepare_text_conds
+    # uses it for dropped rows instead of zeros, matching CFG-uncond inference.
     uncond_crossattn_1: torch.Tensor | None = None
-    # Set during dataset prep from subset.caption_dropout_rate; gates whether
-    # ``ensure_uncond_crossattn`` actually stages the sidecar.
+    # Gates whether ensure_uncond_crossattn stages the sidecar above.
     caption_dropout_enabled: bool = False
     # Online memorization Δ-gap tracker (library/training/mem_reweight.py),
-    # created at model-setup when --mem_reweight_mode is set. Producer: the
-    # mem_gap block in ``_attach_aux_losses`` (base forward on measurement
-    # steps + causal per-item weights). Consumer: the loss site in
-    # ``_process_batch_inner`` (EMA update + loss_weights multiply).
+    # created when --mem_reweight_mode is set; updated in _attach_aux_losses,
+    # consumed (EMA + loss_weights multiply) in _process_batch_inner.
     mem_tracker: object | None = None

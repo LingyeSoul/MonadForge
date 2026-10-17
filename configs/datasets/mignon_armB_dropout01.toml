@@ -1,0 +1,15 @@
+[general]
+caption_extension = '.txt'
+
+[[datasets]]
+batch_size = 1
+validation_split_num = 0
+validation_seed = 42
+
+  [[datasets.subsets]]
+  image_dir = 'post_image_dataset/resized'
+  cache_dir = 'post_image_dataset/lora'
+  text_cache_dir = 'post_image_dataset/lora_te_mignon_armB'
+  path_pattern = 'mignon/*'
+  recursive = true
+  num_repeats = 1

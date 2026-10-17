@@ -1,5 +1,66 @@
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_task_environment(monkeypatch, tmp_path):
+    """No test may launch a worker or create a run in the checkout."""
+    import library.runtime.profiles as profiles
+    from scripts.tasks import _common, _legacy_preprocess, preprocess
+    monkeypatch.setattr(profiles, "is_v100_runtime", lambda: False)
+    monkeypatch.setattr(_common, "_PATH_OVERRIDES_CACHE", {})
+    monkeypatch.setattr(_legacy_preprocess, "_ACTIVE_PREPROCESS_RUN", None)
+    for key in ("PREPROCESS_RUN", "ANIMA_PREPROCESS_RUN", "ANIMA_DAEMON_JOB_DIR", "TARGET_RES",
+                "MULTIRES_PER_IMAGE", "DROP_LOWRES_IMAGES", "MIN_PIXELS", "PREPROCESS_STAGES_JSON",
+                "PREPROCESS_PATH_PATTERN", "CAPTION_AUTOTAG", "CAPTION_POSITION_CLAUSES"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(preprocess, "_ensure_danbooru_tags", lambda: None)
+    monkeypatch.setattr(_legacy_preprocess, "_curation_decisions_args", lambda: [])
+    monkeypatch.setattr(preprocess, "_curation_decisions_path", lambda: tmp_path / "absent-decisions.json")
+    monkeypatch.setenv("ANIMA_HOME", str(tmp_path))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("A task test must stub its worker launch")
+
+    for module in (_common, _legacy_preprocess, preprocess):
+        monkeypatch.setattr(module, "run", forbidden)
+    original = _legacy_preprocess.resolve_preprocess_run
+
+    def guarded(source, config, **kwargs):
+        from pathlib import Path
+        if kwargs.get("create", True):
+            post = Path(kwargs.get("post_image_dataset", "post_image_dataset")).resolve()
+            assert post.is_relative_to(tmp_path), "Test attempted to create a real preprocessing run"
+        return original(source, config, **kwargs)
+
+    monkeypatch.setattr(_legacy_preprocess, "resolve_preprocess_run", guarded)
+
+
+def _entry(cmd: list[str]) -> str:
+    """The child's entry: the module of a ``-m`` invocation (the ``anime_tools``
+    caption stages) or the script path (trainer-side cache scripts)."""
+    return cmd[2] if cmd[1] == "-m" else cmd[1]
+
+
+def _stages_env(monkeypatch, **forms) -> None:
+    """The GUI's stage forms (``PREPROCESS_STAGES_JSON``) for a run."""
+    import json
+
+    monkeypatch.setenv("PREPROCESS_STAGES_JSON", json.dumps(forms))
+
+
+def _patch_run(monkeypatch, fn) -> None:
+    """Stub both child launches: ``preprocess.run`` (the trainer-side cache
+    scripts) and ``_common.run`` (what ``execute_stage`` uses for a curation
+    stage from a shell). Also pin the shell path — a suite running as a daemon
+    job would otherwise run the stages in-process."""
+    from scripts.tasks import _common, preprocess
+
+    monkeypatch.setattr(preprocess, "run", fn)
+    monkeypatch.setattr(_common, "run", fn)
+    monkeypatch.delenv("ANIMA_DAEMON_JOB_DIR", raising=False)
+
 
 def test_preprocess_te_uses_corrected_resized_captions(monkeypatch):
     from scripts.tasks import preprocess
@@ -14,7 +75,7 @@ def test_preprocess_te_uses_corrected_resized_captions(monkeypatch):
         }
         return values.get(key, default)
 
-    monkeypatch.setattr(preprocess, "run", lambda cmd: calls.append(cmd))
+    _patch_run(monkeypatch, lambda cmd: calls.append(cmd))
     monkeypatch.setattr(preprocess, "_path", fake_path)
 
     preprocess.cmd_preprocess_te(
@@ -30,13 +91,21 @@ def test_preprocess_te_uses_corrected_resized_captions(monkeypatch):
     assert len(calls) == 2
     caption_cmd, te_cmd = calls
 
-    assert caption_cmd[:2] == [
+    assert caption_cmd[:3] == [
         preprocess.PY,
-        "scripts/preprocess/correct_captions.py",
+        "-m",
+        "anime_tools.stages.cli.correct_captions",
     ]
-    assert caption_cmd[caption_cmd.index("--src") + 1] == "image_dataset"
+    # ``to_argv`` spells only what differs from the request default, and the
+    # trainer's master tree *is* the package's own default, so ``--src`` is
+    # elided rather than repeated. ``--dst`` differs and stays.
+    from anime_tools import workspace as WS
+
+    assert "--src" not in caption_cmd and WS.SOURCE_ROOT == "image_dataset"
     assert caption_cmd[caption_cmd.index("--dst") + 1] == "post_image_dataset/resized"
     assert caption_cmd[caption_cmd.index("--path_pattern") + 1] == "group/*"
+    # The correction is what TE is about to encode, so it always applies.
+    assert "--apply" in caption_cmd
     assert "--caption_insert_no_artist" in caption_cmd
     assert caption_cmd[caption_cmd.index("--caption_trigger_word") + 1] == (
         "@dataset-trigger"
@@ -50,10 +119,8 @@ def test_preprocess_te_uses_corrected_resized_captions(monkeypatch):
     assert "--match_images_from" not in te_cmd
     assert te_cmd[te_cmd.index("--cache_dir") + 1] == "post_image_dataset/lora"
     assert te_cmd[te_cmd.index("--path_pattern") + 1] == "group/*"
-    assert [i for i, arg in enumerate(te_cmd) if arg == "--min_pixels"] == [
-        te_cmd.index("--min_pixels")
-    ]
-    assert te_cmd[te_cmd.index("--min_pixels") + 1] == "0"
+    # The retired low-res flag is popped, never forwarded to the TE script.
+    assert "--min_pixels" not in te_cmd and "--min_pixels" not in caption_cmd
 
 
 def test_caption_correction_enabled_when_only_trigger_or_no_artist_set():
@@ -90,7 +157,7 @@ def test_preprocess_te_runs_correction_for_trigger_word_without_correct_order(
         }
         return values.get(key, default)
 
-    monkeypatch.setattr(preprocess, "run", lambda cmd: calls.append(cmd))
+    _patch_run(monkeypatch, lambda cmd: calls.append(cmd))
     monkeypatch.setattr(preprocess, "_path", fake_path)
 
     preprocess.cmd_preprocess_te(
@@ -107,7 +174,7 @@ def test_preprocess_te_runs_correction_for_trigger_word_without_correct_order(
     # and the TE cache then reads the corrected captions from the resized dir.
     assert len(calls) == 2
     caption_cmd, te_cmd = calls
-    assert caption_cmd[1] == "scripts/preprocess/correct_captions.py"
+    assert _entry(caption_cmd) == "anime_tools.stages.cli.correct_captions"
     assert caption_cmd[caption_cmd.index("--caption_trigger_word") + 1] == (
         "@dataset-trigger"
     )
@@ -121,36 +188,15 @@ def _stub_overrides(monkeypatch, overrides: dict) -> None:
     monkeypatch.setattr(_common, "_path_overrides", lambda: dict(overrides))
 
 
-def test_min_pixels_args_env_drop_false_keeps_every_image(monkeypatch):
-    """GUI auto-chain unchecks low-res → DROP_LOWRES_IMAGES=0 forces --min_pixels 0,
-    overriding a merged config that still says drop=true (the snapshot strips it)."""
-    from scripts.tasks.preprocess import _min_pixels_args
+def test_retired_lowres_args_are_popped(capsys):
+    from scripts.tasks.preprocess import _pop_retired_lowres_args
 
-    _stub_overrides(monkeypatch, {"drop_lowres_images": True, "min_pixels": 250_000})
-    monkeypatch.setenv("DROP_LOWRES_IMAGES", "0")
-    monkeypatch.setenv("MIN_PIXELS", "250000")
-
-    assert _min_pixels_args() == ["--min_pixels", "0"]
-
-
-def test_min_pixels_args_env_drop_true_uses_env_threshold(monkeypatch):
-    from scripts.tasks.preprocess import _min_pixels_args
-
-    _stub_overrides(monkeypatch, {})
-    monkeypatch.setenv("DROP_LOWRES_IMAGES", "1")
-    monkeypatch.setenv("MIN_PIXELS", "250000")
-
-    assert _min_pixels_args() == ["--min_pixels", "250000"]
-
-
-def test_min_pixels_args_no_env_falls_back_to_config(monkeypatch):
-    from scripts.tasks.preprocess import _min_pixels_args
-
-    _stub_overrides(monkeypatch, {"drop_lowres_images": False, "min_pixels": 250_000})
-    monkeypatch.delenv("DROP_LOWRES_IMAGES", raising=False)
-    monkeypatch.delenv("MIN_PIXELS", raising=False)
-
-    assert _min_pixels_args() == ["--min_pixels", "0"]
+    assert _pop_retired_lowres_args(
+        ["--overwrite", "--min_pixels", "0", "--no_drop_lowres", "--drop_lowres"]
+    ) == ["--overwrite"]
+    assert "handled by resize" in capsys.readouterr().out
+    assert _pop_retired_lowres_args(["--overwrite"]) == ["--overwrite"]
+    assert capsys.readouterr().out == ""
 
 
 def test_target_res_args_env_wins_over_config(monkeypatch):
@@ -794,7 +840,7 @@ def test_full_preprocess_failure_keeps_manifest_incomplete(tmp_path, monkeypatch
     )
     monkeypatch.setattr(preprocess, "_repa_pe_encoder", lambda: None)
 
-    def fail_resize(extra):
+    def fail_resize(extra, **kwargs):
         raise RuntimeError("resize failed")
 
     monkeypatch.setattr(preprocess, "cmd_preprocess_resize", fail_resize)
@@ -953,3 +999,45 @@ def test_preprocess_pe_respects_explicit_centroid_out(tmp_path, monkeypatch):
     cmd = calls[0]
     assert cmd.count("--centroid_out") == 1
     assert cmd[cmd.index("--centroid_out") + 1] == "custom/centroid.safetensors"
+
+
+def test_stage_wrapper_restores_legacy_hooks_and_scopes_reports(tmp_path, monkeypatch):
+    from scripts.tasks import _common, _legacy_preprocess, preprocess
+    run = _make_preprocess_run(tmp_path)
+    previous_run = _legacy_preprocess.run
+    previous_path = _legacy_preprocess._path
+    previous_config = _legacy_preprocess._preprocess_config
+    previous_overrides = _common._PATH_OVERRIDES_CACHE
+    monkeypatch.setattr(preprocess, "_resolve_stage_run", lambda extra, create=False: (run, list(extra)))
+    calls = []
+    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+    monkeypatch.setattr(_common, "run", lambda command, **kwargs: calls.append(command))
+    monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("1", "0", "0"))
+    preprocess.cmd_preprocess_captions([], caption_config={"correct_order": False})
+    assert str(run.resized_dir) in calls[0]
+    assert str(run.root / "reports" / "correct") in calls[0]
+    assert _legacy_preprocess.run is previous_run
+    assert _legacy_preprocess._path is previous_path
+    assert _legacy_preprocess._preprocess_config is previous_config
+    assert _common._PATH_OVERRIDES_CACHE is previous_overrides
+
+
+def test_selected_run_caption_index_is_not_shared(tmp_path, monkeypatch):
+    from scripts.tasks import _common, preprocess
+    run = _make_preprocess_run(tmp_path)
+    monkeypatch.setattr(preprocess, "_resolve_stage_run", lambda extra, create=False: (run, list(extra)))
+    calls = []
+    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+    preprocess.cmd_caption_index([])
+    assert calls[0][calls[0].index("--out") + 1] == str(run.caption_index_path)
+
+
+def test_explicit_lowres_filter_is_preserved_for_resize_only(monkeypatch):
+    from scripts.tasks import preprocess
+    calls = []
+    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+    preprocess.cmd_preprocess_resize(["--min_pixels", "250000", "--overwrite"])
+    assert calls[0][1] == "scripts/preprocess/resize_images.py"
+    assert calls[0][calls[0].index("--min_pixels") + 1] == "250000"
+    preprocess.cmd_preprocess_vae(["--min_pixels", "250000", "--target_res", "1024"])
+    assert "--min_pixels" not in calls[1] and "--target_res" not in calls[1]

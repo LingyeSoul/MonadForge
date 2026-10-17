@@ -1,26 +1,6 @@
-# Soft Tokens — per-layer time-indexed soft text tokens (SoftREPA-style
-# parameterization, plain FM loss).
-
 network_module = "networks.methods.soft_tokens"
 
-# network_dim → num_tokens (K) per layer per timestep bucket.
 network_dim = 4
-
-# n_layers           — number of leading DiT blocks to attach soft tokens to
-#                      (Anima has 28; SoftREPA used 5/24 on SD3, scale
-#                      proportionally).
-# n_t_buckets        — number of t-buckets (sigma ∈ [0,1] split uniformly).
-#                      Paper used 100; on Anima training scale ≪ COCO,
-#                      under-sampled buckets stay near zero (not catastrophic
-#                      since base tokens still train normally). Drop to ~20 if
-#                      that becomes the bottleneck.
-# init_std           — base-tokens init std. t_offsets is zero-init.
-# splice_position    — "front_of_padding" (shipped below; algorithm-faithful —
-#                      SoftREPA appends soft tokens to the text sequence) scatters
-#                      at [seqlens[i], +K) per sample, caption-position-aware.
-#                      "end_of_sequence" (constructor fallback) overwrites the K
-#                      tail zero-padding slots; compile-friendly, preserves the
-#                      strongest front sinks, but an Anima-specific shortcut.
 
 network_args = [
     "n_layers=6",
@@ -41,18 +21,14 @@ network_args = [
 ]
 output_name = "anima_soft_tokens_softrank"
 weight_decay=1e-4
-# Soft tokens are independent of the cached crossattn (they overwrite zero-
-# padding tail), so cache_llm_adapter_outputs is the right default.
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
 
-# Soft tokens are tiny — higher LR is fine.
 learning_rate = 1e-3
 max_train_epochs = 4
 save_every_n_epochs = 4
 checkpointing_epochs = 4
 
-# gradient_accumulation_steps = 2
 blocks_to_swap = 0
 
 

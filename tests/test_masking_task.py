@@ -1,8 +1,25 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 
 from library.preprocess.runs import load_manifest, resolve_preprocess_run
+
+
+@pytest.fixture(autouse=True)
+def isolated_mask_environment(monkeypatch, tmp_path):
+    import library.runtime.profiles as profiles
+    from scripts.tasks import _common, _legacy_masking, masking
+    monkeypatch.setattr(profiles, "is_v100_runtime", lambda: True)
+    monkeypatch.setattr(_common, "_PATH_OVERRIDES_CACHE", {})
+    for key in ("PREPROCESS_RUN", "ANIMA_PREPROCESS_RUN", "ANIMA_DAEMON_JOB_DIR", "SAM_MASK_CONFIG_JSON"):
+        monkeypatch.delenv(key, raising=False)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Mask tests must stub all worker launches")
+
+    for module in (_common, masking, _legacy_masking):
+        monkeypatch.setattr(module, "run", forbidden)
 
 
 def _completed_run(tmp_path: Path):

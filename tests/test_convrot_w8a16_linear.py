@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -58,6 +60,7 @@ def test_w8a16_functional_matches_module() -> None:
     assert torch.allclose(y_mod, y_fn, atol=1e-5, rtol=1e-5)
 
 
+@pytest.mark.training_step
 def test_w8a16_stop_grad_on_base_weight() -> None:
     torch.manual_seed(2)
     linear = nn.Linear(16, 8, bias=False)

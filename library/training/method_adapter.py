@@ -5,8 +5,7 @@ Concrete adapters live next to their network module (e.g.
 instantiated by ``resolve_adapters`` based on ``args`` + the built network.
 
 The trainer holds ``self._adapters: list[MethodAdapter]`` and dispatches
-each lifecycle event to all of them. This replaces the per-method ``if
-args.use_X:`` branches that used to live throughout ``train.py``.
+each lifecycle event to all of them.
 """
 
 from __future__ import annotations
@@ -137,6 +136,14 @@ class MethodAdapter:
 
     name: str = "base"
 
+    # sigma_lowres (σ>threshold → demote-tier latent swap) compatibility.
+    # Default False: an adapter that runs its own forwards / cond streams at a
+    # fixed grid (EasyControl, BYG, soft-tokens) needs its own operating-point
+    # probe before demotion is allowed under it. Set True
+    # only for adapters that are grid-agnostic by construction (REPA: pools
+    # the primary forward's tokens to the encoder grid adaptively).
+    sigma_demote_safe: bool = False
+
     def on_network_built(self, ctx: SetupCtx) -> None:
         """Called once after ``network.apply_to``. Validate runtime contract,
         load auxiliary encoders, install forward hooks, assert preconditions."""
@@ -214,8 +221,7 @@ class MethodAdapter:
 
         Adapters that surface internal counters or auxiliary losses override
         this. ``ctx`` is the ``MetricContext`` from ``library.training.metrics``;
-        it carries ``args`` and ``network``. Default empty so adapters without
-        per-step metrics don't have to implement anything.
+        it carries ``args`` and ``network``. Default empty.
         """
         return {}
 

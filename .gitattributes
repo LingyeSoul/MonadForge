@@ -1,5 +1,5 @@
-# Windows batch files must always be CRLF — cmd.exe mis-parses LF-only .bat
-# (splits setlocal/cd/echo lines into fragments). Pin them regardless of the
-# user's core.autocrlf setting.
+# Windows command scripts require CRLF.
 *.bat text eol=crlf
 *.cmd text eol=crlf
+# Research material is versioned, but excluded from release archives.
+project/ export-ignore

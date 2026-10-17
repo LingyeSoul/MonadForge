@@ -2,18 +2,17 @@
 
 Each bucket is an integer ``(h_patches, w_patches)`` pair — pixel size is
 ``(patch*h, patch*w)`` and patch-token count is ``h*w`` (plus 1 CLS when the
-encoder prepends one). Buckets for an encoder are tuned so every entry lands
-near the encoder's pretraining patch count, keeping the ViT's learned
-positional embeddings close to their training distribution under interpolation.
+encoder prepends one). Buckets are tuned so every entry lands near the
+encoder's pretraining patch count, keeping the ViT's positional embeddings
+close to their training distribution under interpolation.
 
 Images are zero-padded to the encoder's ``t_max_tokens`` at preprocess time
 so the cache stays a single ``(N, T_MAX_TOKENS, D)`` tensor and the resampler
 doesn't need a padding mask.
 
-**Train / test must use the same encoder + bucket spec.** Tokens produced by
-one encoder have a different ``T`` and ``D`` than another; a resampler
-trained on one will silently see a shifted KV length distribution at
-inference time if the encoder flag diverges.
+**Train / test must use the same encoder + bucket spec** — a resampler
+trained on one encoder's ``T``/``D`` will silently see a shifted KV length
+at inference if the encoder flag diverges.
 """
 
 from __future__ import annotations
@@ -39,9 +38,8 @@ class BucketSpec:
         return self.t_max_patches + (1 if self.use_cls else 0)
 
 
-# PE-Core-L14-336 — 336px native, 24x24=576 patch tokens + 1 CLS (use_cls_token=True).
-# Buckets sized so h*w ~ 576 (within ~2%). Patch=14, dimensions chosen as
-# integer multiples of 14 so input H/W are divisible by patch_size.
+# PE-Core-L14-336 — 336px native, 24x24=576 patch tokens + 1 CLS. Buckets sized
+# so h*w ~ 576 (within ~2%); dims are multiples of patch=14.
 PE_CORE_L14_336_SPEC = BucketSpec(
     encoder="pe",
     patch=14,
@@ -58,12 +56,9 @@ PE_CORE_L14_336_SPEC = BucketSpec(
 )
 
 
-# PE-Spatial-B16-512 — 512px native, 32x32=1024 patch tokens + 1 CLS
-# (use_cls_token=True). Buckets sized so h*w ≈ 1024 (within ~3.5%). Patch=16,
-# so dimensions are integer multiples of 16. **Aspects mirror PE-Core**
-# (2.0/1.45/1.33/1.0/0.75/0.69/0.5) so a source image's bucket choice maps
-# 1:1 across the two specs — within-batch homogeneity from the main encoder's
-# bucket sampler carries over to the aux encoder for free.
+# PE-Spatial-B16-512 — 512px native, 32x32=1024 patch tokens + 1 CLS. Buckets
+# sized so h*w ~ 1024 (within ~3.5%); dims are multiples of patch=16.
+# Aspects mirror PE-Core so a bucket choice maps 1:1 across both specs.
 PE_SPATIAL_B16_512_SPEC = BucketSpec(
     encoder="pe_spatial",
     patch=16,
@@ -80,9 +75,21 @@ PE_SPATIAL_B16_512_SPEC = BucketSpec(
 )
 
 
+# PE-Spatial-L14-448 — 448px native, 32x32=1024 patch tokens + 1 CLS. Same
+# patch grid as B16-512 (identical bucket list), just patch=14 so pixel dims
+# are 14/16 of the B16 ones (e.g. native 448x448).
+PE_SPATIAL_L14_448_SPEC = BucketSpec(
+    encoder="pe_spatial_l",
+    patch=14,
+    use_cls=True,
+    buckets=PE_SPATIAL_B16_512_SPEC.buckets,
+)
+
+
 _SPECS: dict[str, BucketSpec] = {
     "pe": PE_CORE_L14_336_SPEC,
     "pe_spatial": PE_SPATIAL_B16_512_SPEC,
+    "pe_spatial_l": PE_SPATIAL_L14_448_SPEC,
 }
 
 

@@ -2,55 +2,58 @@
 
 Timestep-dependent rank masking for LoRA training. Effective rank varies with the denoising step — low at high noise, full at low noise.
 
-> **For the structural walkthrough** (rank schedule math, mask application inside the LoRA bottleneck, training-only semantics, shared GPU-resident tensor), see **`docs/structure/timestep-mask.md`**. This doc is the usage / ops reference.
+> For the structural walkthrough (rank schedule math, mask application inside the LoRA bottleneck, training-only semantics, shared GPU-resident tensor), see `docs/structure/timestep-mask.md`. This doc is the usage / ops reference.
 
 ## Quick start
 
-T-LoRA variants live in `configs/gui-methods/` (one file per variant, no toggle blocks):
-
 ```bash
-make lora-gui GUI_PRESETS=tlora              # OrthoLoRA + timestep masking (rank 64)
+make lora                                    # configs/methods/lora.toml already sets use_timestep_mask = true
+make lora-gui GUI_PRESETS=tlora              # configs/gui-methods/tlora.toml (rank 32, weight_svd down-init)
 ```
-
-Or toggle inside `configs/methods/lora.toml` by uncommenting the T-LoRA block and running `make lora`.
 
 ## Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `use_timestep_mask` | false | Enable timestep rank masking |
-| `min_rank` | 1 | Minimum active rank (floor at clean end) |
+| `use_timestep_mask` | false (`lora.toml`: true) | Enable timestep rank masking |
+| `min_rank` | 1 | Minimum active rank (floor at the pure-noise end, σ=1) |
 | `alpha_rank_scale` | 1.0 | Power-law exponent (1.0 = linear, >1 = steeper, <1 = flatter) |
 | `network_dim` | — | Maximum rank (R_max), set by the method config |
 
 ## Compatibility
 
-Timestep masking applies only to adapter families with a shared
-`network_dim` bottleneck. The mask is applied after down-projection:
+Timestep masking composes with every adapter module type. The mask is applied at the bottleneck (after down-projection), so it is orthogonal to the module's outer parameterization:
 
 | Module | Where mask is applied |
 |--------|----------------------|
-| **LoRA** | After `lora_down`, before dropout and `lora_up` |
-| **OrthoLoRA (Cayley)** | After `Q_eff` projection, multiplied with `lambda_layer` |
-| **HydraLoRA** | After shared `lora_down`; per-expert `lora_up` heads unaffected |
-| **LoKr** | Unsupported: separate Kronecker factors have no shared bottleneck; full-matrix LoKr has no rank axis |
+| LoRA | After `lora_down`, before dropout and `lora_up` |
+| HydraLoRA | After shared `lora_down`; per-expert `lora_up` heads unaffected |
 
-Configuration validation rejects `use_lokr=true` together with
-`use_timestep_mask=true`. Set `use_timestep_mask=false` when training LoKr.
+## Findings
 
-The default block in `configs/methods/lora.toml` stacks LoRA + OrthoLoRA + T-LoRA together.
+The effect depends on where `min_rank` sits relative to the rank the model
+would learn anyway. Scripts and results: `_archive/bench/timestep_mask/`
+(`learned_rank.py` there is a generic ΔW effective-rank tool for any
+LoRA-family checkpoint).
 
-## Configs
-
-`configs/methods/lora.toml` (T-LoRA toggle block) — OrthoLoRA (Cayley) + timestep masking, rank 64:
-
-```toml
-use_ortho = true
-use_timestep_mask = true
-min_rank = 1
-alpha_rank_scale = 1.0
-network_dim = 64
-```
+- **Floor ≥ natural learned rank — inert.** At `network_dim=48, min_rank=16`,
+  mask on/off/σ-uniform all land at participation ratio ≈16 of 48
+  (`results/20260607-*`). The data is the binding constraint; the band above
+  the floor is idle capacity.
+- **Floor below it — spectral regularizer.** At `network_dim=16, min_rank=1`
+  (plain LoRA + REPA, single-artist subset), the mask raises effective rank —
+  PR(median) 10.9 → 12.25, energy-weighted PR 5.2 → 9.8
+  (`results/20260704-1741-learned-rank-dim16-minrank1`). Without the mask,
+  high-energy modules concentrate into a few dominant directions; with it the
+  top columns see gradient only on low-σ steps and the spectrum flattens.
+- **Memorization — reduced, not removed.** Matched `sample_ratio=0.5` arms,
+  `loss_gap.py` member-vs-same-artist-holdout gate
+  (`bench/memorization/results/20260704-18*-sincos_half_*`): both arms show
+  member-specific overfit; the mask trims AUC 0.82 → 0.77 (single seed, within
+  noise), concentrated at σ=0.5 (0.86 → 0.71) where sigmoid-σ sampling peaks and
+  the schedule halves the rank; σ=0.9 moves 0.62 → 0.68.
+- σ-shape (sigmoid vs uniform sampler, `alpha_rank_scale`) had no measurable
+  effect in either bench.
 
 ## Implementation
 
@@ -60,11 +63,3 @@ network_dim = 64
 | `networks/lora_anima/network.py` | `clear_timestep_mask()` — removes mask (for inference) |
 | `networks/lora_modules/lora.py` | Per-module mask application in each forward method |
 | `train.py` | Calls `set_timestep_mask()` each step after noise sampling |
-
-## Programmatic example
-
-`examples/07_stack_ortho_init_tlora.py` builds a fresh OrthoInit + T-LoRA stack
-from Python (no config file) and drives the mask via the one per-step hook
-`apply_router_conditioning`, printing the live effective rank each step. It is the
-runnable counterpart to the "T-LoRA is not a class, it's a buffer" note above —
-see `examples/README.md` (row 07).

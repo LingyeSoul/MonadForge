@@ -19,6 +19,7 @@ def test_forward_value_equals_clean():
     assert torch.allclose(out, y0), "forward value must equal the clean estimate"
 
 
+@pytest.mark.training_step
 def test_gradient_routes_only_through_onestep():
     y0 = _latent(requires_grad=True)
     y1 = _latent(requires_grad=True)

@@ -7,12 +7,8 @@ frequencies emerge from noise. The latent power spectrum decays as a power law
 (`P_ω ∝ |ω|^{-β}`, β=2.26 on Anima — `bench/spd/`), so HF carries far less
 signal and is cheap to defer.
 
-This is the "Case A" / training-free path (`bench/spd/plan.md` Phase 3): the
-bare DiT (or any existing LoRA checkpoint) runs the multi-resolution trajectory
-through the standard inference path — no training. The math here is promoted
-verbatim from the Phase-2 probe (`bench/spd/probe_lowres_denoise.py`), which
-validated that the bare Anima DiT denoises low-res latents and accepts the
-spectral-expansion handoff coherently (std ×0.95, no NaN, no smear).
+SPD is inference-only: the bare DiT (or any existing LoRA checkpoint) runs the
+multi-resolution trajectory through the standard inference path.
 
 Architecturally this mirrors ``networks/spectrum.py``: a sampler-level runner
 that *replaces* the denoise loop and self-registers with
@@ -20,18 +16,15 @@ that *replaces* the denoise loop and self-registers with
 no hard edge into ``networks/``. Dispatched from ``generate_body`` on
 ``--spd``.
 
-v0 scope (runner + CLI, see `docs/proposal/spd_finetune_lora.md` for the
-follow-on fine-tune):
+Scope:
   * **Euler only.** Spectral expansion re-spaces the remaining σ schedule
     mid-loop (Sec 4.3); ``ERSDESampler``/``LCMSampler`` precompute their
     coefficients from the *full* schedule at construction, so they are
-    incompatible with re-spacing. The probe used plain Euler for exactly this
-    reason. If a stochastic sampler is requested we fall back to Euler with a
-    one-time warning.
-  * **No DCW / SMC-CFG composition.** Those operate at the sampler boundary on
-    the (re-spaced) σ and are unvalidated against the mid-loop reshape; passing
-    them with ``--spd`` warns and ignores. (DCW for the SPD trajectory is its
-    own calibration run — see the proposal "Out of scope".)
+    incompatible with re-spacing. If a stochastic sampler is requested we fall
+    back to Euler with a one-time warning.
+  * **No SMC-CFG composition.** It operates at the sampler boundary on the
+    (re-spaced) σ and is unvalidated against the mid-loop reshape; passing it
+    with ``--spd`` warns and ignores.
   * **Composes with LoRA / Hydra / soft-tokens / P-GRAFT** — the per-step
     adapter setters are mirrored from the standard loop, and the per-Linear
     LoRA delta is token-count-agnostic so it runs at any stage resolution.
@@ -48,134 +41,22 @@ from tqdm import tqdm
 
 from library.inference.adapters import (
     compute_and_set_hydra_fei,
-    set_hydra_content,
     set_hydra_crossattn,
     set_hydra_sigma,
+    set_xattn_boost_state,
 )
 from library.inference.sampler_context import SamplerSideChannels
+
+# DCT helpers + SPD spectral primitives (2D separable type-II DCT, paper T_Φ +
+# Eq. i–iii + Eq. 5–6) are pure compute and live in the shared core (also
+# vendored verbatim into the ComfyUI SPEED node). Edit the math in spd_core.py,
+# not here.
+from networks.spd_core import dct2, idct2, dct_lowpass_init, spectral_expand
 
 log = logging.getLogger(__name__)
 
 
-# DCT helpers (2D separable, type-II, pure PyTorch — matches comfyui-speed),
-# promoted verbatim from bench/spd/probe_lowres_denoise.py.
-
-
-# The type-II DCT basis is constant for a given (n, device, dtype), and both the
-# SPD sampler and the fine-tune target construction only ever see a handful of
-# bucket sizes — so build each matrix once and reuse it read-only instead of
-# rebuilding dense (n×n) matrices on every dct2/idct2 call. Callers must NOT
-# mutate the returned tensor (dct2/idct2 only matmul against it). Math is
-# bit-identical to the un-cached construction.
-_DCT_CACHE: dict[tuple[int, torch.device, torch.dtype], torch.Tensor] = {}
-
-
-def _dct_matrix(n: int, device, dtype) -> torch.Tensor:
-    key = (n, device, dtype)
-    m = _DCT_CACHE.get(key)
-    if m is None:
-        nr = torch.arange(n, device=device, dtype=dtype)
-        k = nr.unsqueeze(1)
-        m = torch.cos(torch.pi * k * (2 * nr + 1) / (2 * n))
-        m[0] *= 1.0 / math.sqrt(n)
-        m[1:] *= math.sqrt(2.0 / n)
-        _DCT_CACHE[key] = m
-    return m
-
-
-def dct2(x: torch.Tensor) -> torch.Tensor:
-    """2D type-II DCT over the last two dims of a (B, C, H, W) tensor."""
-    B, C, H, W = x.shape
-    Dh = _dct_matrix(H, x.device, x.dtype)
-    Dw = _dct_matrix(W, x.device, x.dtype)
-    y = x.reshape(B * C, H, W)
-    y = Dh @ y
-    y = y @ Dw.T
-    return y.reshape(B, C, H, W)
-
-
-def idct2(x: torch.Tensor) -> torch.Tensor:
-    B, C, H, W = x.shape
-    Dh = _dct_matrix(H, x.device, x.dtype)
-    Dw = _dct_matrix(W, x.device, x.dtype)
-    y = x.reshape(B * C, H, W)
-    y = Dh.T @ y
-    y = y @ Dw
-    return y.reshape(B, C, H, W)
-
-
-def _snap(v: float, mult: int) -> int:
-    """Round to nearest positive multiple of ``mult`` (DiT patch_spatial)."""
-    return max(mult, int(round(v / mult)) * mult)
-
-
-# SPD spectral primitives (paper T_Φ + Eq. i–iii + Eq. 5–6).
-
-
-def dct_lowpass_init(x5: torch.Tensor, scale: float, patch: int) -> torch.Tensor:
-    """DCT low-pass of a (B,C,1,H,W) latent down to a (B,C,1,h,w) grid (paper T_Φ)."""
-    B, C, T, H, W = x5.shape
-    x4 = x5.squeeze(2).float()
-    xi = dct2(x4)
-    h = min(_snap(H * scale, patch), H)
-    w = min(_snap(W * scale, patch), W)
-    x_low = idct2(xi[:, :, :h, :w])
-    return x_low.unsqueeze(2).to(x5.dtype)
-
-
-def spectral_expand(
-    x5: torch.Tensor,
-    sigma_val: float,
-    scale_lo: float,
-    scale_hi: float,
-    H_full: int,
-    W_full: int,
-    patch: int,
-    gen: torch.Generator,
-    hf_scale: float = 1.0,
-) -> tuple[torch.Tensor, float]:
-    """Embed the current low-res DCT block into a larger grid, fill HF slots with
-    σ-scaled noise, iDCT, scale by κ (Eq. iii) and align the timestep (Eq. 5–6).
-
-    ``hf_scale`` attenuates the fresh HF noise fill (paper prescription = 1.0).
-    It is the continuity↔detail knob the SPD∘Spectrum frontier probe sweeps:
-    γ→0 injects no fresh HF (max LL-feature continuity across the seam, but an
-    off-manifold under-detailed state); γ=1 is the on-manifold paper default.
-    Default 1.0 ⇒ bit-for-bit identical to the sampler/training path.
-
-    Returns (expanded (B,C,1,h_hi,w_hi) latent, sigma_aligned).
-    """
-    B, C, T, h_lo, w_lo = x5.shape
-    x4 = x5.squeeze(2).float()
-    xi = dct2(x4)
-
-    h_hi = max(_snap(H_full * scale_hi, patch), h_lo)
-    w_hi = max(_snap(W_full * scale_hi, patch), w_lo)
-
-    r = scale_hi / scale_lo
-    sigma_aligned = (r * sigma_val) / (1.0 + (r - 1.0) * sigma_val)
-    kappa = r / (1.0 + (r - 1.0) * sigma_val)
-
-    xi_new = torch.zeros(B, C, h_hi, w_hi, device=x5.device, dtype=torch.float32)
-    xi_new[:, :, :h_lo, :w_lo] = xi
-    noise = torch.randn(
-        xi_new.shape, generator=gen, device=x5.device, dtype=torch.float32
-    )
-    mask = torch.zeros_like(xi_new)
-    mask[:, :, h_lo:, :] = 1.0
-    mask[:, :, :h_lo, w_lo:] = 1.0
-    xi_new = xi_new + mask * sigma_val * noise * hf_scale
-
-    x4_new = idct2(xi_new) * kappa
-    return x4_new.unsqueeze(2).to(x5.dtype), float(sigma_aligned)
-
-
-# SPD fine-tune target construction (paper §4.3, Eq. 11–14). Shared with the
-# training loop (``scripts/distill_spd.py``) so the train-time stage-entry state
-# is built by the *same* primitives the sampler runs — the Phase-0 bit-for-bit
-# contract in ``docs/proposal/spd_finetune_lora.md``.
-
-
+# MonadForge compatibility: training-target helpers use the shared SPD core.
 def _aligned_sigma(scale_lo: float, scale_hi: float, sigma_val: float) -> float:
     """Timestep after spectral expansion (Eq. 5–6 / spectral_expand's t̃)."""
     r = scale_hi / scale_lo
@@ -525,8 +406,8 @@ def spd_denoise(
     each stage to match the new token grid.
 
     ``ctx`` carries the shared conditioning side-channels (see
-    ``library.inference.sampler_context``). SPD v0 honors soft-tokens / P-GRAFT /
-    pooled-text but ignores DCW / SMC-CFG (they act on the re-spaced σ boundary,
+    ``library.inference.sampler_context``). SPD honors soft-tokens / P-GRAFT /
+    pooled-text but ignores SMC-CFG (it acts on the re-spaced σ boundary,
     unvalidated against the mid-loop reshape).
     """
     pgraft_network = ctx.pgraft_network
@@ -536,6 +417,13 @@ def spd_denoise(
     soft_tokens_net = ctx.soft_tokens_net
     soft_tokens_embed_seqlens = ctx.soft_tokens_embed_seqlens
     soft_tokens_neg_seqlens = ctx.soft_tokens_neg_seqlens
+    # --xattn_boost: cond-forward-only cross-attn gain at σ ≥ band. The gate
+    # reads the (possibly re-spaced) per-step σ, so the boost window tracks
+    # SPD's mid-loop σ reshaping.
+    xattn_boost = ctx.xattn_boost
+    xattn_boost_band = ctx.xattn_boost_band
+    xattn_renorm = ctx.xattn_boost_renorm
+    xattn_renorm_frac = ctx.xattn_boost_renorm_frac
 
     if sampler is not None:
         log.warning(
@@ -543,11 +431,11 @@ def spd_denoise(
             "(spectral expansion re-spaces σ mid-loop, which precomputed "
             "ER-SDE/LCM coefficients cannot follow)."
         )
-    if ctx.dcw or ctx.dcw_calibrator is not None or ctx.smc_cfg is not None:
+    if ctx.smc_cfg is not None:
         log.warning(
-            "--spd v0 does not compose with DCW / SMC-CFG (they act on the "
-            "re-spaced σ boundary and are unvalidated against the mid-loop "
-            "reshape); ignoring. See docs/proposal/spd_finetune_lora.md."
+            "--spd v0 does not compose with SMC-CFG (it acts on the "
+            "re-spaced σ boundary and is unvalidated against the mid-loop "
+            "reshape); ignoring. See docs/inference/spd.md."
         )
 
     do_cfg = guidance_scale != 1.0
@@ -577,7 +465,6 @@ def spd_denoise(
         t = x.new_full((x.shape[0],), float(sigma_scalar))
         set_hydra_sigma(anima, t)
         compute_and_set_hydra_fei(anima, x)
-        set_hydra_content(anima, embed)
         set_hydra_crossattn(anima, embed)
         if soft_tokens_net is not None:
             soft_tokens_net.append_postfix(
@@ -588,10 +475,20 @@ def spd_denoise(
             if pooled_text_pos is not None
             else {}
         )
-        v_c = anima(x, t, embed, padding_mask=pad_mask, **_pos_kw)
+        _boost_step = (
+            xattn_boost is not None and float(sigma_scalar) >= xattn_boost_band
+        )
+        if _boost_step:
+            set_xattn_boost_state(
+                anima, xattn_boost, renorm_mode=xattn_renorm, frac=xattn_renorm_frac
+            )
+        try:
+            v_c = anima(x, t, embed, padding_mask=pad_mask, **_pos_kw)
+        finally:
+            if _boost_step:
+                set_xattn_boost_state(anima, 1.0)  # uncond runs at identity
         if not do_cfg:
             return v_c
-        set_hydra_content(anima, negative_embed)
         set_hydra_crossattn(anima, negative_embed)
         if soft_tokens_net is not None:
             soft_tokens_net.append_postfix(
@@ -657,7 +554,7 @@ def spd_denoise(
     return x5
 
 
-# Side-effect registration (mirrors networks/spectrum.py:495).
+# Side-effect registration (mirrors the register_spectrum_runner call in networks/spectrum.py).
 from library.inference.generation import register_spd_runner  # noqa: E402
 
 register_spd_runner(spd_denoise)

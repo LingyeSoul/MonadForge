@@ -16,6 +16,14 @@ from webui.services.config_service import ROOT
 
 router = APIRouter()
 
+
+@router.get("/runtimes")
+def get_runtimes():
+    """Registered execution profiles; metadata only, never a torch import."""
+    from library.runtime.profiles import list_runtime_profiles
+
+    return {"runtimes": list_runtime_profiles(ROOT / "configs")}
+
 # Model groups — the anima group reads the effective model config; others are fixed.
 _ANIMA_PATH_KEYS = [(key, default) for key, default in MODEL_CONFIG_DEFAULTS.items()]
 _STATIC_GROUPS: list[dict] = [

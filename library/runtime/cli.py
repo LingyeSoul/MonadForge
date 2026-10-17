@@ -1,17 +1,11 @@
 """Shared argparse flag groups for tooling entry points.
 
-`preprocess/` and `bench/` each re-declared the same handful of flags —
 ``--dir`` / ``--cache_dir`` / ``--recursive`` (dataset IO) and ``--device`` /
-``--dtype`` (compute). These parser-parent helpers collapse that boilerplate so
-a new tool gets the canonical flag spelling, defaults, and help for free.
+``--dtype`` (compute) for ``preprocess/`` and ``bench/``. These helpers only
+*add arguments* to a parser the caller owns (parsing/dispatch stay in the entry
+point); every knob is opt-out or parameterized.
 
-They only *add arguments* to a parser the caller owns; argument parsing,
-dispatch, and any tool-specific flags stay in the entry point. Every knob is
-opt-out or parameterized so a script that wants a different default (e.g. a
-larger ``--batch_size``) or a narrower dtype set keeps full control.
-
-``--dtype`` strings round-trip through ``library.runtime.device.str_to_dtype``
-(``bf16``/``bfloat16``, ``fp16``/``float16``, ``fp32``/``float32``/``float``),
+``--dtype`` strings round-trip through ``library.runtime.device.str_to_dtype``,
 the same mapping ``library.runtime.harness.build_anima`` reads.
 """
 
@@ -46,20 +40,12 @@ def add_io_args(
     include_num_workers: bool = False,
     num_workers_default: int = 4,
 ) -> argparse.ArgumentParser:
-    """Inject the dataset-IO flag group shared by the preprocess cache scripts.
-
-    Flags (each opt-out / parameterized):
-        --dir          dataset directory; ``dir_required`` toggles required vs
-                       optional (PE's ``--centroid_only`` mode wants optional).
-        --cache_dir    optional redirect for cache writes (sidecar by default).
-        --recursive    walk subfolders, mirroring source subdirs under
-                       ``--cache_dir`` with a per-subdir stem-collision check.
-        --batch_size   encode batch size (off by default — defaults differ per
-                       encoder, so the caller passes ``batch_size_default``).
-        --num_workers  DataLoader workers for parallel decode (off by default).
-
-    ``cache_noun`` is spliced into the ``--cache_dir`` help (e.g. "latent
-    caches", "PE caches") so the message reads naturally per script.
+    """Inject the dataset-IO flag group shared by the preprocess cache scripts:
+    ``--dir`` (``dir_required`` toggles required vs optional — PE's
+    ``--centroid_only`` mode wants optional), ``--cache_dir``, ``--recursive``
+    (mirrors source subdirs under ``--cache_dir``), and opt-in ``--batch_size``
+    / ``--num_workers``. ``cache_noun`` is spliced into the ``--cache_dir``
+    help (e.g. "latent caches", "PE caches").
     """
     parser.add_argument(
         "--dir",

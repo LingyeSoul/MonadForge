@@ -1,0 +1,10 @@
+# retrain_kanji_b4 — plan_retrain § 2b: the training set's JA tail (247 rows: 244 kanji + ゙ 々 〇),
+# cold, on retrain_kanji_b3's merged rows. The first batch trained under the pack's encode
+# fold (§ 2c), and the first whose windows also draw the training set's own JA text
+# (config.dataset_ja_lines) — dialogue_2_10 carries 118 of its 245 letter glyphs. The read is
+# C3's six kanji-bearing words, as b1–b3 (floor / c3_kanji routed reads cached), held out of
+# the windows.
+
+vocabs = "ja_retrain_kanji_b4.txt"
+read = ["山田太郎", "小山田", "日本人", "大丈夫", "何時間", "愛してる"]
+context = "retrain_kanji_b3"

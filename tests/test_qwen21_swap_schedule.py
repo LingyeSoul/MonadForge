@@ -1,6 +1,6 @@
 """Invariants of the Qwen-Image-2.1 probe's block-swap schedule.
 
-``library/qwen21/blockswap.py`` drives ``ModelOffloader._submit_move_blocks``
+``library/runtime/blockswap.py`` drives ``ModelOffloader._submit_move_blocks``
 from its own schedule instead of ``submit_move_blocks``. Replayed here against a
 residency set, that schedule must keep three promises: every block is on the
 device when it runs, residency stays within what the layout starts with, and
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-_SRC = Path(__file__).resolve().parents[1] / "library" / "qwen21"
+_SRC = Path(__file__).resolve().parents[1] / "library" / "runtime"
 
 
 def _load_swap_schedule():

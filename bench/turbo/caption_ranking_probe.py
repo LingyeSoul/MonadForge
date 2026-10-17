@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turbo caption-ranking probe (Phase 0 of docs/proposal/turbo_caption_ranking.md).
+"""Turbo caption-ranking probe (Phase 0 of _archive/proposals/turbo_caption_ranking.md).
 
 THE QUESTION. Does DP-DMD distillation preserve the teacher's caption
 discriminability? Nothing currently measures turbo prompt-following (CMMD is

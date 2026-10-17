@@ -4,8 +4,6 @@ Each ``add_*_arguments`` call plugs a related group of flags into the training
 parser. The groups split the flag surface into coherent chunks so individual
 entry points (training, preprocessing, distillation, ...) can opt into only
 what they need.
-
-No real logic lives here — these are pure argparse declarations.
 """
 
 from __future__ import annotations
@@ -333,7 +331,9 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "partitioner recompute view ops in backward instead of saving them "
         "(views are free to recompute but saving one pins its base tensor "
         "alive). Lowers the saved-for-backward set without engaging the "
-        "activation_memory_budget knapsack. Ignored (with a log line) under "
+        "activation_memory_budget knapsack. Measured **exactly inert** on "
+        "Anima (_archive/bench/freefit_vram) — prefer "
+        "--partitioner_aggressive_recomputation. Ignored (with a log line) under "
         "gradient_checkpointing — same repartitioning hazard as the budget.",
     )
     parser.add_argument(
@@ -342,7 +342,8 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="torch._functorch.config.aggressive_recomputation: drop the "
         "min-cut partitioner's ban-recompute heuristics so more op classes "
         "may be recomputed in backward when the cut is cheap. Can trade "
-        "backward time for VRAM — see bench/freefit_vram before adopting. "
+        "backward time for VRAM: −2.25 GB for +12.6% s/it at budget=0.99 "
+        "(_archive/bench/freefit_vram). "
         "Ignored (with a log line) under gradient_checkpointing.",
     )
     parser.add_argument(
@@ -368,7 +369,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "reasoning; mix_order_reduction stays enabled when no band straddles "
         "4096. Costs ~x(bands) step-0 compile wall. No-op on single-tier "
         "pools (one band == the union range). Phase 0 flag — see "
-        "_archive/proposals/perband_dynamic_seq.md and bench/perband_seq.",
+        "_archive/proposals/perband_dynamic_seq.md and _archive/bench/perband_seq.",
     )
     parser.add_argument(
         "--vae", type=str, default=None, help="path to checkpoint of vae to replace"
@@ -556,6 +557,143 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="Restrict training sigma range: maximum sigma (0.0~1.0). Default 1.0.",
     )
     parser.add_argument(
+        "--sigma_lowres",
+        action="store_true",
+        help="σ-conditional low-res training (sigma_lowres Phase 1b): when a "
+        "step's σ draw exceeds --sigma_lowres_threshold, train on the 896-tier "
+        "sibling latent (the demoted_* npz key emitted by `make "
+        "preprocess-demote`) instead of the native 1024-tier latent. Only the "
+        "measured-safe 1024→896 route; images native to other tiers train "
+        "as-is. Opt-in; plain train.py methods only (bespoke adapter loops "
+        "need their own operating-point probe).",
+    )
+    parser.add_argument(
+        "--sigma_lowres_threshold",
+        type=float,
+        default=0.5,
+        help="σ gate for --sigma_lowres: demote only when every σ in the batch "
+        "exceeds this. 0.5 is the measured-safe boundary for 1024→896 — lower "
+        "values are OUTSIDE the probe's safe region.",
+    )
+    parser.add_argument(
+        "--sigma_lowres_threshold_max",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="optional upper σ bound for --sigma_lowres: demote only when "
+        "every σ in the batch is BELOW this too, turning the half-line gate "
+        "into a window (threshold, threshold_max). The measured demote-safe "
+        "region is a per-route window — e.g. 768's least-liability region is "
+        "~(0.65, 0.95), with the σ=1 endpoint elevated again. Default: no "
+        "upper bound (the shipped 1024:896 half-line gate).",
+    )
+    parser.add_argument(
+        "--sigma_lowres_route",
+        type=str,
+        default="1024:896",
+        metavar="NATIVE:DEMOTE",
+        help="demote route for --sigma_lowres as native:demote edge. The "
+        "default 1024:896 is the only measured-safe route; other values "
+        "(e.g. 1024:768 — the E4 negative-control arm) are for probe/control "
+        "runs only. The sibling latents must have been emitted with the SAME "
+        'route (`make preprocess-demote ARGS="--sigma_demote N:D"`) — a '
+        "missing key degrades that batch to native with a warn-once.",
+    )
+    parser.add_argument(
+        "--sigma_lowres_yarnsig",
+        type=str,
+        nargs="?",
+        const="1,4,0.35,2",
+        default=None,
+        metavar="ALPHA,BETA,CENTER,GAMMA",
+        help="on demoted steps, build RoPE with the σ-gated YaRN banded "
+        "alignment (yarnsig). Spatial frequency bands with fewer than "
+        "ALPHA·μ(σ) rotations across the demoted extent get the full PI "
+        "stretch to native coordinates, bands above BETA·μ(σ) keep native "
+        "spacing, linear ramp between; μ(σ) = sigmoid(GAMMA·[logit(σ) − "
+        "logit(CENTER)]) is SigMa's boundary gate. No second σ-threshold — "
+        "the gate lives inside the rope schedule; native steps are untouched. "
+        "ON BY DEFAULT whenever --sigma_lowres is set, at the probe's "
+        "operating point (1,4,0.35,2) — it is part of the shipped "
+        "recipe. Pass ALPHA,BETA,CENTER,GAMMA to move the operating point, or "
+        "`off` to disable it. Applies to PRIMARY-rule demotes only.",
+    )
+    parser.add_argument(
+        "--sigma_lowres_route2",
+        type=str,
+        default=None,
+        metavar="NATIVE:DEMOTE",
+        help="secondary demote rule (E16 stacked router), PRIORITY over the "
+        "primary: when set, steps passing --sigma_lowres_threshold2/_max "
+        "(and --sigma_lowres_span2) demote on THIS route instead — e.g. "
+        "1024:768 inside its measured window (0.65, 0.95) stacked on the "
+        "shipped σ>0.5 1024:896 rule. yarnsig applies to primary-rule "
+        "demotes only. Sibling latents for BOTH routes must be emitted.",
+    )
+    parser.add_argument(
+        "--sigma_lowres_threshold2",
+        type=float,
+        default=None,
+        help="lower σ bound for the secondary rule (--sigma_lowres_route2). "
+        "REQUIRED with route2 — the secondary rule has priority, so an "
+        "unbounded gate here would shadow the primary rule at every σ (and "
+        "silence yarnsig, which is primary-only).",
+    )
+    parser.add_argument(
+        "--sigma_lowres_threshold2_max",
+        type=float,
+        default=None,
+        metavar="SIGMA",
+        help="upper σ bound for the secondary rule — window semantics as "
+        "--sigma_lowres_threshold_max. REQUIRED with route2: the deep route's "
+        "safe region is a WINDOW, so a half-line gate here demotes below the "
+        "window where the measured gap is +0.25…+0.38 (badly off-map).",
+    )
+    parser.add_argument(
+        "--sigma_lowres_span2",
+        type=str,
+        default=None,
+        metavar="MODE[:FRAC]",
+        help="step-span gate for the secondary rule — semantics as "
+        "--sigma_lowres_span.",
+    )
+    parser.add_argument(
+        "--sigma_lowres_span",
+        type=str,
+        default=None,
+        metavar="MODE[:FRAC]",
+        help="step-span gate on top of the σ gate (E16 placement probe): "
+        "demote only inside a span of training progress. MODE early = first "
+        "FRAC of train steps, late = last FRAC, spread = seed-keyed per-step "
+        "coin with p=FRAC (deterministic in --seed + step index, touches no "
+        "RNG stream — CRN pairing holds). FRAC defaults to 0.5. Steps outside "
+        "the span train native; the σ draw itself is untouched. NB configs/"
+        "base.toml ships this ON at late:0.75 (the combolate recipe) — pass an "
+        "empty string to clear it back to the unscheduled combo arm.",
+    )
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Bit-exact reproducibility: deterministic flash-attn backward "
+        "(the dK/dV atomic-add order is the one un-seedable noise source) + "
+        "torch.use_deterministic_algorithms(warn_only) + cudnn determinism. "
+        "Two runs of the identical command then produce identical "
+        "checkpoints, so paired A/B endpoint deltas (--paired_step_rng) are "
+        "pure treatment instead of riding chaos-amplified hardware wobble. "
+        "Slightly slower backward; same GPU/driver/library versions assumed.",
+    )
+    parser.add_argument(
+        "--paired_step_rng",
+        action="store_true",
+        help="Common-random-numbers mode for A/B arms: draw each train step's "
+        "σ and noise from dedicated per-step-seeded generators (derived from "
+        "--seed + step counter) instead of the global torch stream. Arms "
+        "sharing a seed then see identical (data, σ, noise) sequences, so "
+        "checkpoint differences isolate the intervention (e.g. --sigma_lowres "
+        "thresholds) instead of noise-lottery divergence. Statistically "
+        "equivalent to the default draw; use for paired comparisons.",
+    )
+    parser.add_argument(
         "--loss_type",
         type=str,
         default="l2",
@@ -691,7 +829,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--method",
         type=str,
         default=None,
-        help="method name under configs/methods/ (e.g. 'tlora', 'hydralora', 'chimera'). Merged after preset so method settings win on overlap.",
+        help="method name under configs/methods/ (e.g. 'lora', 'soft_tokens'). Merged after preset so method settings win on overlap.",
     )
     parser.add_argument(
         "--preset",
@@ -725,6 +863,17 @@ def add_masked_loss_arguments(parser: argparse.ArgumentParser):
         action="store_true",
         help="apply mask for calculating loss. Off by default since v2: a mask "
         "tree on disk is ignored (one log line) until this is set.",
+    )
+    parser.add_argument(
+        "--mask_dir",
+        type=str,
+        default=None,
+        help="Root of the `{stem}_mask.png` tree written by `make mask`, "
+        "mirroring the resized/ subdir layout. Defaults to `mask_dir` in "
+        "configs/preprocess.toml; a subset's own `mask_dir` in the dataset "
+        "blueprint still wins. Ignored when the directory does not exist, so "
+        "the legacy masks/{merged,sam} auto-resolution still applies to a "
+        "checkout that never re-ran masking.",
     )
 
 
@@ -1033,6 +1182,19 @@ def add_validation_arguments(parser: argparse.ArgumentParser):
         "validation time when you don't need the deltas.",
     )
 
+    # Upstream flags retained across the fork configuration merge.
+    parser.add_argument(
+            "--validation_fm_with_cmmd",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Also run the per-σ FM-MSE pass alongside a successful CMMD "
+            "validation, logged under separate `loss/validation/fm_*` keys (CMMD "
+            "stays the primary signal / best-ckpt selector). Set "
+            "`validation_fm_with_cmmd = false` (or pass `--no-validation_fm_with_cmmd`) "
+            "to skip the extra DiT forwards when you only want CMMD. No effect when "
+            "`use_cmmd` is off — FM-MSE is already the primary signal then.",
+        )
+
 
 def add_train_misc_arguments(parser: argparse.ArgumentParser):
     """Train-loop one-offs that don't belong to a larger flag group.
@@ -1187,12 +1349,11 @@ def enable_high_vram(args: argparse.Namespace):
 def verify_training_args(args: argparse.Namespace):
     enable_high_vram(args)
 
-    # Expand the two semantic cache knobs into the legacy internal flags that
-    # the dataset / strategy / metadata code still reads. `use_vae_cache` and
-    # `use_text_cache` are the only config-facing surface; disk caching is the
-    # only supported mode (RAM-only was never used), so the `_to_disk` siblings
-    # always track their base flag. The old keys survive as schema aliases
-    # (see library/config/schema.py) so pre-existing configs still resolve.
+    # Expand the two semantic cache knobs (`use_vae_cache` / `use_text_cache`)
+    # into the internal flags the dataset / strategy / metadata code reads. Disk
+    # caching is the only supported mode, so the `_to_disk` siblings always track
+    # their base flag. The old keys resolve as schema aliases
+    # (library/config/schema.py).
     args.cache_latents = args.cache_latents_to_disk = bool(args.use_vae_cache)
     args.cache_text_encoder_outputs = args.cache_text_encoder_outputs_to_disk = bool(
         args.use_text_cache
@@ -1289,8 +1450,9 @@ def add_dataset_arguments(
         default=None,
         help=(
             "Global override applied to every subset's sample_ratio (0<r≤1). "
-            "Unset = use each subset's own value. Exposed here so presets like "
-            "`[half]` can propagate a single value across the dataset blueprint."
+            "Unset or 1.0 = use each subset's own value. Exposed here so "
+            "presets like `[half]` and the GUI data-scope field can propagate "
+            "a single value across the dataset blueprint."
         ),
     )
     parser.add_argument(
@@ -1343,4 +1505,20 @@ def add_dataset_arguments(
             type=int,
             default=1,
             help="repeat dataset when training with captions",
+        )
+
+    # Upstream flags retained across the fork configuration merge.
+    parser.add_argument(
+            "--artists_shard",
+            type=str,
+            default=None,
+            help=(
+                "Restrict training to one round-robin shard of the artist "
+                "subdirectories under each subset's image_dir. Format `k_N` (e.g. "
+                "`1_4` = shard 1 of 4): artists are sorted and artist i is assigned "
+                "to shard i mod N, so each shard is a balanced cross-alphabet mix. "
+                "Expands to a `<artist>/*|...` path_pattern at load — mutually "
+                "exclusive with an explicit --path_pattern. Used by the "
+                "lora_merge_interference partition-coherence sweep."
+            ),
         )

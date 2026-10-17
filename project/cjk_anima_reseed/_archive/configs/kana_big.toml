@@ -1,0 +1,13 @@
+# kana_big — kana_mix plus `grid_64` (65 px grids at σ 0.65–0.8, the band read
+# off the gradient: _archive/reports/grid_64_2026_10_03.md) at 12.5 % of the items, every
+# other tier × 0.875 (user, 10-03): kana_mix had no glyph over 64 px and none
+# trained above σ 0.8, where retrain_kana trained 28 % of its glyph instances.
+rows = [
+    "chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをん",
+    "chars:ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロワヲン・ー",
+    "chars:ヴヶゔヵ",
+]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0921"
+steps_per_row = 135
+shares = { grid_44 = 8.75, grid_29 = 8.75, grid_16 = 4.375, lone_44 = 2.1875, lone_28 = 2.1875, lone_16 = 2.1875, bubble1_52 = 11.8125, bubble1_32 = 17.71875, bubbleN_34 = 17.71875, bubbleN_18 = 11.8125, grid_64 = 12.5 }

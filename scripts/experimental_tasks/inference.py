@@ -1,11 +1,9 @@
 """Experimental inference entry-points (exp-test-* commands).
 
 Covers the unstable methods kept under ``make exp-*``: soft tokens, BYG, plus
-the DirectEdit + postfix-tail inversion probes. Reference-image variants accept
+the DirectEdit probes. Reference-image variants accept
 REF_IMAGE env or first positional arg, copy the ref alongside the generated
-output. (EasyControl and Turbo graduated to the shipped ``test-easycontrol`` /
-``test-turbo`` — see ``scripts/tasks/inference.py``; IP-Adapter was downgraded
-to ``bench/ip_adapter/``.)
+output.
 """
 
 from __future__ import annotations
@@ -115,61 +113,17 @@ def cmd_test_soft(extra):
     )
 
 
-def cmd_test_spd(extra):
-    """Inference with the latest SPD fine-tune LoRA on the SPD sampler.
-
-    Runs at the *schedule the LoRA was trained on* — read from the safetensors
-    metadata (``ss_spd_stages`` / ``ss_spd_transition_sigmas``, stamped by
-    ``scripts/distill_spd.py``) so the trajectory geometry can't silently
-    mismatch what was trained (proposal R2). CFG stays at the production
-    default (4.0); ``--spd`` forces Euler internally.
-
-        make exp-test-spd
-        make exp-test-spd ARGS="--spd_stages 0.5 0.75 1.0 --spd_transition_sigmas 0.6 0.4"
-        make exp-test-spd ARGS="--seed 1234 --image_size 832 1248"
-
-    User ``ARGS`` win: passing ``--spd_stages`` / ``--spd_transition_sigmas``
-    in ARGS overrides the metadata schedule.
-    """
-    import json
-
-    from safetensors import safe_open
-
-    weight = latest_output("anima_spd")
-    md: dict[str, str] = {}
-    try:
-        with safe_open(str(weight), "pt") as f:
-            md = f.metadata() or {}
-    except Exception as e:  # noqa: BLE001
-        print(f"  warn: could not read SPD schedule from {weight}: {e}")
-
-    base = override_arg(list(INFERENCE_BASE), "--sampler", "euler")  # SPD forces Euler
-    cmd = [*base, "--lora_weight", str(weight), "--spd"]
-
-    stages = md.get("ss_spd_stages")
-    trans = md.get("ss_spd_transition_sigmas")
-    label = md.get("ss_spd_schedule_label", "?")
-    if stages and "--spd_stages" not in extra:
-        cmd += ["--spd_stages", *(str(s) for s in json.loads(stages))]
-    if trans and "--spd_transition_sigmas" not in extra:
-        cmd += ["--spd_transition_sigmas", *(str(s) for s in json.loads(trans))]
-    print(f"  > SPD LoRA: {weight}  schedule='{label}' stages={stages} σ={trans}")
-    run([*cmd, *extra])
-
-
 def cmd_test_directedit(extra):
-    """DirectEdit on a random source image, seeded by wd-swinv2-tagger-v3.
+    """DirectEdit on a random source image, seeded by the Anima Tagger.
 
     Pipeline:
       1. Pick source image (REF_IMAGE env, first positional arg, or random
          from ``post_image_dataset/resized/``).
-      2. Run wd-swinv2-tagger-v3 on the source -> ``src_tags`` caption
-         (downloaded on first use to ``models/captioners/wd-swinv2-tagger-v3/``).
-      3. Build edit prompts:
-            prompt_src = src_tags
-            prompt_tar = src_tags + ", " + PROMPT
-         (PROMPT env or ``--prompt`` extra arg supplies the edit instruction.
-         Defaults to ``"double peace"``.)
+      2. Run the Anima Tagger on the source -> ``--prompt_src`` caption
+         (checkpoint auto-fetched on first use).
+      3. Pass the edit instruction as ``--edit_instruction`` (PROMPT env, else
+         a ``--prompt`` extra arg, else a "double peace" default); edit.py's
+         dispatcher derives ψ_tar from it.
       4. Call ``scripts/edit.py`` (DirectEdit invert + edit) using the same
          DiT/VAE/TE trio as the other inference targets.
       5. Save under ``output/tests/directedit/`` and copy the source image
@@ -216,7 +170,7 @@ def cmd_test_directedit(extra):
 
     from PIL import Image  # noqa: PLC0415
 
-    from library.captioning.anima_tagger import (  # noqa: PLC0415
+    from anime_tools.tagger.tagger import (  # noqa: PLC0415
         DEFAULT_TAGGER_DIR,
         AnimaTagger,
         ensure_tagger_checkpoint,
@@ -353,6 +307,79 @@ def cmd_test_directedit_dry(extra):
         src_dst = pngs[0].with_name(pngs[0].stem + "_src.png")
         shutil.copy(ref_image, src_dst)
         print(f"  > Source pasted: {src_dst}")
+
+
+def _filter_inference_base_for_edit(args: list[str]) -> list[str]:
+    """Drop INFERENCE_BASE flags that ``scripts/edit.py`` doesn't accept.
+
+    INFERENCE_BASE bundles plenty of generation-only flags (--prompt, --seed,
+    --image_size, --infer_steps, --sampler, etc.) that overlap with or
+    conflict with edit.py's own. Keep only the model/path flags we actually
+    want to forward; let edit.py supply its own defaults for the rest.
+    """
+    keep_flags = {
+        "--dit",
+        "--text_encoder",
+        "--vae",
+        "--vae_chunk_size",
+        "--attn_mode",
+    }
+    boolean_flags = {"--vae_disable_cache"}
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok in keep_flags and i + 1 < len(args):
+            out.extend([tok, args[i + 1]])
+            i += 2
+        elif tok in boolean_flags:
+            out.append(tok)
+            i += 1
+        else:
+            i += 1
+    return out
+
+
+def cmd_test_spd(extra):
+    """Inference with the latest SPD fine-tune LoRA on the SPD sampler.
+
+    Runs at the *schedule the LoRA was trained on* — read from the safetensors
+    metadata (``ss_spd_stages`` / ``ss_spd_transition_sigmas``, stamped by
+    ``scripts/distill_spd.py``) so the trajectory geometry can't silently
+    mismatch what was trained (proposal R2). CFG stays at the production
+    default (4.0); ``--spd`` forces Euler internally.
+
+        make exp-test-spd
+        make exp-test-spd ARGS="--spd_stages 0.5 0.75 1.0 --spd_transition_sigmas 0.6 0.4"
+        make exp-test-spd ARGS="--seed 1234 --image_size 832 1248"
+
+    User ``ARGS`` win: passing ``--spd_stages`` / ``--spd_transition_sigmas``
+    in ARGS overrides the metadata schedule.
+    """
+    import json
+
+    from safetensors import safe_open
+
+    weight = latest_output("anima_spd")
+    md: dict[str, str] = {}
+    try:
+        with safe_open(str(weight), "pt") as f:
+            md = f.metadata() or {}
+    except Exception as e:  # noqa: BLE001
+        print(f"  warn: could not read SPD schedule from {weight}: {e}")
+
+    base = override_arg(list(INFERENCE_BASE), "--sampler", "euler")  # SPD forces Euler
+    cmd = [*base, "--lora_weight", str(weight), "--spd"]
+
+    stages = md.get("ss_spd_stages")
+    trans = md.get("ss_spd_transition_sigmas")
+    label = md.get("ss_spd_schedule_label", "?")
+    if stages and "--spd_stages" not in extra:
+        cmd += ["--spd_stages", *(str(s) for s in json.loads(stages))]
+    if trans and "--spd_transition_sigmas" not in extra:
+        cmd += ["--spd_transition_sigmas", *(str(s) for s in json.loads(trans))]
+    print(f"  > SPD LoRA: {weight}  schedule='{label}' stages={stages} σ={trans}")
+    run([*cmd, *extra])
 
 
 def _resolve_inference_base_flag(name: str) -> str | None:
@@ -616,37 +643,6 @@ def cmd_invert_directedit(extra):
                 src_dst = pngs[0].with_name(pngs[0].stem + "_src.png")
                 shutil.copy(ref_image, src_dst)
                 print(f"  > [{label}] source pasted: {src_dst}")
-
-
-def _filter_inference_base_for_edit(args: list[str]) -> list[str]:
-    """Drop INFERENCE_BASE flags that ``scripts/edit.py`` doesn't accept.
-
-    INFERENCE_BASE bundles plenty of generation-only flags (--prompt, --seed,
-    --image_size, --infer_steps, --sampler, etc.) that overlap with or
-    conflict with edit.py's own. Keep only the model/path flags we actually
-    want to forward; let edit.py supply its own defaults for the rest.
-    """
-    keep_flags = {
-        "--dit",
-        "--text_encoder",
-        "--vae",
-        "--vae_chunk_size",
-        "--attn_mode",
-    }
-    boolean_flags = {"--vae_disable_cache"}
-    out: list[str] = []
-    i = 0
-    while i < len(args):
-        tok = args[i]
-        if tok in keep_flags and i + 1 < len(args):
-            out.extend([tok, args[i + 1]])
-            i += 2
-        elif tok in boolean_flags:
-            out.append(tok)
-            i += 1
-        else:
-            i += 1
-    return out
 
 
 def cmd_test_byg(extra):

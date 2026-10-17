@@ -34,29 +34,51 @@ def _write_image(path: Path, size: tuple[int, int]) -> None:
     Image.fromarray(arr).save(path)
 
 
-def test_move_linked_files_preserves_layout_and_sidecars(tmp_path: Path) -> None:
-    from library.datasets.curation_actions import move_linked_files
+def test_exclude_images_moves_workspace_artifacts_and_keeps_the_source(
+    tmp_path: Path,
+) -> None:
+    """The Image tab's Exclude gesture is ``anime_tools.exclude`` on the
+    trainer's trees: the resized PNG, caption and mask leave the live trees for
+    ``post_image_dataset/_excluded/``, the source stays, the ledger keys the
+    source rel (extension kept — what ``resize --skip`` matches), and restore
+    puts everything back."""
+    from library.datasets.curation_actions import (
+        exclude_images,
+        excluded_rels,
+        restore_rels,
+        source_rel,
+    )
 
-    source = tmp_path / "image_dataset"
-    target = tmp_path / "post_image_dataset" / "moved"
-    image = source / "charA" / "cover.png"
-    _write_image(image, (8, 8))
-    for suffix in (".txt", ".caption", ".json", ".txt.history.jsonl"):
-        image.with_suffix(suffix).write_text(suffix, encoding="utf-8")
+    source = tmp_path / "image_dataset" / "charA" / "cover.jpg"
+    _write_image(source, (8, 8))
+    resized = tmp_path / "post_image_dataset" / "resized" / "charA" / "cover.png"
+    _write_image(resized, (8, 8))
+    resized.with_suffix(".txt").write_text("a caption", encoding="utf-8")
+    mask = tmp_path / "post_image_dataset" / "masks" / "charA" / "cover_mask.png"
+    _write_image(mask, (8, 8))
+    other = tmp_path / "post_image_dataset" / "resized" / "charA" / "keep.png"
+    _write_image(other, (8, 8))
 
-    moved = move_linked_files(image, source_root=source, target_root=target)
+    # Either spelling of the image — source or resized — names the same rel.
+    assert source_rel(source, home=tmp_path) == "charA/cover.jpg"
+    assert source_rel(resized, home=tmp_path) == "charA/cover.jpg"
 
-    expected = [
-        target / "charA" / "cover.png",
-        target / "charA" / "cover.txt",
-        target / "charA" / "cover.caption",
-        target / "charA" / "cover.json",
-        target / "charA" / "cover.txt.history.jsonl",
-    ]
-    assert moved == expected
-    assert all(path.exists() for path in expected)
-    assert not image.exists()
-    assert not image.with_suffix(".txt").exists()
+    (result,) = exclude_images([resized], home=tmp_path, note="dupe")
+    assert result.action == "excluded"
+    excluded = tmp_path / "post_image_dataset" / "_excluded"
+    assert source.exists()  # the source tree is read-only for curation
+    assert not resized.exists() and not resized.with_suffix(".txt").exists()
+    assert not mask.exists()
+    assert other.exists()  # a neighbour with another stem is untouched
+    assert (excluded / "resized" / "charA" / "cover.png").exists()
+    assert (excluded / "resized" / "charA" / "cover.txt").exists()
+    assert (excluded / "masks" / "charA" / "cover_mask.png").exists()
+    assert excluded_rels(home=tmp_path) == ("charA/cover.jpg",)
+
+    (back,) = restore_rels(["charA/cover.jpg"], home=tmp_path)
+    assert back.action == "restored" and not back.skipped
+    assert resized.exists() and resized.with_suffix(".txt").exists() and mask.exists()
+    assert excluded_rels(home=tmp_path) == ()
 
 
 def test_load_curation_decisions_rebases_to_source_subdir(tmp_path: Path) -> None:
@@ -160,12 +182,11 @@ def test_partition_cached(tmp_path: Path) -> None:
 
 
 def test_write_corrected_preprocess_captions_preserves_source(tmp_path: Path) -> None:
-    from library.captioning.correction import (
+    from anime_tools.captions.correction import (
         CaptionCorrectionOptions,
         load_tag_knowledge_base,
     )
-    from library.captioning.preprocess import write_corrected_preprocess_captions
-    from tests.test_caption_correction import _csv
+    from anime_tools.stages.captions import write_corrected_preprocess_captions
 
     source = tmp_path / "image_dataset"
     resized = tmp_path / "post_image_dataset" / "resized"
@@ -177,13 +198,13 @@ def test_write_corrected_preprocess_captions_preserves_source(tmp_path: Path) ->
     stats = write_corrected_preprocess_captions(
         source,
         resized,
-        load_tag_knowledge_base(_csv(tmp_path / "tags.csv")),
+        load_tag_knowledge_base(_tag_csv(tmp_path / "tags.csv")),
         options=CaptionCorrectionOptions(
             insert_no_artist=True,
             trigger_word="@dataset-trigger",
         ),
         recursive=True,
-    )
+    ).stats
 
     assert stats.written == 1
     assert (source / "charA" / "cover.txt").read_text(encoding="utf-8") == original
@@ -192,32 +213,33 @@ def test_write_corrected_preprocess_captions_preserves_source(tmp_path: Path) ->
     )
 
 
-def test_write_corrected_preprocess_captions_removes_stale_missing_source(
+def test_write_corrected_preprocess_captions_keeps_a_revised_caption_without_master(
     tmp_path: Path,
 ) -> None:
-    from library.captioning.correction import CaptionCorrectionOptions
-    from library.captioning.correction import load_tag_knowledge_base
-    from library.captioning.preprocess import write_corrected_preprocess_captions
-    from tests.test_caption_correction import _csv
+    """A revised caption is *the* caption (anime_tools >= 0.4.0, revised-first):
+    with no master beside it, it is corrected in place, not treated as stale."""
+    from anime_tools.captions.correction import CaptionCorrectionOptions
+    from anime_tools.captions.correction import load_tag_knowledge_base
+    from anime_tools.stages.captions import write_corrected_preprocess_captions
 
     source = tmp_path / "image_dataset"
     resized = tmp_path / "post_image_dataset" / "resized"
     source.mkdir()
     _write_image(resized / "charA" / "cover.png", (64, 64))
-    stale = resized / "charA" / "cover.txt"
-    stale.write_text("stale", encoding="utf-8")
+    revised = resized / "charA" / "cover.txt"
+    revised.write_text("smile, 1girl", encoding="utf-8")
 
     stats = write_corrected_preprocess_captions(
         source,
         resized,
-        load_tag_knowledge_base(_csv(tmp_path / "tags.csv")),
+        load_tag_knowledge_base(_tag_csv(tmp_path / "tags.csv")),
         options=CaptionCorrectionOptions(),
         recursive=True,
-    )
+    ).stats
 
-    assert stats.missing_source == 1
-    assert stats.removed_stale == 1
-    assert not stale.exists()
+    assert stats.no_caption == 0
+    assert stats.from_master == 0
+    assert revised.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -275,12 +297,12 @@ def test_count_pending_text_counts_uncaptioned(tmp_path: Path) -> None:
     _write_image(data / "b.png", (64, 64))  # no .txt — still a candidate
     (data / "a.txt").write_text("hello", encoding="utf-8")
 
-    assert count_pending_text(data, cache_dir=cache, min_pixels=0) == (2, 2)
+    assert count_pending_text(data, cache_dir=cache) == (2, 2)
 
     te = _te_cache_path(data / "a.png", cache, data)
     te.parent.mkdir(parents=True, exist_ok=True)
     te.touch()
-    assert count_pending_text(data, cache_dir=cache, min_pixels=0) == (1, 2)
+    assert count_pending_text(data, cache_dir=cache) == (1, 2)
 
 
 def test_count_pending_text_recaches_when_caption_is_newer(tmp_path: Path) -> None:
@@ -299,21 +321,10 @@ def test_count_pending_text_recaches_when_caption_is_newer(tmp_path: Path) -> No
 
     os.utime(caption, (100, 100))
     os.utime(te, (200, 200))
-    assert count_pending_text(data, cache_dir=cache, min_pixels=0) == (0, 1)
+    assert count_pending_text(data, cache_dir=cache) == (0, 1)
 
     os.utime(caption, (300, 300))
-    assert count_pending_text(data, cache_dir=cache, min_pixels=0) == (1, 1)
-
-
-def test_count_pending_text_min_pixels_filter(tmp_path: Path) -> None:
-    from library.preprocess import count_pending_text
-
-    data = tmp_path / "imgs"
-    _write_image(data / "small.png", (16, 16))  # 256 px — below threshold
-    _write_image(data / "big.png", (64, 64))  # 4096 px
-
-    # total reflects the post-min_pixels candidate set (small filtered out).
-    assert count_pending_text(data, min_pixels=1000) == (1, 1)
+    assert count_pending_text(data, cache_dir=cache) == (1, 1)
 
 
 def test_count_pending_text_keep_rel_stems_filters_nested_paths(tmp_path: Path) -> None:
@@ -330,7 +341,6 @@ def test_count_pending_text_keep_rel_stems_filters_nested_paths(tmp_path: Path) 
         cache_dir=cache,
         recursive=True,
         keep_rel_stems={"charA/cover"},
-        min_pixels=0,
     ) == (1, 1)
 
     te = _te_cache_path(data / "charA" / "cover.png", cache, data)
@@ -341,7 +351,6 @@ def test_count_pending_text_keep_rel_stems_filters_nested_paths(tmp_path: Path) 
         cache_dir=cache,
         recursive=True,
         keep_rel_stems={"charA/cover"},
-        min_pixels=0,
     ) == (0, 1)
 
 
@@ -382,7 +391,7 @@ def test_resize_to_buckets_writes_and_mirrors_layout(tmp_path: Path) -> None:
 
     src = tmp_path / "src"
     dst = tmp_path / "dst"
-    # Two images >= 0.5MP (so min_pixels keeps them); one nested.
+    # Two images; one nested.
     _write_image(src / "a.png", (900, 900))
     (src / "a.txt").write_text("caption a")
     _write_image(src / "charB" / "b.png", (900, 900))
@@ -397,7 +406,9 @@ def test_resize_to_buckets_writes_and_mirrors_layout(tmp_path: Path) -> None:
     out_a = dst / "a.png"
     out_b = dst / "charB" / "b.png"
     assert out_a.exists() and out_b.exists()  # nested layout mirrored
-    assert (dst / "a.txt").read_text() == "caption a"  # caption copied
+    # anime_tools >= 0.6: resize moves images only; captions are the caption
+    # stages' file, so the master sidecar must NOT be mirrored here.
+    assert not (dst / "a.txt").exists()
     # Output matches a real bucket resolution.
     with Image.open(out_a) as im:
         assert (im.width, im.height) in bucket_counts
@@ -418,7 +429,6 @@ def test_resize_to_buckets_path_pattern_preserves_filtered_layout(
         dst,
         recursive=True,
         path_pattern="charA/*",
-        min_pixels=0,
         workers=1,
         verbose=False,
     )
@@ -441,7 +451,6 @@ def test_resize_to_buckets_applies_curation_skip_decision(tmp_path: Path) -> Non
     stats, bucket_counts = resize_to_buckets(
         src,
         dst,
-        min_pixels=0,
         workers=1,
         verbose=False,
         curation_decisions={
@@ -462,7 +471,7 @@ def test_resize_to_buckets_applies_curation_skip_decision(tmp_path: Path) -> Non
     assert (src / "move.png").exists()
 
 
-def test_resize_to_buckets_accumulates_decision_and_min_pixel_skips(
+def test_resize_to_buckets_skips_decisions_and_keeps_small_images(
     tmp_path: Path,
 ) -> None:
     from library.preprocess import resize_to_buckets
@@ -471,24 +480,23 @@ def test_resize_to_buckets_accumulates_decision_and_min_pixel_skips(
     dst = tmp_path / "dst"
     _write_image(src / "keep.png", (900, 900))
     _write_image(src / "decision_skip.png", (900, 900))
-    _write_image(src / "too_small.png", (64, 64))
+    _write_image(src / "small.png", (64, 64))  # no pixel floor: scaled up
 
     stats, bucket_counts = resize_to_buckets(
         src,
         dst,
-        min_pixels=500_000,
         workers=1,
         verbose=False,
         curation_decisions={"decision_skip.png": {"action": "skip"}},
     )
 
     assert stats.seen == 3
-    assert stats.skipped == 2
-    assert stats.written == 1
-    assert sum(bucket_counts.values()) == 1
+    assert stats.skipped == 1
+    assert stats.written == 2
+    assert sum(bucket_counts.values()) == 2
     assert (dst / "keep.png").exists()
     assert not (dst / "decision_skip.png").exists()
-    assert not (dst / "too_small.png").exists()
+    assert (dst / "small.png").exists()
 
 
 def test_resize_to_buckets_default_tier_does_not_upscale_to_multitier(
@@ -511,7 +519,6 @@ def test_resize_to_buckets_default_tier_does_not_upscale_to_multitier(
             src,
             dst,
             target_res=target_res,
-            min_pixels=0,
             workers=1,
             verbose=False,
             overwrite=True,
@@ -538,20 +545,16 @@ def test_resize_to_buckets_skips_up_to_date_and_rebuckets_on_tier_change(
     _write_image(src / "big.png", (1400, 1050))  # ~1.5MP → stays 1024 tier
 
     # First pass at the single 1024 tier writes both.
-    stats, _ = resize_to_buckets(
-        src, dst, target_res=[1024], min_pixels=0, workers=1, verbose=False
-    )
+    stats, _ = resize_to_buckets(src, dst, target_res=[1024], workers=1, verbose=False)
     assert (stats.written, stats.skipped) == (2, 0)
 
     # Re-run, same tiers: both already at their bucket → all skipped.
-    stats, _ = resize_to_buckets(
-        src, dst, target_res=[1024], min_pixels=0, workers=1, verbose=False
-    )
+    stats, _ = resize_to_buckets(src, dst, target_res=[1024], workers=1, verbose=False)
     assert (stats.written, stats.skipped) == (0, 2)
 
     # Add the 768 tier: only `small` moves bucket → exactly one re-resize.
     stats, counts = resize_to_buckets(
-        src, dst, target_res=[768, 1024], min_pixels=0, workers=1, verbose=False
+        src, dst, target_res=[768, 1024], workers=1, verbose=False
     )
     assert (stats.written, stats.skipped) == (1, 1)
     with Image.open(dst / "small.png") as im:
@@ -562,7 +565,6 @@ def test_resize_to_buckets_skips_up_to_date_and_rebuckets_on_tier_change(
         src,
         dst,
         target_res=[768, 1024],
-        min_pixels=0,
         workers=1,
         verbose=False,
         overwrite=True,

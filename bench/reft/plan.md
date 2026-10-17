@@ -1,6 +1,11 @@
 # ReFT — does block-level residual-stream intervention earn its place vs plain LoRA?
 
-**Status:** decide-before-keep. ReFT is being **downgraded from a shipped variant to a bench probe** — this plan is the evidence gate that decides whether it gets retired, re-scoped, or promoted back. Not currently a recommended method.
+**Status: DECIDED 2026-07-05 — see `report.md`.** The evidence gate ran as
+Phase-1' (a baseline-reuse + register-synergy cut of the design below):
+**`REFT IS REDUNDANT` — stays retired**; register+ReFT synergy null
+(adoption-blocked, defers to the headroom Phase-2 unfrozen-QKV sweep). This
+file is kept as the pre-registered plan; the matched-budget Phase-1 below was
+superseded by Phase-1' and remains unexecuted.
 
 **Owner question:** *At a **matched trainable-parameter budget**, can ReFT (a) converge faster than plain LoRA, (b) reach competitive final quality, or (c) reach states plain LoRA structurally cannot — on Anima personalization? If none of the three, retire it with evidence.*
 
@@ -12,7 +17,7 @@ ReFT (LoReFT, Wu et al. NeurIPS 2024) was imported and wired into the LoRA famil
 
 The theory (from the design discussion that spawned this bench): ReFT is the **only adapter that edits the post-residual fused representation** `h = x + attn_out + ffn_out`, with an **affine** form `h + R^T(W_s·h + b)` confined to a learned-orthonormal `reft_dim`-subspace, applied **uniformly to every patch token** (no spatial structure). That structural profile predicts:
 
-- **Strong** at *global* tone/style/palette steering — the same lever class as mod-guidance ("global-tone lever, not a content lever" — memory `mod_guidance_sigma_film`), DCW, channel-scaling, PiD color drift.
+- **Strong** at *global* tone/style/palette steering — the same lever class as mod-guidance ("global-tone lever, not a content lever" — memory `mod_guidance_sigma_film`), channel-scaling, PiD color drift.
 - **Weak** at *spatial / compositional / fine-identity* edits — its per-token map can't express "red here, blue there."
 - **Possibly param-efficient** on the global-style axis because it intervenes once per block on the fused stream instead of re-skilling weights.
 
@@ -115,7 +120,7 @@ Drives training via the existing trainer (matched configs built on the fly, `--m
 
 ## Scope & named follow-ups (out of phase 1)
 
-- **Distillation polish (phase 3).** The one place ReFT might add to the turbo/DP-DMD student: a `last_8` ReFT **active only at the low-σ step** (Anima's x0 is visually resolved by σ≈0.45 — memory `sigma_signal_resolves_by_045`), polishing systematic few-step tone drift *on top of* the LoRA student. Test `student = LoRA + low-σ-only ReFT` vs `LoRA + matched-rank LoRA` by CMMD. **Caveat:** ReFT isn't foldable, so a win here costs turbo's "output is a plain LoRA" deployability — weigh against the free training-free correctors (DCW/CNS/channel-scaling) that already own this lever.
+- **Distillation polish (phase 3).** The one place ReFT might add to the turbo/DP-DMD student: a `last_8` ReFT **active only at the low-σ step** (Anima's x0 is visually resolved by σ≈0.45 — memory `sigma_signal_resolves_by_045`), polishing systematic few-step tone drift *on top of* the LoRA student. Test `student = LoRA + low-σ-only ReFT` vs `LoRA + matched-rank LoRA` by CMMD. **Caveat:** ReFT isn't foldable, so a win here costs turbo's "output is a plain LoRA" deployability — weigh against the free training-free correctors (CNS/channel-scaling) that already own this lever.
 - **EasyControl:** *not* a candidate to replace cond-LoRA — spatial conditioning is structurally outside ReFT's uniform-per-token map. Excluded by design, not by experiment.
 - **CFG / aspect:** held fixed in phase 1; revisit only if a niche is found (per the DCW lesson, optima move with CFG/aspect).
 
@@ -126,4 +131,4 @@ Drives training via the existing trainer (matched configs built on the fly, `--m
 - `networks/lora_modules/reft.py` — the module (`forward` is the whole story).
 - `docs/methods/reft.md`, `docs/structure/reft.md` — current (about-to-be-re-scoped) docs.
 - memories: `cmmd_val_signal`, `fm_val_loss_uninformative`, `mod_guidance_sigma_film` (the global-tone-lever prior), `sigma_signal_resolves_by_045`, `turbo_per_step_expert`.
-- `bench/sigma_reshape/README.md`, `bench/mod_guidance/text_jacobian.py` — format + mechanistic-probe precedents.
+- `bench/sigma_reshape/README.md`, `_archive/bench/mod_guidance/text_jacobian.py` — format + mechanistic-probe precedents.

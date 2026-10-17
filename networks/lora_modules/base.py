@@ -40,11 +40,10 @@ def _absorb_channel_scale(
 ) -> torch.Tensor:
     """SmoothQuant-style channel-scale absorption into a Linear's input columns.
 
-    Mutates ``weight`` ([out, in]) so ``W[:, c] *= s_norm[c]`` and returns
+    Mutates ``weight`` so ``W[:, c] *= s_norm[c]``; returns
     ``inv_scale = 1 / s_norm`` (caller applies ``x * inv_scale`` at forward).
-    Output is unchanged; the point is to rebalance per-column gradient magnitudes
-    so each column's ``∂L/∂W[:,c]`` no longer scales with ``|x[c]|^2``.
-    See ``_archive/bench/channel_stats/channel_dominance_analysis.md``.
+    Output is unchanged — rebalances per-column gradient magnitude. See
+    ``_archive/bench/channel_stats/channel_dominance_analysis.md``.
     """
     assert channel_scale.ndim == 1, (
         f"channel_scale must be 1D, got shape {tuple(channel_scale.shape)}"
@@ -57,9 +56,8 @@ def _absorb_channel_scale(
     s = s / s.mean().clamp_min(eps)
     with torch.no_grad():
         weight.mul_(s.to(weight).unsqueeze(0))
-    # inv_scale must track ``weight``'s device so the forward multiply and the
-    # save-time bake never straddle cuda/cpu (``s`` is seeded CPU from calib).
-    # fp32 storage is intentional — only the device moves.
+    # Must track weight's device (forward multiply + save-time bake can't
+    # straddle cuda/cpu); fp32 storage is intentional, only the device moves.
     return (1.0 / s).to(weight.device).contiguous()
 
 
@@ -109,9 +107,9 @@ class BaseLoRAModule(torch.nn.Module):
         self.register_buffer("alpha", torch.tensor(alpha))
 
         self._has_channel_scale = False
-        # Default all-ones mask → identity multiply; every forward can apply
-        # `lx * self._timestep_mask` unconditionally (no None-vs-Tensor guard
-        # under torch.compile). T-LoRA rebinds via LoRANetwork.set_timestep_mask.
+        # All-ones mask by default → identity multiply, so forward never needs a
+        # None-vs-Tensor guard under torch.compile. Rebound live by
+        # LoRANetwork.set_timestep_mask (T-LoRA).
         self.register_buffer(
             "_timestep_mask",
             torch.ones(1, lora_dim, dtype=torch.float32),
@@ -150,8 +148,8 @@ class BaseLoRAModule(torch.nn.Module):
         )
 
     def _rebalance(self, x: torch.Tensor) -> torch.Tensor:
-        # inv_scale stays fp32 in storage (calibration precision); cast at the
-        # multiply site so ``bf16 × fp32 → bf16`` instead of promoting to fp32.
+        # inv_scale stays fp32 in storage; cast at the multiply site so
+        # bf16 × fp32 → bf16 instead of promoting to fp32.
         if not self._has_channel_scale:
             return x
         return x * self.inv_scale.to(device=x.device, dtype=x.dtype)
@@ -191,16 +189,9 @@ class BaseLoRAModule(torch.nn.Module):
 
     # Forward scaffold (template method). The invariant chain — enable/fuse
     # short-circuit, eval delegation, module dropout, dtype policy, T-LoRA
-    # gate, dropout / rank-dropout, residual add — lives here ONCE; the
-    # standard two-GEMM variants (LoRA, OrthoInit, StepExpert) supply only the
-    # down / gate / up rank computation via the hooks below.
-    #
-    # Variants whose forward genuinely differs — the frozen-basis Cayley
-    # modules (OrthoLoRA / OrthoHydra: a single batched Cayley solve shared
-    # between down and up, ``work`` = basis dtype) and the router-gated MoE
-    # modules (Hydra / StackedExperts / Chimera: the "gate" is a routing
-    # tensor consumed inside the up-projection, not an elementwise ``lx``
-    # multiply) — keep their own ``forward`` and do NOT call this scaffold.
+    # gate, dropout, residual add) lives here once; two-GEMM variants (LoRA,
+    # StepExpert) supply only _down/_gate/_up. The router-gated Hydra module
+    # (gate consumed inside the up-projection) keeps its own forward.
 
     def forward(self, x):
         if not self.enabled or getattr(self, "_fused", False):
@@ -209,8 +200,7 @@ class BaseLoRAModule(torch.nn.Module):
         org_forwarded = self.org_forward(x)
 
         if not self.training:
-            # Inference runs full rank at every t (T-LoRA is training-only) —
-            # each variant's eval path is its own simplest form.
+            # T-LoRA is training-only; inference always runs full rank.
             return org_forwarded + self._eval_delta(x, org_forwarded)
 
         if self._skip_module():
@@ -268,10 +258,8 @@ class BaseLoRAModule(torch.nn.Module):
         )
 
     def _gate(self, lx: torch.Tensor, work: torch.dtype) -> torch.Tensor:
-        """Default T-LoRA gate: ``lx * mask``. The fp32 mask promotes ``lx``;
-        the ``_up`` hook casts back to ``work``. Inherited unchanged by every
-        scaffold variant unless it gates the rank latent differently (e.g.
-        OrthoInit folds in its ``lambda_layer``)."""
+        """Default T-LoRA gate: ``lx * mask`` (fp32 mask promotes ``lx``; ``_up``
+        casts back to ``work``). Override to gate differently."""
         return lx * self._timestep_mask
 
     def _down(self, x_lora: torch.Tensor, work: torch.dtype) -> torch.Tensor:

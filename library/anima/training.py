@@ -2,7 +2,6 @@ import argparse
 import gc
 import math
 import os
-import random
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -52,94 +51,29 @@ def resolve_sample_dir(args: argparse.Namespace) -> str:
     )
 
 
-# Sentinel users can drop into captions that lack a real artist tag, so the
-# shuffle/drop boundary keeps working. Stripped from caption variants before
-# they reach the tokenizer (see _generate_caption_variants in
-# scripts/preprocess/cache_text_embeddings.py). Callers of anima_smart_shuffle_caption
-# that feed the result to a tokenizer must strip it themselves — kept inside
-# the shuffle so the boundary index stays consistent with the input.
-NO_ARTIST_SENTINEL = "@no-artist"
-
-
-def _is_artist_tag(tag: str) -> bool:
-    """True for @-prefixed artist handles; False for booru emoticons like ``@ @``.
-
-    Matches the predicate the Anima Tagger uses (see
-    ``scripts/anima_tagger/vocab.py``): a single ``@`` followed by non-space
-    characters. ``@ @`` (``@_@`` after the corpus-wide ``_``→`` `` normalization)
-    is a general-category eye-shape tag and must not trigger the shuffle
-    boundary.
-    """
-    return len(tag) >= 2 and tag[0] == "@" and not tag[1].isspace()
-
-
-def find_anima_prefix_end(tags: List[str]) -> int:
-    """Index one past the trailing artist-handle in the leading run.
-
-    Walks ``tags`` accepting any non-artist tags up front, then any consecutive
-    artist tags, and stops at the first non-artist tag that follows an artist.
-    Returns 0 if no artist tag is present anywhere (the no-artist case the
-    ``@no-artist`` sentinel exists to fix). Multi-artist captions
-    (e.g. ``@artist1, @artist2, …``) protect the full handle run, not just the
-    first handle.
-    """
-    split_idx = 0
-    saw_artist = False
-    for idx, tag in enumerate(tags):
-        if _is_artist_tag(tag):
-            split_idx = idx + 1
-            saw_artist = True
-        elif saw_artist:
-            break
-    return split_idx
-
-
-def strip_no_artist_sentinel(tags: List[str]) -> List[str]:
-    """Drop every occurrence of :data:`NO_ARTIST_SENTINEL` from ``tags``."""
-    return [t for t in tags if t != NO_ARTIST_SENTINEL]
-
-
-def anima_smart_shuffle_caption(flex_tokens: List[str]) -> List[str]:
-    """Shuffle caption tags with awareness of @artist prefix and 'on the ...' sections.
-
-    - Tags up to and including the trailing artist tag of the leading run are
-      kept in order (see :func:`find_anima_prefix_end`). Multi-artist captions
-      and the ``@no-artist`` sentinel both preserve the full handle run.
-    - Remaining tags are split into sections by 'on the ...' / 'in the ...'
-      delimiters; tags within each section are shuffled independently.
-    - The ``@no-artist`` sentinel is preserved in the output so the boundary
-      index stays usable; callers that feed the result to a tokenizer must
-      call :func:`strip_no_artist_sentinel` before joining.
-    """
-    split_idx = find_anima_prefix_end(flex_tokens)
-
-    prefix = flex_tokens[:split_idx]
-    suffix = flex_tokens[split_idx:]
-
-    # Split suffix into sections delimited by "on the ..." tags
-    sections: list[list[str]] = [[]]
-    for tag in suffix:
-        if tag.startswith("On the ") or tag.startswith("In the "):
-            sections.append([tag])
-        else:
-            sections[-1].append(tag)
-
-    result = list(prefix)
-    for section in sections:
-        if not section:
-            continue
-        if section[0].startswith("On the ") or section[0].startswith("In the "):
-            header, body = [section[0]], section[1:]
-        else:
-            header, body = [], section
-        shuffled = body.copy()
-        random.shuffle(shuffled)
-        result.extend(header + shuffled)
-    return result
+# Caption shuffle grammar lives in anime_tools.captions.shuffle (curation side). Re-exported here so trainer callers keep their import path.
+from library.curation_compat.captions.shuffle import (  # noqa: E402,F401
+    NO_ARTIST_SENTINEL,
+    anima_smart_shuffle_caption,
+    find_anima_prefix_end,
+    strip_no_artist_sentinel,
+)
 
 
 def add_anima_training_arguments(parser: argparse.ArgumentParser):
     """Add Anima-specific training arguments to the parser."""
+    parser.add_argument(
+        "--vocab_pack",
+        "--ext_pack",  # pre-v2 research spelling (run_unmask_r2.py); same dest
+        dest="vocab_pack",
+        type=str,
+        default=None,
+        help="CJK vocab pack prefix (path without .safetensors/.json; '' = off). "
+        "Same key as configs/base.toml `vocab_pack`. Routes the T5 stream of "
+        "inline TE caching + sample prompts through the pack, hooks its rows onto "
+        "the DiT's llm_adapter for sampling (library.anima.vocab_pack). Training "
+        "steps read only the cached embeddings.",
+    )
     parser.add_argument(
         "--qwen3",
         type=str,
@@ -181,6 +115,16 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         type=float,
         default=None,
         help="Learning rate for AdaLN modulation layers. None=same as base LR, 0=freeze. Note: mod layers are not included in LoRA by default.",
+    )
+    parser.add_argument(
+        "--pooled_text_proj",
+        type=str,
+        default=None,
+        help="Path to distilled pooled_text_proj weights (mod-guidance adapter). "
+        "When set, the projection is loaded frozen so every training forward runs "
+        "with the pooled-text t-embedding injection active (mod-aware training) — "
+        "adaln LoRAs then train against the operating point mod-guidance perturbs "
+        "at inference. Same flag name as inference.py.",
     )
     parser.add_argument(
         "--t5_tokenizer_path",
@@ -288,7 +232,7 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
     # BYG (Bootstrap Your Generator): owning-step rank-64 LoRA, multi-forward
     # objective (bootstrap rollout + DDS prior + cycle + identity), conditioned on
     # a token-concat source latent; no edited target exists. See
-    # docs/proposal/byg_unpaired_editing.md and networks/methods/byg.py.
+    # bench/byg/README.md and networks/methods/byg.py.
     parser.add_argument(
         "--use_byg",
         action="store_true",
@@ -564,7 +508,7 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
     )
 
     # Variance-reduced flow-matching loss (AsymFlow §5.2, arXiv:2605.12964;
-    # bench/fm_vr_headroom/proposal.md). Gated off by default.
+    # _archive/bench/fm_vr_headroom/proposal.md). Gated off by default.
     parser.add_argument(
         "--vr_loss_weight",
         type=float,
@@ -745,8 +689,7 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
 
 
 # E[w] = 1 normalizers for the min_snr scheme, keyed by (gamma, density). Mean-1
-# normalization is what keeps a reweighting arm from doubling as an LR change —
-# the same confound weight_svd's 1/sqrt(3) row-norm match avoids on the init side.
+# normalization keeps a reweighting arm from doubling as an LR change.
 _MIN_SNR_NORM_CACHE: dict[tuple, float] = {}
 
 
@@ -1236,10 +1179,9 @@ def sample_images(
         dit.switch_block_swap_for_training()
         if net is not None:
             net.train()
-        # No clean_memory_on_device() here on purpose: emptying the CUDA cache
-        # at the sample<->train boundary is what made VRAM visibly fluctuate.
-        # Letting the caching allocator hold its blocks keeps usage flat (peak
-        # settles at max(training, sampling) and stays there).
+        # No clean_memory_on_device() here: emptying the CUDA cache at the
+        # sample<->train boundary makes VRAM fluctuate; holding the allocator's
+        # blocks keeps peak at max(training, sampling).
 
     # Best-effort live decode: offload DiT + network to CPU, decode latents
     # to PNG so the WebUI gallery refreshes immediately. Gracefully skips on
@@ -1346,7 +1288,7 @@ def _sample_image_inference(
     # Band-aware: under --compile_seq_bands the graphs are per-band, so a
     # seq_len in an inter-band gap has no tight graph even though the union
     # range "covers" it. _dynamic_seq_bands is [union range] in classic mode,
-    # so the membership check degenerates to the old range check there.
+    # so the membership check is a plain range check there.
     from library.datasets.buckets import band_for_seq
 
     seq_range = getattr(dit, "_dynamic_seq_range", None)
@@ -1760,6 +1702,86 @@ def _log_preview_memory(label: str) -> None:
     )
 
 
+def sample_image_latents(
+    *,
+    accelerator: Accelerator,
+    dit: anima_models.Anima,
+    height: int,
+    width: int,
+    crossattn_emb: torch.Tensor,
+    neg_crossattn_emb: Optional[torch.Tensor] = None,
+    sample_steps: int = 20,
+    guidance_scale: float = 4.0,
+    flow_shift: float = 3.0,
+    seed: Optional[int] = None,
+    show_progress: bool = True,
+    clean_cache: bool = True,
+) -> torch.Tensor:
+    """Sample one image's latents and return the 5D latent tensor
+    ``(1, 16, 1, H//8, W//8)`` (on ``accelerator.device``, ``dit.dtype``)
+    WITHOUT decoding to pixels.
+
+    Splitting the VAE decode out of the sample step lets callers park the
+    DiT off-GPU before bringing the VAE on-device — CMMD val keeps the DiT
+    and the VAE from sharing the GPU (peak = one model, not both). Pair with
+    :func:`decode_latents_to_image`.
+
+    ``crossattn_emb`` is the prepared cross-attention embedding (already
+    LLM-adapter'd and padded to the model's expected length); CMMD val
+    builds it from cached TE outputs so we don't re-run the text encoder.
+
+    ``clean_cache=False`` skips the gc / ``empty_cache`` bracketing so a
+    caller that samples many items back-to-back (CMMD val) keeps the CUDA
+    allocator pool warm — the per-item denoise scratch is freed by refcount
+    and reused by the next item, instead of being handed back to the driver
+    and re-allocated each time (which also makes VRAM visibly sawtooth).
+    """
+    height = max(64, height - height % 16)
+    width = max(64, width - width % 16)
+    crossattn_emb = crossattn_emb.to(accelerator.device, dtype=dit.dtype)
+    if neg_crossattn_emb is not None:
+        neg_crossattn_emb = neg_crossattn_emb.to(accelerator.device, dtype=dit.dtype)
+
+    if clean_cache:
+        clean_memory_on_device(accelerator.device)
+    latents = do_sample(
+        height,
+        width,
+        seed,
+        dit,
+        crossattn_emb,
+        sample_steps,
+        dit.dtype,
+        accelerator.device,
+        guidance_scale,
+        flow_shift,
+        neg_crossattn_emb,
+        show_progress=show_progress,
+    )
+
+    if clean_cache:
+        gc.collect()
+        synchronize_device(accelerator.device)
+        clean_memory_on_device(accelerator.device)
+    return latents
+
+
+def decode_latents_to_image(vae, latents: torch.Tensor, device) -> torch.Tensor:
+    """Decode sampled 5D latents to a ``[3, H, W]`` pixel tensor in
+    ``[-1, 1]``.
+
+    The VAE is assumed to already be on ``device`` — callers own the VAE's
+    on/off-GPU lifecycle so a whole batch can be decoded under one VAE
+    residency (CMMD val decodes every sample with the DiT parked on CPU).
+    """
+    decoded = vae.decode_to_pixels(latents.to(device, dtype=vae.dtype))
+    image = decoded.float()[0]
+    if image.ndim == 4:
+        # Drop temporal dim if the VAE returned [C, T, H, W].
+        image = image[:, 0, :, :]
+    return image.clamp(-1.0, 1.0)
+
+
 def sample_image_to_tensor(
     *,
     accelerator: Accelerator,
@@ -1779,45 +1801,28 @@ def sample_image_to_tensor(
 
     Sibling of :func:`_sample_image_inference` that skips disk I/O and the
     PIL conversion. Returned tensor is ``[3, H, W]`` float (on
-    ``accelerator.device``), suitable for direct PE-Core encoding.
-
-    ``crossattn_emb`` is the prepared cross-attention embedding (already
-    LLM-adapter'd and padded to the model's expected length); CMMD val
-    builds it from cached TE outputs so we don't re-run the text encoder.
+    ``accelerator.device``), suitable for direct PE-Core encoding. This is the
+    sample-then-decode convenience wrapper (VAE shuttled on/off GPU around the
+    single decode); the two-model-residency-aware CMMD path drives
+    :func:`sample_image_latents` + :func:`decode_latents_to_image` directly.
     """
-    height = max(64, height - height % 16)
-    width = max(64, width - width % 16)
-    crossattn_emb = crossattn_emb.to(accelerator.device, dtype=dit.dtype)
-    if neg_crossattn_emb is not None:
-        neg_crossattn_emb = neg_crossattn_emb.to(accelerator.device, dtype=dit.dtype)
-
-    clean_memory_on_device(accelerator.device)
-    latents = do_sample(
-        height,
-        width,
-        seed,
-        dit,
-        crossattn_emb,
-        sample_steps,
-        dit.dtype,
-        accelerator.device,
-        guidance_scale,
-        flow_shift,
-        neg_crossattn_emb,
+    latents = sample_image_latents(
+        accelerator=accelerator,
+        dit=dit,
+        height=height,
+        width=width,
+        crossattn_emb=crossattn_emb,
+        neg_crossattn_emb=neg_crossattn_emb,
+        sample_steps=sample_steps,
+        guidance_scale=guidance_scale,
+        flow_shift=flow_shift,
+        seed=seed,
         show_progress=show_progress,
     )
-
-    gc.collect()
-    synchronize_device(accelerator.device)
-    clean_memory_on_device(accelerator.device)
     org_vae_device = vae.device
     vae.to(accelerator.device)
-    decoded = vae.decode_to_pixels(latents)
-    vae.to(org_vae_device)
-    clean_memory_on_device(accelerator.device)
-
-    image = decoded.float()[0]
-    if image.ndim == 4:
-        # Drop temporal dim if the VAE returned [C, T, H, W].
-        image = image[:, 0, :, :]
-    return image.clamp(-1.0, 1.0)
+    try:
+        return decode_latents_to_image(vae, latents, accelerator.device)
+    finally:
+        vae.to(org_vae_device)
+        clean_memory_on_device(accelerator.device)

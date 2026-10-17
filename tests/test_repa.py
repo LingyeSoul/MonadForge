@@ -1,4 +1,4 @@
-"""REPA v2 adapter + wiring tests (docs/experimental/repa.md).
+"""REPA v2 adapter + wiring tests (docs/methods/repa.md).
 
 Covers the load-bearing invariants:
   - native_flatten layout-agnosticism: the captured (B,1,seq,1,D) and eager
@@ -78,6 +78,7 @@ def test_native_flatten_layout_agnostic():
         assert torch.isfinite(loss_eager)
 
 
+@pytest.mark.training_step
 def test_grad_flows_to_captured():
     _spec, pe, latents = _square_inputs()
     b, d = 2, 64
@@ -363,6 +364,7 @@ def test_factory_stamps_phase1_levers():
     assert net_default._repa_spatial_norm is False
 
 
+@pytest.mark.training_step
 def test_grad_heatmap_accumulates_and_loss_unchanged():
     """Lever-3 diagnostic: probing must not perturb the loss, and counts
     accumulate exactly k per sample (top-10% of the canonical 32x32 grid)."""
@@ -575,6 +577,7 @@ def test_dog_off_is_bit_identical_to_relational():
     assert torch.equal(loss_default, expected)
 
 
+@pytest.mark.training_step
 def test_dog_grad_flows_to_captured():
     """The band-passed target is detached data, but grad still flows through the
     DiT-side pooled tokens (into the LoRA blocks)."""
@@ -623,11 +626,16 @@ def test_factory_stamps_dog_levers():
     assert net._repa_dog_sigma1_div == pytest.approx(16.0)
     assert net._repa_dog_sigma2_div == 0.0
 
+    # DoG is default-on under use_repa (the shipped stack) — opt out explicitly.
     net_default = lora_create(1.0, 4, 4.0, **lora_common, use_repa="true")
-    assert net_default._repa_target_dog is False
+    assert net_default._repa_target_dog is True
+    net_off = lora_create(
+        1.0, 4, 4.0, **lora_common, use_repa="true", repa_target_dog="false"
+    )
+    assert net_off._repa_target_dog is False
 
     ec_common = dict(vae=None, text_encoders=[], unet=None)
     ec = ec_create(1.0, 8, 8.0, **ec_common, use_repa="true", repa_target_dog="true")
     assert ec._repa_target_dog is True
     ec_default = ec_create(1.0, 8, 8.0, **ec_common, use_repa="true")
-    assert ec_default._repa_target_dog is False
+    assert ec_default._repa_target_dog is True

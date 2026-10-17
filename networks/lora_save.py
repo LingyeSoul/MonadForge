@@ -1,35 +1,14 @@
-"""Save-pipeline orchestrator for the LoRA / Ortho / Hydra family.
+"""Save-pipeline orchestrator for the LoRA / Hydra family.
 
-The per-variant save logic — Cayley distillation, MoE write layout,
-qkv defuse — lives on the variant's module class in
-``networks/lora_modules/`` (``OrthoLoRAModule.distill_save_state_dict``,
-``HydraLoRAModule.build_moe_state_dict``, etc). This file is the thin
-ordering layer that calls them and writes the resulting file(s).
+The per-variant save logic — MoE write layout, qkv defuse — lives on the
+variant's module class in ``networks/lora_modules/``
+(``HydraLoRAModule.build_moe_state_dict``, ``lora.defuse_and_bake_standard``).
+This file is the thin layer that calls them and writes the resulting file.
 
-Ordering of the conversion pipeline is load-bearing:
-
-  1. ``ChimeraHydraLoRAModule.distill_save_state_dict``
-     (gated on co-located ``.Q_basis_c`` + ``.Q_basis_f`` — covers both the
-     Cayley and OrthoInit chimera parameterizations)
-  2. ``StackedExpertsLoRAModule.distill_save_state_dict``
-     (gated on 3-D ``.S_p`` AND 3-D ``.S_q``)
-  3. ``OrthoHydraLoRAModule.distill_save_state_dict``
-     (gated on 3-D ``.S_p`` AND 2-D ``.S_q``)
-  4. ``OrthoLoRAModule.distill_save_state_dict``
-     (gated on 2-D ``.S_p``)
-  4b. ``OrthoInitLoRAModule.distill_save_state_dict``
-     (gated on ``.P_init`` — a name no other variant uses, so order vs the
-     ``.S_p``-keyed steps above is independent; placed here for readability)
-  5. legacy sig-type OrthoLoRA → standard LoRA
-     (gated on ``.base_lambda``; kept here because it touches the
-     deprecated ``lora_deprecated.OrthoLoRAModule`` save layout that no
-     live module class owns)
-
-The ``.S_p`` / ``.S_q`` dimensionality is the discriminator — every step
-checks both dims explicitly so the matchers never overlap on the same
-prefix. Step 5 handles legacy checkpoints from
-``lora_deprecated.OrthoLoRAModule``; current training never emits those
-keys, but the converter is kept so old artifacts remain re-bakeable.
+The standard write path relays adaln keys from the runtime names to the
+ComfyUI layout (``_relayout_adaln_to_comfy``), after the qkv defuse and
+before hashing — so the shipped file is ComfyUI-native end to end. The Hydra
+MoE variant returns early and is not ComfyUI-loadable regardless.
 """
 
 from __future__ import annotations
@@ -42,12 +21,8 @@ import torch
 
 from library.log import setup_logging
 from networks.lora_modules import (
-    ChimeraHydraLoRAModule,
-    HydraLoRAModule,
-    OrthoHydraLoRAModule,
-    OrthoInitLoRAModule,
-    OrthoLoRAModule,
-    StackedExpertsLoRAModule,
+    ChimeraHydraLoRAModule, HydraLoRAModule, OrthoHydraLoRAModule,
+    OrthoInitLoRAModule, OrthoLoRAModule, StackedExpertsLoRAModule,
 )
 from networks.lora_modules.lora import defuse_and_bake_standard
 
@@ -55,9 +30,38 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
-# Legacy sig-type OrthoLoRA → standard LoRA via 2r-dim SVD. Kept here (not on a
-# module class) because the live ``OrthoLoRAModule`` never emits these keys —
-# they belong to the deprecated ``lora_deprecated.OrthoLoRAModule``.
+def _relayout_adaln_to_comfy(
+    state_dict: Dict[str, torch.Tensor], metadata: Optional[Dict[str, str]]
+) -> Optional[Dict[str, str]]:
+    """Rename adaln LoRA keys from the in-repo runtime names
+    (``adaln_up_{br}``) to the ComfyUI state-dict layout
+    (``adaln_modulation_{br}_2``) and stamp ``ss_adaln_layout`` — see the
+    layout note in ``networks/lora_utils.py``. The attn/MLP keys already ship
+    in the defused split layout, so only the adaln keys move.
+
+    Presence-gated — an adaln-less checkpoint is untouched, metadata and
+    all. Mutates ``state_dict`` in place; returns the metadata to write
+    (a dict is allocated if the stamp needs one and none was passed).
+    """
+    from networks.lora_utils import relayout_adaln_runtime_to_comfy
+
+    renamed = relayout_adaln_runtime_to_comfy(state_dict)
+    if renamed.keys() == state_dict.keys():
+        return metadata  # no runtime adaln keys present — nothing to relayout
+
+    state_dict.clear()
+    state_dict.update(renamed)
+    if metadata is None:
+        metadata = {}
+    metadata["ss_adaln_layout"] = "comfy"
+    n_adaln = sum(
+        1 for k in renamed if "adaln_modulation_" in k and k.endswith(".alpha")
+    )
+    logger.info(
+        f"relaid {n_adaln} adaln modules to the ComfyUI layout "
+        "(loads natively in ComfyUI; in-repo loader renames back on load)"
+    )
+    return metadata
 
 
 def _convert_legacy_ortho_to_lora(
@@ -425,16 +429,29 @@ def _convert_lokr_to_native_lokr(
     return True
 
 
-# Back-compat shim: tests/test_global_router.py imports this name directly
-# to exercise the StackedExperts MoE writer in isolation.
+def _build_stacked_experts_state_dict(state_dict, dtype):
+    """Compatibility shim for the independent-A checkpoint writer."""
+    return StackedExpertsLoRAModule.build_moe_state_dict(state_dict, dtype)
 
 
-def _build_stacked_experts_state_dict(
+def build_standard_state_dict(
     state_dict: Dict[str, torch.Tensor],
     dtype: Optional[torch.dtype],
-) -> Dict[str, torch.Tensor]:
-    """Thin shim → :meth:`StackedExpertsLoRAModule.build_moe_state_dict`."""
-    return StackedExpertsLoRAModule.build_moe_state_dict(state_dict, dtype)
+    metadata: Optional[Dict[str, str]],
+) -> tuple[Dict[str, torch.Tensor], Optional[Dict[str, str]]]:
+    """Run the standard finalize chain WITHOUT writing a file.
+
+    Defuse fused qkv + bake channel scaling, relay adaln keys to the ComfyUI
+    layout, cast dtype. Returns the finalized ``(state_dict, metadata)``. Factored
+    out of :func:`save_network_weights` so the dual-pool turbo save can finalize
+    each pool to its on-disk plain-LoRA layout and concat the two exactly.
+    """
+    defuse_and_bake_standard(state_dict)
+    metadata = _relayout_adaln_to_comfy(state_dict, metadata)
+    if dtype is not None:
+        for key in list(state_dict.keys()):
+            state_dict[key] = state_dict[key].detach().clone().to("cpu").to(dtype)
+    return state_dict, metadata
 
 
 def save_network_weights(
@@ -445,7 +462,7 @@ def save_network_weights(
     metadata: Optional[Dict[str, str]],
     save_variant: str,
 ) -> None:
-    """Run the full save pipeline: distill chain + variant write.
+    """Run the save pipeline: variant write.
 
     Mutates ``state_dict`` in place.
     """
@@ -461,9 +478,7 @@ def save_network_weights(
     _convert_legacy_ortho_to_lora(state_dict, dtype)
 
     # Variant dispatch:
-    #   * stacked_experts_global_fei: independent-A → *_moe.safetensors
-    #   * chimera_hydra_moe: dual-A per-pool + freq_router.* → *_chimera.safetensors
-    #   * hydra_moe / ortho_hydra_to_hydra: shared-A Hydra → *_moe.safetensors
+    #   * hydra_moe: shared-A Hydra → *_moe.safetensors
     #   * standard: defuse qkv → *.safetensors
     # Auto-fallback: any surviving ``.lora_up_weight`` key implies a Hydra
     # payload — kept for callers that don't plumb ``save_variant`` through.
@@ -479,6 +494,9 @@ def save_network_weights(
             and any(k.endswith(".lora_up_weight") for k in state_dict.keys())
         )
     ) and not is_stacked_experts_variant
+
+    if is_glokr_variant or is_lokr_variant or is_loha_variant:
+        metadata = _relayout_adaln_to_comfy(state_dict, metadata)
 
     if is_stacked_experts_variant:
         se_file = os.path.splitext(file)[0] + "_moe.safetensors"
@@ -625,13 +643,8 @@ def save_network_weights(
             torch.save(state_dict, file)
         return
 
-    # Standard (lora / ortho) write path.
-    defuse_and_bake_standard(state_dict)
-
-    if dtype is not None:
-        for key in list(state_dict.keys()):
-            v = state_dict[key].detach().clone().to("cpu").to(dtype)
-            state_dict[key] = v
+    # Standard write path.
+    state_dict, metadata = build_standard_state_dict(state_dict, dtype, metadata)
 
     if os.path.splitext(file)[1] == ".safetensors":
         from safetensors.torch import save_file

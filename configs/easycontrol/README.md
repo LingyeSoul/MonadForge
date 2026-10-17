@@ -19,6 +19,7 @@ subset in `easycontrol.toml` in sync with it until gui-methods is migrated.
 | File | Producer | Points at |
 |---|---|---|
 | `near_twins.toml` | `python -m easycontrol_adapters.tools.near_twin` | the materialized `_tags`/`_no_tags` near-twin pair tree under `post_image_dataset/easycontrol/near_twins/staging/` (VAE/TE caches land beside it under `near_twins/cache/`) |
+| `subject.toml` | `python -m easycontrol_adapters.tools.subject_pairs` | cross-image same-character pairs (directedit_ec Phase 2): `subject/staging/` target symlinks + `pairs.json` + `subject/cond/`; **no encode pass** — target latents/TE reused from the shared LoRA cache (`cache_dir = post_image_dataset/lora`), staging + preprocess are both CPU-only symlink steps |
 
 `near_twins.toml` carries three hand-edited tables above the generated
 blueprint: `[staging]` (mining run knobs, read by the miner — legacy name

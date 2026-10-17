@@ -1,18 +1,16 @@
-"""Vision-encoder registry (originally for img2emb; reused live by IP-Adapter
-and the Anima Tagger).
+"""Vision-encoder registry (IP-Adapter, the Anima Tagger, the PE feature cache).
 
 Two Meta Perception Encoder variants are registered:
 
-* ``pe`` — PE-Core-L14-336. Global / CLIP-aligned features. Used by IP-Adapter,
-  the DCW v4 fusion head's PE feature cache, and the Anima Tagger's primary
-  encoder.
-* ``pe_spatial`` — PE-Spatial-B16-512. Spatial-fine-tuned variant from the same
+* ``pe`` — PE-Core-L14-336. Global / CLIP-aligned features. Used by IP-Adapter
+  and the Anima Tagger's primary encoder.
+* ``pe_spatial`` — PE-Spatial-B16-512 (``pe_spatial_l`` — PE-Spatial-L14-448, d=1024). Spatial-fine-tuned variant from the same
   paper. Patch=16, native 32×32 grid. No CLIP projection / no LN-post / no
   pool head — only the patch token sequence is meaningful. Used by the Anima
   Tagger as the auxiliary encoder for spatial detail / long-tail tags.
 
-Both vendored at ``library/models/pe.py`` so we don't have to clone
-perception_models or install xformers.
+Both vendored at ``anime_tools/vision/pe.py`` (re-exported as
+``library.models.pe``) — no perception_models clone or xformers install.
 
 ``encode(pixel_values)`` returns ``(last_hidden_state[B, T, D],
 pooled[B, D_pool])``. ``T`` includes a CLS token at position 0 for both
@@ -30,6 +28,7 @@ from typing import Callable
 
 import torch
 
+from library import downloads as DL
 from library.vision.buckets import BucketSpec, get_bucket_spec
 
 logger = logging.getLogger(__name__)
@@ -50,11 +49,19 @@ class _EncoderOutput:
 
 
 def _default_pe_model_id() -> str:
-    return str(REPO_ROOT / "models" / "pe" / "PE-Core-L14-336.pt")
+    # From the catalog, not spelled here: a path a loader owns separately is a
+    # Download button that writes where the loader will not look.
+    from library.downloads import default_pe_core_path
+
+    return str(default_pe_core_path())
 
 
 def _default_pe_spatial_model_id() -> str:
     return str(REPO_ROOT / "models" / "pe" / "PE-Spatial-B16-512.pt")
+
+
+def _default_pe_spatial_l_model_id() -> str:
+    return str(REPO_ROOT / "models" / "pe" / "PE-Spatial-L14-448.pt")
 
 
 class _PEProcessor:
@@ -117,9 +124,11 @@ def _load_pe_variant(
     """Build a vendored PE vision tower and load Meta's official ``.pt`` weights.
 
     ``config_name`` selects the ``PE_CONFIGS`` entry to instantiate;
-    ``repo_id`` / ``filename`` parameterize the HF auto-download fallback.
-    Used by both PE-Core and PE-Spatial registry entries — the only thing
-    that differs between them is the build name and the download tuple.
+    ``repo_id`` / ``filename`` parameterize the auto-download fallback
+    (ModelScope mirror when ``ANIMA_DOWNLOAD_SOURCE=modelscope`` — a repo
+    without a mirror there raises rather than hitting HuggingFace; HuggingFace
+    otherwise). Used by both PE-Core and PE-Spatial registry entries — the only
+    thing that differs between them is the build name and the download tuple.
 
     ``dtype`` is the compute dtype the model is cast to. Meta ships the ``.pt``
     in fp32; the default bf16 cast matches the live training/CMMD path, but
@@ -143,15 +152,24 @@ def _load_pe_variant(
             f"{repo_id}/{filename} (one-time)."
         )
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        downloaded = Path(
-            hf_download(
-                what=f"{config_name} checkpoint",
-                hint=f"make {download_make_target}",
-                repo_id=repo_id,
-                filename=filename,
-                local_dir=str(ckpt_path.parent),
-            )
+        from library.runtime.ms_download import maybe_ms_download
+
+        downloaded = maybe_ms_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=ckpt_path.parent,
+            what=f"{config_name} checkpoint",
         )
+        if downloaded is None:
+            downloaded = Path(
+                hf_download(
+                    what=f"{config_name} checkpoint",
+                    hint=f"make {download_make_target}",
+                    repo_id=repo_id,
+                    filename=filename,
+                    local_dir=str(ckpt_path.parent),
+                )
+            )
         if downloaded.resolve() != ckpt_path.resolve():
             shutil.move(str(downloaded), str(ckpt_path))
         if not ckpt_path.is_file():
@@ -175,8 +193,8 @@ def _load_pe_encoder(
         device,
         model_id,
         config_name="PE-Core-L14-336",
-        repo_id="facebook/PE-Core-L14-336",
-        filename="PE-Core-L14-336.pt",
+        repo_id=DL.PE_CORE_REPO,
+        filename=DL.PE_CORE_FILENAME,
         download_make_target="download-pe",
         dtype=dtype,
     )
@@ -191,6 +209,20 @@ def _load_pe_spatial_encoder(
         config_name="PE-Spatial-B16-512",
         repo_id="facebook/PE-Spatial-B16-512",
         filename="PE-Spatial-B16-512.pt",
+        download_make_target="download-pe-spatial",
+        dtype=dtype,
+    )
+
+
+def _load_pe_spatial_l_encoder(
+    device: torch.device, model_id: str, *, dtype: torch.dtype = torch.bfloat16
+) -> _PEEncoder:
+    return _load_pe_variant(
+        device,
+        model_id,
+        config_name="PE-Spatial-L14-448",
+        repo_id="facebook/PE-Spatial-L14-448",
+        filename="PE-Spatial-L14-448.pt",
         download_make_target="download-pe-spatial",
         dtype=dtype,
     )
@@ -231,6 +263,17 @@ _REGISTRY: dict[str, EncoderInfo] = {
         default_model_id=_default_pe_spatial_model_id,
         processor_factory=_PEProcessor,
         loader=_load_pe_spatial_encoder,
+    ),
+    # PE-Spatial-L14-448: the large spatial tower (d=1024, 24 layers), same
+    # 1024-patch grid as B16 — drop-in ``--aux_encoder pe_spatial_l``.
+    "pe_spatial_l": EncoderInfo(
+        name="pe_spatial_l",
+        bucket_spec=get_bucket_spec("pe_spatial_l"),
+        d_enc=1024,
+        d_pool=1024,
+        default_model_id=_default_pe_spatial_l_model_id,
+        processor_factory=_PEProcessor,
+        loader=_load_pe_spatial_l_encoder,
     ),
 }
 

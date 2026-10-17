@@ -10,7 +10,7 @@ the image when omitted). Skips already-cached entries (idempotent).
 
 Wrapped by ``make preprocess-pe`` (reads ``post_image_dataset/resized/``,
 writes ``post_image_dataset/lora/``). The same sidecars are consumed by
-IP-Adapter and the DCW v4 fusion head -- they share the cache directory.
+IP-Adapter -- it shares the cache directory.
 
 The cache key matches what the encoder produces at training time:
 ``encode_pe_from_imageminus1to1(bundle, x, same_bucket=True)`` -> ``[T_pe, d_enc]``.
@@ -90,9 +90,8 @@ def main() -> None:
         num_workers_default=4,
     )
     # PE features are consumed as fp32 everywhere (REPA upcasts the cache at
-    # repa.py, CMMD pools in fp32), so cache at full precision by default — the
-    # historical bf16 save silently truncated the encoder output. --dtype now
-    # drives both the encoder compute dtype and the on-disk save dtype.
+    # repa.py, CMMD pools in fp32), so cache at full precision by default.
+    # --dtype drives both the encoder compute dtype and the on-disk save dtype.
     add_device_args(
         parser,
         include_device=False,
@@ -117,7 +116,7 @@ def main() -> None:
         help=(
             "After the cache pass, stream-pool all '_anima_{encoder}.safetensors' "
             "files under --cache_dir and emit a dataset-mean centroid sidecar "
-            "consumed by IP-Adapter and DCW v4. Requires --cache_dir."
+            "consumed by IP-Adapter. Requires --cache_dir."
         ),
     )
     parser.add_argument(

@@ -1,4 +1,4 @@
-# Anima LoRA training script (merged standalone)
+# Anima LoRA training script
 
 import gc
 import _thread
@@ -16,16 +16,15 @@ import threading
 import time
 from multiprocessing import Value
 
-# Windows: suppress per-kernel ptxas.exe / cl.exe console flashes from
-# torch.compile + Triton. Must run before any subprocess.Popen call (i.e.
-# before torch import on Windows where inductor may prefetch toolchain).
+# Windows: suppress per-kernel ptxas.exe/cl.exe console flashes. Must run
+# before any subprocess.Popen call (before torch import on Windows).
 from library.runtime.proc import install_no_window_default
 
 install_no_window_default()
 
-# Allocator default must land before torch initializes the CUDA caching
-# allocator: free-fit varies seq_len per step and fragments the reserved pool
-# without expandable segments (issue #58). Opt out: ANIMA_EXPANDABLE_SEGMENTS=0.
+# Must land before torch initializes the CUDA caching allocator: free-fit
+# varies seq_len per step and fragments the pool without expandable segments
+# (issue #58). Opt out: ANIMA_EXPANDABLE_SEGMENTS=0.
 from library.runtime.allocator import default_expandable_segments
 
 if default_expandable_segments():
@@ -150,6 +149,7 @@ from library.training.stage_schedule import (
 )
 from library.training.convrot import maybe_apply_convrot_base
 from library.training.staged_resolution import configure_staged_resolution
+from library.training.pause import TrainingPaused
 from library.training.sampling_config import normalize_sample_args
 from library.training.log_dispatch import (
     dispatch_logs,
@@ -990,15 +990,17 @@ class AnimaTrainer:
     def __init__(self):
         self.sample_prompts_te_outputs = None
         self._padding_mask_cache = {}
-        # Per-method extensions (EasyControl, IP-Adapter, …). Resolved
-        # from args+network in train() right after _create_and_apply_network.
+        # Per-method extensions (EasyControl, …). Resolved from args+network
+        # in train() right after _create_and_apply_network.
         self._adapters: list[MethodAdapter] = []
         # Feature-specific per-run state — see ``RuntimeState``.
         self._state = RuntimeState()
-        # Liveness ledger (issues.md P1.1): counts aux consumption per
-        # skip-if-missing loss; the loop audits it (step-25 early check +
-        # run end) and flags configured-but-dead features with `LIVENESS:`.
+        # Counts aux consumption per skip-if-missing loss; the loop audits it
+        # and flags configured-but-dead features with `LIVENESS:`.
         self._liveness = LivenessLedger()
+        # Realized patch-token histogram over train steps (post σ-demote
+        # swap) — per-arm FLOPs accounting; merged into run_end.
+        self._token_step_hist: dict[int, int] = {}
 
     # region logging helpers
 
@@ -1016,9 +1018,8 @@ class AnimaTrainer:
         mean_grad_norm=None,
         mean_combined_norm=None,
     ):
-        # Thin wrapper (same shape as step_logging/epoch_logging below): the
-        # loop calls this on the trainer; the assembly lives in log_dispatch,
-        # with the trainer contributing only its VR λ state.
+        # Thin wrapper: assembly lives in log_dispatch; the trainer
+        # contributes only its VR λ state.
         return _generate_step_logs(
             args,
             current_loss,
@@ -1078,7 +1079,7 @@ class AnimaTrainer:
 
     # endregion
 
-    # region Anima-specific methods (from AnimaNetworkTrainer overrides)
+    # region Anima-specific methods
 
     def assert_extra_args(
         self,
@@ -1099,21 +1100,23 @@ class AnimaTrainer:
                 "when caching Text Encoder output, token_warmup_step or caption_tag_dropout_rate cannot be used"
             )
             if getattr(args, "cache_llm_adapter_outputs", False):
-                # Adapter output caching is only valid when the adapter is frozen (no LoRA on adapter).
+                # Adapter output caching is only valid when the adapter is frozen
+                # (no LoRA on adapter). The flag is store_true, so a method TOML
+                # that sets it (easycontrol.toml) can't be switched off from a
+                # descriptor — auto-disable instead; the TE cache-completeness
+                # probe then requires the prompt_embeds layout.
                 if args.network_args is not None and any(
                     "train_llm_adapter" in a and "true" in a.lower()
                     for a in args.network_args
                 ):
-                    raise ValueError(
-                        "--cache_llm_adapter_outputs is incompatible with --network_args train_llm_adapter=True"
+                    logger.warning(
+                        "network_args train_llm_adapter=true needs the llm_adapter "
+                        "live; disabling cache_llm_adapter_outputs."
                     )
+                    args.cache_llm_adapter_outputs = False
         elif getattr(args, "cache_llm_adapter_outputs", False):
-            # Adapter-output caching writes into the TE cache; with text caching
-            # off there is nothing to write into (the caching strategy is None and
-            # adapter outputs are computed live), so the flag is a harmless no-op.
-            # Auto-disable it instead of crashing — this combination is easy to
-            # hit from the GUI, where use_text_cache and cache_llm_adapter_outputs
-            # are independent toggles while methods default the latter to true.
+            # Adapter-output caching writes into the TE cache; with text
+            # caching off it is a no-op, so auto-disable instead of crashing.
             logger.warning(
                 "cache_llm_adapter_outputs=true has no effect without text-encoder "
                 "caching (use_text_cache=false / live text encoding); disabling it."
@@ -1143,7 +1146,7 @@ class AnimaTrainer:
                     dataset.inversion_num_runs = num_runs
 
         # Propagate BYG per-image edit-tuple cache dir so datasets load
-        # {stem}_byg.safetensors into batch["byg_{role}_emb"]/["byg_{role}_mask"].
+        # {stem}_byg.safetensors into the batch.
         if getattr(args, "use_byg", False):
             byg_text_dir = getattr(args, "byg_text_dir", None) or os.path.join(
                 "post_image_dataset", "byg"
@@ -1156,8 +1159,8 @@ class AnimaTrainer:
                         f"BYG: kept {kept} images with edit-tuple sidecars, "
                         f"dropped {dropped} without (no swappable tag in caption)."
                     )
-            # restrict_to_byg_tuples re-buckets each member, shrinking its length;
-            # refresh the ConcatDataset cumulative_sizes or global indices overflow.
+            # re-buckets each member, shrinking its length; refresh the
+            # ConcatDataset cumulative_sizes or global indices overflow.
             train_dataset_group.refresh_concat_state()
             if val_dataset_group is not None:
                 for dataset in val_dataset_group.datasets:
@@ -1165,22 +1168,17 @@ class AnimaTrainer:
                     dataset.restrict_to_byg_tuples()
                 val_dataset_group.refresh_concat_state()
 
-        # REPA v2: load cached PE-Spatial patch tokens into batches when
-        # use_repa is set. The flag rides the network kwargs; read the resolved
-        # merged view (--network_args + top-level TOML keys) rather than
-        # re-scanning both intake paths.
+        # REPA: load cached PE-Spatial patch tokens into batches when
+        # use_repa is set (rides the resolved network kwargs).
         net_kwargs = resolve_network_kwargs(args)
         if net_kwargs.get("use_repa", "").lower() in ("true", "1", "yes"):
             repa_encoder = net_kwargs.get("repa_encoder") or "pe_spatial"
             for dataset in train_dataset_group.datasets:
                 dataset.load_repa_pe = True
                 dataset.repa_pe_encoder = repa_encoder
-            # Probe PE sidecar coverage now. A missing PE cache makes the REPA
-            # alignment term a silent no-op — the loss skips any batch without
-            # repa_pe_features (library/training/repa.py) — so a run with
-            # use_repa but no `make preprocess-pe` would train as if REPA were
-            # off, with no error. Fail fast on a fully-absent cache; warn on a
-            # partial one (the all-or-nothing collate tolerates per-batch gaps).
+            # A missing PE cache makes the REPA alignment term a silent no-op
+            # (the loss skips any batch without repa_pe_features), so probe
+            # coverage now: fail fast on a fully-absent cache, warn on partial.
             present, total = train_dataset_group.count_repa_pe_sidecars()
             if total > 0 and present == 0:
                 raise RuntimeError(
@@ -1203,11 +1201,9 @@ class AnimaTrainer:
                 f"batches carry repa_pe_features ({present}/{total} cached)."
             )
 
-        # Soft-tokens contrastive negatives. The objective's knobs live in
-        # ``network_args`` (see configs/methods/soft_tokens.toml); preview them
-        # via the resolved kwargs view to decide whether
-        # the dataset should surface cached negative text embeddings. Off unless
-        # contrastive_weight > 0. See docs/proposal/soft_tokens_contrastive.md.
+        # Soft-tokens contrastive negatives (configs/methods/soft_tokens.toml).
+        # Preview the resolved kwargs to decide whether the dataset should
+        # surface cached negative text embeddings. Off unless contrastive_weight > 0.
         if str(getattr(args, "network_module", "") or "") == (
             "networks.methods.soft_tokens"
         ):
@@ -1244,9 +1240,8 @@ class AnimaTrainer:
             args.blocks_to_swap is not None and args.blocks_to_swap > 0
         )
 
-        # Load Qwen3 text encoder (tokenizers already loaded in get_tokenize_strategy).
-        # Skipped when every text-encoder output is already cached and no live
-        # encoding (sampling / TE training / cache disabled) needs it.
+        # Skipped when every text-encoder output is already cached and no
+        # live encoding (sampling / TE training) needs it.
         if load_qwen3:
             logger.info("Loading Qwen3 text encoder...")
             qwen3_text_encoder, _ = anima_utils.load_qwen3_text_encoder(
@@ -1276,7 +1271,6 @@ class AnimaTrainer:
             logger.info("Skipping VAE load: all latents cached and no sampling.")
             vae = None
 
-        # Return format: (model_type, text_encoders, vae, unet)
         return "anima", [qwen3_text_encoder], vae, None  # unet loaded lazily
 
     def load_unet_lazily(
@@ -1285,9 +1279,17 @@ class AnimaTrainer:
         loading_dtype = weight_dtype
         loading_device = "cpu" if self.is_swapping_blocks else accelerator.device
 
-        attn_mode = "torch"
-        if args.attn_mode is not None:
-            attn_mode = args.attn_mode
+        from library.runtime.backend import (
+            needs_rocm_attention_fallback,
+            resolve_attention_mode,
+        )
+
+        requested_attn_mode = args.attn_mode
+        attn_mode = resolve_attention_mode(requested_attn_mode, torch)
+        if needs_rocm_attention_fallback(requested_attn_mode, torch):
+            logger.warning(
+                "ROCm detected: using PyTorch SDPA instead of CUDA Flash Attention"
+            )
 
         v100_flash_stability = _resolve_v100_flash_stability(args)
         debug_finite_checks = bool(
@@ -1367,20 +1369,23 @@ class AnimaTrainer:
             v100_flash_stability=v100_flash_stability,
             debug_finite_checks=debug_finite_checks,
             checkpoint_layout=getattr(args, "_anima_checkpoint_layout", None),
+            # Sample prompts tokenized through the pack need its rows behind
+            # the ext ids (same table the TE caches were built with).
+            vocab_pack=getattr(args, "vocab_pack", None),
         )
         model.anima_base_sha256 = getattr(args, "anima_base_sha256", None)
 
-        # NOTE: torch.compile (compile_blocks) is intentionally NOT done here.
-        # It must run AFTER the adapter's apply_to monkey-patches the targeted
-        # Linears, or dynamo traces the un-adapted forward — see the compile
-        # ordering in library/runtime/harness.py. compile is lazy, so the old
-        # compile-here-apply-later ordering happened to work as long as no DiT
-        # forward ran in the window; moved to _create_and_apply_network (after
-        # apply_to + load_weights + grad-ckpt) so the invariant holds by
-        # construction rather than by luck.
+        # Mod-aware training: install the distilled pooled_text_proj so an
+        # adaln LoRA trains against the operating point mod-guidance perturbs
+        # at inference. Frozen implicitly (excluded from the LoRA factory).
+        if getattr(args, "pooled_text_proj", None):
+            anima_utils.load_pooled_text_proj(model, args.pooled_text_proj, "cpu")
+            model.pooled_text_proj.to(device=loading_device, dtype=loading_dtype)
 
-        # Store unsloth preference so that when the base trainer calls
-        # dit.enable_gradient_checkpointing(), we can override to use unsloth.
+        # compile_blocks is NOT run here: it must follow apply_to + load_weights
+        # (see _create_and_apply_network and library/runtime/harness.py).
+
+        # So dit.enable_gradient_checkpointing() can override to use unsloth.
         self._use_unsloth_offload_checkpointing = args.unsloth_offload_checkpointing
 
         # Block swap
@@ -1393,9 +1398,9 @@ class AnimaTrainer:
 
         # Variance-reduced FM loss: the "frozen reference" is the trainable
         # DiT itself with ``network.set_multiplier(0)`` during the no-grad
-        # forward — works because base weights are frozen and LoRA-family
-        # adapters are additive. See ``get_noise_pred_and_target`` for the
-        # bypass. Saves ~5 GB VRAM vs holding a second DiT copy.
+        # forward (works since base weights are frozen and LoRA-family
+        # adapters are additive) — see get_noise_pred_and_target for the
+        # bypass. Saves ~5 GB VRAM vs a second DiT copy.
         if float(getattr(args, "vr_loss_weight", 0.0) or 0.0) > 0.0:
             logger.info(
                 f"VR loss enabled (vr_loss_weight={args.vr_loss_weight}); "
@@ -1403,11 +1408,8 @@ class AnimaTrainer:
             )
 
         # Online memorization Δ-gap tracker (same set_multiplier(0) trick as
-        # VR — _archive/proposals/memorization_lowsigma_reweight.md). The
-        # measurement is a second per-step DiT forward, unaudited against the
-        # block-swap offloader (cf.
-        # [[project_blockswap_extra_forwards_gradcache]]) — raise, not warn,
-        # same policy as the register-tokens guard.
+        # VR). The measurement is a second per-step DiT forward, unaudited
+        # against the block-swap offloader — raise, not warn.
         mem_mode = str(getattr(args, "mem_reweight_mode", "") or "")
         if mem_mode:
             if self.is_swapping_blocks:
@@ -1430,10 +1432,8 @@ class AnimaTrainer:
 
         return model, text_encoders
 
-    # Strategy construction + singleton installation lives in
-    # library/anima/strategy.py (setup_training_strategies /
-    # setup_text_encoder_outputs_caching_strategy) — the training-side
-    # counterpart of library/inference/text.py::ensure_text_strategies.
+    # Strategy construction lives in library/anima/strategy.py
+    # (setup_training_strategies / setup_text_encoder_outputs_caching_strategy).
 
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
         if args.cache_text_encoder_outputs:
@@ -1448,15 +1448,9 @@ class AnimaTrainer:
         )
         return noise_scheduler
 
-    # ------------------------------------------------------------------
-    # Per-step forward phases (issues.md P2.1)
-    #
-    # ``get_noise_pred_and_target`` is a flat sequence of named phases; the
-    # conditional logic of each phase lives INSIDE it, never as lexical
-    # nesting around it. "Always per step" is therefore structurally evident
-    # at the call site — the silent-REPA dispatch bug was exactly an
-    # always-phase written inside a sometimes-branch.
-    # ------------------------------------------------------------------
+    # Per-step forward phases: ``get_noise_pred_and_target`` is a flat
+    # sequence of named phases; conditional logic lives INSIDE each phase,
+    # never as nesting around the call.
 
     def _step_ctx(self, ctx: TrainCtx) -> StepCtx:
         return StepCtx(
@@ -1467,23 +1461,444 @@ class AnimaTrainer:
         )
 
     def _prime_adapters(self, ctx: TrainCtx, batch, latents, *, is_train) -> None:
-        """ALWAYS per step. Method-adapter pre-forward priming.
-
-        IP-Adapter encodes the reference image and primes per-block K/V;
-        EasyControl runs the cond pre-pass and primes per-block (K_c, V_c).
-        Both run on the 4D latent layout the patched DiT forward expects. The
-        patched cross-attn / self-attn closures consume the primed tensors
-        during attention."""
+        """ALWAYS per step. Method-adapter pre-forward priming (e.g. EasyControl
+        runs the cond pre-pass and primes per-block (K_c, V_c)) — consumed by
+        the patched cross-attn/self-attn closures during attention."""
         if not self._adapters:
             return
         step_ctx = self._step_ctx(ctx)
         for adapter in self._adapters:
             adapter.prime_for_forward(step_ctx, batch, latents, is_train=is_train)
 
-    def _sample_noisy_input(self, ctx: TrainCtx, latents, noise, *, is_train):
+    def _paired_step_generators(self, args, device, is_train):
+        """Common-random-numbers mode (``--paired_step_rng``): per-train-step
+        ``(g_sigma, g_noise)`` generators seeded from (seed, step counter),
+        decoupled from the global torch stream, so arms sharing a seed see
+        identical σ/noise on same-shape steps and checkpoint deltas isolate
+        the intervention. ``(None, None)`` when off."""
+        if not is_train or not getattr(args, "paired_step_rng", False):
+            return None, None
+        counter = getattr(self, "_paired_step_counter", 0) + 1
+        self._paired_step_counter = counter
+        base = (int(getattr(args, "seed", 0) or 0) * 1_000_003 + counter) * 2
+        mask = (1 << 62) - 1
+        g_sigma = torch.Generator(device=device).manual_seed(base & mask)
+        g_noise = torch.Generator(device=device).manual_seed((base + 1) & mask)
+        return g_sigma, g_noise
+
+    @staticmethod
+    def _sigma_route(args):
+        """Parsed ``--sigma_lowres_route`` as ``(native_edge, demote_edge)``.
+
+        Defaults to the measured-safe 1024:896 (``SIGMA_DEMOTE_ROUTE``);
+        validates the shape once per call site.
+        """
+        raw = str(getattr(args, "sigma_lowres_route", None) or "1024:896")
+        try:
+            native, demote = (int(x) for x in raw.split(":"))
+        except ValueError:
+            raise ValueError(
+                f"--sigma_lowres_route expects NATIVE:DEMOTE (e.g. 1024:896), "
+                f"got {raw!r}"
+            ) from None
+        if not (native > demote > 0):
+            raise ValueError(
+                f"--sigma_lowres_route needs NATIVE > DEMOTE > 0, got {raw!r}"
+            )
+        return native, demote
+
+    # The probe's operating point, and the value `--sigma_lowres` implies.
+    YARNSIG_OPERATING_POINT = "1,4,0.35,2"
+    _YARNSIG_OFF = frozenset({"", "0", "off", "no", "none", "false"})
+
+    @staticmethod
+    def _yarnsig_params(args):
+        """Parsed ``--sigma_lowres_yarnsig`` as ``(alpha, beta, center, gamma)``,
+        or None when off. Validates once; cached on the args namespace.
+        **Default-on with ``--sigma_lowres``** (docs/optimizations/sigma_lowres.md):
+        an unset flag resolves to the operating point, not off. Opt out with
+        ``--sigma_lowres_yarnsig off``. Written back onto ``args`` so the
+        snapshot records what actually ran.
+        """
+        raw = getattr(args, "sigma_lowres_yarnsig", None)
+        if raw is None and getattr(args, "sigma_lowres", False):
+            raw = AnimaTrainer.YARNSIG_OPERATING_POINT
+            args.sigma_lowres_yarnsig = raw
+        if raw is None or str(raw).strip().lower() in AnimaTrainer._YARNSIG_OFF:
+            return None
+        cached = getattr(args, "_yarnsig_parsed", None)
+        if cached is not None:
+            return cached
+        try:
+            alpha, beta, center, gamma = (float(v) for v in raw.split(","))
+        except ValueError:
+            raise ValueError(
+                f"--sigma_lowres_yarnsig expects ALPHA,BETA,CENTER,GAMMA, got {raw!r}"
+            )
+        if not (0.0 <= alpha < beta and 0.0 < center < 1.0 and gamma > 0.0):
+            raise ValueError(
+                "--sigma_lowres_yarnsig needs 0<=ALPHA<BETA, 0<CENTER<1, "
+                f"GAMMA>0, got {raw!r}"
+            )
+        args._yarnsig_parsed = (alpha, beta, center, gamma)
+        return args._yarnsig_parsed
+
+    @staticmethod
+    def _sigma_rule_suffix(rule):
+        if rule not in (1, 2):
+            raise ValueError(f"sigma_lowres rule must be 1 or 2, got {rule!r}")
+        return "" if rule == 1 else "2"
+
+    @staticmethod
+    def _sigma_rule_cfg(args, rule):
+        """``(threshold, threshold_max, span_spec)`` for one rule.
+
+        Written as LITERAL ``getattr(args, "…")`` calls, one branch per rule,
+        not a computed ``f"sigma_lowres_threshold{sfx}"`` — the H2 drift guard
+        (``tests/config_closure.py``) AST-scans for literal names only, so a
+        computed name would be invisible to it.
+        """
+        if rule == 1:
+            return (
+                getattr(args, "sigma_lowres_threshold", 0.5),
+                getattr(args, "sigma_lowres_threshold_max", None),
+                getattr(args, "sigma_lowres_span", None),
+            )
+        if rule == 2:
+            return (
+                getattr(args, "sigma_lowres_threshold2", None),
+                getattr(args, "sigma_lowres_threshold2_max", None),
+                getattr(args, "sigma_lowres_span2", None),
+            )
+        raise ValueError(f"sigma_lowres rule must be 1 or 2, got {rule!r}")
+
+    @staticmethod
+    def _sigma_route2(args):
+        """Parsed ``--sigma_lowres_route2`` as ``(native, demote)``, or None
+        when the secondary rule is off. Same shape/validation as
+        ``_sigma_route`` (which always has its 1024:896 default)."""
+        raw = getattr(args, "sigma_lowres_route2", None)
+        if not raw:
+            return None
+        try:
+            native, demote = (int(x) for x in str(raw).split(":"))
+        except ValueError:
+            raise ValueError(
+                f"--sigma_lowres_route2 expects NATIVE:DEMOTE (e.g. 1024:768), "
+                f"got {raw!r}"
+            ) from None
+        if not (native > demote > 0):
+            raise ValueError(
+                f"--sigma_lowres_route2 needs NATIVE > DEMOTE > 0, got {raw!r}"
+            )
+        return native, demote
+
+    @staticmethod
+    def _sigma_span_params(args, rule=1):
+        """Parsed ``--sigma_lowres_span[2]`` as ``(mode, frac)``, or None when
+        off. ``mode`` ∈ early|late|spread, 0 < frac < 1 (default 0.5).
+        Validates once; cached on the args namespace per rule."""
+        sfx = AnimaTrainer._sigma_rule_suffix(rule)
+        raw = AnimaTrainer._sigma_rule_cfg(args, rule)[2]
+        if not raw:
+            return None
+        cache_attr = f"_sigma_span{sfx}_parsed"
+        cached = getattr(args, cache_attr, None)
+        if cached is not None:
+            return cached
+        parts = str(raw).split(":")
+        mode, frac = parts[0], 0.5
+        ok = mode in ("early", "late", "spread") and len(parts) <= 2
+        if ok and len(parts) == 2:
+            try:
+                frac = float(parts[1])
+            except ValueError:
+                ok = False
+        if not ok or not (0.0 < frac < 1.0):
+            raise ValueError(
+                f"--sigma_lowres_span{sfx} expects early|late|spread[:FRAC] "
+                f"with 0<FRAC<1, got {raw!r}"
+            )
+        setattr(args, cache_attr, (mode, frac))
+        return getattr(args, cache_attr)
+
+    @staticmethod
+    def _sigma_gate_allows(args, sigmas_flat, rule=1):
+        """σ gate: every σ in the batch above --sigma_lowres_threshold[2]
+        and, when --sigma_lowres_threshold[2]_max is set, below it too — the
+        measured demote-safe region is a per-route σ WINDOW, not a
+        half-line."""
+        threshold, threshold_max, _ = AnimaTrainer._sigma_rule_cfg(args, rule)
+        # Rule 2's bounds have no defaults — _validate_sigma_rules() refuses a
+        # route2 without both, so an unset bound here can only be rule 1's.
+        threshold = 0.5 if threshold is None else float(threshold)
+        if not bool((sigmas_flat > threshold).all()):
+            return False
+        if threshold_max is not None:
+            return bool((sigmas_flat < float(threshold_max)).all())
+        return True
+
+    @staticmethod
+    def _sigma_span_allows(args, step_idx, rule=1):
+        """Step-span gate: may step ``step_idx`` (1-based train-forward index)
+        demote? True when no span is set.
+
+        early/late split total train forwards (max_train_steps × grad-accum)
+        at the FRAC point; spread is a per-step coin seeded from
+        (--seed, step_idx) alone — deterministic and touches neither the
+        global nor the paired RNG streams.
+        """
+        span = AnimaTrainer._sigma_span_params(args, rule)
+        if span is None:
+            return True
+        mode, frac = span
+        total = int(getattr(args, "max_train_steps", 0) or 0) * int(
+            getattr(args, "gradient_accumulation_steps", 1) or 1
+        )
+        if total <= 0:
+            raise ValueError("--sigma_lowres_span needs a finalized max_train_steps")
+        if mode == "early":
+            return step_idx <= round(frac * total)
+        if mode == "late":
+            # Boundary at (1-frac)·T, same rounding as early's — so
+            # early:f and late:1-f partition [1, T] exactly for any T.
+            return step_idx > round((1.0 - frac) * total)
+        seed = int(getattr(args, "seed", 0) or 0)
+        return random.Random(seed * 1_000_003 + step_idx).random() < frac
+
+    @staticmethod
+    def _validate_sigma_rules(args):
+        """Validate the whole sigma_lowres surface UP FRONT, at setup — not on
+        the first train forward (after model load/adapter attach/caching).
+        Rejects ``--sigma_lowres_route2`` without both σ bounds: rule 2 has
+        PRIORITY, so an unbounded gate would shadow the primary rule across
+        the whole σ>0.5 half-line. Also validates span specs up front.
+        """
+        route = AnimaTrainer._sigma_route(args)
+        route2 = AnimaTrainer._sigma_route2(args)
+        if route2 is not None:
+            lo, hi, _ = AnimaTrainer._sigma_rule_cfg(args, 2)
+            missing = [
+                flag
+                for flag, val in (
+                    ("--sigma_lowres_threshold2", lo),
+                    ("--sigma_lowres_threshold2_max", hi),
+                )
+                if val is None
+            ]
+            if missing:
+                raise ValueError(
+                    f"--sigma_lowres_route2 {route2[0]}:{route2[1]} needs an "
+                    f"explicit σ WINDOW — missing {', '.join(missing)}. Rule 2 "
+                    "has priority over rule 1, so an unbounded gate demotes on "
+                    "the deep route everywhere it fires (shadowing the primary "
+                    "rule and silencing yarnsig, which is primary-only) — "
+                    "including σ below the route's certified window, where the "
+                    "measured demote gap is large. The shipped 1024:768 window "
+                    "is 0.65 < σ < 0.95."
+                )
+            if not (0.0 <= float(lo) < float(hi) <= 1.0):
+                raise ValueError(
+                    f"--sigma_lowres_threshold2/_max must satisfy "
+                    f"0 <= lo < hi <= 1, got {lo} / {hi}"
+                )
+        hi1 = AnimaTrainer._sigma_rule_cfg(args, 1)[1]
+        if hi1 is not None and not (
+            0.0 <= float(getattr(args, "sigma_lowres_threshold", 0.5)) < float(hi1)
+        ):
+            raise ValueError(
+                f"--sigma_lowres_threshold_max ({hi1}) must exceed "
+                f"--sigma_lowres_threshold "
+                f"({getattr(args, 'sigma_lowres_threshold', 0.5)})"
+            )
+        # Parse both spans and yarnsig here so a typo raises at setup.
+        AnimaTrainer._sigma_span_params(args, 1)
+        AnimaTrainer._sigma_span_params(args, 2)
+        AnimaTrainer._yarnsig_params(args)
+        return route, route2
+
+    @staticmethod
+    def _sigma_demote_choice(args, sigmas_flat, step_idx):
+        """Which demote rule fires this step: 2, 1, or None.
+
+        The secondary rule (route2 + its own gate/span) takes precedence —
+        stacked-router semantics: demote DEEPER (e.g. 768) when σ is inside
+        the deep route's measured window, else the primary rule (e.g. σ>0.5 →
+        896), else native.
+        """
+        if AnimaTrainer._sigma_route2(args) is not None:
+            if AnimaTrainer._sigma_gate_allows(
+                args, sigmas_flat, rule=2
+            ) and AnimaTrainer._sigma_span_allows(args, step_idx, rule=2):
+                return 2
+        if AnimaTrainer._sigma_gate_allows(args, sigmas_flat) and (
+            AnimaTrainer._sigma_span_allows(args, step_idx)
+        ):
+            return 1
+        return None
+
+    def _sigma_rule_dead_warn(self, args, rule):
+        """Warn once per rule when its gate passed but the sibling latent for
+        that route is absent from the batch — the rule is configured but dead
+        (would otherwise silently fall through and train as a plain
+        single-route arm).
+        """
+        warned = getattr(self, "_sigma_rule_dead_warned", None)
+        if warned is None:
+            warned = self._sigma_rule_dead_warned = set()
+        if rule in warned:
+            return
+        warned.add(rule)
+        route = (
+            self._sigma_route2(args) if rule == 2 else self._sigma_route(args)
+        ) or ("?", "?")
+        logger.warning(
+            "sigma_lowres: rule %d (%s:%s) passed its σ gate but the batch "
+            "carries no sibling latent for that route — those steps fall "
+            "through to %s. Emit it with `make preprocess-demote "
+            'ARGS="--sigma_demote %s:%s"` (or list both routes in '
+            "configs/preprocess.toml's sigma_demote). Warned once per rule.",
+            rule,
+            route[0],
+            route[1],
+            "rule 1 / native" if rule == 2 else "native",
+            route[0],
+            route[1],
+        )
+
+    def _maybe_sigma_demote(
+        self, ctx: TrainCtx, batch, latents, is_train, generator=None
+    ):
+        """sigma_lowres σ-demote (σ > threshold → demote-tier latent).
+
+        Returns ``(latents, sigmas_flat)``: possibly-swapped latents plus the
+        pre-drawn flat σ (None → sampler draws internally). Active only when
+        --sigma_lowres is on, the batch carries ``demoted_latents``, and this
+        is a train step; ``--sigma_lowres_span`` further restricts by training
+        progress. Side effect: sets ``self._yarnsig_step`` (consumed/cleared
+        by the primary forward).
+        """
+        args = ctx.args
+        self._yarnsig_step = None
+        if not is_train or not getattr(args, "sigma_lowres", False):
+            return latents, None
+        # Train-forward index for the step-span gate. Pre-seeded with the
+        # resume offset — else a resumed run would measure the span boundary
+        # from the resume point, not absolute T.
+        step_idx = getattr(self, "_sigma_span_step", 0) + 1
+        self._sigma_span_step = step_idx
+        demoted = batch.get("demoted_latents")
+        demoted2 = batch.get("demoted_latents2")
+        if demoted is None and demoted2 is None:
+            return latents, None
+        unsafe = [
+            a.name for a in self._adapters if not getattr(a, "sigma_demote_safe", False)
+        ]
+        if unsafe:
+            raise ValueError(
+                f"--sigma_lowres is unsupported under method adapter(s) "
+                f"{unsafe} — fixed-grid cond/extra-forward streams need their "
+                "own operating-point probe first (sigma_lowres Q5). "
+                "Grid-agnostic adapters (repa) are allowed."
+            )
+        from library.runtime.noise import draw_flat_sigmas
+
+        sigmas_flat = draw_flat_sigmas(
+            args,
+            latents.shape[0],
+            latents.shape[-2],
+            latents.shape[-1],
+            ctx.accelerator.device,
+            generator=generator,
+        )
+        if sigmas_flat is None:
+            if not getattr(self, "_sigma_lowres_warned", False):
+                self._sigma_lowres_warned = True
+                logger.warning(
+                    "sigma_lowres: timestep_sampling=%r has no flat-σ draw — "
+                    "training native throughout (no demotion).",
+                    getattr(args, "timestep_sampling", None),
+                )
+            return latents, None
+        total = getattr(self, "_sigma_lowres_seen", 0) + 1
+        self._sigma_lowres_seen = total
+        # Priority router: rule 2 (deep route, own gate/span) > rule 1 >
+        # native. A rule whose sibling latent is missing falls through to
+        # the next (partial-emit degrade, mirroring the single-rule path).
+        choice = self._sigma_demote_choice(args, sigmas_flat, step_idx)
+        if choice == 2 and demoted2 is None:
+            # Un-emitted deep route: falls through to rule 1 and looks
+            # healthy, so warn explicitly.
+            self._sigma_rule_dead_warn(args, 2)
+            choice = (
+                1
+                if self._sigma_gate_allows(args, sigmas_flat)
+                and self._sigma_span_allows(args, step_idx)
+                else None
+            )
+        if choice == 1 and demoted is None:
+            self._sigma_rule_dead_warn(args, 1)
+            choice = None
+        if choice is not None:
+            native_hw = tuple(latents.shape[-2:])
+            swapped = demoted2 if choice == 2 else demoted
+            latents = swapped.to(device=latents.device, dtype=latents.dtype)
+            # yarnsig belongs to the PRIMARY rule only — the deep route's
+            # window was measured on plain demotion.
+            yarn = self._yarnsig_params(args) if choice == 1 else None
+            if yarn is not None:
+                alpha, beta, center, gamma = yarn
+                # Patch-grid units: demoted patch i sits at
+                # i · (native_patches / demoted_patches). μ from the
+                # batch-min σ (the sample nearest the gate).
+                s = min(max(float(sigmas_flat.min()), 1e-6), 1.0 - 1e-6)
+                mu = 1.0 / (
+                    1.0
+                    + math.exp(
+                        -gamma
+                        * (math.log(s / (1.0 - s)) - math.log(center / (1.0 - center)))
+                    )
+                )
+                self._yarnsig_step = (
+                    (native_hw[0] // 2) / (latents.shape[-2] // 2),
+                    (native_hw[1] // 2) / (latents.shape[-1] // 2),
+                    alpha,
+                    beta,
+                    mu,
+                )
+            demoted_n = getattr(self, "_sigma_lowres_demoted", 0) + 1
+            self._sigma_lowres_demoted = demoted_n
+            if demoted_n == 1:
+                logger.info(
+                    "sigma_lowres: first demoted step — latent grid %s → %s at σ=%s%s",
+                    native_hw,
+                    tuple(latents.shape[-2:]),
+                    [round(float(s), 3) for s in sigmas_flat],
+                    (
+                        f" (yarnsig μ={self._yarnsig_step[-1]:.3f})"
+                        if self._yarnsig_step is not None
+                        else ""
+                    ),
+                )
+        else:
+            demoted_n = getattr(self, "_sigma_lowres_demoted", 0)
+        if total % 500 == 0:
+            logger.info(
+                "sigma_lowres: demoted %d/%d eligible steps (%.1f%%)",
+                demoted_n,
+                total,
+                100.0 * demoted_n / total,
+            )
+        return latents, sigmas_flat
+
+    def _sample_noisy_input(
+        self, ctx: TrainCtx, latents, noise, *, is_train, sigmas=None
+    ):
         """ALWAYS per step. Draw (noisy input, timesteps, sigmas) via the
-        sampler registry (M1) and run per-step network router conditioning
-        (timestep masks, σ/FEI routers, balance-loss warmup)."""
+        sampler registry and run per-step network router conditioning
+        (timestep masks, σ/FEI routers, balance-loss warmup). ``sigmas``
+        (pre-drawn flat σ, sigma_lowres's σ-first path) skips the in-sampler
+        draw."""
         args = ctx.args
         sampler_fn = SAMPLER_REGISTRY[getattr(args, "sampler", "default") or "default"]
         sampler_out = sampler_fn(
@@ -1494,6 +1909,7 @@ class AnimaTrainer:
                 noise=noise,
                 device=ctx.accelerator.device,
                 weight_dtype=ctx.weight_dtype,
+                sigmas=sigmas,
             )
         )
         # timesteps are [0,1]-scaled, float32.
@@ -1542,22 +1958,9 @@ class AnimaTrainer:
             uncond_crossattn_emb=self._state.uncond_crossattn_1,
         )
 
-        # ChimeraHydra global content router (chimera with
-        # ``content_router_source="crossattn"``): fire ONCE per step on the
-        # pooled crossattn_emb. apply_router_conditioning ran before text
-        # conds were materialized, so the content router lives outside that
-        # helper. No-op on non-chimera networks or per-Linear chimera.
-        if (
-            getattr(network, "use_content_router", False)
-            and tc.crossattn_emb is not None
-            and hasattr(network, "set_content")
-        ):
-            network.set_content(tc.crossattn_emb)
-
-        # Network-level GlobalRouter routed on pooled text
-        # (``router_source="crossattn_emb"``, route_per_layer=False). Same
-        # timing rationale as the content router above — fires once per step
-        # on the materialized cross-attn text features. No-op otherwise.
+        # Network-level GlobalRouter routed on pooled text: fire ONCE per step.
+        # apply_router_conditioning ran before text conds were materialized, so
+        # this lives outside that helper. No-op otherwise.
         if (
             getattr(network, "use_crossattn_router", False)
             and tc.crossattn_emb is not None
@@ -1583,15 +1986,12 @@ class AnimaTrainer:
     def _run_primary_forward(
         self, ctx: TrainCtx, *, anima, noisy_model_input, timesteps, tc, padding_mask
     ):
-        """ALWAYS per step. Single, branch-free forward call site (issues.md
-        P2.3): both text-conditioning modes normalize to ONE uniform
-        ``ForwardConditioning`` (cond, kw) bundle first — the mode split is
-        data prep in ``build_forward_conditioning``, not control flow around
-        the call. The normalization (postfix splice runs learned modules)
-        must happen inside the primary forward's autocast / grad scope, which
-        is why it lives here rather than in ``_prepare_conditioning``.
-        Returns ``(model_pred, cond)``; ``cond`` is also consumed by the
-        aux-loss and adapter-dispatch phases after the forward."""
+        """ALWAYS per step. Single, branch-free forward call site: both
+        text-conditioning modes normalize to one ``ForwardConditioning`` in
+        ``build_forward_conditioning``. Must run inside the primary forward's
+        autocast/grad scope (the postfix splice runs learned modules).
+        Returns ``(model_pred, cond)``.
+        """
         cond = build_forward_conditioning(
             network=ctx.network, tc=tc, timesteps=timesteps
         )
@@ -1621,15 +2021,14 @@ class AnimaTrainer:
     ) -> None:
         """Trainer-owned aux-loss producers riding the primary forward (func
         inversion loss, VR control variate). Every gate lives INSIDE this
-        phase — including the cached-text requirement (``cond.crossattn_emb
-        is not None``), which used to be implied by lexical position inside
-        the else-branch. Must run inside the primary forward's autocast /
-        grad scope (extra ``anima(...)`` calls)."""
+        phase, including the cached-text requirement
+        (``cond.crossattn_emb is not None``). Must run inside the primary
+        forward's autocast/grad scope (extra ``anima(...)`` calls)."""
         args = ctx.args
 
-        # Functional MSE loss against a sampled stochastic inversion run.
-        # The captures dict is populated by trainer-owned forward hooks
-        # on cross_attn.output_proj at ``self._func_blocks``.
+        # Functional MSE loss against a sampled stochastic inversion run. The
+        # captures dict is populated by forward hooks on cross_attn.output_proj
+        # at ``self._func_blocks``.
         self._func_loss = None
         if (
             is_train
@@ -1675,12 +2074,10 @@ class AnimaTrainer:
                 "state": self._state.vr,
             }
 
-        # Online memorization Δ-gap (mem_reweight.py). Producer half: the
-        # causal per-item weights (from state BEFORE this step's measurement)
-        # plus, on measurement steps with any σ ≤ sigma_max draw, the base
-        # forward's per-sample log-MSE on the identical (x_t, ε, σ). The
-        # consumer half (EMA update + loss_weights multiply) lives at the
-        # loss site in ``_process_batch_inner`` where model_pred/target exist.
+        # Online memorization Δ-gap (mem_reweight.py). Producer half: causal
+        # per-item weights plus, on measurement steps, the base forward's
+        # per-sample log-MSE. Consumer half (EMA + loss_weights multiply)
+        # lives in ``_process_batch_inner``.
         tracker = self._state.mem_tracker
         if (
             is_train
@@ -1695,8 +2092,8 @@ class AnimaTrainer:
             grid_deltas = None
             if tracker.extra_sigmas:
                 # Multi-draw mode: fixed σ grid × antithetic ε, every visit
-                # (not gated on the train draw's σ) — the Δ is computed fully
-                # here; the consumer only folds it into the EMA.
+                # (not gated on the train draw's σ); the consumer only folds
+                # the Δ into the EMA.
                 if tracker.should_measure():
                     grid_deltas = measure_grid_delta(
                         anima_call=anima,
@@ -1736,15 +2133,10 @@ class AnimaTrainer:
         self, ctx: TrainCtx, primary: ForwardArtifacts
     ) -> None:
         """ALWAYS per step — both text-conditioning paths. Method-adapter
-        extra forwards (soft-tokens, REPA, …).
-
-        This dispatch used to live inside the cached-crossattn else-branch
-        only, which silently skipped every adapter's aux loss on the in-model
-        text path (crossattn_emb=None — EasyControl's default; REPA trained
-        as baseline). Each adapter sees the primary forward's inputs + 5D
-        output and may run additional anima(...) calls inside the same
-        autocast / grad scope, returning aux loss tensors keyed for the
-        LossComposer."""
+        extra forwards (soft-tokens, REPA, …). Must dispatch on BOTH paths —
+        gating it inside the cached-crossattn branch only would silently skip
+        every adapter's aux loss on the in-model text path (crossattn_emb=None
+        — EasyControl's default)."""
         if not self._adapters:
             return
         step_ctx = self._step_ctx(ctx)
@@ -1772,10 +2164,53 @@ class AnimaTrainer:
         if latents.ndim == 5:  # Fallback for 5D latents (old cache)
             latents = latents.squeeze(2)  # [B, C, 1, H, W] -> [B, C, H, W]
 
+        # Paired-step RNG (CRN): dedicated per-step generators for σ + noise,
+        # so A/B arms sharing a seed stay noise-locked. (None, None) when off.
+        g_sigma, g_noise = self._paired_step_generators(
+            ctx.args, ctx.accelerator.device, is_train
+        )
+
+        # sigma_lowres: σ-first draw + latent swap. When EVERY sample's σ
+        # clears the gate, the whole step runs on the demoted grid. The σ
+        # marginal is untouched (drawn merely before the noise), so the
+        # all-samples rule is exact at train_batch_size=1 and conservative above.
+        latents, sigmas_flat = self._maybe_sigma_demote(
+            ctx, batch, latents, is_train, generator=g_sigma
+        )
+        if is_train and getattr(ctx.args, "sigma_lowres", False):
+            # Realized patch-token histogram: counts examples at the grid the
+            # step ACTUALLY ran on (post demote swap), for per-arm FLOPs
+            # accounting. Emitted with the run_end progress event.
+            tok = (latents.shape[-2] // 2) * (latents.shape[-1] // 2)
+            self._token_step_hist[tok] = self._token_step_hist.get(tok, 0) + int(
+                latents.shape[0]
+            )
+        if sigmas_flat is None and g_sigma is not None:
+            # Paired mode on a batch the demote path didn't draw for: still
+            # take σ from the paired stream so every arm shares the sequence.
+            from library.runtime.noise import draw_flat_sigmas
+
+            sigmas_flat = draw_flat_sigmas(
+                ctx.args,
+                latents.shape[0],
+                latents.shape[-2],
+                latents.shape[-1],
+                ctx.accelerator.device,
+                generator=g_sigma,
+            )
+
         self._prime_adapters(ctx, batch, latents, is_train=is_train)
-        noise = torch.randn_like(latents)
+        if g_noise is not None:
+            noise = torch.randn(
+                latents.shape,
+                generator=g_noise,
+                device=latents.device,
+                dtype=latents.dtype,
+            )
+        else:
+            noise = torch.randn_like(latents)
         noisy_model_input, timesteps, sigmas = self._sample_noisy_input(
-            ctx, latents, noise, is_train=is_train
+            ctx, latents, noise, is_train=is_train, sigmas=sigmas_flat
         )
         tc = self._prepare_conditioning(
             ctx, batch, text_encoder_conds, noisy_model_input
@@ -1787,43 +2222,51 @@ class AnimaTrainer:
             2
         )  # 4D to 5D, [B, C, H, W] -> [B, C, 1, H, W]
 
-        with torch.set_grad_enabled(is_train), accelerator.autocast():
-            model_pred, cond = self._run_primary_forward(
-                ctx,
-                anima=anima,
-                noisy_model_input=noisy_model_input,
-                timesteps=timesteps,
-                tc=tc,
-                padding_mask=padding_mask,
-            )
-            self._attach_aux_losses(
-                ctx,
-                anima=anima,
-                batch=batch,
-                latents=latents,
-                noise=noise,
-                sigmas=sigmas,
-                timesteps=timesteps,
-                noisy_model_input=noisy_model_input,
-                cond=cond,
-                padding_mask=padding_mask,
-                is_train=is_train,
-            )
-            self._dispatch_adapter_extras(
-                ctx,
-                ForwardArtifacts(
-                    anima_call=anima,
+        # yarnsig: expose this demoted step's banded-rope params on the model
+        # for exactly the span of its forward(s); cleared in the finally so a
+        # later native/val/sample forward can never inherit them.
+        if getattr(self, "_yarnsig_step", None) is not None:
+            anima._sigma_lowres_yarn = self._yarnsig_step
+        try:
+            with torch.set_grad_enabled(is_train), accelerator.autocast():
+                model_pred, cond = self._run_primary_forward(
+                    ctx,
+                    anima=anima,
                     noisy_model_input=noisy_model_input,
                     timesteps=timesteps,
-                    crossattn_emb=cond.crossattn_emb,
+                    tc=tc,
                     padding_mask=padding_mask,
-                    forward_kwargs=cond.kw,
-                    model_pred=model_pred,
-                    noise=noise,
+                )
+                self._attach_aux_losses(
+                    ctx,
+                    anima=anima,
+                    batch=batch,
                     latents=latents,
+                    noise=noise,
+                    sigmas=sigmas,
+                    timesteps=timesteps,
+                    noisy_model_input=noisy_model_input,
+                    cond=cond,
+                    padding_mask=padding_mask,
                     is_train=is_train,
-                ),
-            )
+                )
+                self._dispatch_adapter_extras(
+                    ctx,
+                    ForwardArtifacts(
+                        anima_call=anima,
+                        noisy_model_input=noisy_model_input,
+                        timesteps=timesteps,
+                        crossattn_emb=cond.crossattn_emb,
+                        padding_mask=padding_mask,
+                        forward_kwargs=cond.kw,
+                        model_pred=model_pred,
+                        noise=noise,
+                        latents=latents,
+                        is_train=is_train,
+                    ),
+                )
+        finally:
+            anima._sigma_lowres_yarn = None
         model_pred = model_pred.squeeze(2)  # 5D to 4D, [B, C, 1, H, W] -> [B, C, H, W]
 
         # Note: do NOT clear timestep mask here -- gradient checkpointing recomputes the forward
@@ -1910,14 +2353,10 @@ class AnimaTrainer:
     ) -> torch.Tensor:
         """Override base process_batch to surface caption_dropout_rates for on-device dropout."""
 
-        # The cached text-encoder outputs list arrives as
-        # [..., caption_dropout_rates] from the dataset (see strategy.py
-        # cache layout). Split the trailing rates tensor off so the inner
-        # path sees the canonical 4- or 5-element conds list, and stash the
-        # rates on the batch -- get_noise_pred_and_target applies the dropout
-        # in-place after the H2D transfer. Doing it here on CPU would clone
-        # prompt_embeds / crossattn_emb on the critical path before the H2D
-        # copy, blocking the main thread.
+        # Cached text-encoder outputs arrive as [..., caption_dropout_rates].
+        # Split the rates off; get_noise_pred_and_target applies the dropout
+        # in-place after the H2D transfer (doing it here on CPU would clone
+        # prompt_embeds/crossattn_emb before the copy, blocking the main thread).
         text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
         if text_encoder_outputs_list is not None:
             caption_dropout_rates = text_encoder_outputs_list[-1]
@@ -1939,9 +2378,7 @@ class AnimaTrainer:
         *,
         is_train=True,
     ) -> torch.Tensor:
-        """
-        Process a batch for the network (original NetworkTrainer.process_batch logic)
-        """
+        """Process a batch for the network."""
         args = ctx.args
         accelerator = ctx.accelerator
         network = ctx.network
@@ -2078,10 +2515,10 @@ class AnimaTrainer:
         if func_loss is not None:
             loss_aux["func_loss"] = func_loss
 
-        # Online memorization Δ-gap, consumer half (producer: the mem_gap
-        # block in ``_attach_aux_losses``). Fold this step's paired Δ into the
-        # per-item EMA (measurement steps only), then apply the CAUSAL weights
-        # (computed from pre-step state) onto the per-sample loss_weights.
+        # Online memorization Δ-gap, consumer half (producer: _attach_aux_losses).
+        # Fold this step's paired Δ into the per-item EMA (measurement steps
+        # only), then apply the CAUSAL weights (from pre-step state) onto
+        # per-sample loss_weights.
         loss_weights = batch["loss_weights"]
         mem_gap = loss_aux.pop("mem_gap", None)
         if mem_gap is not None:
@@ -2129,15 +2566,15 @@ class AnimaTrainer:
 
     # endregion
 
-    # region Methods only in NetworkTrainer (not overridden by Anima)
+    # region Generic network-trainer methods
 
     def post_process_network(self, args, accelerator, network, text_encoders, unet):
         self._network = (
             network  # composer reads _network for ortho / balance regularizers
         )
         # Aux-loss gating convention (library/training/losses.py docstring):
-        # handlers read network._<name>_weight. functional's weight is a
-        # top-level training arg, so the trainer stamps it here.
+        # handlers read network._<name>_weight; the trainer stamps it here
+        # since functional's weight is a top-level training arg.
         network._functional_loss_weight = float(
             getattr(args, "functional_loss_weight", 0.0) or 0.0
         )
@@ -2160,14 +2597,13 @@ class AnimaTrainer:
 
             def _make_hook(block_idx: int):
                 def _hook(_module, _inputs, output):
-                    # Save the cross_attn.output_proj output for this block.
-                    # Hook fires twice per step (main forward + inversion forward);
-                    # the main forward runs first, we snapshot before second forward overwrites.
+                    # Fires twice per step (main forward + inversion forward);
+                    # main runs first, so this snapshots before the 2nd overwrites.
                     self._func_captures[block_idx] = output
 
                 return _hook
 
-            blocks_list = unet.blocks  # nn.ModuleList of 28 Anima DiT blocks
+            blocks_list = unet.blocks  # nn.ModuleList of DiT blocks
             num_blocks = len(blocks_list)
             for bi in self._func_blocks:
                 if not (0 <= bi < num_blocks):
@@ -2267,16 +2703,13 @@ class AnimaTrainer:
             text_encoders[0].to(accelerator.device)
             return
 
-        # With caching on, the on-disk cache is guaranteed complete (asserted in
-        # train(), including the LLM adapter's crossattn_emb outputs, which
-        # preprocess writes). The dataset thus never needs encoding here — run
-        # the pass with no model purely to populate
-        # ImageInfo.text_encoder_outputs_npz (forms no batches).
+        # With caching on, the on-disk cache is guaranteed complete (asserted
+        # in train()), so no encoding is needed here — run the pass with no
+        # model purely to populate ImageInfo.text_encoder_outputs_npz.
         dataset.new_cache_text_encoder_outputs([None], accelerator)
 
-        # The text encoder is in memory only to encode sample prompts (TE
-        # training is mutually exclusive with caching). It is None when no
-        # sample prompts are configured — nothing left to do.
+        # In memory only to encode sample prompts; None when no sample
+        # prompts are configured.
         if text_encoders[0] is not None and args.sample_prompts is not None:
             logger.info(
                 f"cache Text Encoder outputs for sample prompts: {args.sample_prompts}"
@@ -2365,8 +2798,18 @@ class AnimaTrainer:
 
     def _prepare_dataset(self, args) -> DatasetBundle:
         """Build train/val dataset groups and the collator shared by both loaders."""
+        from library.datasets.subsets import resolve_configured_mask_dir
+
         use_dreambooth_method = args.in_json is None
         use_user_config = args.dataset_config is not None
+
+        # `mask_dir` rides the config chain (configs/preprocess.toml → preset →
+        # method → --mask_dir) and reaches every subset that doesn't name one
+        # of its own via the BlueprintGenerator's argparse fallback. Gate it on
+        # the directory existing first — the config value names where `make
+        # mask` *would* write, and a maskless checkout must keep falling back
+        # to the legacy auto-resolution instead of flipping alpha_mask on.
+        args.mask_dir = resolve_configured_mask_dir(getattr(args, "mask_dir", None))
 
         if args.dataset_class is None:
             blueprint_generator = BlueprintGenerator(
@@ -2449,21 +2892,63 @@ class AnimaTrainer:
 
             # Global --sample_ratio override (used by the `[half]` preset).
             sample_ratio = getattr(args, "sample_ratio", None)
-            if sample_ratio is not None:
+            if sample_ratio is not None and sample_ratio != 1.0:
                 for ds in user_config.get("datasets", []):
                     for sub in ds.get("subsets", []):
                         sub["sample_ratio"] = sample_ratio
                 logger.info(f"Applied --sample_ratio={sample_ratio} to all subsets")
 
+            # --artists_shard k_N: restrict training to one round-robin shard of
+            # the artist subdirs, expanded into each subset's path_pattern
+            # before the blueprint is built (so downstream path_pattern-
+            # filtered logic sees the shard).
+            artists_shard = getattr(args, "artists_shard", None)
+            if artists_shard:
+                if getattr(args, "path_pattern", None):
+                    raise ValueError(
+                        "--artists_shard and --path_pattern are mutually "
+                        "exclusive (the shard expands to a path_pattern)."
+                    )
+                from library.datasets.artist_shard import apply_artist_shard
+                from library.env import resolve_under_home
+
+                shard_info = apply_artist_shard(
+                    user_config, artists_shard, resolve=resolve_under_home
+                )
+                for image_dir, meta in shard_info.items():
+                    logger.info(
+                        "Applied --artists_shard=%s to %s: %d/%d artists [%s]",
+                        artists_shard,
+                        image_dir,
+                        meta["n_shard"],
+                        meta["n_artists"],
+                        ", ".join(meta["artists"]),
+                    )
+
             blueprint = blueprint_generator.generate(user_config, args)
+            # `masked_loss` is the one masking switch: a mask tree left on disk
+            # (config `mask_dir`, or the legacy `masks/{merged,sam}`
+            # auto-resolution) must not re-enable masking. The gate sits before
+            # the datasets are built because construction bakes mask paths and
+            # preloads the PNGs (see `disable_masks_in_blueprint`).
+            if not getattr(args, "masked_loss", False):
+                ignored_mask_dirs = config_util.disable_masks_in_blueprint(
+                    blueprint.dataset_group
+                )
+                if ignored_mask_dirs:
+                    logger.info(
+                        "masked_loss = false: masks under %s are ignored "
+                        "(set masked_loss = true to train with them)",
+                        ", ".join(ignored_mask_dirs),
+                    )
+                else:
+                    logger.info("masked_loss = false: training unmasked")
             train_dataset_group, val_dataset_group = (
                 config_util.generate_dataset_group_by_blueprint(
                     blueprint.dataset_group,
-                    # Free-fit (the only resize mode): the predefined bucket set is
-                    # the union of the on-disk resized sizes, so every cached latent
-                    # exact-matches its own (W, H) and nothing AR-snaps. target_res
-                    # is preprocess-only and inert here — the on-disk caches decide
-                    # which tiers/shapes are present, not this list.
+                    # Free-fit: the bucket set is the union of on-disk resized
+                    # sizes, so every cached latent exact-matches its own
+                    # (W, H). target_res is preprocess-only and inert here.
                     target_res=getattr(args, "target_res", None),
                 )
             )
@@ -2530,6 +3015,53 @@ class AnimaTrainer:
                         "mask copy — re-cache without masks to fully disable "
                         "masked loss"
                     )
+        # sigma_lowres: activate the σ-demote sidecar on TRAIN datasets only
+        # — validation stays native so val loss is comparable across arms.
+        if getattr(args, "sigma_lowres", False):
+            route, route2 = self._validate_sigma_rules(args)
+
+            enabled_on = 0
+            for ds in getattr(train_dataset_group, "datasets", []):
+                if hasattr(ds, "enable_sigma_demote"):
+                    ds.enable_sigma_demote(*route)
+                    if route2 is not None:
+                        ds.enable_sigma_demote2(*route2)
+                    enabled_on += 1
+            logger.info(
+                "sigma_lowres ENABLED: %d→%d demote at σ > %s on %d train "
+                "dataset(s); validation stays native.",
+                route[0],
+                route[1],
+                getattr(args, "sigma_lowres_threshold", 0.5),
+                enabled_on,
+            )
+            if route2 is not None:
+                logger.info(
+                    "sigma_lowres rule2 ENABLED (priority): %d→%d demote at "
+                    "%s < σ < %s%s.",
+                    route2[0],
+                    route2[1],
+                    *self._sigma_rule_cfg(args, 2)[:2],
+                    (
+                        f", span {self._sigma_rule_cfg(args, 2)[2]}"
+                        if self._sigma_rule_cfg(args, 2)[2]
+                        else ""
+                    ),
+                )
+            yarn = self._yarnsig_params(args)
+            if yarn is not None:
+                logger.info(
+                    "sigma_lowres yarnsig ENABLED: banded rope on demoted "
+                    "steps, α,β=%s,%s, μ=sigmoid(%s·[logit(σ)−logit(%s)]).",
+                    *(yarn[0], yarn[1], yarn[3], yarn[2]),
+                )
+        elif self._yarnsig_params(args) is not None:
+            # `off` (and friends) parse to None, so opting out in a config that
+            # never enables sigma_lowres stays inert instead of hard-failing.
+            raise ValueError(
+                "--sigma_lowres_yarnsig requires --sigma_lowres (it only "
+                "changes rope on demoted steps, which need the demote sidecar)."
+            )
 
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)
@@ -2552,18 +3084,14 @@ class AnimaTrainer:
         )
 
     def _derive_token_budget(self, args, train_group, val_group):
-        """(n_token_families, seq_range) from the buckets the datasets populate.
-
-        Reads each dataset's ``bucket_manager.resos`` (the buckets at least one
-        selected image landed in) and reduces to the set of distinct token counts,
-        unioned with the token counts the sample prompts will request (see
-        ``_sample_prompt_token_counts``). This sizes ``compile_blocks``' dynamo
-        cache to exactly the tiers on disk for this run — independent of
-        ``args.target_res``. ``seq_bands`` is the per-tier clustering of the same count
-        set (``cluster_token_bands``), consumed only under
-        ``--compile_seq_bands``. Returns ``(None, None, None)`` when no bucketed
-        resos are available (e.g. a MinimalDataset), leaving compile_blocks on
-        its own defaults.        """
+        """(n_token_families, seq_range, seq_bands) from the buckets the
+        datasets populate, unioned with sample-prompt token counts
+        (``_sample_prompt_token_counts``). Sizes ``compile_blocks``' dynamo
+        cache to exactly the tiers on disk, independent of ``args.target_res``.
+        ``seq_bands`` is the per-tier clustering of the same count set
+        (``cluster_token_bands``), consumed only under ``--compile_seq_bands``.
+        ``(None, None, None)`` when no bucketed resos are available.
+        """
         from library.datasets.buckets import (
             cluster_token_bands,
             token_counts_for_resos,
@@ -2580,19 +3108,24 @@ class AnimaTrainer:
         if not resos:
             return None, None, None
         counts = token_counts_for_resos(resos) | self._sample_prompt_token_counts(args)
+        # sigma_lowres: demoted forwards run at the demote tier's token
+        # counts, which must sit inside the compiled dynamic-seq range.
+        if getattr(args, "sigma_lowres", False):
+            from library.datasets.buckets import demoted_token_counts
+
+            counts |= demoted_token_counts(resos, *self._sigma_route(args))
+            route2 = self._sigma_route2(args)
+            if route2 is not None:
+                counts |= demoted_token_counts(resos, *route2)
         return len(counts), (min(counts), max(counts)), cluster_token_bands(counts)
 
     def _sample_prompt_token_counts(self, args) -> set:
-        """Token counts the sample prompts will request; empty when sampling is off.
-
-        Sample generation runs through the same compiled blocks as training, so a
-        sample resolution outside the training buckets (e.g. ``--w 1024 --h 1536``
-        over 1024-tier data) would land outside the dynamic-seq mark_dynamic range
-        and crash the run mid-training with a ConstraintViolationError (#42).
-        Folding the prompt resolutions into the budget compiles for them up front.
-        Prompts are re-read from disk at every sample event, so resolutions added
-        to the file mid-run are NOT covered here — those are skipped with a
-        warning at sample time instead (``_sample_image_inference``).
+        """Token counts the sample prompts will request; empty when sampling
+        is off. Sample generation runs through the same compiled blocks as
+        training, so an out-of-bucket resolution would crash mid-training
+        (ConstraintViolationError) unless folded into the compile budget up
+        front. Resolutions added to the file mid-run are NOT covered — skipped
+        with a warning at sample time instead.
         """
         from library.datasets.buckets import token_counts_for_sample_prompts
 
@@ -2830,6 +3363,21 @@ class AnimaTrainer:
 
         self.post_process_network(args, accelerator, network, text_encoders, unet)
 
+        # Token-adding adapters (register tokens) do mid-stack token surgery
+        # via block pre-hooks — unaudited against the block-swap offloader,
+        # which desyncs on unexpected per-step forward patterns.
+        if (
+            int(getattr(network, "extra_seq_tokens", 0) or 0) > 0
+            and args.blocks_to_swap is not None
+            and args.blocks_to_swap > 0
+        ):
+            raise ValueError(
+                "Register tokens (extra_seq_tokens>0) require blocks_to_swap=0 — "
+                "the mid-stack token insertion pre-hooks have not been validated "
+                "against the block-swap offloader and can silently desync it. "
+                "Use block compile for memory instead."
+            )
+
         # apply network to unet and text_encoder
         train_unet = not args.network_train_text_encoder_only
         train_text_encoder = self.is_train_text_encoder(args)
@@ -2903,8 +3451,7 @@ class AnimaTrainer:
             # special-casing here — see Anima.compile_blocks.
             from library.runtime.harness import compile_blocks_for_training
 
-            # Token-family budget from buckets the dataset actually populated
-            # (_derive_token_budget) — not args.target_res (preprocess-only).
+            # Token-family budget from _derive_token_budget.
             n_token_families, seq_range, seq_bands = getattr(
                 self, "_compile_token_budget", (None, None, None)
             )
@@ -3274,11 +3821,8 @@ class AnimaTrainer:
         train_util.prepare_dataset_args(args, True)
         setup_logging(args, reset=True)
 
-        # Free-fit is the only resize mode and it requires compile_dynamic_seq: a
-        # free-fit pool populates many distinct (W, H) within one tier's token
-        # band, which would explode the static N-graph compile cascade. dynamic_seq
-        # marks only the seq axis dynamic over the band → a single graph per tier.
-        # Auto-enable it whenever compile is on (no-op if torch_compile is off).
+        # Free-fit requires compile_dynamic_seq (else a static N-graph compile
+        # cascade); auto-enable whenever torch_compile is on.
         if getattr(args, "torch_compile", False):
             if not getattr(args, "compile_dynamic_seq", False):
                 logger.info(
@@ -3293,20 +3837,36 @@ class AnimaTrainer:
             args.seed = random.randint(0, 2**32)
         set_seed(args.seed)
 
+        # --deterministic: closes flash-attn's backward atomic-add order plus
+        # standard torch determinism knobs. Must precede CUDA/cublas init and
+        # the first (possibly compiled) forward — the flash flag is read at
+        # trace time. Bespoke loops (turbo/spd/mod) do NOT inherit this.
+        if getattr(args, "deterministic", False):
+            os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+            torch.use_deterministic_algorithms(True, warn_only=True)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            from networks import attention_dispatch
+
+            attention_dispatch.set_deterministic(True)
+            logger.info(
+                "deterministic mode: flash-attn deterministic backward + "
+                "torch.use_deterministic_algorithms(warn_only) + cudnn "
+                "deterministic (CUBLAS_WORKSPACE_CONFIG=%s)",
+                os.environ["CUBLAS_WORKSPACE_CONFIG"],
+            )
+
         # Whether inductor will have CUDAGraphs active -- governs whether the
-        # training loop needs to call torch.compiler.cudagraph_mark_step_begin()
-        # each step (see the call site inside the accumulate block).
+        # loop needs to call torch.compiler.cudagraph_mark_step_begin() each step.
         self._cudagraph_mark_step = bool(
             getattr(args, "torch_compile", False)
             and getattr(args, "compile_inductor_mode", None)
             in ("reduce-overhead", "max-autotune")
         )
 
-        # Build + install the strategy singletons (tokenize / latents-caching /
-        # text-encoding). Must run before _prepare_dataset — dataset init reads
-        # the tokenize + latents-caching strategies. The TE-OUTPUTS caching
-        # strategy is installed separately below, after assert_extra_args has
-        # had its chance to mutate cache_llm_adapter_outputs.
+        # Build + install the strategy singletons. Must run before
+        # _prepare_dataset — dataset init reads them. TE-OUTPUTS caching
+        # strategy is installed separately below, after assert_extra_args.
         strategies = strategy_anima.setup_training_strategies(args)
         tokenize_strategy = strategies.tokenize
         text_encoding_strategy = strategies.text_encoding
@@ -3332,13 +3892,7 @@ class AnimaTrainer:
         use_user_config = ds.use_user_config
         use_dreambooth_method = ds.use_dreambooth_method
 
-        # Derive the torch.compile token-family budget from the buckets the
-        # selected (path_pattern-filtered) images actually populate — NOT from
-        # args.target_res. The on-disk caches are the source of truth for which
-        # tiers are present, so this can't drift from preprocess, and a filtered
-        # run sizes the dynamo cache to only the families it really uses. Sample
-        # prompt resolutions are folded in (when sampling is enabled) so sample
-        # generation outside the training buckets compiles instead of crashing.
+        # Compile token-family budget: see _derive_token_budget.
         self._compile_token_budget = self._derive_token_budget(
             args, train_dataset_group, val_dataset_group
         )
@@ -3370,19 +3924,14 @@ class AnimaTrainer:
             args, train_dataset_group, val_dataset_group
         )  # may change some args
 
-        # Install the text-encoder-outputs caching strategy now: after
-        # assert_extra_args (which may flip cache_llm_adapter_outputs, read by
-        # the strategy ctor) and before the model load, so the
-        # cache-completeness probe below can use it to decide whether the
-        # Qwen3 text encoder needs loading at all.
+        # Install the caching strategy now: after assert_extra_args (which may
+        # flip cache_llm_adapter_outputs) and before the model load, so the
+        # cache-completeness probe below can decide if Qwen3 needs loading.
         strategy_anima.setup_text_encoder_outputs_caching_strategy(args)
 
-        # Decide whether the heavy encoders are actually needed. When caching is
-        # enabled the caches MUST already be complete on disk (run `make
-        # preprocess` first) — train.py no longer encodes missing latents / TE
-        # outputs on the fly. With complete caches and nothing else needing them
-        # we skip loading the encoders entirely (saves the disk read, RAM, and
-        # the GPU round-trip). `cache_latents = false` (e.g. IP-Adapter) is a
+        # When caching is enabled the caches MUST already be complete on disk
+        # (train.py does not encode on the fly); skip loading the encoders
+        # entirely when nothing else needs them. `cache_latents = false` is a
         # separate, explicit live-encoding mode, not a fallback.
         sampling_enabled = bool(
             args.sample_prompts
@@ -3418,19 +3967,12 @@ class AnimaTrainer:
                 "use_text_cache = false for live encoding)."
             )
 
-        # CMMD validation generates samples and decodes them through the VAE
-        # (see library/training/validation.py). It reads cached TE outputs, so
-        # it needs the VAE but not the text encoder.
+        # CMMD validation decodes samples through the VAE; reads cached TE
+        # outputs, so it needs the VAE but not the text encoder.
         cmmd_validation = val_dataset_group is not None and getattr(
             args, "use_cmmd", True
         )
-        # VAE: needed only to live-encode (caching off), to decode training
-        # samples, or to decode CMMD validation samples. With caching on the
-        # cache is guaranteed complete above, so no encode pass is required.
         vae_needed = (not cache_latents) or sampling_enabled or cmmd_validation
-
-        # Qwen3 TE: needed only to live-encode (caching off), to encode sample
-        # prompts, or when the text encoder itself is being trained.
         qwen3_needed = (
             (not args.cache_text_encoder_outputs)
             or bool(args.sample_prompts)
@@ -3471,10 +4013,9 @@ class AnimaTrainer:
             text_encoder if isinstance(text_encoder, list) else [text_encoder]
         )
 
-        # prepare dataset for latents caching if needed. When vae is None the
-        # latents are already fully cached -- new_cache_latents still runs to
-        # populate each ImageInfo.latents_npz path the dataloader reads, but
-        # forms no encode batches so the (absent) VAE is never touched.
+        # When vae is None, latents are already fully cached — new_cache_latents
+        # still runs to populate each ImageInfo.latents_npz path, but forms
+        # no encode batches so the absent VAE is never touched.
         if cache_latents:
             if vae is not None:
                 vae.to(accelerator.device, dtype=vae_dtype)
@@ -3545,8 +4086,8 @@ class AnimaTrainer:
         train_text_encoder = net.train_text_encoder
 
         # Resolve and run on_network_built for each method adapter (EasyControl,
-        # IP-Adapter, …). Each adapter validates its runtime contract and
-        # logs/sets up auxiliary state before optimizer / accelerator wiring.
+        # …); validates its runtime contract and sets up state before
+        # optimizer/accelerator wiring.
         self._adapters = resolve_adapters(args, network)
         if self._adapters:
             setup_ctx = SetupCtx(
@@ -3625,9 +4166,8 @@ class AnimaTrainer:
             )
             num_train_epochs = max(num_train_epochs, stage_budget)
 
-        # Structured progress sink (Phase 0): a JSONL event stream next to the
-        # checkpoint that the GUI / daemon can tail instead of regex-parsing
-        # tqdm. Main-process only; default on, gated by --progress_jsonl.
+        # Structured progress sink: a JSONL event stream next to the
+        # checkpoint the GUI/daemon can tail instead of regex-parsing tqdm.
         self.progress_sink = None
         if is_main_process:
             progress_path = ProgressSink.resolve_path(args)
@@ -3653,8 +4193,7 @@ class AnimaTrainer:
                     anima_model_channels=getattr(args, "anima_model_channels", None),
                     anima_base_sha256=getattr(args, "anima_base_sha256", None),
                 )
-                # Mirror WARNING+ records into the stream so a reader debugging
-                # the run gets them structured instead of buried in tqdm stdout.
+                # Mirror WARNING+ log records into the stream.
                 self.progress_sink.attach_log_mirror()
 
         if (args.save_n_epoch_ratio is not None) and (args.save_n_epoch_ratio > 0):
@@ -3774,6 +4313,13 @@ class AnimaTrainer:
                 "max_train_steps should be greater than initial step"
             )
 
+        # Units: ``resume_step`` / ``initial_step`` are optimizer steps here.
+        # accelerate syncs on the last batch of the dataloader, so an epoch is
+        # ceil(batches / ga) steps; full epochs are skipped by ``epoch_to_start``
+        # and only the residual inside the resumed epoch is turned into a batch
+        # count for ``skip_first_batches``. (Dividing a ga-multiplied count by
+        # steps-per-epoch here used to over-skip by ga², see GH #103.)
+        resume_step = initial_step
         epoch_to_start = 0
         initial_global_step = None
         stage_batch_cursor = 0
@@ -3872,15 +4418,17 @@ class AnimaTrainer:
                     initial_step,
                 )
             else:
-                epoch_to_start = initial_step // math.ceil(
-                    len(train_dataloader) / args.gradient_accumulation_steps
-                )
                 initial_step = 0  # do not skip
 
         # Stage schedules keep the mutable dataset group so the loop can rebuild
         # membership and its DataLoader. Ordinary runs drop the local as before.
         if stage_plan is None:
             del train_dataset_group
+
+        # sigma_lowres step-span gate: seed the train-forward counter with the
+        # resume offset (already in forward units) so it covers every resume
+        # path, not just re-deriving from args inside the loop.
+        self._sigma_span_step = resume_step * args.gradient_accumulation_steps
 
         loop_state = build_loop_state(
             self,
@@ -3914,6 +4462,7 @@ class AnimaTrainer:
             num_train_epochs=num_train_epochs,
             epoch_to_start=epoch_to_start,
             initial_step=initial_step,
+            resume_step=resume_step,
             metadata=metadata,
             stage_plan=stage_plan,
             initial_global_step=initial_global_step,
@@ -3926,18 +4475,33 @@ class AnimaTrainer:
         )
         saver.set_runtime_state_provider(loop_state.checkpoint_runtime_state)
 
-        # run_scope emits the matching run_end (ok / stopped / error) on exit;
-        # run_start already fired when the sink was constructed above.
+        # Emits the matching run_end (ok/stopped/error) on exit; run_start
+        # already fired when the sink was constructed above.
         with run_scope(
             self.progress_sink,
             final_step=lambda: loop_state.global_step,
-            extra_fields=self._liveness.run_end_fields,
+            extra_fields=lambda: {
+                **self._liveness.run_end_fields(),
+                **(
+                    {
+                        "token_step_hist": {
+                            str(k): v for k, v in sorted(self._token_step_hist.items())
+                        }
+                    }
+                    if self._token_step_hist
+                    else {}
+                ),
+            },
             stopped=lambda: loop_state.stop_requested,
         ):
             loop_completed = False
             try:
                 run_training_loop(self, loop_state)
                 loop_completed = True
+            except TrainingPaused:
+                loop_completed = True
+                accelerator.end_training()
+                raise
             except BaseException:
                 # Python exceptions can often still persist the most recently
                 # committed optimizer state. SIGKILL, host OOM and power loss
@@ -4060,9 +4624,6 @@ class AnimaTrainer:
             getattr(self, "_stop_controller", None) and self._stop_controller.close()
             _hard_exit_after_cooperative_stop(True)
 
-        # Remove the TensorBoard log dir for runs shorter than 2 steps — they
-        # add noise to the runs list (e.g. aborted starts, dry-runs) and carry
-        # no useful loss curves.
         if is_main_process and loop_state.global_step < 2:
             _cleanup_short_log_dir(args)
         getattr(self, "_stop_controller", None) and self._stop_controller.close()
@@ -4155,18 +4716,13 @@ from library.config import schema as _config_schema  # noqa: E402
 from networks import all_network_kwargs as _all_network_kwargs  # noqa: E402
 
 
-# Network-module-consumed flags (networks.lora_anima / networks.methods.*).
-# These don't flow through argparse directly because `create_network` reads
-# them from ``kwargs``. Sourced from the flat ``NETWORK_KWARGS`` allowlist in
-# ``networks/__init__.py`` so adding a key there automatically registers it
-# here.
+# Network-module-consumed flags. Don't flow through argparse directly since
+# `create_network` reads them from ``kwargs``; sourced from the flat
+# ``NETWORK_KWARGS`` allowlist in ``networks/__init__.py``.
 NETWORK_KWARG_ALLOWLIST: tuple[str, ...] = _all_network_kwargs()
 
-# Top-level training args that aren't network kwargs but still flow through
-# ``net_kwargs`` because a network module reads them. Kept explicit -- any
-# growth here should be reviewed, since the right answer is usually to
-# expose the value as a proper argparse flag the network module reads
-# directly rather than tunneling it through kwargs.
+# Top-level training args that flow through ``net_kwargs`` though they aren't
+# network kwargs. Kept explicit; growth here should be reviewed.
 _EXTRA_FORWARDED_TOP_LEVEL_ARGS: tuple[str, ...] = (
     # Postfix contrastive resets its intra-step reference set on step
     # boundary, so it needs the grad-accum window.
@@ -4175,16 +4731,10 @@ _EXTRA_FORWARDED_TOP_LEVEL_ARGS: tuple[str, ...] = (
 
 
 def resolve_network_kwargs(args) -> dict[str, str]:
-    """The single intake for network kwargs, merging both config paths.
-
-    A network kwarg can arrive as ``--network_args k=v`` (CLI / method TOML
-    ``network_args`` list) or as an allowlisted top-level config key landing
-    on ``args``; CLI ``--network_args`` win on overlap. Consumers outside the
-    network factory (e.g. the REPA dataset-sidecar enable in
-    ``assert_extra_args``) must see the same merged view the factory gets, so
-    the result is cached on ``args._network_kwargs`` — read a kwarg from here
-    rather than scanning ``args.network_args`` with a ``getattr(args, …)``
-    fallback. All values are strings, as ``create_network(**kwargs)`` expects.
+    """The single intake for network kwargs, merging both config paths
+    (``--network_args k=v`` and allowlisted top-level config keys; CLI wins
+    on overlap). Cached on ``args._network_kwargs`` — read from here rather
+    than re-scanning ``args.network_args``. Values are strings.
     """
     cached = getattr(args, "_network_kwargs", None)
     if cached is not None:
@@ -4195,11 +4745,8 @@ def resolve_network_kwargs(args) -> dict[str, str]:
         key, value = net_arg.split("=", 1)
         net_kwargs[key] = value
 
-    # Forward known network-arg keys from top-level config (TOML). Source of
-    # truth: `networks.all_network_kwargs()` (the flat `NETWORK_KWARGS`
-    # allowlist), plus a small tail of top-level training args the network
-    # modules still want to read (e.g. postfix contrastive's step-boundary
-    # window).
+    # Forward known network-arg keys from top-level config (TOML), plus a
+    # small tail of top-level training args network modules still want.
     for key in NETWORK_KWARG_ALLOWLIST + _EXTRA_FORWARDED_TOP_LEVEL_ARGS:
         if (
             key not in net_kwargs
@@ -4222,20 +4769,11 @@ def build_network_extras() -> dict[str, _config_schema.ConfigKey]:
 def _install_crash_reporter(argv: list[str]) -> None:
     """Record a fatal startup/training exception into ``--progress_jsonl``.
 
-    The daemon launches us windowless under ``pythonw.exe``; that interpreter
-    drops the child's stdout/stderr (only the ``accelerate launch`` *parent*'s
-    output reaches ``stdout.log``), so an uncaught traceback here is lost and the
-    daemon falls back to a generic "process exited (code=1)" with nothing
-    actionable. ``progress.jsonl`` is written by path, not via the dead std
-    streams, so it survives — and it's what the daemon already reads to diagnose
-    a job (``manager._finalize_from_exit`` → ``run_end.error``).
-
-    ``run_scope`` already emits ``run_end(error=…)`` for failures inside the
-    training loop, but only *after* ``ProgressSink.run_start`` has fired — late
-    in ``train()``. Errors before that (latent/TE cache incomplete, config or
-    dataset build, model load) escape it entirely. This excepthook is the
-    catch-all: it appends a ``run_end`` error event for any uncaught exception,
-    wherever it's raised, so the GUI's finish banner shows the real cause.
+    Under the daemon's windowless ``pythonw.exe`` launch stdout/stderr are
+    dropped, so an uncaught traceback is otherwise lost. ``run_scope`` only
+    covers failures after ``ProgressSink.run_start`` (late in ``train()``);
+    this excepthook catches earlier ones (cache incomplete, config/dataset
+    build, model load).
     """
     path = None
     for i, tok in enumerate(argv):
@@ -4329,4 +4867,7 @@ if __name__ == "__main__":
     )
 
     trainer = AnimaTrainer()
-    trainer.train(args)
+    try:
+        trainer.train(args)
+    except TrainingPaused:
+        sys.exit(0)  # run_end(paused) already carries the state dir

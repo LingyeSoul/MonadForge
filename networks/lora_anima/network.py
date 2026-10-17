@@ -306,6 +306,17 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                                         )
                                         alpha_val = alpha
 
+                                # Per-pattern alpha override (reg_dims/reg_lrs
+                                # trio); applies regardless of how dim was set.
+                                if cfg.reg_alphas is not None and dim:
+                                    for reg, a in cfg.reg_alphas.items():
+                                        if re.fullmatch(reg, original_name):
+                                            alpha_val = a
+                                            logger.debug(
+                                                f"Module {original_name} matched with regex '{reg}' -> alpha: {a}"
+                                            )
+                                            break
+
                             if dim is None or dim == 0:
                                 if is_linear or is_conv2d_1x1:
                                     candidates.append(
@@ -521,6 +532,12 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                 # kwarg; gate so it never reaches them.
                 if cfg.down_init != "kaiming" and effective_module_class is LoRAModule:
                     extra_kwargs["down_init"] = cfg.down_init
+                    # adaln_up_* stays on the shared top-r (see cfg.svd_slice).
+                    if cfg.down_init == "weight_svd" and "adaln_up_" not in lora_name:
+                        if cfg.svd_slice:
+                            extra_kwargs["svd_slice"] = int(cfg.svd_slice)
+                        if cfg.svd_slice_count:
+                            extra_kwargs["svd_slice_count"] = int(cfg.svd_slice_count)
                     # Gradient-SVD modes carry a per-layer basis; DiT-only (the
                     # sketch never ran on the TE) and a missing key means that
                     # module keeps Kaiming, counted for the summary below.
@@ -1049,41 +1066,46 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         if not self.cfg.use_timestep_mask:
             return
 
-        max_rank = self.cfg.lora_dim
-        # Reuse a single GPU-resident mask to avoid ~200 CPU→GPU transfers per step
-        mask = getattr(self, "_shared_timestep_mask", None)
-        if mask is None or mask.device != timesteps.device:
-            mask = torch.zeros(1, max_rank, device=timesteps.device)
-            self._shared_timestep_mask = mask
-            self._timestep_mask_arange = torch.arange(max_rank, device=timesteps.device)
+        # ONE shared mask PER DISTINCT RANK, not one per network. GOTCHA: a
+        # per-pattern rank override (reg_dims, e.g. adaln_rank) leaves a
+        # mixed-rank module set — a single (1, cfg.lora_dim) mask broadcast
+        # against a smaller rank raises RuntimeError at the first mismatched
+        # block. Group by each module's own lora_dim to keep every multiply
+        # shape-exact.
+        masks = getattr(self, "_shared_timestep_masks", None)
+        if masks is None or any(m.device != timesteps.device for m in masks.values()):
+            masks = {}
+            self._timestep_mask_aranges = {}
             for lora in self.text_encoder_loras + self.unet_loras:
-                lora._timestep_mask = mask
+                rank = int(getattr(lora, "lora_dim", self.cfg.lora_dim))
+                if rank not in masks:
+                    masks[rank] = torch.zeros(1, rank, device=timesteps.device)
+                    self._timestep_mask_aranges[rank] = torch.arange(
+                        rank, device=timesteps.device
+                    )
+                lora._timestep_mask = masks[rank]
+            self._shared_timestep_masks = masks
 
-        # Compute threshold r entirely on device — avoids GPU→CPU .item() sync and
-        # keeps the effective rank as a tensor so the mask build stays static-shape.
+        # Compute threshold r entirely on device — avoids a GPU→CPU .item() sync.
         t = timesteps.float().mean()
         frac = ((max_timestep - t) / max_timestep).clamp(min=0.0, max=1.0)
-        r = (
-            frac.pow(self.cfg.alpha_rank_scale) * (max_rank - self.cfg.min_rank)
-            + self.cfg.min_rank
-        )
-        r = r.clamp(max=float(max_rank))
-        mask.copy_((self._timestep_mask_arange < r).to(mask.dtype).unsqueeze(0))
+        frac = frac.pow(self.cfg.alpha_rank_scale)
+        for rank, mask in masks.items():
+            # Each group masks the same FRACTION of its own rank (so an r16
+            # override follows the same schedule shape as an r32 bulk); floor
+            # is clamped into the group's own range.
+            floor = min(float(self.cfg.min_rank), float(rank))
+            r = (frac * (rank - floor) + floor).clamp(max=float(rank))
+            mask.copy_(
+                (self._timestep_mask_aranges[rank] < r).to(mask.dtype).unsqueeze(0)
+            )
 
     def clear_timestep_mask(self):
-        """Restore full-rank masks on every LoRA module.
-
-        Each module's ``_timestep_mask`` is a Tensor by construction (default
-        all-ones buffer at init, rebound to the shared live-updated mask when
-        ``set_timestep_mask`` runs). Clearing fills the shared masks with ones
-        in place — modules that were rebound immediately see the neutral mask
-        via the shared reference; modules with local defaults are already
-        neutral. Never set to None: the always-a-Tensor invariant is what
-        keeps the adapter forward free of a None-vs-Tensor guard under
-        ``torch.compile``.
+        """Restore full-rank masks on every LoRA module (fill in place, never
+        set to None — the always-a-Tensor invariant is what keeps the adapter
+        forward free of a None-vs-Tensor guard under ``torch.compile``).
         """
-        shared = getattr(self, "_shared_timestep_mask", None)
-        if shared is not None:
+        for shared in (getattr(self, "_shared_timestep_masks", None) or {}).values():
             shared.fill_(1.0)
 
     def set_sigma(self, sigmas: torch.Tensor) -> None:
@@ -1554,6 +1576,18 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
             weights_sd = load_file(file)
         else:
             weights_sd = torch.load(file, map_location="cpu")
+
+        # GOTCHA: save_network_weights relays adaln keys to the ComfyUI layout
+        # (adaln_up_{br} → adaln_modulation_{br}_2); a resume/init load must
+        # rename them back or every adaln module lands in missing_keys and
+        # silently trains from scratch. Mirrors factory.py. See adaln.md.
+        from networks.lora_utils import (
+            has_comfy_adaln_keys,
+            relayout_adaln_comfy_to_runtime,
+        )
+
+        if has_comfy_adaln_keys(weights_sd):
+            weights_sd = relayout_adaln_comfy_to_runtime(weights_sd)
 
         weights_sd = _normalize_native_lokr_keys(weights_sd)
         # Detect legacy fused-projection LoKR (pre-split-layout) checkpoints.
@@ -2147,6 +2181,13 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         for prefix in getattr(self, "_training_only_prefixes", ()):
             for key in [k for k in state_dict if k.startswith(prefix)]:
                 del state_dict[key]
+        if getattr(self.cfg, "down_init", "kaiming") != "kaiming":
+            metadata["ss_down_init"] = str(self.cfg.down_init)
+            if self.cfg.down_init == "weight_svd":
+                metadata["ss_svd_slice"] = str(int(getattr(self.cfg, "svd_slice", 0)))
+                if getattr(self.cfg, "svd_slice_count", 0):
+                    metadata["ss_svd_slice_count"] = str(int(self.cfg.svd_slice_count))
+
         lora_save.save_network_weights(
             state_dict,
             file=file,

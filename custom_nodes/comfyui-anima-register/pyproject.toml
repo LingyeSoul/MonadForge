@@ -1,0 +1,17 @@
+[project]
+name = "comfyui-anima-register"
+description = "Anima register-token adapter for ComfyUI: one node loads a register adapter.safetensors trained by `train.py --method register` and patches a stock Anima MODEL so a normal KSampler runs with the register tokens + trained self-attn QKV surface live. Comfy-native (split q/k/v against MiniTrainDIT). Eager path — do not stack with the Block Compile node."
+version = "0.3.0"
+license = { file = "LICENSE" }
+# torch ships with any ComfyUI install; listed so a bare `pip install .` works.
+dependencies = [
+    "torch",
+]
+
+[project.urls]
+Repository = "https://github.com/sorryhyun/anima_lora/tree/main/custom_nodes/comfyui-anima-register"
+
+[tool.comfy]
+PublisherId = "sorryhyun"
+DisplayName = "Anima Register Adapter"
+Icon = ""

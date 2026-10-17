@@ -31,8 +31,8 @@ def _make_args(**overrides) -> argparse.Namespace:
 
 
 def _net(**attrs) -> SimpleNamespace:
-    # Composer reads `_ortho_reg_weight` and `_balance_loss_weight`.
-    defaults = {"_ortho_reg_weight": 0.0, "_balance_loss_weight": 0.0}
+    # Composer reads `_balance_loss_weight`.
+    defaults = {"_balance_loss_weight": 0.0}
     defaults.update(attrs)
     return SimpleNamespace(**defaults)
 
@@ -41,6 +41,7 @@ def test_registry_contains_expected_keys():
     assert {
         "flow_match",
         "ortho_reg",
+        "fera_fecl",
         "hydra_balance",
         "functional",
         "multiscale",
@@ -59,6 +60,18 @@ def test_hydra_balance_activates_when_network_requests_it():
     composer = build_loss_composer(args, _net(_balance_loss_weight=0.01))
     assert "hydra_balance" in composer.active_losses
     assert "flow_match" in composer.active_losses
+
+
+def test_ortho_regularization_activates_when_network_requests_it():
+    composer = build_loss_composer(_make_args(), _net(_ortho_reg_weight=0.01))
+    assert "ortho_reg" in composer.active_losses
+
+
+def test_chimera_balance_remains_active_during_outer_warmup():
+    composer = build_loss_composer(
+        _make_args(), _net(_use_chimera_hydra=True, _balance_loss_weight=0.0)
+    )
+    assert "hydra_balance" in composer.active_losses
 
 
 def test_functional_activates_when_weight_set():

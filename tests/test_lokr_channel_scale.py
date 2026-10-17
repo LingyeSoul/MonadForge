@@ -165,6 +165,7 @@ def test_channel_scaling_is_rejected_at_direct_module_boundary():
         )
 
 
+@pytest.mark.training_step
 def test_wrapper_forward_and_gradients_equal_direct_lycoris():
     torch.manual_seed(123)
     wrapped_base = torch.nn.Linear(512, 512, bias=False)
@@ -287,6 +288,7 @@ def test_fp32_compute_casts_all_official_bypass_operands(monkeypatch):
     assert seen_backends == ["torch"]
 
 
+@pytest.mark.training_step
 def test_zero_init_trains_the_official_w2_chain_end_first():
     base, module = _make_module(rank=4, alpha=4, factor=16)
     module.apply_to()

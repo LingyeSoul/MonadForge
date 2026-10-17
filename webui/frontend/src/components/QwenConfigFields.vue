@@ -3,11 +3,11 @@
   <v-progress-linear v-if="qwen.loading" indeterminate />
   <template v-if="qwen.draft && qwen.schema">
     <div class="d-flex align-center flex-wrap ga-2 mb-4">
-      <v-chip size="small" variant="tonal">Qwen-Image 2.1 · LoRA</v-chip>
+      <v-chip size="small" variant="tonal">{{ qwen.label }} · {{ String(qwen.draft.train.algo || 'LoRA').toUpperCase() }}</v-chip>
       <span class="text-caption text-medium-emphasis">{{ t('qwProfileStored') }}</span>
       <v-spacer />
       <v-btn v-if="qwen.legacyAvailable" data-testid="qwen-import-legacy" variant="text" size="small" @click="qwen.perform(async () => qwen.importLegacy())">{{ t('qwImportLegacy') }}</v-btn>
-      <v-btn data-testid="qwen-reset-defaults" variant="text" size="small" @click="qwen.resetDefaults()">{{ t('qwenReset') }}</v-btn>
+      <v-btn data-testid="qwen-reset-defaults" variant="text" size="small" :disabled="qwen.busy" @click="qwen.resetDefaults()">{{ t('qwenReset') }}</v-btn>
       <v-btn to="/preprocess" variant="outlined" size="small">{{ t('navPreprocess') }}</v-btn>
     </div>
     <div class="d-flex align-center ga-2 mb-4">
@@ -32,7 +32,7 @@
         <div v-if="groups.length === 0" class="workspace-empty">{{ t('cfgNoMatchingFields') }}</div>
       </v-col>
       <v-col v-if="showHelp" cols="12" lg="4">
-        <HelpPanel ref="helpPanel" :variant="`qwen21/${qwen.profile}`" :field-help="help" :guide-html="guide" height="min(680px, calc(100dvh - 120px))" />
+        <HelpPanel ref="helpPanel" :variant="`${qwen.family}/${qwen.profile}`" :field-help="help" :guide-html="guide" height="min(680px, calc(100dvh - 120px))" />
       </v-col>
     </v-row>
   </template>
@@ -41,12 +41,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from '../composables/useI18n'
-import { useQwenWorkspace, type QwenSection } from '../stores/qwenWorkspace'
+import { useActiveModelWorkspace, type QwenSection } from '../stores/qwenWorkspace'
+import { useAppStore } from '../stores/app'
+import { modelFieldLabel, mossText } from '../i18n/modelWorkspace'
 import { modelFields, requestJson, resolvedPaths, type QwenField } from '../utils/qwen21'
 import HelpPanel from './HelpPanel.vue'
 import QwenFields from './QwenFields.vue'
 
-const qwen = useQwenWorkspace()
+const qwen = useActiveModelWorkspace()
+const app = useAppStore()
 const { t } = useI18n()
 const search = ref<string | null>('')
 const showHelp = ref(true)
@@ -56,27 +59,30 @@ const definitions: { section: QwenSection; title: string }[] = [
   { section: 'models', title: 'qwenModels' }, { section: 'train', title: 'qwTrainingParameters' }, { section: 'generate', title: 'qwTestParameters' },
 ]
 function sectionFields(section: QwenSection): QwenField[] {
-  if (!qwen.schema) return []
-  return section === 'models' ? qwen.schema.train.filter(f => modelFields.has(f.name)) : qwen.schema[section].filter(f => !modelFields.has(f.name))
+  if (!qwen.value.schema) return []
+  return section === 'models' ? qwen.value.schema.train.filter(f => modelFields.has(f.name)) : qwen.value.schema[section].filter(f => !modelFields.has(f.name))
 }
 const groups = computed(() => definitions.map(group => {
   const terms = (search.value ?? '').toLowerCase().split(/\s+/).filter(Boolean)
-  const fields = sectionFields(group.section).filter(field => terms.every(term => `${field.name} ${t(`qwenField_${field.name}`)} ${field.help}`.toLowerCase().includes(term)))
+  const fields = sectionFields(group.section).filter(field => terms.every(term => `${field.name} ${fieldLabel(field.name)} ${field.help}`.toLowerCase().includes(term)))
   const advanced = (field: QwenField): boolean => group.section === 'models' ? field.name !== 'model_dir' : field.advanced
   return { ...group, basic: fields.filter(f => !advanced(f)), advanced: fields.filter(advanced) }
 }).filter(group => group.basic.length + group.advanced.length > 0))
-const help = computed(() => Object.fromEntries(definitions.flatMap(group => sectionFields(group.section).map(field => [`${group.section}.${field.name}`, `${t(`qwenField_${field.name}`)}\n${field.help}`]))))
-const guide = computed(() => [t('qwenSourcesHint'), t('qwenAutoHint'), t('qwenGenerateHint'), t('qwUnsupported'), t('qwResultIsolation')].map(text => `<p>${text}</p>`).join(''))
+const fieldLabel = (name: string) => modelFieldLabel(qwen.value.family, app.language, name, t(`qwenField_${name}`))
+const help = computed(() => Object.fromEntries(definitions.flatMap(group => sectionFields(group.section).map(field => [`${group.section}.${field.name}`, `${fieldLabel(field.name)}\n${field.help}`]))))
+const guide = computed(() => (qwen.value.family === 'moss' ? [mossText(app.language, 'sourcesHint'), mossText(app.language, 'autoHint'), mossText(app.language, 'generateHint'), mossText(app.language, 'unsupported'), t('qwResultIsolation')] : [t('qwenSourcesHint'), t('qwenAutoHint'), t('qwenGenerateHint'), t('qwUnsupported'), t('qwResultIsolation')]).map(text => `<p>${text}</p>`).join(''))
 function openHelp(key: string): void {
   showHelp.value = true
   helpPanel.value?.showFieldHelp(key, 'method')
 }
 async function inspectPaths(): Promise<void> {
-  await qwen.perform(async () => {
-    paths.value = resolvedPaths(await requestJson('/api/qwen21/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: qwen.draft?.models }) }))
+  const selected = qwen.value
+  await selected.perform(async () => {
+    const result = resolvedPaths(await requestJson(`${selected.apiRoot}/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: { ...selected.draft?.train, ...selected.draft?.models } }) }), selected.family)
+    if (qwen.value === selected) paths.value = result
   })
 }
-watch(() => qwen.draft?.models, () => { paths.value = null }, { deep: true })
+watch(() => qwen.value.draft?.models, () => { paths.value = null }, { deep: true })
 </script>
 
 <style scoped>

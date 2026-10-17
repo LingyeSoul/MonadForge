@@ -1,0 +1,107 @@
+# project/finished/ — completed lines
+
+Lines that ran to a successful conclusion — the goal was reached or the
+measured ceiling was hit — land here, one subdir each. This tier is distinct
+from the gitignored `_archive/` tree on both axes:
+
+- Outcome: `finished/` lines *worked* (shipped artifacts, ceiling reached);
+  `_archive/` holds retired/killed/superseded material.
+- Visibility: `finished/` is **tracked** — the record of what was achieved
+  and where the ceiling sits stays in the public repo, so nobody re-proposes a
+  lever that was already exhausted.
+
+Each subdir is a digest home page (`README.md`): final verdicts with evidence
+pointers, shipped artifacts, and any small open remainder. It does not
+duplicate code or bench tables — canonical sources stay where they live.
+
+**Search.** Each CJK line carries a `.ignore` that hides its record material
+(docs, reports, dead probes; `cjk_renderable_anima/`, `cjk_anima_scale/` and `ocr_reader/` whole) from ripgrep, so
+Grep / Glob / Explore stay on live code; the `archive-explorer` agent searches
+it (`rg --no-ignore-dot`). What stays visible is what code outside
+`finished/` reads or runs: `sr/`, `mod_guidance/` and `cjk_aware_anima/{assets,
+probes}/` (the reseed line's eval prompts, `bench/cjk_adapter`'s residual
+prompts, `bench/grad_init`'s `blind_pairs.py`). Live code (`library/`, `scripts/`,
+`tests/`, `configs/`) reads nothing under `project/`; a line's own tests sit in
+its `tests/`. A new outside reference
+into a hidden path means narrowing that line's `.ignore`.
+
+A finished line's whole working tree may move here when its top-level surface
+(make targets, repo-root dir) is no longer worth keeping — the code stays
+runnable via direct script invocation. Each line's `STATUS.md` (or `README.md`
+for digest-only homes) records the verdicts.
+
+Finished lines:
+
+- [`mod_guidance/`](mod_guidance/) — text-conditioned AdaLN steering via a
+  distilled `pooled_text_proj` MLP (2026-08-24). Shipped (release asset + the
+  Spectrum KSampler node); the bench was archived 2026-07-12 with every axis
+  terminal — it's a global-tone/finishing lever, the σ and layer schedule axes
+  are falsified, and the content-direction ceiling is architectural. The
+  one-shot distillation loop moved here from its old `distill_mod` home under
+  `scripts/`, and its two
+  make targets were removed. Verdicts:
+  [`mod_guidance/STATUS.md`](mod_guidance/STATUS.md); ops:
+  [`mod_guidance/README.md`](mod_guidance/README.md).
+- [`sr/`](sr/) — ResShift ×4/×2 super-resolution sidecar (full tree moved
+  from repo-root `sr/`; `make sr-*` targets removed). ×2 and ×4 both at their
+  measured ceilings (teacher-bound; distillation faithful). Open remainder:
+  Korean-text training data. Verdicts: [`sr/STATUS.md`](sr/STATUS.md); ops:
+  [`sr/README.md`](sr/README.md).
+- [`cjk_aware_anima/`](cjk_aware_anima/) — the encoder-side CJK line: native
+  JA / KO / ZH prompting through extra T5-side vocab rows distilled against the
+  EN-translation teacher (frozen 2026-09-05, moved here 2026-09-24). Shipped:
+  the `synthja_v4` tag tier and the `synthjakozh1sym_r256` pack that the
+  public `anima-vocab-pack-cjk` repo is built on. Ceiling: rare kanji names
+  never compose under any lever, coverage / geometry refinements are inert,
+  content-free tables tie the trained pack for unmask training; the DiT-side
+  question continued in [`cjk_aware_anima_dit/`](cjk_aware_anima_dit/) →
+  [`cjk_renderable_anima/`](cjk_renderable_anima/).
+  The pack recipe stays operational in `scripts/distill_cjk/` (corpus builders
+  under `corpus/`; `docs/methods/cjk_vocab_pack.md` § Rebuilding a pack).
+  Verdicts: [`cjk_aware_anima/findings.md`](cjk_aware_anima/findings.md);
+  digest: [`cjk_aware_anima/README.md`](cjk_aware_anima/README.md).
+- [`cjk_aware_anima_dit/`](cjk_aware_anima_dit/) — the DiT-side CJK line: ext
+  rows as content-free addresses, CJK meaning learned or woken on the DiT side
+  (frozen 2026-09-08, wake line split out 2026-09-14, moved here 2026-09-24).
+  Shipped: the OCR half — the AnimeText detector and the B′ SFX reader
+  (`sorryhyun/paddleocr-vl-1.6-manga-lora`, `anime_tools.ocr.{animetext,sfx}`),
+  the caption clause rules, the D1 quote-partitioned pack. Ceiling: the reader
+  — five arms decoupled in-domain COO from the doujin gate, so the headroom is
+  ♡ / small-kana labels. The DiT goals were **handed off, not measured**
+  (G-A read on one 351-image shard only, G-B never run); the question lives on
+  in [`cjk_renderable_anima/`](cjk_renderable_anima/) and [`cjk_anima_scale/`](cjk_anima_scale/). Code runnable by
+  path; the `render_*` EasyControl descriptors in `scripts/tasks/training.py`
+  still call its `render/` scripts. Verdicts:
+  [`cjk_aware_anima_dit/findings.md`](cjk_aware_anima_dit/findings.md);
+  digest: [`cjk_aware_anima_dit/README.md`](cjk_aware_anima_dit/README.md).
+- [`cjk_renderable_anima/`](cjk_renderable_anima/) — the wake line: a frozen
+  DiT renders a requested JA glyph or a whole common word from a delta on the
+  vocab pack's ext rows (promoted 2026-09-14, moved here 2026-09-30).
+  Shipped: the rows recipe and `anima_cjk_vocab_pack_preview2` (the merged
+  `step1_0921` + `step1_0921z` table after the band2 sentence run,
+  2026-09-23). Settled: trained addresses are hash-like (held-out anything is
+  0, the cost is exposure per row), a static row table can carry order and
+  count at the price of a unit-count prior. Production continued in
+  [`cjk_anima_scale/`](cjk_anima_scale/) (vendored its own `src/`, imports
+  nothing from here). Code runnable by path. Verdicts:
+  [`cjk_renderable_anima/findings.md`](cjk_renderable_anima/findings.md);
+  digest: [`cjk_renderable_anima/README.md`](cjk_renderable_anima/README.md).
+- [`cjk_anima_scale/`](cjk_anima_scale/) — the production line for the JA
+  pack (opened 2026-09-23 out of the wake line, moved here 2026-10-09).
+  Shipped: the **vocab band law** (`band_experiment_results.md`: the band
+  keyed on glyph count, px sets the floor, nothing above 0.9 — all measured),
+  the singles retrain's seed `seed_retrain_0930`, `preview3` / `preview4`, and
+  A of jp_v1's recipe (`retrain_kanji_b5`, 225 kanji cold). Its trainer, the
+  stage code it vendored into `src/` and its fonts now live in
+  `../cjk_anima_reseed/`, the home for cold training; this tree is frozen,
+  runnable by path (`project/finished/cjk_anima_scale/scale.py`). Its outputs
+  stay at `output/cjk_anima_scale/` (reseed reads the seed rows, scene pools
+  and EN refs there). Digest: [`cjk_anima_scale/README.md`](cjk_anima_scale/README.md).
+- [`ocr_reader/`](ocr_reader/) — the PaddleOCR-VL reader v4 (JA + KO + ZH),
+  opened 2026-10-10 out of `cjk_aware_anima_dit`'s reader half, moved here
+  2026-10-15. Shipped: v4 = `vl16_p2b_kozh_ep2` (tower LoRA + LM full FT,
+  gelnote KO/ZH pseudo rows, 2 epochs) on the Hub reader repo's `v4/`, pinned
+  by `anime_tools` v0.7.12. Ceiling: more labels and more data (hitocrawl
+  twins, Opus relabel + v4 self-labels) did not beat v4. Gates and code
+  runnable by path (`ocr/`, `gate/`, `hito/`); gate images in the gitignored
+  `eval_data/`. Digest: [`ocr_reader/README.md`](ocr_reader/README.md).

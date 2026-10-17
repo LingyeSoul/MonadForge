@@ -1,0 +1,6 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>EasyControl</h2>
+<p>扩展自注意力图像条件化。DiT 被冻结；训练仅更新每块的 cond LoRA（作用于自注意力 q/k/v/o + FFN）以及每块的标量门控 <code>b_cond</code>（初始值&nbsp;-10），该门控控制参考图像的 token 在每步自注意力中的渗入量。</p>
+<div style='background:#33231e; padding:10px 14px; border-left:3px solid #e67e22; margin:12px 0; border-radius:3px;'>
+<p style='margin:0; color:#f0c14b;'><b>&#9888; 第一阶段基线 &mdash; 目前尚未产生实际效果。</b> 这是 <i>ref&nbsp;==&nbsp;target</i> 设置，即条件图像就是目标图像本身。由于没有真正的控制任务可供学习，当前检查点不会产生有效的条件化效果 &mdash; 请将此变体视为管道 / 脚手架验证，而<b>非</b>可用的控制适配器。如需实际控制任务，请选择 <b>Colorize</b>。</p>
+</div>
+<p>源数据放入 <code>easycontrol-dataset/</code>；缓存生成到 <code>post_image_dataset/easycontrol/</code>。参见 <code>docs/experimental/easycontrol.md</code>。</p>

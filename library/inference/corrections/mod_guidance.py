@@ -11,6 +11,7 @@ from library.anima import models as anima_models, text_strategies
 from library.runtime.device import clean_memory_on_device
 from library.inference.models import load_text_encoder
 from library.inference.text import process_escape
+from library.inference.corrections.mod_guidance_core import build_block_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -54,30 +55,15 @@ def build_mod_schedule(args: argparse.Namespace, num_blocks: int) -> List[float]
     checkpoint skips its own last block, not block 27.
     See docs/inference/mod-guidance.md for rationale.
     """
-    w = float(args.mod_w)
-    start = int(getattr(args, "mod_start_layer", 8))
-    end_raw = getattr(args, "mod_end_layer", None)
-    if end_raw is None:
-        # argparse default is None: "unset" skips this checkpoint's own final
-        # compensation block (depth-relative; 27 on the 28-block base, 39 on
-        # the 40-block 2.9B). int(None) here would crash the mod-w path.
-        end_raw = num_blocks - 1
-    else:
-        end_raw = int(end_raw)
-    end = num_blocks if end_raw < 0 else min(end_raw, num_blocks)
-    start = max(0, min(start, end))
-    taper = int(getattr(args, "mod_taper", 0))
-    taper_scale = float(getattr(args, "mod_taper_scale", 0.25))
-
-    sched = [0.0] * num_blocks
-    for i in range(start, end):
-        sched[i] = w
-    if taper > 0 and end > start:
-        taper_start = max(start, end - taper)
-        taper_w = w * taper_scale
-        for i in range(taper_start, end):
-            sched[i] = taper_w
-    return sched
+    end_layer = getattr(args, "mod_end_layer", None)
+    return build_block_schedule(
+        num_blocks,
+        w=float(args.mod_w),
+        start_layer=int(getattr(args, "mod_start_layer", 8)),
+        end_layer=num_blocks - 1 if end_layer is None else int(end_layer),
+        taper=int(getattr(args, "mod_taper", 0)),
+        taper_scale=float(getattr(args, "mod_taper_scale", 0.25)),
+    )
 
 
 def setup_mod_guidance(
@@ -86,7 +72,7 @@ def setup_mod_guidance(
     device: torch.device,
     shared_models: Optional[Dict] = None,
 ) -> None:
-    """Compute Phase 2 modulation guidance delta and per-block schedule.
+    """Compute the modulation guidance delta and per-block schedule.
 
     delta_unit  = proj(pool(pos_crossattn)) - proj(pool(neg_crossattn))
     schedule[l] = w(l) from --mod_start_layer / --mod_end_layer / --mod_taper
@@ -122,12 +108,11 @@ def setup_mod_guidance(
     if getattr(anima, "enable_pooled_text_sigma_film", False):
         # This head is σ-conditioned, but the single baked delta below is σ-flat
         # (no timestep available at bake time). It falls back to the σ-flat proj
-        # path (t_embedding=None), so steering ignores the FiLM. Per-step steering
-        # is a follow-up; warn rather than silently mis-steer.
+        # path (t_embedding=None), so steering ignores the FiLM — warn.
         logger.warning(
             "pooled_text_proj was trained with σ-FiLM, but inference steering bakes "
             "a single σ-flat delta — the timestep conditioning is ignored. "
-            "Use bench/mod_guidance/text_jacobian.py to evaluate the σ-FiLM head."
+            "Use _archive/bench/mod_guidance/text_jacobian.py to evaluate the σ-FiLM head."
         )
     with torch.no_grad():
         pos_pooled = pos_crossattn.max(dim=1).values  # (1, 1024)

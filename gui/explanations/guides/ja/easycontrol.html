@@ -1,0 +1,6 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>EasyControl</h2>
+<p>拡張されたセルフアテンション画像コンディショニングです。DiT は凍結されます; 学習はセルフアテンション (q/k/v/o) + FFN へのブロック別 cond LoRA と、各ステップのセルフアテンションに参照画像のトークンがどれだけ流れ込むかを制御するブロック別スカラーゲート <code>b_cond</code> (初期値&nbsp;-10) のみを更新します。</p>
+<div style='background:#33231e; padding:10px 14px; border-left:3px solid #e67e22; margin:12px 0; border-radius:3px;'>
+<p style='margin:0; color:#f0c14b;'><b>&#9888; フェーズ 1 ベースライン &mdash; まだ意味のある動作をしていません。</b> これはコンディションがターゲット画像そのものである <i>ref&nbsp;==&nbsp;target</i> セットアップです。実際に学習するコントロールタスクがないため、現在のチェックポイントは有用なコンディショニング効果を生み出しません &mdash; このバリアントは配管 / スキャフォールディング検証として扱い、使用可能なコントロールアダプターとは見なさないでください。実際のコントロールタスクには <b>Colorize</b> を選択してください。</p>
+</div>
+<p>ソースデータは <code>easycontrol-dataset/</code> に置き、キャッシュは <code>post_image_dataset/easycontrol/</code> に生成されます。<code>docs/experimental/easycontrol.md</code> を参照してください。</p>

@@ -1,9 +1,21 @@
 [default]
 blocks_to_swap = 0
 
+[default.gui]
+group = "hardware"
+label = "Default (16GB+)"
+description = "No memory-saving tricks — fastest when the model fits."
+order = 10
+
 [low_vram]
-gradient_checkpointing = true # only triggered when low_vram was set
-unsloth_offload_checkpointing = true  # only triggered when low_vram was set
+gradient_checkpointing = true
+unsloth_offload_checkpointing = true
+
+[low_vram.gui]
+group = "hardware"
+label = "Low VRAM (8GB)"
+description = "Gradient checkpointing + Unsloth offload checkpointing."
+order = 20
 
 [graft]
 blocks_to_swap = 20
@@ -11,11 +23,23 @@ blocks_to_swap = 20
 [half]
 sample_ratio = 0.5
 
+[half.gui]
+group = "data"
+
 [quarter]
 sample_ratio = 0.25
+
+[quarter.gui]
+group = "data"
 
 [tenth]
 sample_ratio = 0.1
 
+[tenth.gui]
+group = "data"
+
 [debug]
 sample_ratio = 0.001
+
+[debug.gui]
+group = "data"

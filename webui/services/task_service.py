@@ -726,6 +726,9 @@ class TaskService:
         command: str,
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
+        *,
+        context: dict | None = None,
+        runtime_profile: str | None = None,
     ) -> Task:
         """Submit ``python tasks.py <command> [args...]`` as a daemon command job."""
         # The daemon prepends its own venv interpreter (venv_python) to command
@@ -737,6 +740,27 @@ class TaskService:
             if env:
                 raise ValueError("Qwen WebUI jobs require explicit form parameters; environment overrides are not supported")
             args = prepare_job_args(command, args or [])
+        from library.runtime.profiles import resolve_runtime
+
+        selected_runtime = runtime_profile or (
+            "curation" if command == "curation-stage" else "default"
+        )
+        runtime = resolve_runtime(selected_runtime)
+        job_context = dict(context or {})
+        if command in QWEN_COMMANDS:
+            job_context["model_type"] = "qwen21"
+        elif command.startswith("moss-"):
+            from webui.services.moss_service import prepare_job_args as prepare_moss, task_context as moss_context
+
+            if env:
+                raise ValueError("MOSS WebUI jobs require explicit parameters; environment overrides are not supported")
+            args = prepare_moss(command, args or [])
+            job_context.update(moss_context(command, args))
+            job_context["model_type"] = "moss"
+        elif command == "curation-stage":
+            job_context["model_type"] = "curation"
+        else:
+            job_context.setdefault("model_type", "anima")
         argv = ["tasks.py", command, *(args or [])]
         # The daemon already sets PYTHONUNBUFFERED/PYTHONUTF8/PYTHONIOENCODING
         # (manager._build_cmd), so we only forward caller-provided env (e.g.
@@ -775,7 +799,11 @@ class TaskService:
                 extra_env=extra_env,
                 config_snapshot=config_snapshot,
                 start=True,
-                stall_timeout=900.0 if command in QWEN_COMMANDS else None,
+                stall_timeout=900.0 if command in QWEN_COMMANDS or command.startswith("moss-") or command == "curation-stage" else None,
+                context=job_context,
+                runtime_profile=runtime.name,
+                python_executable=str(runtime.python),
+                runtime_env=runtime.env,
             )
         except DaemonError as exc:
             self._tasks.pop(temp_id, None)
@@ -1164,15 +1192,17 @@ class TaskService:
 
     @staticmethod
     def _command_runs_training(command: str) -> bool:
-        """Mirror of the daemon's ``_command_runs_train`` argv classification.
+        """Commands that publish training events for the shared dashboard.
 
         Delegates to :func:`scripts.tasks._common.command_runs_training` so this
         and the daemon's ``--progress_jsonl`` injection decision can't drift —
-        they must agree on which ``tasks.py`` commands route through ``train.py``
-        (and thus honor ``--progress_jsonl``)."""
+        Anima commands route through ``train.py`` and honor ``--progress_jsonl``.
+        Qwen/MOSS publish to ANIMA_DAEMON_JOB_DIR without Anima resume semantics."""
         from scripts.tasks._common import command_runs_training
 
-        return command_runs_training(command)
+        return command_runs_training(command) or command in {
+            "qwen21-train", "qwen21-cache-train", "moss-train", "moss-cache-train",
+        }
 
     def _config_path_overrides(
         self,

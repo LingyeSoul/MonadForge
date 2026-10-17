@@ -66,6 +66,7 @@ def test_int8_mm_scaled_cuda_int_mm_matches_float_when_supported() -> None:
     assert rel.item() < 1e-5
 
 
+@pytest.mark.training_step
 def test_w8a8_int_linear_ste_grad() -> None:
     torch.manual_seed(2)
     x = torch.randn(5, 64, requires_grad=True)

@@ -48,7 +48,7 @@ Output:
   trained LoRA. Use it exactly like the output of the Anima Adapter Loader; no
   separate loader node needed.
 
-The method is locked to `configs/gui-methods/tlora.toml` (T-LoRA + OrthoLoRA).
+The method is locked to `configs/gui-methods/tlora.toml` (T-LoRA).
 Saves to
 `<ComfyUI>/models/loras/anima_trainer_<timestamp>.safetensors`.
 
@@ -68,12 +68,12 @@ Saves to
   training so there is room for the trainer's own DiT + optimizer state.
 - **Single-image mode** writes PNGs + `.txt` under
   `<anima_lora_root>/output/tmp_trainer/<timestamp>/`. Prune periodically.
-- **Plain LoRA output** — tlora + ortholora saves as pure LoRA (SVD collapse at
-  save time), so the output safetensors is also usable by any ComfyUI LoRA loader.
+- **Plain LoRA output** — tlora saves as pure LoRA (the rank mask is
+  training-only), so the output safetensors is also usable by any ComfyUI LoRA loader.
 
 ## Out of scope
 
 - Directory-of-images datasets and method/preset/warm-start overrides (the old
   "Advanced" node) — use the GUI or CLI (`make lora-gui`) for those.
 - Baking the trained LoRA into DiT weights as a standalone checkpoint
-  (see `scripts/merge_to_dit.py` for the CLI equivalent).
+  (see `scripts/toolkits/merge_to_dit.py` for the CLI equivalent).

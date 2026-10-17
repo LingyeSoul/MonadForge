@@ -212,6 +212,10 @@ class DaemonClient:
         config_snapshot: Optional[dict] = None,
         start: bool = True,
         stall_timeout: float | None = None,
+        context: dict | None = None,
+        runtime_profile: str | None = None,
+        python_executable: str | None = None,
+        runtime_env: dict[str, str] | None = None,
     ) -> dict:
         """Enqueue a ``command`` job (a plain ``python <argv>``).
 
@@ -233,6 +237,14 @@ class DaemonClient:
             body["chain_train"] = chain_train
         if config_snapshot:
             body["config_snapshot"] = config_snapshot
+        if context is not None:
+            body["context"] = context
+        if runtime_profile is not None:
+            body["runtime_profile"] = runtime_profile
+        if python_executable is not None:
+            body["python_executable"] = python_executable
+        if runtime_env is not None:
+            body["runtime_env"] = runtime_env
         return await self._request("POST", "/jobs", body=body)
 
     async def submit_training(

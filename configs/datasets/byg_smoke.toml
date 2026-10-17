@@ -1,7 +1,3 @@
-# BYG smoke dataset — a single artist subdir (aak) whose images all have BYG
-# edit-tuple sidecars (post_image_dataset/byg/<stem>_byg.safetensors) and cached
-# VAE/TE features. Used by the end-to-end smoke run; not a production config.
-
 [general]
 caption_extension = '.txt'
 

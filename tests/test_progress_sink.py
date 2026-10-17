@@ -3,11 +3,34 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import logging
 import os
+import sys
+from pathlib import Path
 
-from library.training.progress import ProgressSink, _find_cmmd, _flatten_logs
+import pytest
+
+from library.training.progress import (
+    ProgressSink,
+    _find_cmmd,
+    _flatten_logs,
+    read_status,
+)
+
+
+def _load_run_status():
+    """``scripts/`` is not an installed package — load the CLI by path."""
+    path = Path(__file__).resolve().parent.parent / "scripts" / "run_status.py"
+    spec = importlib.util.spec_from_file_location("run_status", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["run_status"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+rs = _load_run_status()
 
 
 def _read_events(path: str) -> list[dict]:
@@ -172,3 +195,162 @@ def test_flatten_logs_drops_nonscalar():
 def test_find_cmmd():
     assert _find_cmmd({"loss/val_cmmd": 0.042, "loss": 1.0}) == 0.042
     assert _find_cmmd({"loss": 1.0}) is None
+
+
+# --- read_status (issue #4: the "where is this run at" digest, so callers don't
+# export the TB events file and reimplement the parse) ---
+
+
+def _write_stream(tmp_path, events, *, torn: str = "") -> str:
+    path = tmp_path / "run.progress.jsonl"
+    path.write_text("".join(json.dumps(e) + "\n" for e in events) + torn)
+    return str(path)
+
+
+def _run_start(**over) -> dict:
+    ev = dict(
+        ev="run_start",
+        ts=0,
+        run="r",
+        method="turbo",
+        preset=None,
+        total_steps=1000,
+        total_epochs=1,
+        pid=os.getpid(),
+    )
+    ev.update(over)
+    return ev
+
+
+def test_read_status_live_run_reports_step_rate_eta_and_ckpt(tmp_path):
+    events = [_run_start()]
+    # 10s per 100 steps → 10 it/s; 600 steps left → 60s ETA.
+    events += [
+        {"ev": "step", "ts": i * 10.0, "global_step": i * 100, "epoch": 0, "loss": 0.5}
+        for i in range(1, 5)
+    ]
+    events.append({"ev": "ckpt", "ts": 41.0, "global_step": 400, "path": "/ck.sft"})
+    events.append(
+        {"ev": "log", "ts": 42.0, "level": "WARNING", "logger": "x", "msg": "!"}
+    )
+    # a torn trailing line (live stream, mid-write) must not break the read
+    st = read_status(_write_stream(tmp_path, events, torn='{"ev": "step", "ts'))
+
+    assert st["status"] == "running"  # our own pid → alive
+    assert (st["global_step"], st["total_steps"], st["pct"]) == (400, 1000, 40.0)
+    assert st["rate"] == pytest.approx(10.0)
+    assert st["eta"] == pytest.approx(60.0)
+    assert st["metrics"] == {"loss": 0.5}
+    assert st["ckpt"]["path"] == "/ck.sft"
+    assert st["warnings"] == 1
+
+
+def test_read_status_terminal_states_come_from_run_end(tmp_path):
+    for status, final in (("ok", 1000), ("stopped", 300), ("error", 12)):
+        events = [
+            _run_start(pid=1),  # alive pid must NOT override a real run_end
+            {"ev": "step", "ts": 1.0, "global_step": final, "epoch": 0},
+            {
+                "ev": "run_end",
+                "ts": 2.0,
+                "status": status,
+                "final_step": final,
+                "error": "RuntimeError: boom" if status == "error" else None,
+            },
+        ]
+        st = read_status(_write_stream(tmp_path, events))
+        assert st["status"] == status
+        assert st["global_step"] == final
+        assert st["eta"] is None  # never an ETA for a run that has stopped
+    assert st["error"] == "RuntimeError: boom"
+
+
+def test_read_status_flags_a_vanished_pid_as_dead(tmp_path):
+    # No run_end and the writer is gone: killed / OOMed, not "still running".
+    events = [
+        _run_start(pid=_unused_pid()),
+        {"ev": "step", "ts": 1.0, "global_step": 5},
+    ]
+    assert read_status(_write_stream(tmp_path, events))["status"] == "dead"
+
+
+def test_read_status_val_event_and_empty_stream(tmp_path):
+    events = [_run_start(), {"ev": "val", "ts": 1.0, "global_step": 100, "cmmd": 0.3}]
+    st = read_status(_write_stream(tmp_path, events))
+    assert st["val"]["cmmd"] == 0.3
+    assert st["global_step"] is None and st["rate"] is None  # no step events yet
+
+    empty = tmp_path / "empty.progress.jsonl"
+    empty.write_text("")
+    with pytest.raises(ValueError):
+        read_status(str(empty))
+
+
+def _unused_pid() -> int:
+    """A pid that is not running (walk down from an implausible one)."""
+    for pid in range(4_194_303, 4_194_000, -1):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return pid
+        except Exception:
+            continue
+    raise RuntimeError("no free pid found")
+
+
+# --- run_status.py stream discovery (issues.md §1: the default launch path is
+# the daemon, whose per-job stream lives outside output/logs) ---
+
+
+def _daemon_stream(jobs_dir, job_id: str, run: str) -> None:
+    """Write what a daemon train job produces: <jobs>/<id>/progress.jsonl.
+
+    The daemon overrides --progress_jsonl with a per-job path (manager._build_cmd),
+    so the filename is bare — the run name exists only inside `run_start`.
+    """
+    d = jobs_dir / job_id
+    d.mkdir(parents=True)
+    (d / "progress.jsonl").write_text(
+        json.dumps(_run_start(run=run))
+        + "\n"
+        + json.dumps({"ev": "step", "ts": 1.0, "global_step": 5, "epoch": 0})
+        + "\n"
+    )
+
+
+def test_run_status_finds_daemon_job_streams(tmp_path):
+    """`make run-status RUN=<name>` used to exit 1 on a healthy daemon run: it
+    scanned only output/logs, where a daemon run leaves the snapshot + TB events
+    but no progress.jsonl."""
+    logs, jobs = tmp_path / "logs", tmp_path / "jobs"
+    logs.mkdir()
+    (logs / "inline_run.progress.jsonl").write_text(
+        json.dumps(_run_start(run="x")) + "\n"
+    )
+    _daemon_stream(jobs, "20260901-180249-1334d2", "cjk_unmask_a")
+
+    found = rs._find_streams(logs, jobs)
+    assert len(found) == 2  # both launch paths, one list
+
+    # a daemon run resolves by its run name (matched inside the stream)…
+    hit = rs._resolve("cjk_unmask_a", logs, jobs)
+    assert hit.parent.name == "20260901-180249-1334d2"
+    assert rs._stream_run_name(hit) == "cjk_unmask_a"
+    # …and by the job id, which is all a `daemon-jobs` listing gives you
+    assert rs._resolve("20260901-180249-1334d2", logs, jobs) == hit
+    # the flat logs/ name still resolves from its filename, no file read needed
+    assert rs._resolve("inline_run", logs, jobs).name == "inline_run.progress.jsonl"
+
+    # a genuine miss still fails loudly, naming both places it looked
+    with pytest.raises(SystemExit) as ei:
+        rs._resolve("nope", logs, jobs)
+    assert "logs" in str(ei.value) and "jobs" in str(ei.value)
+
+
+def test_run_status_skips_command_jobs_and_survives_empty_dirs(tmp_path):
+    """A command job's dir exists but never materializes a progress.jsonl."""
+    logs, jobs = tmp_path / "logs", tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "20260901-1200-abcdef").mkdir()  # command job: no stream
+    assert rs._find_streams(logs, jobs) == []  # missing logs dir is not an error
+    assert rs._find_streams(logs, None) == []

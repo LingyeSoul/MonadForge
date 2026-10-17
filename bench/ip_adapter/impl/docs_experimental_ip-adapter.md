@@ -262,7 +262,7 @@ python inference.py \
 
 - `networks/methods/ip_adapter.py` — `IPAdapterNetwork`, the patched-forward closure, save/load, runtime diagnostics (`set_diagnostics_enabled` / `diagnostic_summary`).
 - `library/vision/encoder.py` — PE-Core wrapper (`load_pe_encoder`, `encode_pe_from_imageminus1to1`). Used by both the cache script and the live-encoding fallback.
-- `scripts/preprocess/cache_pe_encoder.py` — entry point for `make preprocess-pe` (`post_image_dataset/resized/` → `post_image_dataset/lora/`). Writes `{stem}_anima_{encoder}.safetensors` sidecars consumed by IP-Adapter (and the DCW v4 fusion head).
+- `scripts/preprocess/cache_pe_encoder.py` — entry point for `make preprocess-pe` (`post_image_dataset/resized/` → `post_image_dataset/lora/`). Writes `{stem}_anima_{encoder}.safetensors` sidecars consumed by IP-Adapter.
 - `library/datasets/base.py` — `_try_load_ip_features` reads sidecars in `__getitem__`; stacks into `batch["ip_features"]` per training bucket.
 - `library/vision/resampler.py` — `PerceiverResampler` (extracted from the archived img2emb pipeline).
 - `library/vision/buckets.py` — per-encoder PE bucket spec for dynamic-resolution resize.

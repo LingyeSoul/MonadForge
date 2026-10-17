@@ -1,33 +1,10 @@
-# LoRA family — method selection via toggle blocks.
-#
-# Default (uncommented) = LoRA + OrthoLoRA + T-LoRA + Hydra (σ-routed).
-# Routing config is on the three-axis surface (plan2.md §three-axis-config):
-#
-#     use_moe_style    = False | "shared_A" | "independent_A"
-#     route_per_layer  = true | false
-#     router_source    = "none" | "input" | "sigma" | "fei" | "crossattn_emb"
-#
-# To switch routing modes:
-#   - Plain LoRA stack (no MoE): set `use_moe_style = false` and drop every
-#     `*router*` / `num_experts` / `balance_*` / `sigma_*` / `fei_*` key.
-#   - FEI-on-Hydra (Phase 1, FeRA-style content-aware on the shared-A stack):
-#     comment out the σ-router block and uncomment the FEI block near the
-#     bottom of this file.
-#   - Author-faithful FeRA (independent-A + global FEI router): set
-#     `use_moe_style = "independent_A"` + `route_per_layer = false` +
-#     `router_source = "fei"` here. (The standalone `gui-methods/fera.toml`
-#     variant and its `make exp-fera` shortcut were removed.)
-#
-# Per-variant dim/alpha/lr/epochs are experiment drift, not calibrated
-# defaults — tune freely.
-# 90, 128, 152, 180, 214 each for 16, 32, 48, 64, 96
 network_alpha = 128
 network_dim = 32
 
 learning_rate = 2e-5
-max_train_epochs = 6
-save_every_n_epochs = 6
-checkpointing_epochs = 6
+max_train_epochs = 8
+save_every_n_epochs = 8
+checkpointing_epochs = 8
 
 use_shuffled_caption_variants = true
 use_randomized_caption_variants = true
@@ -54,21 +31,17 @@ path_pattern = "sincos/*"
 # -------------
 # Ortho-lora
 down_init = "weight_svd"
+# Upstream orthogonal SVD windows and interleaved shards.
+svd_slice = 0
+svd_slice_count = 0
 # use_ortho_init = true
-
-# -------------
-# OrthoInit: top-r SVD of W0 as *trainable* init (no frozen-subspace cap).
-# Full LoRA expressivity with a W0-aligned warm start — drop-in replacement for
-# `use_ortho` when ortho/T-LoRA-ortho feels too weak. Mutually exclusive with
-# use_ortho; non-MoE / non-chimera only. To use: comment out `use_ortho` above.
-# use_ortho_init = true
-
-# -------------
-# Timestep mask
 
 use_timestep_mask = true
 min_rank = 1
 alpha_rank_scale = 1.0
+
+# -------------
+# Timestep mask (configured above)
 
 
 # ---
@@ -182,8 +155,8 @@ alpha_rank_scale = 1.0
 # below; anneal stays off pending its A/B (candidate 0.25); lever 3 closed.
 use_repa       = true
 repa_mode      = "relational"
-repa_weight    = 0.05          # vs v1's 0.5 — late-run gradient is where style drifts
-repa_layer     = 8            # block to hook (of 28)
+repa_weight    = 0.05
+repa_layer     = 8
 repa_encoder   = "pe_spatial"
 repa_lr_scale  = 1.0          # head LR multiplier (absolute mode only)
 repa_spatial_norm = false

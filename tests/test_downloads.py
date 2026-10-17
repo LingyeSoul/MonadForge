@@ -1,4 +1,4 @@
-from __future__ import annotations
+"""The model catalog and the ``make download-*`` targets that drive it.
 
 import urllib.error
 from io import BytesIO
@@ -6,27 +6,152 @@ from pathlib import Path
 
 import pytest
 
-from scripts.tasks import downloads
+from library import downloads as DL
 
 
-def test_danbooru_tags_download_url_points_to_source_repo():
-    assert downloads.DANBOORU_TAGS_URLS == (
-        "https://raw.githubusercontent.com/Localsmile/danbooru_KR_wiki_tag_search/main/danbooru_tags_classified.csv",
+def test_the_two_catalog_halves_have_disjoint_ids():
+    """``by_id`` merges them; a collision would silently shadow a row."""
+    trainer = {a.id for a in DL.catalog()}
+    curation = {a.id for a in DL.curation_catalog()}
+    assert not (trainer & curation)
+    assert len(DL.by_id()) == len(trainer) + len(curation)
+
+
+def test_every_group_and_the_default_set_name_real_rows():
+    """A typo in ``GROUPS`` is a make target that downloads nothing."""
+    known = set(DL.by_id())
+    for group, ids in DL.GROUPS.items():
+        assert set(ids) <= known, group
+    assert set(DL.DEFAULT_SET) <= known
+    assert "mit" not in DL.GROUPS
+
+
+def test_every_alias_and_pack_resolves():
+    """``resolve`` precedence is alias → pack → row; every token of the first
+    two kinds must land on rows, and the two ``pe`` meanings must differ."""
+    for name in (*DL.GROUP_ALIASES, *DL.by_pack()):
+        assert DL.resolve([name]), name
+    # The make target `pe` is both towers; the pack `pe` is PE-Core alone.
+    assert [a.id for a in DL.resolve(["pe"])] == ["pe_core", "pe_spatial"]
+    assert [a.id for a in DL.by_pack()["pe"]] == ["pe_core"]
+    # `tagger` the alias (checkpoint only) shadows `tagger` the pack.
+    assert [a.id for a in DL.resolve(["tagger"])] == ["tagger"]
+    assert len(DL.by_pack()["tagger"]) > 1
+
+
+def test_every_visible_row_belongs_to_a_listed_pack():
+    """The GUI renders by pack: a row with a pack id that is not in ``PACKS``
+    would silently vanish from both tabs."""
+    pack_ids = {p.id for p in DL.PACKS}
+    for a in DL.full_catalog():
+        assert a.pack in pack_ids, a.id
+    assert DL.PACKS[: len(DL.TRAINER_PACKS)] == DL.TRAINER_PACKS
+    assert [p.id for p in DL.TRAINER_PACKS] == [
+        "anima",
+        "pe",
+        "cjk",
+        "moss-base",
+        "moss-sft",
+    ]
+    assert not (set(DL.HIDDEN_PACKS) & pack_ids)
+
+
+def test_hidden_pack_rows_are_not_on_the_trainer_side(monkeypatch):
+    """A pack in ``HIDDEN_PACKS`` is neither listed, resolved nor downloadable
+    from here. The set is empty since the package dropped the MIT text
+    segmenter (``text_mask``) itself — pin that the rows are really gone and
+    that the seam still filters when a pack is named."""
+    from anime_tools.downloads import catalog as package_catalog
+
+    assert DL.HIDDEN_PACKS == ()
+    assert not {"mit_text", "ctd_onnx"} & {a.id for a in package_catalog()}
+    with pytest.raises(KeyError):
+        DL.resolve(["mit_text"])
+    with pytest.raises(KeyError):
+        DL.resolve(["text_mask"])
+
+    monkeypatch.setattr(DL, "HIDDEN_PACKS", ("grouping",))
+    hidden = {a.id for a in package_catalog() if a.pack == "grouping"}
+    assert hidden == {"pe_spatial"}
+    assert not (hidden & {a.id for a in DL.curation_catalog()})
+
+
+def test_the_first_run_set_is_the_mandatory_set():
+    """v2 default: masking is opt-in, so SAM3 must not be in a fresh install's
+    path — its gated repo was the first-run failure this removes. The CJK vocab
+    pack is the opposite: base.toml enables it, so the set must install it."""
+    assert "sam3" not in DL.DEFAULT_SET
+    assert "vocab_pack" in DL.DEFAULT_SET
+    assert "mit_text" not in DL.DEFAULT_SET
+    assert "mit_text" not in DL.by_id()
+    # …and the rows a default preprocess actually needs are.
+    assert {"anima_dit", "anima_te", "anima_vae", "tagger"} <= set(DL.DEFAULT_SET)
+
+
+def test_resolve_expands_groups_and_dedupes_in_catalog_order():
+    ids = [a.id for a in DL.resolve(["pe", "pe_core", "anima"])]
+    assert ids == ["anima_dit", "anima_te", "anima_vae", "pe_core", "pe_spatial"]
+
+
+def test_resolve_expands_a_pack_id():
+    """``make download-model ARGS=ocr`` is the pack, in catalog order."""
+    ids = [a.id for a in DL.resolve(["ocr"])]
+    assert ids == [a.id for a in DL.by_pack()["ocr"]]
+    assert ids and all(DL.by_id()[i].pack == "ocr" for i in ids)
+
+
+def test_by_pack_keeps_pack_order_and_drops_empty_packs():
+    grouped = DL.by_pack()
+    assert list(grouped) == [p.id for p in DL.PACKS if p.id in grouped]
+    assert all(rows for rows in grouped.values())
+    trainer_only = DL.by_pack(DL.catalog())
+    assert list(trainer_only) == ["anima", "pe", "cjk", "moss-base", "moss-sft"]
+
+
+def test_resolve_raises_naming_the_unknown_token():
+    with pytest.raises(KeyError) as exc:
+        DL.resolve(["sam3", "nope"])
+    assert "nope" in str(exc.value)
+
+
+def test_rows_land_where_the_loaders_look():
+    """The catalog's one rule: a path a loader owns separately is a Download
+    button that writes where the loader will not look."""
+    from library.anima import vocab_pack
+    from library.vision import encoders
+
+    rows = DL.by_id()
+    assert encoders._default_pe_model_id() == str(DL.default_pe_core_path())
+    assert rows["pe_core"].dest / DL.PE_CORE_FILENAME == DL.default_pe_core_path()
+
+    assert vocab_pack.PACK_REPO == rows["vocab_pack"].repo
+    assert vocab_pack.DEFAULT_PACK_PREFIX.startswith(f"models/{DL.VOCAB_PACK_DIR}/")
+    assert rows["vocab_pack"].dest == DL.default_vocab_pack_dir()
+    from library.env import anima_home, resolve_under_home
+
+    assert (
+        resolve_under_home(vocab_pack.DEFAULT_PACK_PREFIX)
+        == DL.default_vocab_pack_prefix()
+        == anima_home() / "models" / DL.VOCAB_PACK_DIR / DL.VOCAB_PACK_STEM
     )
 
 
-class _FakeResponse:
-    def __init__(self, payload: bytes):
-        self._payload = payload
+def test_moss_rows_land_where_library_moss_looks():
+    """``library/moss`` reads every part from ``<variant>/<subfolder>``; the TE,
+    VAE and tokenizer only ever from Base, so SFT ships its DiT alone."""
+    from library.moss import requests as moss
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc):
-        return False
-
-    def read(self) -> bytes:
-        return self._payload
+    rows = DL.by_id()
+    for variant in moss.VARIANTS:
+        root = moss.variant_dir(None, variant)
+        assert rows[f"moss_{variant}_root"].dest == root
+        assert rows[f"moss_{variant}_transformer"].dest == root / "transformer"
+    base = moss.variant_dir(None, "base")
+    for part in ("text_encoder", "vae", "tokenizer", "scheduler"):
+        assert rows[f"moss_base_{part}"].dest == base / part
+        assert f"moss_sft_{part}" not in rows
+    assert not set(DL.GROUPS["moss-base"]) & set(DL.DEFAULT_SET)
+    assert not set(DL.GROUPS["moss-sft"]) & set(DL.DEFAULT_SET)
 
 
 def test_download_danbooru_tags_writes_models_file(tmp_path, monkeypatch):
@@ -36,36 +161,33 @@ def test_download_danbooru_tags_writes_models_file(tmp_path, monkeypatch):
         downloads, "DANBOORU_TAGS_URLS", ("https://example.test/tags.csv",)
     )
     monkeypatch.setattr(
-        downloads.urllib.request,
-        "urlopen",
-        lambda _req, timeout=60: _FakeResponse(
-            b"name,category,post_count,description\n1girl,0,1,test\n"
-        ),
+        type(asset), "fetch", lambda *_a, **_k: pytest.fail("re-fetched")
     )
 
-    downloads.cmd_download_danbooru_tags([])
-
-    assert dest.read_text(encoding="utf-8").startswith("name,category")
+    assert DL.fetch(asset, log=lambda _m: None) is False
 
 
-def test_download_danbooru_tags_skips_existing_without_force(tmp_path, monkeypatch):
-    dest = tmp_path / "models" / "danbooru_tags_classified.csv"
-    dest.parent.mkdir(parents=True)
-    dest.write_text("existing", encoding="utf-8")
-    monkeypatch.setattr(downloads, "DANBOORU_TAGS_PATH", dest)
-    called = False
+def test_fetch_all_continues_past_a_failure_and_reports_it():
+    """One gated repo without granted access must not abort the row beside it."""
+    fetched: list[str] = []
 
-    def _fail_if_called(*_args, **_kwargs):
-        nonlocal called
-        called = True
-        return _FakeResponse(BytesIO().read())
+    class _Row:
+        def __init__(self, title, ok):
+            self.title, self._ok, self.installed = title, ok, False
+            self.repo = self.location = "-"
+            self.dest = None
 
-    monkeypatch.setattr(downloads.urllib.request, "urlopen", _fail_if_called)
+        def fetch(self, _log):
+            if not self._ok:
+                raise FileNotFoundError("gated")
+            fetched.append(self.title)
 
-    downloads.cmd_download_danbooru_tags([])
+    failed = DL.fetch_all(
+        [_Row("a", True), _Row("b", False), _Row("c", True)], log=lambda _m: None
+    )
 
-    assert not called
-    assert dest.read_text(encoding="utf-8") == "existing"
+    assert fetched == ["a", "c"]
+    assert failed == ["b"]
 
 
 def test_download_danbooru_tags_failure_names_source_repo(tmp_path, monkeypatch):
@@ -79,9 +201,18 @@ def test_download_danbooru_tags_failure_names_source_repo(tmp_path, monkeypatch)
         "urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(urllib.error.URLError("nope")),
     )
+    targets = [
+        n
+        for n in tasks.COMMANDS
+        if n.startswith("download-")
+        and n not in ("download-anima-variant", "download-list", "download-model")
+    ]
+    assert len(targets) >= 8
+    assert "download-mit" not in tasks.COMMANDS
+    for name in targets:
+        tasks.COMMANDS[name][0]([])
+    assert all(ids for ids in picked)
 
-    with pytest.raises(SystemExit) as exc:
-        downloads.cmd_download_danbooru_tags([])
 
     assert "Localsmile/danbooru_KR_wiki_tag_search" in str(exc.value)
 

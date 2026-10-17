@@ -1,9 +1,7 @@
 """Dataset-caching orchestration shared by the ``preprocess/`` entry points.
 
 This package holds the reusable "drive the primitives over a *dataset*" logic
-that the ``preprocess/cache_*.py`` scripts otherwise inlined in their ``main()``
-bodies (see ``docs/proposal/tooling_architecture.md`` §A): the walk/group/skip
-loop (``_dataset``) plus one module per cache kind whose function takes the
+behind the ``preprocess/cache_*.py`` scripts: the walk/group/skip loop (``_dataset``) plus one module per cache kind whose function takes the
 already-loaded model + explicit paths and returns a :class:`PreprocessStats`.
 Entry points keep argparse + model load + an optional ``tqdm`` progress bar.
 
@@ -27,7 +25,9 @@ _LAZY = {
     "process_image": ("images", "process_image"),
     "resize_to_buckets": ("images", "resize_to_buckets"),
     "cache_latents": ("latents", "cache_latents"),
+    "cache_demoted_latents": ("latents", "cache_demoted_latents"),
     "count_pending_latents": ("latents", "count_pending_latents"),
+    "count_pending_demoted": ("latents", "count_pending_demoted"),
     "get_latents_npz_path": ("latents", "get_latents_npz_path"),
     "cache_pe_features": ("pe", "cache_pe_features"),
     "compute_pe_centroid": ("pe", "compute_pe_centroid"),
@@ -40,13 +40,22 @@ _LAZY = {
     "StaleCaches": ("reconcile", "StaleCaches"),
     "cache_text_embeddings": ("text", "cache_text_embeddings"),
     "count_pending_text": ("text", "count_pending_text"),
-    # Torch-free leaf (caption_variants) so the caption-correction step / GUI can
-    # import these without dragging torch in via the text submodule.
-    "generate_caption_variants": ("caption_variants", "generate_caption_variants"),
-    "build_erasure_token_pool": ("caption_variants", "build_erasure_token_pool"),
-    "variants_sidecar_path": ("caption_variants", "variants_sidecar_path"),
-    "write_variants_sidecar": ("caption_variants", "write_variants_sidecar"),
-    "read_variants_sidecar": ("caption_variants", "read_variants_sidecar"),
+    # Torch-free leaf (anime_tools.captions.variants), so the caption-correction
+    # step / GUI can import these without torch via the text submodule.
+    "generate_caption_variants": (
+        "anime_tools.captions.variants",
+        "generate_caption_variants",
+    ),
+    "build_erasure_token_pool": (
+        "anime_tools.captions.variants",
+        "build_erasure_token_pool",
+    ),
+    "variants_sidecar_path": ("anime_tools.captions.variants", "variants_sidecar_path"),
+    "write_variants_sidecar": (
+        "anime_tools.captions.variants",
+        "write_variants_sidecar",
+    ),
+    "read_variants_sidecar": ("anime_tools.captions.variants", "read_variants_sidecar"),
 }
 
 __all__ = list(_LAZY)
@@ -57,7 +66,8 @@ def __getattr__(name: str):
         submodule, attr = _LAZY[name]
     except KeyError:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-    value = getattr(import_module(f"{__name__}.{submodule}"), attr)
+    target = submodule if "." in submodule else f"{__name__}.{submodule}"
+    value = getattr(import_module(target), attr)
     globals()[name] = value  # cache so __getattr__ runs once per name
     return value
 

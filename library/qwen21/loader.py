@@ -12,6 +12,7 @@ Anima FP16 policies are intentionally not applied to this different model.
 from __future__ import annotations
 
 import gc
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -19,7 +20,7 @@ from accelerate import init_empty_weights
 
 from typing import TYPE_CHECKING
 
-from library.qwen21.requests import CONFIG_DIR, ModelPaths
+from library.qwen21.requests import CONFIG_DIR, ModelPaths, TrainRequest, model_paths
 from library.qwen21.checkpoint import (
     assert_unquantized_directory,
     read_checkpoint,
@@ -179,7 +180,7 @@ def place(
     0 keeps everything resident. Returns the ``Attached`` handle (or None) —
     the caller must ``detach()`` it to give the VRAM back.
     """
-    from library.qwen21 import blockswap
+    import library.runtime.blockswap as blockswap
 
     blocks = blockswap.find_blocks(model, blocks_path)
     if blocks_to_swap is None:
@@ -292,3 +293,57 @@ def drop_text_encoder(pipe) -> None:
     pipe.register_to_config(text_encoder=None)
     del te
     empty_cache()
+
+
+@dataclass(frozen=True)
+class Plan:
+    """Which strategy the card can afford."""
+
+    name: str
+    reason: str
+
+    @property
+    def resident_transformer(self) -> bool:
+        return self.name in ("full", "split")
+
+
+def choose_plan(device: int = 0, headroom_gb: float = 2.0) -> Plan:
+    free = free_vram_gb(device)
+    if free >= _TRANSFORMER_GB + _TEXT_ENCODER_GB + _VAE_GB + headroom_gb:
+        return Plan("full", f"{free:.1f} GB free — everything resident")
+    if free >= _TRANSFORMER_GB + headroom_gb:
+        return Plan(
+            "split",
+            f"{free:.1f} GB free — transformer resident, text encoder streamed "
+            "for the encode pass then dropped",
+        )
+    return Plan("sequential", f"{free:.1f} GB free — submodule streaming throughout")
+
+
+_TRANSFORMER_GB = 14.3
+_TEXT_ENCODER_GB = 17.6
+_VAE_GB = 1.4
+
+
+def load_pipeline(
+    model_dir=None, dtype=torch.bfloat16, *, components=None, text_encoder=None
+):
+    """Upstream convenience API backed by the strict local component loaders."""
+    paths = model_paths(TrainRequest(model_dir=str(model_dir or "")))
+    selected = set(components or ("text_encoder", "transformer", "vae"))
+    te = (
+        text_encoder
+        if text_encoder is not None
+        else (
+            load_text_encoder(paths.text_encoder, dtype)
+            if "text_encoder" in selected
+            else None
+        )
+    )
+    return build_pipeline(
+        paths,
+        load_vae(paths.vae, dtype) if "vae" in selected else None,
+        te,
+        load_transformer(paths.dit, dtype) if "transformer" in selected else None,
+        load_scheduler(paths.scheduler),
+    )

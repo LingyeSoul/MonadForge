@@ -195,6 +195,7 @@ def test_fuse_unfuse_preserves_forward_and_restores_weight():
         assert torch.allclose(base(x), expected, atol=1e-5, rtol=1e-5)
 
 
+@pytest.mark.training_step
 def test_zero_init_trains_w2_chain_end_and_magnitudes_first():
     base, module = _make_module(rank=4, alpha=4, factor=16)
     module.apply_to()

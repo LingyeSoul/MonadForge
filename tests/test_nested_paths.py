@@ -8,9 +8,9 @@ Covers:
   flat-fallback, missing.
 - ``library.datasets.subsets._resolve_default_mask_dir`` — priority order
   across the new + legacy candidates.
-- ``scripts.preprocess.merge_masks`` end-to-end through ``main()`` — `(rel_dir,
+- ``anime_tools.masking.cli.merge_masks`` end-to-end through ``main()`` — `(rel_dir,
   name)` keying, flat-to-flat passthrough, mixed nested+flat inputs.
-- ``scripts.preprocess.resize_images.process_image`` — writes under
+- ``library.preprocess.images.process_image`` (the anime_tools resize worker) — writes under
   ``out_dir/<rel>/`` and mirrors the caption sidecar.
 """
 
@@ -195,24 +195,69 @@ def test_resolve_default_mask_dir_priority(
     assert _resolve_default_mask_dir() == "post_image_dataset/masks"
 
 
+def test_resolve_configured_mask_dir_gates_on_existence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A config-level mask_dir only reaches the subsets when the dir exists.
+
+    ``configs/preprocess.toml`` ships ``mask_dir`` active, so a maskless
+    checkout would otherwise hand every subset a nonexistent root (flipping
+    ``alpha_mask`` on and suppressing the legacy auto-resolution).
+    """
+    from library.datasets.subsets import resolve_configured_mask_dir
+
+    monkeypatch.chdir(tmp_path)
+    assert resolve_configured_mask_dir(None) is None
+    assert resolve_configured_mask_dir("post_image_dataset/masks") is None
+    (tmp_path / "post_image_dataset" / "masks").mkdir(parents=True)
+    assert (
+        resolve_configured_mask_dir("post_image_dataset/masks")
+        == "post_image_dataset/masks"
+    )
+
+
+def test_config_mask_dir_reaches_subsets_via_blueprint_fallback() -> None:
+    """`mask_dir` rides preprocess.toml → args → the BlueprintGenerator
+    fallback, and a subset's own `mask_dir` still wins over it."""
+    import argparse
+
+    from library.config.loader import BlueprintGenerator, ConfigSanitizer
+
+    gen = BlueprintGenerator(ConfigSanitizer(support_dropout=True))
+    user_config = {
+        "general": {},
+        "datasets": [
+            {
+                "subsets": [
+                    {"image_dir": "a"},
+                    {"image_dir": "b", "mask_dir": "own/masks"},
+                ]
+            }
+        ],
+    }
+    namespace = argparse.Namespace(
+        mask_dir="cfg/masks", debug_dataset=False, prior_loss_weight=1.0
+    )
+    subsets = gen.generate(user_config, namespace).dataset_group.datasets[0].subsets
+    assert subsets[0].params.mask_dir == "cfg/masks"
+    assert subsets[1].params.mask_dir == "own/masks"
+
+    namespace.mask_dir = None
+    subsets = gen.generate(user_config, namespace).dataset_group.datasets[0].subsets
+    assert subsets[0].params.mask_dir is None
+    assert subsets[1].params.mask_dir == "own/masks"
+
+
 # ---------------------------------------------------------------------------
 # merge_masks.py (driver-level)
 # ---------------------------------------------------------------------------
 
 
 def _run_merge(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> None:
-    """Run ``scripts/preprocess/merge_masks.py:main`` with the given argv."""
-    repo_root = Path(__file__).resolve().parent.parent
-    preprocess_dir = repo_root / "scripts" / "preprocess"
-    monkeypatch.syspath_prepend(str(preprocess_dir))
+    """Run ``anime_tools.masking.cli.merge_masks:main`` with the given argv."""
     monkeypatch.setattr(sys, "argv", ["merge_masks.py", *argv])
-
-    # Force a fresh import each test — main() reads sys.argv at call time but
-    # the module-level imports run once; reusing it across tests is fine.
-    if "merge_masks" in sys.modules:
-        merge_masks = sys.modules["merge_masks"]
-    else:
-        merge_masks = importlib.import_module("merge_masks")
+    # main() reads sys.argv at call time; the module-level imports run once.
+    merge_masks = importlib.import_module("anime_tools.masking.cli.merge_masks")
     merge_masks.main()
 
 
@@ -294,7 +339,7 @@ def test_merge_masks_mixed_rel_does_not_collide(
 
 
 # ---------------------------------------------------------------------------
-# resize_images.process_image
+# resize stage process_image
 # ---------------------------------------------------------------------------
 
 
@@ -305,58 +350,34 @@ def _write_test_image(path: Path, size: tuple[int, int] = (1024, 1024)) -> None:
 
 def test_resize_images_nested_output(tmp_path: Path) -> None:
     """process_image writes under out_dir/<rel>/ when rel_dir is set."""
-    repo_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(repo_root / "scripts" / "preprocess"))
-    try:
-        from resize_images import process_image
-    finally:
-        sys.path.pop(0)
+    from library.preprocess.images import ResizeOptions, process_image
 
     src = tmp_path / "image_dataset" / "charA"
     img_path = src / "cover.png"
     _write_test_image(img_path)
-    # Caption sidecar should follow the same nested layout.
-    img_path.with_suffix(".txt").write_text("a test caption", encoding="utf-8")
 
     dst = tmp_path / "post_image_dataset" / "resized"
-    bucket_args = (
-        (1024, 1024),  # max_reso (vestigial under free-fit)
-        512,  # min_size
-        2048,  # max_size
-        64,  # reso_steps
-        # no target_res → defaults to the canonical 1024 tier; free-fit resize
-    )
-
+    # Default options → the canonical 1024 tier; free-fit resize.
     name, _reso, _skipped = process_image(
-        img_path, dst, bucket_args, copy_captions=True, rel_dir="charA"
+        img_path, dst, ResizeOptions(), rel_dir="charA"
     )
 
     assert name == "cover.png"
     out_png = dst / "charA" / "cover.png"
-    out_txt = dst / "charA" / "cover.txt"
     assert out_png.exists(), "resized PNG not written under nested layout"
-    assert out_txt.exists(), "caption sidecar not mirrored into nested layout"
     # Flat layout must NOT be populated when rel_dir is set.
     assert not (dst / "cover.png").exists()
 
 
 def test_resize_images_flat_output(tmp_path: Path) -> None:
     """Empty rel_dir collapses back to the legacy flat layout (no breakage)."""
-    repo_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(repo_root / "scripts" / "preprocess"))
-    try:
-        from resize_images import process_image
-    finally:
-        sys.path.pop(0)
+    from library.preprocess.images import ResizeOptions, process_image
 
     img_path = tmp_path / "image_dataset" / "cover.png"
     _write_test_image(img_path)
 
     dst = tmp_path / "post_image_dataset" / "resized"
-    # 4 elements → target_res defaults to the canonical 1024 tier (free-fit).
-    bucket_args = ((1024, 1024), 512, 2048, 64)
-
-    process_image(img_path, dst, bucket_args, copy_captions=False, rel_dir="")
+    process_image(img_path, dst, ResizeOptions(), rel_dir="")
     assert (dst / "cover.png").exists()
     # No phantom subdir was created.
     assert not any(p.is_dir() for p in dst.iterdir())

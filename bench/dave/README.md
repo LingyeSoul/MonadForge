@@ -27,7 +27,7 @@ energy. See the root `image.png` for the figure we worked from.
   intervention is a **post-`forward` hook** (forward_hook-not-override invariant),
   branchless (`h − (1−α)·μ`, α=1 → exact no-op) so it survives `compile_blocks()`.
 - It is a *representation* edit inside the forward, **not** a sampler-boundary
-  correction like DCW/CNS/SMC — so it lives as a hook + per-step model buffer
+  correction like CNS/SMC — so it lives as a hook + per-step model buffer
   (the Spectrum/mod-guidance pattern), not in `library/inference/corrections/`'s
   post-step callback shape.
 

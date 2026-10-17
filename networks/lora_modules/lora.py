@@ -17,6 +17,57 @@ from networks.lora_modules.custom_autograd import (
 logger = logging.getLogger(__name__)
 
 
+# Smallest (lam_cols / lam_0) a fp32 eigh still resolves into the right
+# eigenvector. lam is sigma^2, so 1e-3 is a 32:1 singular-value window — every
+# weight group of the base DiT clears it by an order of magnitude at the 256
+# columns eight r=32 slices need, except the ones that need the SVD anyway.
+_GRAM_EIG_FLOOR = 1e-3
+
+
+def _gram_window_is_resolvable(lam: torch.Tensor) -> bool:
+    """``lam`` = the descending eigenvalues of the window actually requested."""
+    return bool(lam[0] > 0 and (lam[-1] / lam[0]).item() >= _GRAM_EIG_FLOOR)
+
+
+def _top_right_singular_vectors(W: torch.Tensor, cols: int) -> torch.Tensor:
+    """Top-``cols`` right singular vectors of ``W``, as an ``(in, cols)`` matrix.
+
+    The same subspace ``torch.linalg.svd(W).Vh[:cols].T`` returns, but routed
+    through an eigendecomposition of the **smaller Gram matrix**: ~7.5x cheaper
+    on the base DiT *and* tighter-orthonormal columns than cuSOLVER's Jacobi
+    SVD (1e-6 vs 1e-3 max off-diagonal), which is the property ``svd_slice``
+    leans on.
+
+    What the Gram costs is the **bottom** of the window: it squares the spectrum,
+    so ``lam_cols / lam_0 == (sigma_cols / sigma_0)^2`` sinks under the fp32 eigh
+    error floor long before the SVD would notice, and those eigenvectors come
+    back orthonormal but spanning the wrong subspace (the 256-vector
+    ``(6144, 256)`` Linears decay 1569:1 and a slice-7 window — the last 32 of
+    the 256 — captured only 0.796 of the exact one). ``in > out`` is worse still:
+    the ``(out, out)`` eigenvectors are U, and ``V_r = W^T U_r / sigma_r``
+    amplifies the same error again (the 3325:1 adaln ``.1`` Linears lose
+    orthogonality outright, 0.49). So both branches read their own conditioning
+    off the eigenvalues they just computed and hand the layer to the SVD when the
+    requested window reaches too deep — which is cheap, because those are the
+    narrow layers.
+    """
+    out_dim, in_dim = W.shape
+    if in_dim <= out_dim:
+        # V are the eigenvectors of the (in x in) Gram directly.
+        lam, Q = torch.linalg.eigh(W.T @ W)
+        lam, V = lam.flip(-1)[:cols], Q.flip(-1)[:, :cols]
+        if _gram_window_is_resolvable(lam):
+            return V
+    elif cols <= out_dim:
+        # out < in: eigh gives U, and V follows through W^T U / sigma.
+        lam, Q = torch.linalg.eigh(W @ W.T)
+        lam, U = lam.flip(-1)[:cols], Q.flip(-1)[:, :cols]
+        if _gram_window_is_resolvable(lam):
+            return (W.T @ U) / lam.clamp_min(0).sqrt().clamp_min(1e-12)
+    _, _, Vh = torch.linalg.svd(W, full_matrices=False)
+    return Vh.T[:, :cols]
+
+
 class LoRAModule(BaseLoRAModule):
     supports_conv2d = True
 
@@ -33,6 +84,8 @@ class LoRAModule(BaseLoRAModule):
         channel_scale=None,
         down_init="kaiming",
         grad_basis=None,
+        svd_slice=0,
+        svd_slice_count=0,
     ):
         """if alpha == 0 or None, alpha is rank (no scaling).
 
@@ -44,7 +97,13 @@ class LoRAModule(BaseLoRAModule):
         take the same scale-matched seed from a precomputed ``grad_basis``
         (``in × r_store``; see networks/grad_basis.py). Still ordinary LoRA after
         init in every mode: ΔW=0 (up=0), full B trainable on step 1.
-        See docs/methods/svd-down-lora.md, docs/proposal/grad_basis_init.md.
+        ``svd_slice=k`` (weight_svd only) takes right singular vectors
+        ``[k·r, (k+1)·r)`` instead of the top-r, so adapters trained with
+        different slices own mutually orthogonal input subspaces (slices of one
+        orthonormal basis) — a per-artist address for merging. 0 = top-r.
+        ``svd_slice_count=N`` (> 0) interleaves instead: slice k takes vectors
+        ``{k, k+N, k+2N, …}``, so every slice gets one of the top-N directions.
+        See docs/methods/svd-down-lora.md.
         """
         super().__init__(
             lora_name,
@@ -79,7 +138,7 @@ class LoRAModule(BaseLoRAModule):
         torch.nn.init.zeros_(self.lora_up.weight)
 
         if down_init == "weight_svd":
-            self._init_down_weight_svd(org_module)
+            self._init_down_weight_svd(org_module, svd_slice, svd_slice_count)
         elif down_init in ("grad_svd", "basis_file"):
             self._init_down_grad_basis(grad_basis, down_init)
         elif down_init != "kaiming":
@@ -97,15 +156,23 @@ class LoRAModule(BaseLoRAModule):
         self.org_module_ref = [org_module]
         self._fused = False
 
-    def _init_down_weight_svd(self, org_module: torch.nn.Module) -> None:
+    def _init_down_weight_svd(
+        self, org_module: torch.nn.Module, svd_slice: int = 0, svd_slice_count: int = 0
+    ) -> None:
         """SVD-Down: seed ``lora_down`` with W0's top-r right singular vectors.
+
+        ``svd_slice=k`` shifts the window to singular vectors ``[k·r, (k+1)·r)``;
+        with ``svd_slice_count=N`` it takes the interleaved comb ``k + N·j``
+        (j < r) instead. The window must fit inside ``min(W.shape)`` or the init
+        refuses — on the base DiT the 256-row adaln Linears cap r=32 at slices
+        0–7 (contiguous) or N·r ≤ 256 (interleaved).
 
         ``A_0 = V_r^T / sqrt(3)`` where ``W0 = U Σ V^T`` and the ``1/sqrt(3)``
         matches the expected row-norm of the Kaiming default (a row of V_r^T has
         norm 1; a Kaiming row has E[‖·‖²] ≈ 1/3), so "better direction" is not
-        confounded with "larger effective step". Linear only in v0 — Conv2d keeps
-        the Kaiming init already written above. Uses the same randomized SVD as
-        ``ortho.py`` (no new numerical machinery).
+        confounded with "larger effective step". Linear only — Conv2d keeps the
+        Kaiming init already written above. The basis comes from
+        ``_top_right_singular_vectors`` (exact, Gram-routed).
         """
         if not isinstance(self.lora_down, torch.nn.Linear):
             logger.warning(
@@ -115,11 +182,23 @@ class LoRAModule(BaseLoRAModule):
             return
         W = org_module.weight.data.float()
         rank = self.lora_dim
-        q = min(rank + 6, min(W.shape))
-        _, _, V = torch.svd_lowrank(W, q=q, niter=2)  # V: (in_features, q)
+        if svd_slice_count:
+            idx = int(svd_slice) + int(svd_slice_count) * torch.arange(rank)
+        else:
+            idx = int(svd_slice) * rank + torch.arange(rank)
+        offset, end = int(idx[0]), int(idx[-1]) + 1
+        if end > min(W.shape):
+            raise ValueError(
+                f"svd_slice={svd_slice}: window [{offset}, {end}) exceeds "
+                f"the {min(W.shape)}-vector spectrum of {self.lora_name} "
+                f"({tuple(W.shape)}); lower the slice or the rank."
+            )
+        # Exact basis: slice 0 is the actual top-r and every slice pair is
+        # exactly orthogonal (a randomized sketch would break both).
+        V = _top_right_singular_vectors(W, end)
         with torch.no_grad():
-            v_r = (V[:, :rank].T / math.sqrt(3)).to(self.lora_down.weight.dtype)
-            self.lora_down.weight.copy_(v_r)
+            v_r = V[:, idx].T / math.sqrt(3)
+            self.lora_down.weight.copy_(v_r.to(self.lora_down.weight.dtype))
 
     def _init_down_grad_basis(self, grad_basis, mode: str) -> None:
         """Gradient-SVD: seed ``lora_down`` from a precomputed gradient row space.
@@ -145,10 +224,9 @@ class LoRAModule(BaseLoRAModule):
             self.lora_down.weight.data, grad_basis, lora_name=self.lora_name
         )
 
+
     # Forward is the shared BaseLoRAModule scaffold; this class supplies the
-    # down / up GEMMs (Linear-or-Conv2d dispatch) and the eval delta. The
-    # T-LoRA gate is the inherited default (``lx * _timestep_mask``). The
-    # ``_fused`` short-circuit + the dtype-policy commentary live in the base.
+    # down / up GEMMs (Linear-or-Conv2d dispatch) and the eval delta.
 
     def _project_down(self, x, work):
         if (
@@ -295,7 +373,7 @@ class LoRAModule(BaseLoRAModule):
 # Co-located with LoRAModule because they operate on the layout this class
 # writes (``.lora_down.weight`` / ``.lora_up.weight`` / ``.alpha`` /
 # optional ``.inv_scale``). The standard variant write fires these; the
-# Hydra and Chimera writers also defuse their plain-LoRA legs by calling
+# Hydra writer also defuses its plain-LoRA leg by calling
 # :func:`defuse_standard_qkv` directly.
 
 
@@ -313,10 +391,7 @@ def defuse_standard_qkv(state_dict: Dict[str, torch.Tensor]) -> None:
     Used by:
       * the standard write path,
       * the Hydra write path's "plain-LoRA leg" (modules excluded from
-        ``router_targets`` save under the plain layout),
-      * the Chimera write path's plain-LoRA leg (router_targets excludes
-        attention projections by default — OrthoLoRA fallback lands as
-        plain LoRA after the ortho distill step).
+        ``router_targets`` save under the plain layout).
     """
     fused_groups: List[tuple] = []
     for key in list(state_dict.keys()):
@@ -357,9 +432,7 @@ def bake_inv_scale(state_dict: Dict[str, torch.Tensor]) -> None:
     ``F.linear(x * inv_scale, down)``. Pre-folding ``down *= inv_scale`` makes
     the on-disk delta act on raw inputs — a standard LoRA that any consumer
     (stock ComfyUI, ``merge_to_dit``, third-party loaders) applies correctly
-    without knowing the ``.inv_scale`` convention. This is exactly what every
-    loader does on load (``LoRAModule.merge_to`` / ``get_weight`` / the inference
-    factory's ``inv_scale``-keyed reconstruction), precomputed once at save.
+    without knowing the ``.inv_scale`` convention.
 
     Operates on the split (post-defuse) layout: each ``<prefix>.inv_scale`` has
     a sibling ``<prefix>.lora_down.weight``. Run AFTER ``defuse_standard_qkv``.

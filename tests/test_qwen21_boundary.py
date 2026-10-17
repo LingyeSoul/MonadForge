@@ -1,4 +1,4 @@
-"""Keep Qwen isolated from Anima and keep its configuration surfaces torch-free."""
+"""Keep Qwen isolated while shared request/adapter helpers remain reusable."""
 
 from __future__ import annotations
 
@@ -8,66 +8,87 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-QWEN_HOMES = ("library/qwen21/", "scripts/qwen21/", "tests/")
-# The only webui modules allowed to reference library.qwen21; the same set is
-# what test_qwen_configuration_and_web_forms_do_not_import_torch keeps torch-free.
+QWEN21 = ROOT / "library/qwen21"
 QWEN_WEBUI_MODULES = (
     "webui.api.qwen21",
     "webui.services.qwen21_service",
     "webui.services.qwen21_workspace",
 )
-WEBUI_BOUNDARY = {module.replace(".", "/") + ".py" for module in QWEN_WEBUI_MODULES}
-SHARED = {
+_QWEN21_HOMES = (
+    "library/qwen21/",
+    "scripts/qwen21/",
+    "gui/qwen21/",
+    "project/qwen21_lora/",
+    "tests/",
+)
+_WEBUI_BOUNDARY = {module.replace(".", "/") + ".py" for module in QWEN_WEBUI_MODULES}
+_SHARED = (
     "library.env",
-    "library.runtime.device",
+    "library.lines",
     "library.runtime.offloading",
+    "library.runtime.blockswap",
+    "library.runtime.device",
     "library.runtime.dynamo",
-}
+)
+_SCANNED = (
+    "anima_lora",
+    "library",
+    "networks",
+    "scripts",
+    "gui",
+    "bench",
+    "webui/api",
+    "webui/services",
+    "train.py",
+)
 
 
-def imports(path: Path) -> set[str]:
-    result: set[str] = set()
+def _imports(path: Path) -> set[str]:
+    names: set[str] = set()
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
-            result.update(alias.name for alias in node.names)
+            names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-            result.add(node.module)
-    return result
+            names.add(node.module)
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return names
 
 
-def test_qwen_uses_only_shared_anima_helpers():
+def _python_files():
+    for entry in _SCANNED:
+        path = ROOT / entry
+        yield from [path] if path.is_file() else path.rglob("*.py")
+
+
+def test_anima_side_never_imports_qwen21():
     offenders = []
-    for path in (ROOT / "library/qwen21").glob("*.py"):
-        for module in imports(path):
-            if (
-                module.startswith("library.")
-                and not module.startswith("library.qwen21")
-                and module not in SHARED
-            ):
-                offenders.append((str(path), module))
-    assert not offenders
+    for path in _python_files():
+        rel = path.relative_to(ROOT).as_posix()
+        if rel.startswith(_QWEN21_HOMES) or rel in _WEBUI_BOUNDARY:
+            continue
+        if any(n.startswith("library.qwen21") for n in _imports(path)):
+            offenders.append(rel)
+    assert not offenders, f"Anima code imports library.qwen21: {offenders}"
 
 
-def test_anima_does_not_import_qwen():
+def test_qwen21_uses_only_shared_library_helpers():
     offenders = []
-    for directory in (
-        "anima_lora",
-        "library",
-        "networks",
-        "scripts",
-        "webui/api",
-        "webui/services",
-    ):
-        for path in (ROOT / directory).rglob("*.py"):
-            relative = path.relative_to(ROOT).as_posix()
-            if relative.startswith(QWEN_HOMES) or relative in WEBUI_BOUNDARY:
+    for path in QWEN21.rglob("*.py"):
+        for name in _imports(path):
+            if not name.startswith("library.") or name.startswith("library.qwen21"):
                 continue
-            if any(module.startswith("library.qwen21") for module in imports(path)):
-                offenders.append(relative)
-    assert not offenders
+            if not any(name == root or name.startswith(root + ".") for root in _SHARED):
+                offenders.append(f"{path.name}: {name}")
+    assert not offenders, f"library.qwen21 reaches into Anima: {offenders}"
 
 
 def test_qwen_configuration_and_web_forms_do_not_import_torch():
     modules = ", ".join((*QWEN_WEBUI_MODULES, "library.qwen21.requests"))
     code = f"import sys; import {modules}; assert 'torch' not in sys.modules"
     subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True)
+
+
+def test_gui_is_torch_free():
+    code = "import sys, gui.qwen21.app; sys.exit('torch' in sys.modules)"
+    result = subprocess.run([sys.executable, "-c", code], cwd=ROOT)
+    assert result.returncode == 0, "gui.qwen21.app imports torch"

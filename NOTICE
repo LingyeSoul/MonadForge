@@ -76,6 +76,6 @@ are not limited to:
     Anima-specific implementations.
   * Adding new adapter families (OrthoLoRA, T-LoRA, HydraLoRA, FeRA,
     ChimeraHydra, IP-Adapter, EasyControl, Soft Tokens) and inference
-    accelerators (Spectrum, SPD, DCW, SMC-CFG, modulation guidance).
+    accelerators (Spectrum, SPD, SMC-CFG, modulation guidance).
   * Restructuring the codebase into the library/, networks/, and anima_lora/
     packages with a new configuration system and task runner.

@@ -3,8 +3,8 @@
 import argparse
 import logging
 import math
+import os
 import random
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional, List, Any, Dict, Tuple, Union
 
@@ -17,18 +17,21 @@ from library.inference.adapters import (
     clear_hydra_fei,
     clear_hydra_sigma,
     compute_and_set_hydra_fei,
-    set_hydra_content,
     set_hydra_crossattn,
     set_hydra_sigma,
     set_step_expert_index,
+    set_xattn_boost_state,
 )
 from library.inference import sampling as inference_utils
 from library.inference.output import check_inputs
 from library.inference.text import prepare_text_inputs
 from library.inference.models import load_dit_model
 from library.inference.corrections.mod_guidance import setup_mod_guidance
+from library.inference.corrections.fsg import FSGCalibrator
+from library.inference.cfg_delta_probe import CfgDeltaProbe
 from library.inference.corrections.smc_cfg import SMCCFGState
 from library.inference.sampler_context import SamplerSideChannels
+from library.inference.traj_stats import TrajStatsRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +39,8 @@ logger = logging.getLogger(__name__)
 def _build_cns_recolorer(args):
     """Build a CNS noise recolorer from ``--cns`` (path or "auto"), or None.
 
-    Only meaningful on the stochastic ``er_sde`` path — on euler/lcm there is no
-    injected noise to recolor, so the recolorer (even if loaded) is a no-op. We
-    still gate on the flag here and let the sampler ignore it otherwise.
+    Only meaningful on the stochastic ``er_sde`` path — on euler/lcm there is
+    no injected noise to recolor.
     """
     spec = getattr(args, "cns", None)
     if not spec:
@@ -59,15 +61,12 @@ def _build_cns_recolorer(args):
     return recolorer
 
 
-# Spectrum runner registry. The spectrum implementation lives in
-# networks/spectrum.py (or a downstream package); it self-registers on import.
-# generation.py never imports it directly so the dep edge can point inward
-# from a downstream inference package without inverting.
+# Runner registries: networks/spectrum.py, networks/spd.py, networks/foveated.py
+# self-register on import (generation.py never imports them directly, so the
+# dep edge can point inward from a downstream package without inverting).
 _SPECTRUM_RUNNER = None
-
-# SPD (Spectral Progressive Diffusion) runner registry — same pattern as
-# Spectrum. networks/spd.py self-registers on import; --spd dispatches to it.
 _SPD_RUNNER = None
+_FOVEATED_RUNNER = None
 
 
 def _setup_soft_tokens(args, anima, device):
@@ -115,30 +114,44 @@ def _seqlens_from_context(context_dict, device):
     return embed_mask.sum(dim=-1).to(torch.int32)
 
 
-def register_spectrum_runner(fn):
-    """Plug in a spectrum_denoise implementation.
+def _parse_spectrum_delta(raw):
+    """Parse ``--spectrum_delta`` (str 'auto' or a float) into the runner's arg.
 
-    The runner must match networks.spectrum.spectrum_denoise's signature: the
-    core positional args, a ``SamplerSideChannels`` (see
-    ``library.inference.sampler_context``) carrying the shared DCW / SMC-CFG /
-    soft-tokens / P-GRAFT / pooled-text channels, then the spectrum-specific
-    keyword knobs. Called by networks/spectrum.py at import time, or by a
-    downstream inference package that ships its own spectrum module.
+    Returns ``None`` for auto-calibration (the SEA accumulator self-tunes δ to
+    the refresh ratio), or a float for an explicit threshold.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if str(raw).strip().lower() == "auto":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+def register_spectrum_runner(fn):
+    """Plug in a spectrum_denoise implementation (networks.spectrum's signature:
+    core positional args + a ``SamplerSideChannels`` + spectrum keyword knobs).
+    Called by networks/spectrum.py at import time.
     """
     global _SPECTRUM_RUNNER
     _SPECTRUM_RUNNER = fn
 
 
 def register_spd_runner(fn):
-    """Plug in an spd_denoise implementation (Spectral Progressive Diffusion).
-
-    The runner must match networks.spd.spd_denoise's signature: the core
-    positional args, a ``SamplerSideChannels`` (shared side-channels), then the
-    SPD-specific keyword knobs. Called by networks/spd.py at import time,
-    mirroring register_spectrum_runner.
-    """
+    """Plug in an spd_denoise implementation. Mirrors register_spectrum_runner;
+    called by networks/spd.py at import time."""
     global _SPD_RUNNER
     _SPD_RUNNER = fn
+
+
+def register_foveated_runner(fn):
+    """Plug in a foveated_denoise implementation. Mirrors
+    register_spectrum_runner; called by networks/foveated.py at import time."""
+    global _FOVEATED_RUNNER
+    _FOVEATED_RUNNER = fn
 
 
 def _resolve_spd_schedule(args) -> Tuple[List[float], List[float]]:
@@ -165,18 +178,14 @@ def _resolve_spd_schedule(args) -> Tuple[List[float], List[float]]:
 
 
 class GenerationSettings:
-    # ``dit_weight_dtype`` was dropped 2026-05-24: it was vestigial — the model
-    # is forced to bf16 in ``load_dit_model`` regardless, so the field never
-    # influenced anything. The DiT runs in bf16 for inference.
+    # DiT always runs bf16 for inference (forced in load_dit_model).
     def __init__(self, device: torch.device):
         self.device = device
 
 
 def get_generation_settings(args: argparse.Namespace) -> GenerationSettings:
-    # ``inference.parse_args`` defaults ``--device`` to None and resolves it in
-    # main()'s body, but programmatic callers (GenerationRequest.to_args(), bench
-    # probes) skip that block. Resolve the cuda-else-cpu default here so the one
-    # chokepoint every caller funnels through can't see ``args.device is None``.
+    # programmatic callers (GenerationRequest.to_args(), bench probes) skip
+    # parse_args' device-resolution block, so resolve cuda-else-cpu here too
     dev = getattr(args, "device", None) or (
         "cuda" if torch.cuda.is_available() else "cpu"
     )
@@ -188,10 +197,8 @@ def get_generation_settings(args: argparse.Namespace) -> GenerationSettings:
 def resolve_seed(args: argparse.Namespace) -> int:
     """Return the seed to use: ``args.seed`` if set, else a fresh random one.
 
-    Pure — does **not** mutate ``args``. Callers that need ``args.seed`` set for
-    downstream saving (filename / metadata) should assign the return value
-    themselves. ``generate()`` resolves a seed this way per call without writing
-    back to the namespace, so one namespace is safe to reuse across calls.
+    Pure — does **not** mutate ``args``. Callers that need ``args.seed`` set
+    for downstream saving should assign the return value themselves.
     """
     return args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
 
@@ -278,7 +285,7 @@ def generate_body_tiled(
         context_null = context
     negative_embed = context_null["embed"][0].to(device, dtype=torch.bfloat16)
 
-    # Soft tokens — see generate_body() for the long-form comment.
+    # soft tokens — see generate_body() for details
     soft_tokens_net = _setup_soft_tokens(args, anima, device)
     soft_tokens_embed_seqlens = (
         _seqlens_from_context(context, device) if soft_tokens_net is not None else None
@@ -319,8 +326,7 @@ def generate_body_tiled(
     )
     timesteps = timesteps.to(device, dtype=torch.bfloat16)  # σ∈[0,1] — DiT time arg
 
-    # Create sampler. Variable kept named `er_sde` for historic minimum-diff
-    # reasons; both ERSDESampler and LCMSampler share the same .step interface.
+    # `er_sde` also holds an LCMSampler when selected; both share .step()
     cns = _build_cns_recolorer(args)
     er_sde = None
     if args.sampler == "er_sde":
@@ -339,9 +345,17 @@ def generate_body_tiled(
         if do_cfg and getattr(args, "smc_cfg", False)
         else None
     )
+    traj_stats = TrajStatsRecorder.from_args(args, seed=getattr(args, "seed", None))
 
     pgraft_network = getattr(anima, "_pgraft_network", None)
     lora_cutoff_step = getattr(args, "lora_cutoff_step", None)
+
+    # xattn_boost: cond-forward-only cross-attn gain at σ ≥ band, per tile
+    _boost_raw = float(getattr(args, "xattn_boost", 1.0) or 1.0)
+    xattn_boost = _boost_raw if _boost_raw != 1.0 else None
+    xattn_boost_band = float(getattr(args, "xattn_boost_band", 0.85))
+    xattn_renorm = str(getattr(args, "xattn_boost_renorm", "img"))
+    xattn_renorm_frac = float(getattr(args, "xattn_boost_renorm_frac", 0.5))
 
     try:
         with tqdm(total=len(timesteps), desc="Denoising steps (tiled)") as pbar:
@@ -358,11 +372,8 @@ def generate_body_tiled(
                 t_expand = t.expand(latents.shape[0])
                 set_hydra_sigma(anima, t_expand)
                 set_step_expert_index(anima, i)
-                # FEI router input — computed on the full latent (pre-tile)
-                # so every tile in this step sees the same per-sample FEI.
-                # Drives both the per-Linear FEI router (FEI-on-Hydra) and
-                # the network-level GlobalRouter (FeRA / stacked_experts);
-                # no-op when no FEI router is attached.
+                # computed on the full latent (pre-tile) so every tile sees the
+                # same per-sample FEI; no-op when no FEI router is attached
                 compute_and_set_hydra_fei(anima, latents)
 
                 noise_acc = torch.zeros_like(latents)
@@ -376,6 +387,9 @@ def generate_body_tiled(
                         1, 1, 1, h_latent, w_latent, device=device, dtype=torch.bfloat16
                     )
 
+                _boost_step = (
+                    xattn_boost is not None and float(sigmas[i]) >= xattn_boost_band
+                )
                 for y, x in positions:
                     tile_h = min(tile_size, h_latent - y)
                     tile_w = min(tile_size, w_latent - x)
@@ -391,14 +405,18 @@ def generate_body_tiled(
 
                     if anima.blocks_to_swap:
                         anima.prepare_block_swap_before_forward()
-                    # Caption-dependent routers (chimera ContentRouter and the
-                    # crossattn-emb GlobalRouter) — gates depend on the caption,
-                    # so fire separately for cond vs uncond. No-op otherwise.
-                    set_hydra_content(anima, embed)
+                    # caption-dependent routers; fire separately for cond vs uncond
                     set_hydra_crossattn(anima, embed)
                     if soft_tokens_net is not None:
                         soft_tokens_net.append_postfix(
                             embed, soft_tokens_embed_seqlens, timesteps=t_expand
+                        )
+                    if _boost_step:
+                        set_xattn_boost_state(
+                            anima,
+                            xattn_boost,
+                            renorm_mode=xattn_renorm,
+                            frac=xattn_renorm_frac,
                         )
                     with torch.no_grad():
                         tile_pred = anima(
@@ -409,13 +427,15 @@ def generate_body_tiled(
                             h_offset=h_off,
                             w_offset=w_off,
                         )
+                    if _boost_step:
+                        # uncond runs at identity
+                        set_xattn_boost_state(anima, 1.0)
                     noise_acc[:, :, :, y : y + tile_h, x : x + tile_w] += tile_pred * bw
                     weight_acc[:, :, :, y : y + tile_h, x : x + tile_w] += bw
 
                     if do_cfg:
                         if anima.blocks_to_swap:
                             anima.prepare_block_swap_before_forward()
-                        set_hydra_content(anima, negative_embed)
                         set_hydra_crossattn(anima, negative_embed)
                         if soft_tokens_net is not None:
                             soft_tokens_net.append_postfix(
@@ -449,33 +469,33 @@ def generate_body_tiled(
                             noise_pred - uncond_noise_pred
                         )
 
+                if traj_stats is not None:
+                    traj_stats.record(
+                        i,
+                        sigmas[i],  # tensor, NOT float() — float() = stream sync
+                        latents,
+                        noise_pred,
+                        uncond_noise_pred if do_cfg else None,
+                    )
                 denoised = latents.float() - sigmas[i] * noise_pred.float()
                 if er_sde is not None:
                     new_latents = er_sde.step(latents, denoised, i)
                 else:
                     new_latents = inference_utils.step(latents, noise_pred, sigmas, i)
 
-                if getattr(args, "dcw", False) and float(sigmas[i + 1]) > 0.0:
-                    from networks.dcw import apply_dcw, parse_band_mask
-
-                    new_latents = apply_dcw(
-                        new_latents.float(),
-                        denoised,
-                        float(sigmas[i]),
-                        lam=args.dcw_lambda,
-                        schedule=args.dcw_schedule,
-                        bands=parse_band_mask(getattr(args, "dcw_band_mask", "LL")),
-                    )
-
                 latents = new_latents.to(latents.dtype)
                 pbar.update()
     finally:
+        if xattn_boost is not None:
+            set_xattn_boost_state(anima, 1.0)
         clear_hydra_sigma(anima)
         clear_hydra_fei(anima)
         # P-GRAFT: restore LoRA for next generation
         if pgraft_network is not None and lora_cutoff_step is not None:
             pgraft_network.set_enabled(True)
 
+    if traj_stats is not None:
+        traj_stats.flush()
     return latents
 
 
@@ -487,20 +507,29 @@ def generate_body(
     device: torch.device,
     seed: Union[int, List[int]],
     latents: Optional[torch.Tensor] = None,
+    context_alt: Optional[Dict[str, Any]] = None,
+    tag_drop_sigma: Optional[float] = None,
+    tag_boost_scale: Optional[float] = None,
 ) -> torch.Tensor:
     """Core denoising loop for Anima generation.
 
     Args:
-        args: Generation arguments (image_size, infer_steps, guidance_scale, etc.)
-        anima: Loaded DiT model.
-        context: Dict with "embed" key containing text encoder outputs.
-        context_null: Dict with negative prompt embeddings (or None for unconditional).
-        device: Target device.
-        seed: Single seed or list of seeds (for batch generation).
-        latents: Optional pre-created latent noise tensor.  When provided, the
-            batch dimension is taken from this tensor and seed is ignored for
-            noise creation.  This enables callers (e.g. batch mode) to construct
-            multi-seed batched latents externally.
+        args: generation arguments (image_size, infer_steps, guidance_scale, etc).
+        anima: loaded DiT model.
+        context: dict with "embed" key containing text encoder outputs.
+        context_null: negative-prompt embeddings dict, or None for unconditional.
+        device: target device.
+        seed: single seed or list of seeds (batch generation).
+        latents: optional pre-created noise tensor; when given, batch size
+            comes from it and ``seed`` is ignored for noise creation.
+        context_alt / tag_drop_sigma / tag_boost_scale: commitment-σ probe —
+            below ``tag_drop_sigma`` the conditional pass swaps from
+            ``context`` to ``context_alt`` (e.g. the same caption with one tag
+            dropped), or, with ``tag_boost_scale`` set, to an amplified
+            ``embed_alt + scale·(embed − embed_alt)`` extrapolation — testing
+            when/whether a dropped tag's contribution is localized structure
+            vs. a global tone shift. No-op unless ``context_alt`` and
+            ``tag_drop_sigma`` are both set.
 
     Returns:
         Denoised latent tensor (batch dimension preserved).
@@ -546,14 +575,13 @@ def generate_body(
         context_null = context  # dummy for unconditional
     negative_embed = context_null["embed"][0].to(device, dtype=torch.bfloat16)
 
-    # Optional pooled-text override for modulation guidance (left unset here;
-    # downstream guards on ``is not None``).
+    # optional pooled-text override for modulation guidance; downstream guards
+    # on `is not None`
     _pooled_text_pos = None
     _pooled_text_neg = None
 
-    # Soft tokens: build + apply the monkey-patches once. The per-step
-    # append_postfix(..., timesteps=t) call fires inside the loop below — and
-    # is mirrored in the Spectrum runner for the --spectrum path.
+    # soft tokens: monkey-patches built once; per-step append_postfix() fires
+    # in the loop below (and is mirrored in the Spectrum runner)
     soft_tokens_net = _setup_soft_tokens(args, anima, device)
     soft_tokens_embed_seqlens = (
         _seqlens_from_context(context, device) if soft_tokens_net is not None else None
@@ -580,6 +608,24 @@ def generate_body(
     embed = embed.to(torch.bfloat16)
     negative_embed = negative_embed.to(torch.bfloat16)
 
+    # commitment-σ probe alt embedding (see docstring). Text encoder outputs
+    # are max-padded, so this shares embed's sequence length (padding-sink
+    # invariant — trimming would produce black images).
+    embed_alt = None
+    embed_boost = None
+    if context_alt is not None and tag_drop_sigma is not None:
+        embed_alt = context_alt["embed"][0].to(device, dtype=torch.bfloat16)
+        if embed_alt.shape[0] < bs:
+            embed_alt = embed_alt.expand(bs, -1, -1)
+        embed_alt = embed_alt.to(torch.bfloat16)
+        if tag_boost_scale is not None:
+            # amplify the tag's embedding delta (embed - embed_alt) in fp32
+            # before casting back, to minimize rounding at scale>1
+            embed_boost = (
+                embed_alt.float()
+                + float(tag_boost_scale) * (embed.float() - embed_alt.float())
+            ).to(torch.bfloat16)
+
     timesteps, sigmas = inference_utils.get_timesteps_sigmas(
         args.infer_steps,
         args.flow_shift,
@@ -588,43 +634,7 @@ def generate_body(
     )
     timesteps = timesteps.to(device, dtype=torch.bfloat16)  # σ∈[0,1] — DiT time arg
 
-    # DCW: load + setup the learnable calibrator if requested.
-    dcw_calibrator = None
-    calibrator_path = getattr(args, "dcw_calibrator", None) or getattr(
-        args, "dcw_v4", None
-    )
-    if calibrator_path:
-        from library.inference.corrections.dcw_calibrator import OnlineDCWCalibrator
-
-        artifact_path = Path(calibrator_path)
-        if artifact_path.is_dir():
-            artifact_path = artifact_path / "fusion_head.safetensors"
-        try:
-            dcw_calibrator = OnlineDCWCalibrator.from_safetensors(
-                artifact_path, device=device
-            )
-        except Exception as e:
-            logger.warning(
-                "DCW calibrator: failed to load %s: %s — disabling", artifact_path, e
-            )
-            dcw_calibrator = None
-        if dcw_calibrator is not None:
-            calib_embed_mask = (
-                context["embed"][3].to(device)
-                if len(context["embed"]) > 3 and context["embed"][3] is not None
-                else None
-            )
-            dcw_calibrator.setup(
-                embed=embed,
-                embed_mask=calib_embed_mask,
-                gain=getattr(args, "dcw_calibrator_gain", None)
-                or getattr(args, "dcw_v4_alpha_gain", 1.0),
-            )
-            if not dcw_calibrator.is_active:
-                dcw_calibrator = None  # graceful degrade to scalar/none
-
-    # Create sampler. Variable kept named `er_sde` for historic minimum-diff
-    # reasons; both ERSDESampler and LCMSampler share the same .step interface.
+    # `er_sde` also holds an LCMSampler when selected; both share .step()
     cns = _build_cns_recolorer(args)
     er_sde = None
     if args.sampler == "er_sde":
@@ -644,25 +654,109 @@ def generate_body(
         else None
     )
 
+    # FSG pre-step latent calibration. CFG-only (needs the cond/uncond gap).
+    # Composes with --spectrum; ignored under --spd.
+    fsg = None
+    if getattr(args, "fsg", False):
+        if not do_cfg:
+            logger.warning("--fsg requires CFG (guidance_scale != 1.0); ignoring.")
+        elif getattr(args, "spd", False):
+            logger.warning(
+                "--fsg is ignored under --spd (it replaces the denoise loop); "
+                "FSG×SPD is a v2 item."
+            )
+        else:
+            _band = getattr(args, "fsg_band", [0.59, 0.75])
+            fsg = FSGCalibrator(
+                band=(float(_band[0]), float(_band[1])),
+                k=getattr(args, "fsg_k", 3),
+                d_sigma=getattr(args, "fsg_d_sigma", 0.1),
+                gamma=getattr(args, "fsg_gamma", None),
+            )
+
+    # CFG++ substrate (paper App A.2): a σ-scheduled guidance REWEIGHT, so it's
+    # a pure change to the cond/uncond combine and works unchanged under Euler
+    # and er_sde/lcm, and (via the side-channel) under --spectrum. Mutually
+    # exclusive with --smc_cfg (alternative combine) and unsupported under
+    # --spd (mid-loop σ re-spacing).
+    cfgpp_lambda = None
+    if getattr(args, "cfgpp", False):
+        if not do_cfg:
+            logger.warning("--cfgpp requires CFG (guidance_scale != 1.0); ignoring.")
+        elif smc_cfg is not None:
+            logger.warning(
+                "--cfgpp and --smc_cfg both replace the cond/uncond combine; "
+                "ignoring --cfgpp."
+            )
+        elif getattr(args, "spd", False):
+            logger.warning(
+                "--cfgpp is ignored under --spd (mid-loop σ re-spacing; CFG++ is "
+                "not wired into the SPD runner)."
+            )
+        else:
+            cfgpp_lambda = float(getattr(args, "cfgpp_lambda", 1.5))
+            _sampler_name = "er_sde" if er_sde is not None else "euler"
+            _loop = "spectrum" if getattr(args, "spectrum", False) else _sampler_name
+            logger.info(
+                f"CFG++ substrate active (λ={cfgpp_lambda}, sampler={_sampler_name}"
+                f", loop={_loop})."
+            )
+
     pgraft_network = getattr(anima, "_pgraft_network", None)
     lora_cutoff_step = getattr(args, "lora_cutoff_step", None)
 
-    # Shared conditioning side-channels handed to whichever loop runner is active
-    # (spectrum / spd). The standard inline loop below reads the locals directly.
+    # passive per-step trajectory recorder; threaded through the side channels
+    # so the spectrum runner records too, flushed once before return
+    traj_stats = TrajStatsRecorder.from_args(args, seed=seed)
+
+    # handed to whichever loop runner is active (spectrum / spd); the standard
+    # inline loop below reads the locals directly instead
     _side_channels = SamplerSideChannels.from_args(
         args,
         pgraft_network=pgraft_network,
         lora_cutoff_step=lora_cutoff_step,
         pooled_text_pos=_pooled_text_pos,
         pooled_text_neg=_pooled_text_neg,
-        dcw_calibrator=dcw_calibrator,
         smc_cfg=smc_cfg,
+        fsg=fsg,
+        cfgpp_lambda=cfgpp_lambda,
         soft_tokens_net=soft_tokens_net,
         soft_tokens_embed_seqlens=soft_tokens_embed_seqlens,
         soft_tokens_neg_seqlens=soft_tokens_neg_seqlens,
+        traj_stats=traj_stats,
     )
 
-    if getattr(args, "spd", False):
+    _fovea_sigma_c = float(getattr(args, "fovea_sigma_c", 0.0) or 0.0)
+    if _fovea_sigma_c > 0.0:
+        if getattr(args, "spd", False) or getattr(args, "spectrum", False):
+            raise ValueError(
+                "--fovea_sigma_c is mutually exclusive with --spd / --spectrum "
+                "(all replace the denoise loop). The foveated-Spectrum compose "
+                "was closed by foveated P3 (_archive/bench/foveated/) — do not "
+                "re-propose."
+            )
+        if _FOVEATED_RUNNER is None:
+            raise RuntimeError(
+                "--fovea_sigma_c was passed but no foveated runner is "
+                "registered. Import networks.foveated before calling generate()."
+            )
+        latents = _FOVEATED_RUNNER(
+            anima,
+            latents,
+            timesteps,
+            sigmas,
+            embed,
+            negative_embed,
+            padding_mask,
+            args.guidance_scale,
+            er_sde,
+            device,
+            _side_channels,
+            sigma_c=_fovea_sigma_c,
+            fovea_frac=getattr(args, "fovea_frac", 0.35),
+            mask_source=getattr(args, "fovea_mask_source", "combo"),
+        )
+    elif getattr(args, "spd", False):
         if getattr(args, "spectrum", False):
             raise ValueError(
                 "--spd and --spectrum are mutually exclusive (both replace the "
@@ -720,8 +814,42 @@ def generate_body(
             lam=getattr(args, "spectrum_lam", 0.1),
             stop_caching_step=getattr(args, "spectrum_stop_caching_step", -1),
             calibration_strength=getattr(args, "spectrum_calibration", 0.0),
+            schedule=getattr(args, "spectrum_schedule", "window"),
+            delta=_parse_spectrum_delta(getattr(args, "spectrum_delta", "auto")),
+            refresh_ratio=getattr(args, "spectrum_refresh_ratio", -1.0),
         )
     else:
+        cfg_delta_probe = CfgDeltaProbe.maybe_create()
+        # cross-attn residual gain on the cond forward for σ ≥ band; reset
+        # right after so uncond (and FSG's internal forwards) run at identity —
+        # the finally below guarantees no gain leaks into later generations
+        xattn_boost = _side_channels.xattn_boost
+        xattn_boost_band = _side_channels.xattn_boost_band
+        xattn_renorm = _side_channels.xattn_boost_renorm
+        xattn_renorm_frac = _side_channels.xattn_boost_renorm_frac
+        if xattn_boost is not None:
+            _renorm_desc = (
+                "raw"
+                if xattn_renorm == "off"
+                else f"renorm={xattn_renorm} ρ={xattn_renorm_frac:g}"
+            )
+            logger.info(
+                f"xattn boost active: λ={xattn_boost} at σ ≥ {xattn_boost_band} "
+                f"({_renorm_desc})"
+                + ("" if do_cfg else " (CFG 1.0 — boosting the single forward)")
+            )
+        # ANIMA_TEXT_KNOCKOUT_SIGMA=<cutoff>: below it, continue unconditionally
+        # (noise_pred = uncond) to measure how much late-σ text still steers
+        # the output. Off (None) => normal generation.
+        _knockout_env = os.environ.get("ANIMA_TEXT_KNOCKOUT_SIGMA")
+        text_knockout_sigma = float(_knockout_env) if _knockout_env else None
+        # ANIMA_FREEZE_GUIDANCE_SIGMA=<cutoff>: below it, keep the per-step
+        # guidance magnitude but lock its direction to the unit delta captured
+        # at the first sub-cutoff step — tests whether late cross-attn
+        # re-tweaking (not its presence) drives the tag-region effect.
+        _freeze_env = os.environ.get("ANIMA_FREEZE_GUIDANCE_SIGMA")
+        freeze_guidance_sigma = float(_freeze_env) if _freeze_env else None
+        _frozen_guidance_dir = None  # unit delta, captured once below the cutoff
         try:
             with tqdm(total=len(timesteps), desc=f"Denoising steps ({bs}x)") as pbar:
                 for i, t in enumerate(timesteps):
@@ -737,19 +865,46 @@ def generate_body(
                         )
 
                     t_expand = t.expand(latents.shape[0])
+                    # mutates `latents` before the real forward; hydra/FEI
+                    # setters below recompute on the calibrated latent
+                    if fsg is not None and fsg.scheduled(float(sigmas[i])):
+                        latents = fsg.calibrate(
+                            anima,
+                            latents,
+                            float(sigmas[i]),
+                            i,
+                            embed,
+                            negative_embed,
+                            padding_mask,
+                            args.guidance_scale,
+                            pooled_pos=_pooled_text_pos,
+                            pooled_neg=_pooled_text_neg,
+                        )
                     set_hydra_sigma(anima, t_expand)
                     set_step_expert_index(anima, i)
                     compute_and_set_hydra_fei(anima, latents)
-                    if dcw_calibrator is not None:
-                        # Capture FEI on the pre-forward latent at warmup steps
-                        # for v6 fei_obs={replace,concat} artifacts. No-op for v5.
-                        dcw_calibrator.record_latent_pre_forward(i, latents)
 
-                    set_hydra_content(anima, embed)
-                    set_hydra_crossattn(anima, embed)
+                    # below cutoff: alternate (or boosted) embedding; else embed
+                    if embed_alt is not None and float(sigmas[i]) < tag_drop_sigma:
+                        cond_embed = (
+                            embed_boost if embed_boost is not None else embed_alt
+                        )
+                    else:
+                        cond_embed = embed
+                    set_hydra_crossattn(anima, cond_embed)
                     if soft_tokens_net is not None:
                         soft_tokens_net.append_postfix(
-                            embed, soft_tokens_embed_seqlens, timesteps=t_expand
+                            cond_embed, soft_tokens_embed_seqlens, timesteps=t_expand
+                        )
+                    _boost_step = (
+                        xattn_boost is not None and float(sigmas[i]) >= xattn_boost_band
+                    )
+                    if _boost_step:
+                        set_xattn_boost_state(
+                            anima,
+                            xattn_boost,
+                            renorm_mode=xattn_renorm,
+                            frac=xattn_renorm_frac,
                         )
                     with torch.no_grad():
                         _pos_kw = (
@@ -760,13 +915,15 @@ def generate_body(
                         noise_pred = anima(
                             latents,
                             t_expand,
-                            embed,
+                            cond_embed,
                             padding_mask=padding_mask,
                             **_pos_kw,
                         )
+                    if _boost_step:
+                        # uncond runs at identity
+                        set_xattn_boost_state(anima, 1.0)
 
                     if do_cfg:
-                        set_hydra_content(anima, negative_embed)
                         set_hydra_crossattn(anima, negative_embed)
                         if soft_tokens_net is not None:
                             soft_tokens_net.append_postfix(
@@ -787,15 +944,59 @@ def generate_body(
                                 padding_mask=padding_mask,
                                 **_neg_kw,
                             )
-                        if smc_cfg is not None:
+                        if cfg_delta_probe is not None:
+                            # log text-driven velocity before the combine
+                            # overwrites noise_pred (still conditional here)
+                            cfg_delta_probe.record(
+                                i, float(sigmas[i]), noise_pred, uncond_noise_pred
+                            )
+                        if cfgpp_lambda is not None:
+                            # noise_pred = v^u + w_eff·(v^c − v^u); see
+                            # sampling.cfgpp_guidance_weight
+                            w_eff = inference_utils.cfgpp_guidance_weight(
+                                float(sigmas[i]), float(sigmas[i + 1]), cfgpp_lambda
+                            )
+                            noise_pred = uncond_noise_pred + w_eff * (
+                                noise_pred - uncond_noise_pred
+                            )
+                        elif smc_cfg is not None:
                             noise_pred = smc_cfg.combine(
                                 noise_pred, uncond_noise_pred, args.guidance_scale
                             )
                         else:
-                            noise_pred = uncond_noise_pred + args.guidance_scale * (
-                                noise_pred - uncond_noise_pred
-                            )
+                            delta = noise_pred - uncond_noise_pred
+                            if (
+                                freeze_guidance_sigma is not None
+                                and float(sigmas[i]) < freeze_guidance_sigma
+                            ):
+                                # keep magnitude, lock direction; per-sample L2
+                                # over all non-batch dims (5D latent)
+                                flat = delta.float().reshape(delta.shape[0], -1)
+                                mag = flat.norm(dim=1).clamp_min(1e-12)
+                                unit = (flat / mag[:, None]).reshape(delta.shape)
+                                if _frozen_guidance_dir is None:
+                                    # capture once, at the first sub-cutoff step
+                                    _frozen_guidance_dir = unit
+                                mag_shape = (delta.shape[0],) + (1,) * (delta.dim() - 1)
+                                delta = _frozen_guidance_dir.to(
+                                    delta.dtype
+                                ) * mag.reshape(mag_shape).to(delta.dtype)
+                            noise_pred = uncond_noise_pred + args.guidance_scale * delta
 
+                        if (
+                            text_knockout_sigma is not None
+                            and float(sigmas[i]) < text_knockout_sigma
+                        ):
+                            noise_pred = uncond_noise_pred
+
+                    if traj_stats is not None:
+                        traj_stats.record(
+                            i,
+                            sigmas[i],  # tensor, NOT float() — float() = stream sync
+                            latents,
+                            noise_pred,
+                            uncond_noise_pred if do_cfg else None,
+                        )
                     denoised = latents.float() - sigmas[i] * noise_pred.float()
                     if er_sde is not None:
                         new_latents = er_sde.step(latents, denoised, i)
@@ -804,69 +1005,24 @@ def generate_body(
                             latents, noise_pred, sigmas, i
                         )
 
-                    if dcw_calibrator is not None:
-                        dcw_calibrator.record(i, noise_pred)
-                        dcw_calibrator.fire_head_if_due(i)
-
-                    lam_i_calib: Optional[float] = None
-                    if float(sigmas[i + 1]) > 0.0 and (
-                        dcw_calibrator is not None or getattr(args, "dcw", False)
-                    ):
-                        from networks.dcw import apply_dcw, parse_band_mask
-
-                        if dcw_calibrator is not None:
-                            lam_i_calib = dcw_calibrator.lambda_for_step(
-                                i, float(sigmas[i])
-                            )
-                            new_latents = apply_dcw(
-                                new_latents.float(),
-                                denoised,
-                                float(sigmas[i]),
-                                lam=lam_i_calib,
-                                schedule="const",
-                                bands=frozenset({"LL"}),
-                            )
-                        else:
-                            new_latents = apply_dcw(
-                                new_latents.float(),
-                                denoised,
-                                float(sigmas[i]),
-                                lam=args.dcw_lambda,
-                                schedule=args.dcw_schedule,
-                                bands=parse_band_mask(
-                                    getattr(args, "dcw_band_mask", "LL")
-                                ),
-                            )
-
                     latents = new_latents.to(latents.dtype)
-
-                    if dcw_calibrator is not None and dcw_calibrator.is_active:
-                        # λ_scalar = α̂·gain — the prompt-adaptive equivalent of
-                        # the bench's fixed `lam=0.01, schedule="one_minus_sigma"` scalar.
-                        # λ_i is the post-envelope per-step value actually applied.
-                        lam_scalar = dcw_calibrator.gain * dcw_calibrator.alpha_eff
-                        if i < dcw_calibrator.k_warmup:
-                            pbar.set_postfix_str(
-                                f"λ_i={lam_i_calib:+.4f} (warmup {i + 1}/{dcw_calibrator.k_warmup})"
-                                if lam_i_calib is not None
-                                else f"warmup {i + 1}/{dcw_calibrator.k_warmup}"
-                            )
-                        else:
-                            pbar.set_postfix_str(
-                                f"λ_scalar={lam_scalar:+.4f} λ_i={lam_i_calib:+.4f} "
-                                f"α={dcw_calibrator.alpha_eff:+.4g}"
-                                if lam_i_calib is not None
-                                else f"λ_scalar={lam_scalar:+.4f} α={dcw_calibrator.alpha_eff:+.4g}"
-                            )
 
                     pbar.update()
         finally:
+            if cfg_delta_probe is not None:
+                cfg_delta_probe.flush()
+            if xattn_boost is not None:
+                set_xattn_boost_state(anima, 1.0)
             clear_hydra_sigma(anima)
             clear_hydra_fei(anima)
             # P-GRAFT: restore LoRA for next generation
             if pgraft_network is not None and lora_cutoff_step is not None:
                 pgraft_network.set_enabled(True)
 
+    # single flush point for every branch (runners record but never flush);
+    # idempotent, so flushing early is harmless
+    if traj_stats is not None:
+        traj_stats.flush()
     return latents
 
 
@@ -882,14 +1038,9 @@ def generate(
         torch.Tensor: generated latent
     """
     device = gen_settings.device
-
-    # Resolve the seed for this call without mutating ``args`` (callers that
-    # save by ``args.seed`` resolve it themselves — see ``resolve_seed`` /
-    # ``GenerationRequest`` docs).
-    seed = resolve_seed(args)
+    seed = resolve_seed(args)  # doesn't mutate args — see resolve_seed docstring
 
     if shared_models is None or "model" not in shared_models:
-        # load DiT model (bf16 — see GenerationSettings note)
         anima = load_dit_model(args, device, torch.bfloat16)
 
         if shared_models is not None:
@@ -907,7 +1058,7 @@ def generate(
         logger.info("No precomputed data. Preparing image and text inputs.")
         context, context_null = prepare_text_inputs(args, device, anima, shared_models)
 
-    # Phase 2 modulation guidance: compute guidance delta once
+    # Modulation guidance: compute guidance delta once
     if (
         getattr(args, "pooled_text_proj", None) is not None
         and getattr(args, "mod_w", 0.0) != 0.0
@@ -916,14 +1067,11 @@ def generate(
     else:
         anima.reset_mod_guidance()
 
-    # EasyControl: load + apply network, VAE-encode reference image, run cond
-    # pre-pass to prime per-block (K_c, V_c). Phase 1 — recomputed every step
-    # at training; at inference we run it once here (no KV cache yet).
     _setup_easycontrol(args, anima, device, shared_models)
 
-    # DAVE: arm the per-block DC-attenuation hooks (training-free diversity edit).
-    # Hooks must be removed after generation — the model is shared across seeds,
-    # so a stacked hook set would compound the attenuation. See dave.py.
+    # DAVE: per-block DC-attenuation hooks (training-free diversity edit). Must
+    # be removed after generation — the model is shared across seeds, so a
+    # stacked hook set would compound the attenuation. See dave.py.
     dave_hooks = None
     if getattr(args, "dave", None):
         from library.inference.corrections.dave import setup_dave
@@ -943,11 +1091,10 @@ def generate(
 def _setup_easycontrol(args, anima, device, shared_models):
     """Load EasyControl weights, VAE-encode the reference image, prime cond KV cache.
 
-    The cond stream is deterministic across denoising steps (cond_temb at t=0,
-    no dependence on noisy target, frozen DiT + frozen LoRA), so we run it
-    once via ``network.precompute_cond_kv()`` and reuse the per-block
-    (K_c, V_c) tensors for every step and every CFG branch — the patched
-    Block.forward then bypasses the cond stream entirely.
+    The cond stream is deterministic across denoising steps (frozen DiT +
+    frozen LoRA, no dependence on the noisy target), so it's run once via
+    ``network.precompute_cond_kv()`` and the (K_c, V_c) tensors are reused
+    for every step and CFG branch.
     """
     ec_weight = getattr(args, "easycontrol_weight", None)
     ec_image = getattr(args, "easycontrol_image", None)
@@ -974,9 +1121,7 @@ def _setup_easycontrol(args, anima, device, shared_models):
 
         with Image.open(ec_image) as _ref_for_size:
             _rw, _rh = _ref_for_size.size
-        # Free-fit the reference's native aspect into the canonical 1024 tier band
-        # (the old path snapped to the nearest discrete CONSTANT_TOKEN_BUCKETS;
-        # free-fit preserves aspect with sub-patch crop).
+        # free-fit the reference's native aspect into the canonical 1024 tier band
         _edge = choose_edge(_rw, _rh, [1024])
         _bw, _bh = freefit_bucket(_rw, _rh, freefit_band_for_edge(_edge))
         args.image_size = [_bh, _bw]
@@ -998,11 +1143,19 @@ def _setup_easycontrol(args, anima, device, shared_models):
         **create_kwargs,
     )
     network.load_weights(ec_weight)
+    # b_cond is a live logit bias, not baked into the KV cache — must offset
+    # before apply_to/precompute so every block's closure captures the shifted
+    # Parameter. Mirrors scripts/edit.py.
+    b_offset = getattr(args, "easycontrol_b_offset", None)
+    if b_offset is not None:
+        with torch.no_grad():
+            for b in network.b_cond:
+                b += float(b_offset)
+        logger.info("EasyControl: b_cond offset %+g applied to every block", b_offset)
     network.to(device, dtype=torch.bfloat16)
     network.apply_to(text_encoders=None, unet=anima)
 
-    # VAE-encode the reference image -> 4D latent.
-    # Resize to args.image_size first so the cond bucket matches the target.
+    # resize to args.image_size first so the cond bucket matches the target
     h_pix, w_pix = args.image_size
     img = Image.open(ec_image).convert("RGB").resize((w_pix, h_pix), Image.LANCZOS)
     tfm = transforms.Compose(
@@ -1037,9 +1190,6 @@ def _setup_easycontrol(args, anima, device, shared_models):
         torch.cuda.empty_cache()
 
     network.set_cond(cond_latent.to(device, dtype=torch.bfloat16))
-    # KV cache: walk the cond stream once and pin per-block (K_c, V_c). Every
-    # subsequent denoising step (and CFG branch) feeds these into target's
-    # extended self-attention without re-running the cond stream.
     network.precompute_cond_kv()
     logger.info(
         f"EasyControl: loaded {ec_weight} "

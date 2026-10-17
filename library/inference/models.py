@@ -76,14 +76,11 @@ def _prepare_inference_anima_identity(
 def _is_hydra_moe(path: str) -> bool:
     """Cheap check: peek at the safetensors header for a per-expert ups key.
 
-    HydraLoRA moe files carry per-expert ``.lora_ups.N.weight`` keys;
-    chimera files carry the dual-pool variants ``.lora_ups_c.N.weight`` /
-    ``.lora_ups_f.N.weight``. Either signal means router-live: skip static
-    merge. Regular LoRA files have none of these. Uses ``safe_open`` so
-    only the header is read.
-
-    Callers that need to disambiguate chimera from plain Hydra should also
-    consult ``_is_chimera_moe``.
+    HydraLoRA moe files carry per-expert ``.lora_ups.N.weight`` keys, which
+    means router-live: skip static merge. Regular LoRA files have none. The
+    removed ChimeraHydra layout (``.lora_ups_c.`` / ``.lora_ups_f.``) is matched
+    too so it reaches ``create_network_from_weights``' refusal instead of a
+    silent partial merge. Uses ``safe_open`` so only the header is read.
     """
     from safetensors import safe_open
 
@@ -191,7 +188,7 @@ def attach_adapters(
     """Attach LoRA-family adapters that ride as dynamic forward hooks.
 
     Covers the two routes that can't go through ``load_anima_model``'s static
-    merge: **P-GRAFT** (toggleable mid-denoising) and **HydraLoRA moe / chimera**
+    merge: **P-GRAFT** (toggleable mid-denoising) and **HydraLoRA moe**
     (router-live, runs per-sample). Both rehydrate a network, ``apply_to`` the
     already-loaded ``model`` in place, and stash it on ``model`` for the sampler
     toggle sites to find. No-op when neither mode is set. Mutates ``model``;
@@ -256,10 +253,15 @@ def attach_adapters(
 
     # P-GRAFT: attach LoRA as dynamic hooks (can be toggled mid-denoising)
     if pgraft_mode and not hydra_mode:
+        from safetensors import safe_open
         from networks import lora_anima
 
         logger.info("P-GRAFT: Loading LoRA as dynamic hooks (not static merge)")
         for lora_weight_path in args.lora_weight:
+            # Metadata carries the three-axis stamps — load_file() drops
+            # __metadata__, so read it separately.
+            with safe_open(lora_weight_path, framework="pt") as f:
+                lora_metadata = dict(f.metadata() or {})
             lora_sd = load_file(lora_weight_path)
             lora_sd = {k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")}
 
@@ -275,6 +277,7 @@ def attach_adapters(
                 text_encoders=[],
                 unet=model,
                 weights_sd=lora_sd,
+                metadata=lora_metadata,
                 for_inference=True,
             )
             network.apply_to([], model, apply_text_encoder=False, apply_unet=True)
@@ -301,23 +304,12 @@ def attach_adapters(
         from safetensors import safe_open
 
         for lora_weight_path in args.lora_weight:
-            # Read the three-axis routing stamps (and chimera stamps) from
-            # on-disk __metadata__ — load_file() drops it. Chimera files
-            # (dual-pool) carry top-level ``freq_router.*`` keys outside the
-            # ``lora_unet_*`` namespace, so they must NOT be filtered; plain
-            # Hydra moe keeps the lora_unet_* filter. Passing ``metadata=``
-            # alongside ``weights_sd=`` lets both layouts go through one code
-            # path — no more file=path vs weights_sd= fork.
+            # Read the three-axis routing stamps from on-disk __metadata__ —
+            # load_file() drops it.
             with safe_open(lora_weight_path, framework="pt") as f:
                 lora_metadata = dict(f.metadata() or {})
-            is_chimera = _is_chimera_moe(lora_weight_path)
             lora_sd = load_file(lora_weight_path)
-            if is_chimera:
-                logger.info("HydraLoRA: chimera file — dual-pool routing wired")
-            else:
-                lora_sd = {
-                    k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")
-                }
+            lora_sd = {k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")}
 
             multiplier = (
                 args.lora_multiplier
@@ -408,15 +400,21 @@ def load_dit_model(
     loading_device = device
     checkpoint_layout = _prepare_inference_anima_identity(args)
 
-    # HydraLoRA moe (incl. FeRA-style stacked-experts global FEI): router-live
-    # inference can't go through static merge. Detect early so we can skip the
-    # baked-down path and take the dynamic hook route regardless of whether
-    # --pgraft is set. ``_is_hydra_moe`` matches the ``lora_ups.{i}.weight``
-    # key pattern shared by both shared-A Hydra and the plan2 stacked-experts
-    # save format.
+    # HydraLoRA moe: router-live inference can't go through static merge.
+    # Detect early so we can skip the baked-down path and take the dynamic hook
+    # route regardless of whether --pgraft is set. ``_is_hydra_moe`` matches
+    # the ``lora_ups.{i}.weight`` key pattern.
     # Per-step-expert turbo is detected FIRST: its files also match
     # ``_is_hydra_moe`` (shared ``.lora_ups.{k}.weight`` key shape) but are
     # router-free and head-selected by step counter, so the metadata stamp wins.
+    # CJK vocab pack: --no_vocab_pack > --vocab_pack > base.toml `vocab_pack`.
+    # Resolved once here (memoised) and hooked onto llm_adapter.embed below;
+    # the prompt side is routed by the tokenize strategy prepare_text_inputs
+    # installs from the same selection.
+    from library.anima.vocab_pack import resolve_active_pack
+
+    vocab_pack = resolve_active_pack(args)
+
     step_expert_mode = False
     if args.lora_weight is not None and len(args.lora_weight) > 0:
         se_flags = [_is_step_expert_turbo(p) for p in args.lora_weight]
@@ -487,8 +485,8 @@ def load_dit_model(
         and len(args.lora_weight) > 0
     )
 
-    # load LoRA weights (skip static merge for P-GRAFT, HydraLoRA moe, and
-    # per-step-expert turbo — all three ride dynamic hooks instead)
+    # load LoRA weights (skip static merge for P-GRAFT, HydraLoRA moe,
+    # and per-step-expert turbo — all ride dynamic hooks)
     if (
         not pgraft_mode
         and not hydra_mode
@@ -523,15 +521,27 @@ def load_dit_model(
     else:
         lora_weights_list = None
 
+    from library.runtime.backend import (
+        needs_rocm_attention_fallback,
+        resolve_attention_mode,
+    )
+
+    attn_mode = resolve_attention_mode(args.attn_mode, torch)
+    if needs_rocm_attention_fallback(args.attn_mode, torch):
+        logger.warning(
+            "ROCm detected: using PyTorch SDPA instead of CUDA Flash Attention"
+        )
+
     model = anima_utils.load_anima_model(
         device,
         args.dit,
-        args.attn_mode,
+        attn_mode,
         loading_device,
         dit_weight_dtype,
         lora_weights_list=lora_weights_list,
         lora_multipliers=args.lora_multiplier,
         checkpoint_layout=checkpoint_layout,
+        vocab_pack=vocab_pack,
     )
     if checkpoint_layout is not None:
         model.anima_base_sha256 = getattr(args, "anima_base_sha256", None)
@@ -567,6 +577,29 @@ def load_dit_model(
     if getattr(args, "compile", False):
         logger.info("Compiling DiT model with torch.compile...")
         model = torch.compile(model)
+    elif getattr(args, "compile_dynamic_seq", False):
+        # compile_seq_range / compile_token_bands are set by the batch path from
+        # every prompt's size; unset falls back to compile_blocks' 1024-tier band.
+        # A cached graph carries the seq-range guard of the run that built it
+        # (e.g. 4050 <= s); a later run with a wider band reuses it and hits
+        # ConstraintViolationError → eager fallback. Compile fresh instead.
+        import torch._functorch.config as functorch_config
+        from library.runtime.dynamo import pin_inductor_flag
+
+        pin_inductor_flag("fx_graph_cache", False)
+        functorch_config.enable_autograd_cache = False
+        functorch_config._config["enable_autograd_cache"].default = False
+
+        bands = getattr(args, "compile_token_bands", None)
+        model.compile_blocks(
+            mode=getattr(args, "compile_inductor_mode", None),
+            # recompile budget 2n+8: each band also splits on the cond/uncond
+            # requires_grad guard and the xattn_boost renorm toggle
+            n_token_families=2 * len(bands) if bands else None,
+            dynamic_seq=True,
+            seq_range=getattr(args, "compile_seq_range", None),
+            seq_bands=bands,
+        )
     elif getattr(args, "compile_blocks", False):
         model.compile_blocks(mode=getattr(args, "compile_inductor_mode", None))
 
@@ -593,8 +626,7 @@ def load_text_encoder(
 
     The legacy ``args`` namespace is still accepted as a fallback (the CLI and
     ``prepare_text_inputs`` pass one); explicit keywords win over it when both are
-    given. Don't reach for ``inference.parse_args`` just to feed this — that drags
-    in unrelated required flags (``--save_path``) and reads nothing else here.
+    given.
     """
     # Explicit keyword wins; otherwise fall back to the namespace; otherwise default.
     te_path = (

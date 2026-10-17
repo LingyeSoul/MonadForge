@@ -1,19 +1,12 @@
 #!/usr/bin/env python3
 """Resident Anima inference server — load the DiT/VAE/TE once, generate many.
 
-This is the inference twin of the training ``scripts/daemon/``: same
-**discoverability** skin (a localhost HTTP port + a pidfile both written to a
-fixed per-user location), wrapped around the **resident-model** lifetime the
-``scripts/anima_tagger/autotag_server.py`` worker pioneered. The engine itself is
-already done — ``generate(args, settings, shared_models=…)`` reuses a warm DiT
-out of ``shared_models["model"]`` and never frees it — so this file is mostly the
-HTTP shell + discovery + a coexistence handshake.
-
-Why a *separate* process from the daemon and not a new daemon job kind: the
-daemon's contract is to **free** the GPU between serial, mutually-exclusive jobs
-(it reaps VRAM in ``manager._gpu_guard``); a resident inference model is the
-opposite workload. So inference lives in its own polite-tenant process that
-*yields* the card on request.
+Discovery mirrors ``anima_daemon/`` (a localhost HTTP port + a pidfile at a
+fixed per-user location). ``generate(args, settings, shared_models=…)`` reuses
+a warm DiT out of ``shared_models["model"]``; this file is the HTTP shell,
+discovery, and the coexistence handshake. It is a separate process because the
+daemon frees the GPU between jobs (``manager._gpu_guard``), so a resident model
+instead *yields* the card on request.
 
 GPU coexistence with the training daemon (two services, one card):
 
@@ -68,7 +61,7 @@ if str(ROOT) not in sys.path:
 logger = logging.getLogger("anima.inference_server")
 
 # --------------------------------------------------------------------------- #
-# Discovery — mirrors scripts/daemon/config.py so any client (CLI / agent /
+# Discovery — mirrors anima_daemon/config.py so any client (CLI / agent /
 # MCP / a vendored node) finds {port} without hardcoding it. Kept inline so this
 # file stays self-contained and importable without dragging in torch.
 # --------------------------------------------------------------------------- #

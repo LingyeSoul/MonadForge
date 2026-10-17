@@ -1,0 +1,83 @@
+{
+  "_comment": "Phase-2c eyeball / diagnostic prompt set. Each entry pairs a native-JA prompt with the EN translation the teacher arm (ja_t5en) puts on its T5 side, so `en` must be a faithful translation, not a paraphrase. Five registers, deliberately mixed: t* = danbooru tag-style (the training register), s* = sentence prose (D2/D7 register, untrained), q* = embedded quoted text (D6, eval-only by design), n* = proper nouns (risk 4: raw MT transliterates these, so the rows may be unvisited), c* = composition/lighting vocabulary. Consumed by bench/cjk_adapter/run_bench.py --prompts. Tag-style prompts join with \", \" (the primary student joiner since 2026-08-30); prose prompts keep 、 as punctuation.",
+  "t1_tags_school": {
+    "en": "1girl, black hair, long hair, school uniform, classroom, sitting, looking at viewer, smile, anime style",
+    "ja": "女の子1人, 黒髪, 長い髪, 制服, 教室, 座る, カメラ目線, 笑顔, アニメ風"
+  },
+  "t2_tags_maid": {
+    "en": "1girl, maid, white apron, blonde hair, twintails, blue eyes, holding a tray, indoors, detailed background",
+    "ja": "女の子1人, メイド, 白いエプロン, 金髪, ツインテール, 青い目, トレイを持つ, 屋内, 緻密な背景"
+  },
+  "t3_tags_armor": {
+    "en": "1girl, knight, silver armor, red cape, sword, standing, castle, cloudy sky, dramatic lighting",
+    "ja": "女の子1人, 騎士, 銀の鎧, 赤いマント, 剣, 立つ, 城, 曇り空, 劇的な照明"
+  },
+  "t4_tags_cat": {
+    "en": "1girl, cat ears, animal ear fluff, hoodie, sitting on bed, night, room, soft lighting, looking away",
+    "ja": "女の子1人, 猫耳, 動物の耳のふわふわ部分, パーカー, ベッドに座る, 夜, 部屋, 柔らかい照明, 視線をそらす"
+  },
+  "t5_tags_two": {
+    "en": "2girls, twins, matching outfits, holding hands, cherry blossoms, spring, outdoors, full body",
+    "ja": "女の子2人, 双子, お揃いの服, 手をつなぐ, 桜, 春, 屋外, 全身"
+  },
+  "t6_tags_boy": {
+    "en": "1boy, short hair, glasses, white shirt, library, reading a book, from side, depth of field",
+    "ja": "男の子1人, 短い髪, 眼鏡, 白いシャツ, 図書館, 本を読む, 横から, 被写界深度"
+  },
+  "s1_scene_rain": {
+    "en": "a girl with an umbrella standing at a crosswalk in the rain at night, neon signs reflected on the wet road",
+    "ja": "雨の夜、傘をさした少女が横断歩道に立っていて、濡れた路面にネオンの看板が映っている"
+  },
+  "s2_scene_kitchen": {
+    "en": "a young woman cooking breakfast in a sunlit kitchen, steam rising from the pan, warm morning light",
+    "ja": "日の差し込む台所で若い女性が朝食を作っていて、フライパンから湯気が立ちのぼる、暖かい朝の光"
+  },
+  "s3_scene_train": {
+    "en": "a schoolgirl dozing off by the window of an empty train, late afternoon sunlight across the seats",
+    "ja": "誰もいない電車の窓際で女子学生がうたた寝している、夕方の日差しが座席を横切る"
+  },
+  "s4_scene_festival": {
+    "en": "two friends in yukata eating shaved ice at a summer festival, paper lanterns glowing behind them",
+    "ja": "夏祭りで浴衣を着た二人の友達がかき氷を食べている、後ろで提灯が光っている"
+  },
+  "s5_scene_studio": {
+    "en": "an illustrator drawing on a tablet in a cluttered room at midnight, only the monitor lighting her face",
+    "ja": "真夜中の散らかった部屋でイラストレーターがタブレットに絵を描いている、モニターだけが彼女の顔を照らしている"
+  },
+  "q1_quote_sign": {
+    "en": "1girl, school uniform, classroom, holding a wooden sign with \"GOOD MORNING\" written on it, anime style",
+    "ja": "女の子1人, 制服, 教室, 「おはよう」と書かれた木の看板を持つ, アニメ風"
+  },
+  "q2_quote_shop": {
+    "en": "a small cafe storefront with a hanging cloth curtain reading \"OPEN\", potted plants beside the door",
+    "ja": "「営業中」と書かれた暖簾がかかった小さなカフェの店先、扉の横に鉢植え"
+  },
+  "q3_quote_book": {
+    "en": "1girl, holding an open notebook toward the viewer with \"THANK YOU\" written on the page, smiling",
+    "ja": "女の子1人, 「ありがとう」と書かれた開いたノートをこちらに向けて持つ, 笑顔"
+  },
+  "n1_name_hakurei": {
+    "en": "hakurei reimu, touhou, red and white miko outfit, detached sleeves, shrine, standing, anime style",
+    "ja": "博麗霊夢, 東方Project, 紅白の巫女服, 袖なし, 神社, 立つ, アニメ風"
+  },
+  "n2_name_asuka": {
+    "en": "souryuu asuka langley, neon genesis evangelion, red plugsuit, interface headset, serious expression",
+    "ja": "惣流・アスカ・ラングレー, 新世紀エヴァンゲリオン, 赤いプラグスーツ, インターフェースヘッドセット, 真剣な表情"
+  },
+  "n3_name_place": {
+    "en": "a shrine on a mountain in kyoto in autumn, red maple leaves, stone stairs, no humans",
+    "ja": "秋の京都, 山の上の神社, 紅葉, 石段, 人物なし"
+  },
+  "c1_comp_closeup": {
+    "en": "close-up portrait, 1girl, freckles, green eyes, wind-blown hair, shallow depth of field, backlighting",
+    "ja": "接写の肖像, 女の子1人, そばかす, 緑の目, 風になびく髪, 浅い被写界深度, 逆光"
+  },
+  "c2_comp_wide": {
+    "en": "wide shot, 1girl, tiny figure in a vast field of sunflowers, blue sky, from above, summer",
+    "ja": "引きの構図, 女の子1人, 広大なひまわり畑の中の小さな人影, 青空, 俯瞰, 夏"
+  },
+  "c3_comp_mono": {
+    "en": "monochrome, greyscale, 1girl, sitting on a windowsill, cigarette smoke, film grain, 1990s anime style",
+    "ja": "モノクロ, グレースケール, 女の子1人, 窓辺に座る, 煙草の煙, フィルムグレイン, 1990年代アニメ風"
+  }
+}

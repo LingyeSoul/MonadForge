@@ -2,8 +2,9 @@
   <v-container fluid class="pa-4 preprocess-page">
     <div class="text-h5 mb-1">{{ t('ppTitle') }}</div>
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('ppSubtitle') }}</div>
+    <div class="mb-4" style="max-width: 480px"><RuntimeSelector :disabled="taskStore.loading" /></div>
 
-    <QwenPreprocessContent v-if="workspace.family === 'qwen21'" />
+    <QwenPreprocessContent v-if="workspace.family !== 'anima'" :key="workspace.family" />
     <template v-else>
     <!-- Isolated preprocess run -->
     <v-card variant="tonal" class="mb-4">
@@ -492,6 +493,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useModelWorkspace } from '../stores/modelWorkspace'
 import QwenPreprocessContent from '../components/QwenPreprocessContent.vue'
+import RuntimeSelector from '../components/RuntimeSelector.vue'
 const workspace = useModelWorkspace()
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'

@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0}img{max-width:100%}</style>
+<title>CJK Renderable Anima</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Arimo:ital,wght@0,400;0,700;1,400&family=Noto+Sans+Math&family=STIX+Two+Text:ital,wght@0,400;0,600;1,400;1,600&family=Noto+Sans+JP:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Computer Modern (the LaTeX paper face) for every formula. Greek comes from the TeX
+   math-italic face (CMU Unicode's text Greek is a different shape: varrho for rho, an
+   a-like alpha); KaTeX_Main supplies the operators CMU lacks (∂ ∈ ∼); Noto Sans Math is
+   the last resort. */
+@font-face{font-family:"CMU Serif";font-style:normal;font-weight:400;font-display:swap;
+  src:url("https://cdn.jsdelivr.net/npm/computer-modern@0.1.3/fonts/cmu-serif-500-roman.woff2") format("woff2")}
+@font-face{font-family:"CMU Serif";font-style:italic;font-weight:400;font-display:swap;
+  src:url("https://cdn.jsdelivr.net/npm/computer-modern@0.1.3/fonts/cmu-serif-500-italic.woff2") format("woff2")}
+@font-face{font-family:"CMU Serif";font-style:normal;font-weight:700;font-display:swap;
+  src:url("https://cdn.jsdelivr.net/npm/computer-modern@0.1.3/fonts/cmu-serif-700-roman.woff2") format("woff2")}
+@font-face{font-family:"CMU Serif";font-style:italic;font-weight:700;font-display:swap;
+  src:url("https://cdn.jsdelivr.net/npm/computer-modern@0.1.3/fonts/cmu-serif-700-italic.woff2") format("woff2")}
+@font-face{font-family:"CMU Serif";font-style:normal;font-weight:400;font-display:swap;unicode-range:U+03B1-03C9,U+03D1,U+03D5-03D6,U+03F1,U+03F5;
+  src:url("https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/KaTeX_Math-Italic.woff2") format("woff2")}
+@font-face{font-family:"CMU Serif";font-style:italic;font-weight:400;font-display:swap;unicode-range:U+03B1-03C9,U+03D1,U+03D5-03D6,U+03F1,U+03F5;
+  src:url("https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/KaTeX_Math-Italic.woff2") format("woff2")}
+@font-face{font-family:"KaTeX_Main";font-style:normal;font-weight:400;font-display:swap;
+  src:url("https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/KaTeX_Main-Regular.woff2") format("woff2")}
+@font-face{font-family:"KaTeX_AMS";font-style:normal;font-weight:400;font-display:swap;
+  src:url("https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/KaTeX_AMS-Regular.woff2") format("woff2")}
+@font-face{font-family:"KaTeX_Caligraphic";font-style:normal;font-weight:400;font-display:swap;
+  src:url("https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/KaTeX_Caligraphic-Regular.woff2") format("woff2")}
+</style>
+<style>
+:root{
+  --bg:#ffffff; --ink:#1c1c24; --muted:#6f6f80; --faint:#a9a9b8; --rule:#dcdce6;
+  --lav:#e5e5fa; --mint:#dcf5d1; --butter:#fff8cc; --apri:#fde2b3; --sky:#c2dfee;
+  --red:#cf3f2a; --plate:#f6f6fb;
+  --sans:"Arimo","Helvetica Neue",Helvetica,Arial,sans-serif;
+  --math:"CMU Serif","KaTeX_Main","STIX Two Text","Noto Sans Math","Times New Roman",Times,serif;
+  --jp:"Noto Sans JP","Hiragino Sans","Yu Gothic",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#15151c; --ink:#e9e9f2; --muted:#a2a2b4; --faint:#62627a; --rule:#2e2e3c;
+    --lav:#33335a; --mint:#294632; --butter:#4a4424; --apri:#5a4120; --sky:#1d4256;
+    --red:#ff7a61; --plate:#1d1d27;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#15151c; --ink:#e9e9f2; --muted:#a2a2b4; --faint:#62627a; --rule:#2e2e3c;
+  --lav:#33335a; --mint:#294632; --butter:#4a4424; --apri:#5a4120; --sky:#1d4256;
+  --red:#ff7a61; --plate:#1d1d27;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.55;padding-inline:20px;padding-block:40px 64px}
+.wrap{max-width:1240px;margin-inline:auto;display:grid;gap:40px}
+header{display:grid;gap:10px;max-width:760px}
+.eyebrow{font-family:var(--mono);font-size:13px;color:var(--muted);letter-spacing:.02em}
+h1{font-family:var(--math);font-weight:600;font-size:clamp(30px,4.2vw,44px);line-height:1.1;margin:0;text-wrap:balance}
+.dek{margin:0;font-size:18px;color:var(--ink);max-width:66ch}
+.dek em{font-family:var(--math);font-size:1.08em}
+.legend{display:flex;flex-wrap:wrap;gap:10px 26px;font-size:14px;color:var(--muted);margin:0;padding:0;list-style:none}
+.legend li{display:flex;align-items:center;gap:8px}
+.sw{width:30px;height:16px;display:inline-block}
+.sw.frozen{background:var(--lav)}
+.sw.trained{background:var(--lav);outline:2.5px solid var(--red);outline-offset:-2.5px}
+.sw.grad{height:0;border-top:2.5px dashed var(--red)}
+figure{margin:0;display:grid;gap:14px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.scroll svg{display:block;width:100%;min-width:720px;height:auto;color:var(--ink)}
+.scroll.narrow svg{max-width:820px;min-width:0;margin-inline:auto}
+figcaption{font-size:15px;color:var(--muted);max-width:78ch}
+figcaption b{color:var(--ink);font-weight:700}
+/* svg vocabulary, in the DiT-paper figure idiom */
+svg text{font-family:var(--sans);font-size:18px;fill:var(--ink)}
+svg .sm{font-size:14.5px;fill:var(--muted)}
+svg .m{font-family:var(--math);font-style:italic;font-size:20px}
+svg .jp{font-family:var(--jp)}
+svg .cap{font-size:19px}
+svg .red{fill:var(--red)}
+.f-lav{fill:var(--lav)} .f-mint{fill:var(--mint)} .f-butter{fill:var(--butter)} .f-apri{fill:var(--apri)} .f-sky{fill:var(--sky)}
+.trained{stroke:var(--red);stroke-width:3}
+.wire{stroke:var(--ink);stroke-width:2.6;fill:none}
+.grad{stroke:var(--red);stroke-width:2.6;stroke-dasharray:9 6;fill:none}
+.zoomline{stroke:var(--muted);stroke-width:1.2;stroke-dasharray:5 5}
+.plus-bg{fill:var(--ink)} .plus{stroke:var(--bg);stroke-width:3}
+.ink-fill{fill:var(--ink)} .red-fill{fill:var(--red)}
+.thumb-edge{fill:none;stroke:var(--rule);stroke-width:1.5}
+.ghost{fill:none;stroke:var(--faint);stroke-width:2;stroke-dasharray:7 6}
+svg .gbox{fill:none;stroke:var(--faint);stroke-width:1.5}
+svg .faint-ink{fill:var(--muted)}
+svg .mono{font-family:var(--mono);font-size:13px}
+/* lower sections */
+section{display:grid;gap:18px;align-content:start}
+h2{font-family:var(--math);font-weight:600;font-size:26px;margin:0;text-wrap:balance}
+.lede{margin:0;color:var(--muted);max-width:70ch}
+.specimens{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px 18px}
+@media (max-width:640px){.specimens{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.spec{display:grid;gap:8px;margin:0}
+.spec img{width:100%;aspect-ratio:1;object-fit:contain;background:var(--plate);display:block;max-width:100%}
+.spec figcaption{font-size:13.5px;line-height:1.4;color:var(--muted)}
+.spec .read{font-family:var(--jp);color:var(--ink);font-size:15px}
+.ok{color:#2f8a4e} .miss{color:var(--red)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .ok{color:#6fd08f}}
+:root[data-theme="dark"] .ok{color:#6fd08f}
+.group-label{font-family:var(--mono);font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);grid-column:1/-1;border-bottom:1px solid var(--rule);padding-bottom:6px}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:36px}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{text-align:left;padding:9px 10px 9px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-size:12.5px;font-family:var(--mono);font-weight:500;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
+td.num{font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:14px;white-space:nowrap}
+.mi{font-family:var(--math);font-style:italic;font-size:1.1em;font-feature-settings:"kern" 1}
+.cal{font-family:"KaTeX_Caligraphic","Noto Sans Math",var(--math);font-style:normal}
+.bb{font-family:"KaTeX_AMS","Noto Sans Math",var(--math);font-style:normal}
+.tag{font-family:var(--mono);font-size:12.5px;padding:1px 7px;white-space:nowrap}
+.tag.t{color:var(--red);outline:1.5px solid var(--red)}
+.tag.z{color:var(--muted);outline:1.5px solid var(--rule)}
+p{margin:0}
+.prose{display:grid;gap:12px;max-width:66ch}
+code{font-family:var(--mono);font-size:.88em}
+svg .tok{font-family:var(--mono);font-size:13px;fill:var(--ink)}
+.tag.h{color:var(--ink);outline:1.5px solid var(--ink)}
+.tag.k{color:var(--muted);outline:1.5px dashed var(--faint)}
+.eqs{display:grid;gap:16px;padding-block:20px;padding-inline:24px;background:var(--plate);overflow-x:auto}
+.eq{display:flex;align-items:baseline;justify-content:space-between;gap:24px;font-family:var(--math);font-size:23px;line-height:1.5;white-space:nowrap;font-variant-numeric:lining-nums;font-feature-settings:"kern" 1,"liga" 1;text-rendering:optimizeLegibility}
+.frac{display:inline-flex;flex-direction:column;align-items:center;vertical-align:middle;margin-inline:6px;font-size:.94em;line-height:1.35}
+.frac .num{border-bottom:1.3px solid currentColor;padding:0 12px 5px}
+.frac .den{padding:5px 12px 0}
+.eq i{font-style:italic;padding-right:.02em}
+.eq sub,.eq sup,.mi sub,.mi sup{font-size:.68em}
+.eq sub{vertical-align:sub} .eq sup{vertical-align:super}
+.eq .n{font-family:var(--sans);font-size:14px;color:var(--muted);align-self:center}
+.eq .side{font-size:17.5px;color:var(--muted);margin-left:28px;align-self:center}
+.sym{min-width:720px}
+.sym td:first-child{font-family:var(--math);font-style:italic;font-size:19px;white-space:nowrap}
+.thumb{width:44px;height:44px;vertical-align:middle;background:var(--plate);margin-left:6px}
+svg .fire{font-size:22px}
+.legend .fire{font-size:18px}
+.retired td:first-child{font-family:var(--math);font-style:italic;font-size:18px;white-space:nowrap}
+svg .fire{font-size:22px}
+.legend .fire{font-size:18px}
+.retired td:first-child{font-family:var(--math);font-style:italic;font-size:18px;white-space:nowrap}
+svg .fire{font-size:22px}
+.legend .fire{font-size:18px}
+.retired td:first-child{font-family:var(--math);font-style:italic;font-size:18px;white-space:nowrap}
+svg .fire{font-size:22px}
+svg .v{font-weight:700;font-style:normal}
+.eq .v,.mi.v,b.v{font-family:var(--math);font-weight:700;font-style:normal}
+.legend .fire{font-size:18px}
+.retired td:first-child{font-family:var(--math);font-style:italic;font-size:18px;white-space:nowrap}
+</style>
+
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="eyebrow">project/finished/cjk_renderable_anima</div>
+  <h1>CJK Renderable Anima</h1>
+  <p class="dek">Anima already knows how to draw Japanese glyphs. It garbles them because nothing in the text stream tells it <em>which</em> glyph to draw. This line trains that missing address: one free vector <b class="v">f</b><sub>r</sub> per vocab-pack ext row, with the DiT, adapter and text encoder all frozen. What ships is the pack, with the trained rows baked in.</p>
+</header>
+
+<section>
+  <h2>The loss: a paired difference, not a plain residual</h2>
+  <p class="lede">Binding one row takes exposure: ≈ 1 000 composite draws. The paired loss changes what each of those draws teaches. The row is trained on what separates the two renders, so it learns to put its glyph <em>into</em> the scene it is given.</p>
+<figure>
+  <ul class="legend" aria-label="Figure key">
+    <li><span class="sw frozen"></span>frozen weight</li>
+    <li><span class="sw trained"></span><span class="fire">🔥</span> trained parameter, the only one</li>
+    <li><span class="sw grad"></span>gradient path</li>
+    <li><span class="tag k">no_grad</span>the sibling branch, detached</li>
+  </ul>
+  <div class="scroll narrow">
+  <svg viewBox="0 88 820 1180" role="img" aria-label="The paired loss. At the top, the base model samples a scene from an English prompt; its anchor text is erased once and the same text fit is drawn twice, feeding the two branches below. Branch B, on the left, is the composite carrying the new glyph and the trained ext row in its caption; branch A, on the right, is a sibling image of the same scene with Latin reference letters pasted in the same box under the same Japanese caption frame. Both are noised with the same epsilon and sigma and run through the same frozen Anima; branch A carries no gradient. Each branch forms a flow-matching residual, and the loss is the squared box-weighted norm of their difference. Inside the box the noise cancels and the target is the clean pixel delta between the two strings; outside the box the term asks the two renders to match, which preserves the scene. A red dashed rail runs from the loss back to the ext row in B's caption only.">
+    <defs>
+      <marker id="ah4" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="ink-fill"/></marker>
+      <marker id="ahr4" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="red-fill"/></marker>
+    </defs>
+
+    <!-- ============ the scene both branches are cut from ============ -->
+    <g transform="translate(-130 0)">
+      <rect x="408" y="106" width="264" height="250" rx="6" class="f-mint"/>
+      <text x="540" y="134" text-anchor="middle" font-size="16">Anima draws the scene</text>
+
+      <rect x="460" y="164" width="160" height="112" class="thumb-edge" style="fill:var(--plate)"/>
+      <circle cx="486" cy="258" r="14" class="gbox"/>
+      <path class="gbox" d="M466 276 q20 -17 40 0"/>
+      <path class="gbox" d="M598 268 q14 -11 24 9"/>
+      <ellipse cx="546" cy="202" rx="46" ry="30" class="gbox" style="fill:var(--bg)"/>
+      <path class="gbox" d="M528 228 L520 250 L540 230" style="fill:var(--bg)"/>
+      <text x="546" y="211" text-anchor="middle" font-size="22">hi</text>
+
+      <text x="540" y="302" text-anchor="middle" class="m" font-size="16"><tspan class="v">z</tspan> ← <tspan class="v">z</tspan> − Δσ · <tspan class="v">v</tspan><tspan dy="5" font-size="12">θ</tspan><tspan dy="-5">(</tspan><tspan class="v">z</tspan>, σ, <tspan class="v">c</tspan><tspan dy="5" font-size="12">EN</tspan><tspan dy="-5">)</tspan></text>
+      <text x="540" y="324" text-anchor="middle" class="sm">σ : 1 → 0 · an EN prompt</text>
+    </g>
+
+    <!-- the scene splits into the two branches -->
+    <path class="wire" d="M410 356 V 374 H 194 V 390" marker-end="url(#ah4)"/>
+    <path class="wire" d="M410 356 V 374 H 626 V 390" marker-end="url(#ah4)"/>
+
+    <!-- ============ branch B ============ -->
+    <g transform="translate(-46 264)">
+      <rect x="90" y="130" width="300" height="250" rx="6" class="f-butter"/>
+      <text x="106" y="158"><tspan class="m v">B</tspan> · the item to learn</text>
+
+      <rect x="140" y="172" width="200" height="140" class="thumb-edge" style="fill:var(--plate)"/>
+      <circle cx="172" cy="290" r="18" class="gbox"/>
+      <path class="gbox" d="M146 312 q26 -22 52 0"/>
+      <path class="gbox" d="M302 300 q18 -14 30 12"/>
+      <ellipse cx="244" cy="226" rx="60" ry="40" class="gbox" style="fill:var(--bg)"/>
+      <path class="gbox" d="M220 262 L210 288 L236 264" style="fill:var(--bg)"/>
+      <text x="244" y="240" text-anchor="middle" class="jp" font-size="36">が</text>
+      <rect x="216" y="200" width="56" height="52" fill="none" stroke="var(--red)" stroke-width="2" stroke-dasharray="5 4"/>
+
+      <rect x="104" y="318" width="272" height="42" rx="4" class="f-sky"/>
+      <text x="114" y="345" class="tok" font-size="13">…reads as "</text>
+      <rect x="204" y="324" width="44" height="30" rx="3" class="f-lav trained"/>
+      <text x="226" y="346" text-anchor="middle" class="jp" font-size="17">が</text>
+      <text x="252" y="345" class="tok" font-size="13">".</text>
+      <text x="368" y="345" text-anchor="end" class="m" font-size="17"><tspan class="v">c</tspan><tspan dy="5" font-size="13">B</tspan></text>
+      <text x="272" y="350" class="fire">🔥</text>
+    </g>
+
+    <!-- ============ branch A ============ -->
+    <g transform="translate(-214 264)">
+      <rect x="690" y="130" width="300" height="250" rx="6" class="f-lav"/>
+      <text x="706" y="158"><tspan class="m v">A</tspan> · the reference sibling</text>
+
+      <rect x="740" y="172" width="200" height="140" class="thumb-edge" style="fill:var(--plate)"/>
+      <circle cx="772" cy="290" r="18" class="gbox"/>
+      <path class="gbox" d="M746 312 q26 -22 52 0"/>
+      <path class="gbox" d="M902 300 q18 -14 30 12"/>
+      <ellipse cx="844" cy="226" rx="60" ry="40" class="gbox" style="fill:var(--bg)"/>
+      <path class="gbox" d="M820 262 L810 288 L836 264" style="fill:var(--bg)"/>
+      <text x="844" y="239" text-anchor="middle" font-size="30">KZ</text>
+      <rect x="816" y="200" width="56" height="52" fill="none" stroke="var(--red)" stroke-width="2" stroke-dasharray="5 4"/>
+
+      <rect x="704" y="318" width="272" height="42" rx="4" class="f-sky"/>
+      <text x="714" y="345" class="tok" font-size="13">…reads as "</text>
+      <rect x="804" y="324" width="44" height="30" rx="3" class="f-sky" style="stroke:var(--faint);stroke-width:1.5"/>
+      <text x="826" y="346" text-anchor="middle" font-size="16">KZ</text>
+      <text x="852" y="345" class="tok" font-size="13">".</text>
+      <text x="968" y="345" text-anchor="end" class="m" font-size="17"><tspan class="v">c</tspan><tspan dy="5" font-size="13">A</tspan></text>
+      <text x="840" y="376" text-anchor="middle" class="sm">one Latin letter per glyph · never the romaji</text>
+    </g>
+
+    <!-- ============ noising ============ -->
+    <g transform="translate(-46 264)">
+      <line class="wire" x1="240" y1="388" x2="240" y2="416" marker-end="url(#ah4)"/>
+      <rect x="120" y="418" width="240" height="46" rx="4" class="f-apri"/>
+      <text x="240" y="447" text-anchor="middle" class="m" font-size="18"><tspan class="v">z</tspan><tspan dy="5" font-size="13">σ</tspan><tspan dy="-5">= (1−σ)</tspan><tspan class="v">x</tspan><tspan dy="5" font-size="13">B</tspan><tspan dy="-5"> + σ</tspan><tspan class="v">ε</tspan></text>
+    </g>
+    <g transform="translate(-214 264)">
+      <line class="wire" x1="840" y1="388" x2="840" y2="416" marker-end="url(#ah4)"/>
+      <rect x="720" y="418" width="240" height="46" rx="4" class="f-apri"/>
+      <text x="840" y="447" text-anchor="middle" class="m" font-size="18"><tspan class="v">z</tspan><tspan dy="5" font-size="13">σ</tspan><tspan dy="-5">= (1−σ)</tspan><tspan class="v">x</tspan><tspan dy="5" font-size="13">A</tspan><tspan dy="-5"> + σ</tspan><tspan class="v">ε</tspan></text>
+    </g>
+    <g transform="translate(-130 264)">
+      <text x="540" y="437" text-anchor="middle" class="sm">the same <tspan class="m">ε</tspan>,</text>
+      <text x="540" y="456" text-anchor="middle" class="sm">the same <tspan class="m">σ</tspan> ∼ U[0.7, 0.9]</text>
+    </g>
+
+    <!-- ============ the frozen model, twice ============ -->
+    <g transform="translate(-46 264)">
+      <line class="wire" x1="240" y1="470" x2="240" y2="494" marker-end="url(#ah4)"/>
+      <rect x="120" y="496" width="240" height="72" rx="5" class="f-lav"/>
+      <text x="240" y="524" text-anchor="middle" font-size="17">Anima · frozen</text>
+      <text x="240" y="548" text-anchor="middle" class="m" font-size="18"><tspan class="v">v</tspan><tspan dy="5" font-size="13">θ</tspan><tspan dy="-5">(</tspan><tspan class="v">z</tspan><tspan dy="5" font-size="13">σ</tspan><tspan dy="-5">, </tspan><tspan class="v">c</tspan><tspan dy="5" font-size="13">B</tspan><tspan dy="-5">)</tspan></text>
+    </g>
+    <g transform="translate(-214 264)">
+      <line class="wire" x1="840" y1="470" x2="840" y2="494" marker-end="url(#ah4)"/>
+      <rect x="720" y="496" width="240" height="72" rx="5" class="f-lav"/>
+      <text x="840" y="524" text-anchor="middle" font-size="17">same weights · <tspan class="mono" font-size="14">no_grad</tspan></text>
+      <text x="840" y="548" text-anchor="middle" class="m" font-size="18"><tspan class="v">v</tspan><tspan dy="5" font-size="13">θ</tspan><tspan dy="-5">(</tspan><tspan class="v">z</tspan><tspan dy="5" font-size="13">σ</tspan><tspan dy="-5">, </tspan><tspan class="v">c</tspan><tspan dy="5" font-size="13">A</tspan><tspan dy="-5">)</tspan></text>
+    </g>
+    <line class="zoomline" x1="314" y1="796" x2="506" y2="796"/>
+    <text x="410" y="788" text-anchor="middle" class="sm">one model, two forwards</text>
+
+    <!-- ============ residuals ============ -->
+    <g transform="translate(-46 264)">
+      <line class="wire" x1="240" y1="574" x2="240" y2="598" marker-end="url(#ah4)"/>
+      <rect x="120" y="600" width="240" height="48" rx="4" class="f-mint"/>
+      <text x="240" y="630" text-anchor="middle" class="m" font-size="19"><tspan class="v">r</tspan><tspan dy="5" font-size="14">B</tspan><tspan dy="-5"> = </tspan><tspan class="v">v</tspan><tspan dy="5" font-size="13">θ</tspan><tspan dy="-5">(B) − </tspan><tspan class="v">v</tspan><tspan dy="5" font-size="13">B</tspan><tspan dy="-5">*</tspan></text>
+    </g>
+    <g transform="translate(-214 264)">
+      <line class="wire" x1="840" y1="574" x2="840" y2="598" marker-end="url(#ah4)"/>
+      <rect x="720" y="600" width="240" height="48" rx="4" class="f-mint"/>
+      <text x="840" y="630" text-anchor="middle" class="m" font-size="19"><tspan class="v">r</tspan><tspan dy="5" font-size="14">A</tspan><tspan dy="-5"> = </tspan><tspan class="v">v</tspan><tspan dy="5" font-size="13">θ</tspan><tspan dy="-5">(A) − </tspan><tspan class="v">v</tspan><tspan dy="5" font-size="13">A</tspan><tspan dy="-5">*</tspan></text>
+    </g>
+
+    <!-- ============ the difference ============ -->
+    <path class="wire" d="M194 912 V 942 H 380" marker-end="url(#ah4)"/>
+    <path class="wire" d="M626 912 V 942 H 440" marker-end="url(#ah4)"/>
+    <circle cx="410" cy="942" r="17" class="plus-bg"/>
+    <line x1="401" y1="942" x2="419" y2="942" class="plus"/>
+    <text x="410" y="976" text-anchor="middle" class="sm">≈ 80 % of <tspan class="m v">r</tspan><tspan class="m" dy="4" font-size="12">B</tspan><tspan dy="-4"> cancels: the scene posterior at σ ≈ 0.8,</tspan></text>
+    <text x="410" y="995" text-anchor="middle" class="sm">the erase patch and the paste artefacts, shared by construction</text>
+
+    <!-- ============ the loss ============ -->
+    <g transform="translate(-130 264)">
+      <line class="wire" x1="540" y1="758" x2="540" y2="742" marker-end="url(#ah4)"/>
+      <rect x="300" y="758" width="480" height="62" rx="5" class="f-apri trained"/>
+      <text x="540" y="798" text-anchor="middle" class="m" font-size="26"><tspan class="cal" font-style="normal">L</tspan><tspan dy="6" font-size="16">Δ</tspan><tspan dy="-6" font-style="normal"> = ‖ </tspan><tspan class="v">r</tspan><tspan dy="6" font-size="16">B</tspan><tspan dy="-6"> − </tspan><tspan class="v">r</tspan><tspan dy="6" font-size="16">A</tspan><tspan dy="-6" font-style="normal"> ‖²</tspan><tspan dy="8" font-size="16">w</tspan></text>
+    </g>
+
+    <!-- ============ what the two regions do ============ -->
+    <line class="wire" x1="410" y1="1084" x2="410" y2="1106" marker-end="url(#ah4)" opacity="0.6"/>
+    <rect x="170" y="1110" width="480" height="62" rx="4" class="gbox"/>
+    <text x="186" y="1136" class="sm"><tspan class="ink-fill" font-size="15">inside the box</tspan>: <tspan class="m">ε</tspan> cancels exactly, so the target is</text>
+    <text x="186" y="1158" class="sm"><tspan class="m v">x</tspan><tspan class="m" dy="4" font-size="12">A</tspan><tspan dy="-4"> − </tspan><tspan class="m v">x</tspan><tspan class="m" dy="4" font-size="12">B</tspan><tspan dy="-4"> : the clean pixel delta of the two strings</tspan></text>
+    <rect x="170" y="1182" width="480" height="62" rx="4" class="gbox"/>
+    <text x="186" y="1208" class="sm"><tspan class="ink-fill" font-size="15">outside the box</tspan>: the term is ‖<tspan class="m v">v</tspan><tspan class="m" dy="4" font-size="12">θ</tspan><tspan dy="-4">(B) − </tspan><tspan class="m v">v</tspan><tspan class="m" dy="4" font-size="12">θ</tspan><tspan dy="-4">(A)‖² :</tspan></text>
+    <text x="186" y="1230" class="sm">draw the scene as you draw it with text you can read</text>
+
+    <!-- ============ gradient rail: B only ============ -->
+    <path class="grad" d="M170 1039 H 14 V 660 H 164 V 630" marker-end="url(#ahr4)"/>
+    <text transform="translate(32 850) rotate(-90)" text-anchor="middle" class="sm red">∂<tspan class="cal">L</tspan><tspan dy="4" font-size="11">Δ</tspan><tspan dy="-4">/∂</tspan><tspan class="m v">f</tspan><tspan class="m" dy="4" font-size="11">r</tspan><tspan dy="-4">, into the ext row of </tspan><tspan class="m v">c</tspan><tspan class="m" dy="4" font-size="11">B</tspan><tspan dy="-4">, nowhere else</tspan></text>
+  </svg>
+  </div>
+
+  <div class="eqs" role="math">
+    <div class="eq"><span><b class="v">z</b><sub><i>σ</i></sub><sup><i>X</i></sup>&emsp14;=&emsp14;(1−<i>σ</i>)&thinsp;<b class="v">x</b><sub><i>X</i></sub>&thinsp;+&thinsp;<i>σ</i>&thinsp;<b class="v">ε</b>,&emsp;<b class="v">v</b><sub><i>X</i></sub>*&emsp14;=&emsp14;<b class="v">ε</b>&thinsp;−&thinsp;<b class="v">x</b><sub><i>X</i></sub>,&emsp;<b class="v">r</b><sub><i>X</i></sub>&emsp14;=&emsp14;<b class="v">v</b><sub><i>θ</i></sub>(<b class="v">z</b><sub><i>σ</i></sub><sup><i>X</i></sup>,&thinsp;<i>σ</i>,&thinsp;<b class="v">c</b><sub><i>X</i></sub>)&thinsp;−&thinsp;<b class="v">v</b><sub><i>X</i></sub>*<span class="side"><i>X</i> ∈ {A, B}</span></span><span class="n">(1)</span></div>
+    <div class="eq"><span><span class="cal">L</span><sub>Δ</sub>&emsp14;=&emsp14;<span class="bb">E</span><sub><b class="v">ε</b>,&thinsp;<i>σ</i></sub>&thinsp;‖&thinsp;<b class="v">r</b><sub><i>B</i></sub>&thinsp;−&thinsp;sg[&thinsp;<b class="v">r</b><sub><i>A</i></sub>&thinsp;]&thinsp;‖²<sub><i>w</i></sub>&thinsp;+&thinsp;<i>μ</i>&thinsp;·&thinsp;<span class="bb">E</span><sub><i>r</i> ∈ <span class="cal">R</span><sub>tr</sub></sub>&thinsp;‖<b class="v">f</b><sub><i>r</i></sub>‖²<span class="side"><i>σ</i> ∼ U[0.7, 0.9]</span></span><span class="n">loss</span></div>
+    <div class="eq"><span>in box:&emsp14;<b class="v">v</b><sub><i>B</i></sub>*&thinsp;−&thinsp;<b class="v">v</b><sub><i>A</i></sub>*&emsp14;=&emsp14;<b class="v">x</b><sub><i>A</i></sub>&thinsp;−&thinsp;<b class="v">x</b><sub><i>B</i></sub>&emsp;&emsp;out of box:&emsp14;<b class="v">r</b><sub><i>B</i></sub>&thinsp;−&thinsp;<b class="v">r</b><sub><i>A</i></sub>&emsp14;=&emsp14;<b class="v">v</b><sub><i>θ</i></sub>(B)&thinsp;−&thinsp;<b class="v">v</b><sub><i>θ</i></sub>(A)<span class="side">the scene is held</span></span><span class="n">(2)</span></div>
+  </div>
+
+  <figcaption><b>One noise, one <span class="mi">σ</span>, two renders of the same scene.</b> The row has to learn one thing, the glyph it addresses. Plain flow matching on a composite trains it on the whole picture, so everything the scene happens to contain is pulled into the row as bias. Instead the same scene is drawn twice, once with the new glyph (<span class="mi"><b class="v">B</b></span>) and once with a Latin string the frozen model already renders (<span class="mi"><b class="v">A</b></span>), under the same <span class="mi"><b class="v">ε</b></span> and the same <span class="mi">σ</span>; the row is trained on the <b>difference of the two flow-matching residuals</b>. What the two renders share cancels, and what is left is the part the new row draws.</figcaption>
+</figure>
+
+</section>
+
+<section>
+  <h2>Where it lands: the frozen text path</h2>
+  <p class="lede">Both branches run through this path with the same frozen weights. One thing moves: the ext-row table the T5 id stream reads, and it moves only through branch <span class="mi"><b class="v">B</b></span>'s caption.</p>
+
+<figure>
+  <ul class="legend" aria-label="Figure key">
+    <li><span class="sw frozen"></span>frozen weight</li>
+    <li><span class="sw trained"></span><span class="fire">🔥</span> trained parameter, the only one</li>
+    <li><span class="sw grad"></span>gradient path</li>
+  </ul>
+  <div class="scroll">
+  <svg viewBox="0 0 850 930" role="img" aria-label="The text-conditioning path, bottom to top. One caption feeds two tokenizers: Qwen3 reads the raw text and its last hidden state becomes the LLM adapter's keys and values; the T5 id stream is the query, with Japanese spans routed to ext ids at or above 32128. The embedding table is split into frozen stock rows and the vocab pack's ext rows, which carry the one trained parameter, f. Six frozen adapter blocks and an out_proj produce the 512 by 1024 context, which feeds the frozen Anima DiT sketched at the top. A red dashed rail runs from the DiT back down through the frozen adapter to the ext rows, the only place anything updates; Qwen3 receives no gradient.">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="ink-fill"/></marker>
+      <marker id="ahr" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="red-fill"/></marker>
+    </defs>
+
+    <!-- ============ the next block, sketched ============ -->
+    <g>
+      <rect x="340" y="58" width="320" height="88" rx="5" class="ghost"/>
+      <text x="500" y="94" text-anchor="middle" class="faint-ink">Anima DiT</text>
+      <text x="500" y="118" text-anchor="middle" class="sm">28 × block · self-attn · cross-attn · MLP</text>
+      <text x="500" y="137" text-anchor="middle" class="sm">frozen</text>
+    </g>
+
+    <!-- ============ context out ============ -->
+    <line class="wire" x1="500" y1="196" x2="500" y2="150" marker-end="url(#ah)"/>
+    <text x="512" y="176" class="sm">context 512 × 1024</text>
+
+    <rect x="372" y="196" width="256" height="44" rx="4" class="f-mint"/>
+    <text x="500" y="223" text-anchor="middle" font-size="16">out_proj · RMSNorm</text>
+    <line class="wire" x1="500" y1="266" x2="500" y2="244" marker-end="url(#ah)"/>
+
+    <!-- ============ adapter ============ -->
+    <rect x="352" y="266" width="296" height="252" rx="6" class="f-butter"/>
+    <text x="340" y="296" text-anchor="end">6×</text>
+    <text x="500" y="502" text-anchor="middle" class="sm">pre-norm · residual · frozen</text>
+
+    <rect x="372" y="278" width="256" height="44" rx="4" class="f-lav"/>
+    <text x="500" y="305" text-anchor="middle">MLP</text>
+    <line class="wire" x1="500" y1="348" x2="500" y2="326" marker-end="url(#ah)"/>
+
+    <rect x="372" y="348" width="256" height="58" rx="4" class="f-apri"/>
+    <text x="500" y="372" text-anchor="middle">Cross-Attention</text>
+    <text x="500" y="394" text-anchor="middle" class="sm">Q: T5 stream · K, V: Qwen3</text>
+    <line class="wire" x1="500" y1="432" x2="500" y2="410" marker-end="url(#ah)"/>
+
+    <rect x="372" y="432" width="256" height="58" rx="4" class="f-apri"/>
+    <text x="500" y="456" text-anchor="middle">Self-Attention</text>
+    <text x="500" y="478" text-anchor="middle" class="sm">RoPE over 512 slots</text>
+    <line class="wire" x1="500" y1="568" x2="500" y2="522" marker-end="url(#ah)"/>
+
+    <!-- ============ embed: stock rows | pack ext rows ============ -->
+    <rect x="344" y="544" width="312" height="130" rx="7" class="gbox"/>
+    <text x="358" y="565" class="sm mono">llm_adapter.embed</text>
+    <rect x="372" y="568" width="120" height="86" rx="4" class="f-lav"/>
+    <text x="432" y="596" text-anchor="middle" font-size="16">stock</text>
+    <text x="432" y="618" text-anchor="middle" class="sm">id &lt; 32128</text>
+    <text x="432" y="640" text-anchor="middle" class="sm">frozen</text>
+
+    <rect x="508" y="568" width="120" height="86" rx="4" class="f-lav trained"/>
+    <text x="568" y="596" text-anchor="middle" font-size="16">pack ext</text>
+    <text x="568" y="618" text-anchor="middle" class="sm">id ≥ 32128</text>
+    <text x="568" y="642" text-anchor="middle" class="m" font-size="17"><tspan class="v">e</tspan><tspan dy="4" font-size="12">r</tspan><tspan dy="-4"> + ρ</tspan><tspan class="v">f</tspan><tspan dy="4" font-size="12">r</tspan></text>
+    <text x="630" y="592" class="fire">🔥</text>
+
+    <!-- ============ T5 id strip ============ -->
+    <line class="wire" x1="432" y1="690" x2="432" y2="660" marker-end="url(#ah)"/>
+    <line class="wire" x1="568" y1="690" x2="568" y2="660" marker-end="url(#ah)"/>
+    <g>
+      <rect x="372" y="690" width="26" height="34" rx="3" class="f-sky"/><text x="385" y="712" text-anchor="middle" class="tok">…</text>
+      <rect x="410" y="690" width="44" height="34" rx="3" class="f-sky"/><text x="432" y="712" text-anchor="middle" class="tok">▁as</text>
+      <rect x="466" y="690" width="56" height="34" rx="3" class="f-sky"/><text x="494" y="712" text-anchor="middle" class="tok">▁"</text>
+      <rect x="534" y="690" width="68" height="34" rx="3" class="f-apri"/><text x="568" y="713" text-anchor="middle" class="jp" font-size="16">します</text>
+      <rect x="614" y="690" width="28" height="34" rx="3" class="f-sky"/><text x="628" y="712" text-anchor="middle" class="tok">".</text>
+      <rect x="654" y="690" width="40" height="34" rx="3" class="f-sky"/><text x="674" y="712" text-anchor="middle" class="tok">&lt;/s&gt;</text>
+    </g>
+
+    <!-- ============ tokenizers ============ -->
+    <line class="wire" x1="500" y1="768" x2="500" y2="730" marker-end="url(#ah)"/>
+    <rect x="372" y="768" width="256" height="54" rx="4" class="f-sky"/>
+    <text x="500" y="791" text-anchor="middle" font-size="16">T5 tokenizer + pack</text>
+    <text x="500" y="812" text-anchor="middle" class="sm">EN spiece · JA → 32128 + r</text>
+
+    <rect x="104" y="768" width="180" height="54" rx="4" class="f-sky"/>
+    <text x="194" y="791" text-anchor="middle" font-size="16">Qwen3</text>
+    <text x="194" y="812" text-anchor="middle" class="sm">tokenizer</text>
+    <line class="wire" x1="284" y1="795" x2="367" y2="795" marker-end="url(#ah)"/>
+    <text x="326" y="786" text-anchor="middle" class="sm">pieces</text>
+
+    <!-- ============ Qwen3 source stream ============ -->
+    <line class="wire" x1="194" y1="768" x2="194" y2="700" marker-end="url(#ah)"/>
+    <rect x="104" y="614" width="180" height="86" rx="4" class="f-butter"/>
+    <text x="194" y="648" text-anchor="middle" font-size="16">Qwen3 0.6B</text>
+    <text x="194" y="672" text-anchor="middle" class="sm">frozen</text>
+    <path class="wire" d="M194 614V377H367" marker-end="url(#ah)"/>
+    <text x="284" y="367" text-anchor="middle" class="sm">K, V</text>
+
+    <!-- ============ caption ============ -->
+    <line class="wire" x1="194" y1="866" x2="194" y2="826" marker-end="url(#ah)"/>
+    <line class="wire" x1="500" y1="866" x2="500" y2="826" marker-end="url(#ah)"/>
+    <rect x="104" y="866" width="612" height="48" rx="4" class="f-lav"/>
+    <text x="410" y="896" text-anchor="middle" class="jp" font-size="17">…speech bubble. She is saying "します".</text>
+
+    <!-- ============ gradient rail ============ -->
+    <path class="grad" d="M730 100V611H634" marker-end="url(#ahr)"/>
+    <text transform="translate(722 380) rotate(-90)" text-anchor="middle" class="sm red">∂<tspan class="cal">L</tspan>/∂context</text>
+  </svg>
+  </div>
+
+  <div class="eqs" role="math">
+    <div class="eq"><span><span class="frac"><span class="num">∂<span class="cal">L</span><sub>Δ</sub></span><span class="den">∂<b class="v">f</b><sub><i>r</i></sub></span></span>&emsp14;=&emsp14;<i>ρ</i>&thinsp;·&thinsp;<span class="frac"><span class="num">∂<span class="cal">L</span><sub>Δ</sub></span><span class="den">∂context<sub><i>B</i></sub></span></span>&thinsp;·&thinsp;<span class="frac"><span class="num">∂context<sub><i>B</i></sub></span><span class="den">∂<b class="v">ẽ</b><sub><i>r</i></sub></span></span><span class="side">branch <i>A</i> is detached, so it contributes no term</span></span><span class="n">grad</span></div>
+  </div>
+
+  <figcaption>The caption has to reach the DiT as something it can act on, so it is read twice. Qwen3 0.6B reads the raw text and supplies the keys and values; the T5 id stream supplies the query. English spans keep their stock ids, and a Japanese span is cut into Qwen pieces, each routed to an ext id that <code>llm_adapter.embed</code> resolves against the pack rows plus <span class="mi">ρ<b class="v">F</b></span>. English captions touch no ext row, so they render bit-exact. <b>The gradient</b> (red, dashed) enters on branch <span class="mi"><b class="v">B</b></span> only and runs back to the ext rows without updating anything it passes through.</figcaption>
+</figure>
+</section>
+
+<section>
+  <h2>The address, written out</h2>
+  <p class="lede">One table is trained: the ext rows that <code>llm_adapter.embed</code> reads, one free vector per row. Notation: bold lowercase is a vector, bold uppercase a matrix or tensor, italic a scalar.</p>
+  <div class="eqs" role="math">
+    <div class="eq"><span><b class="v">ẽ</b><sub><i>r</i></sub>&emsp14;=&emsp14;<b class="v">e</b><sub><i>r</i></sub>&thinsp;+&thinsp;<i>ρ</i>&thinsp;<b class="v">f</b><sub><i>r</i></sub></span><span class="n">(1)</span></div>
+    <div class="eq"><span><b class="v">r</b><sub><i>X</i></sub>&emsp14;=&emsp14;<b class="v">v</b><sub><i>φ</i></sub>(<b class="v">z</b><sub><i>σ</i></sub><sup><i>X</i></sup>,&thinsp;<i>σ</i>,&thinsp;<i>T</i>(<b class="v">c</b><sub><i>X</i></sub>;&thinsp;<b class="v">Ẽ</b>))&thinsp;−&thinsp;(<b class="v">ε</b>&thinsp;−&thinsp;<b class="v">z</b><sub>0</sub><sup><i>X</i></sup>)<span class="side">only <b class="v">c</b><sub><i>B</i></sub> carries an ext id, so only <b class="v">r</b><sub><i>B</i></sub> depends on <b class="v">F</b></span></span><span class="n">(2)</span></div>
+    <div class="eq"><span><span class="cal">L</span><sub>Δ</sub>&emsp14;=&emsp14;<span class="bb">E</span><sub><i>x</i></sub>&thinsp;‖&thinsp;<b class="v">r</b><sub><i>B</i></sub>&thinsp;−&thinsp;sg[&thinsp;<b class="v">r</b><sub><i>A</i></sub>&thinsp;]&thinsp;‖²<sub><i>w</i></sub>&thinsp;+&thinsp;<i>μ</i>&thinsp;·&thinsp;<span class="bb">E</span><sub><i>r</i> ∈ <span class="cal">R</span><sub>tr</sub></sub>&thinsp;‖<b class="v">f</b><sub><i>r</i></sub>‖²<span class="side"><i>σ</i> ∼ U[0.7, 0.9]</span></span><span class="n">(3)</span></div>
+  </div>
+  <div class="scroll">
+  <table class="sym">
+    <thead><tr><th>Symbol</th><th>Value</th><th>Kind</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><b class="v">f</b><sub>r</sub> 🔥</td><td class="num">rows × 1024</td><td><span class="tag t">trained</span></td><td>One free vector per ext row in a training caption, in row-norm units; stacked, the table <b class="v">F</b>. lr 2e-3 cosine, AdamW (0.9, 0.99), batch 4. It is the address: a near-orthogonal direction the DiT reads as one unit (a kana, a kanji, or a whole Qwen piece such as <span class="jp">します</span>).</td></tr>
+      <tr><td><span class="cal">R</span><sub>tr</sub></td><td class="num">374 + pieces</td><td><span class="tag k">inventory</span></td><td>The singles table: 92 kana + 68 voiced / small kana + 200 corpus kanji + 13 punctuation, <b>every row at weight 1</b>. The 18 small kana are inside the 68 and cannot be drawn alone (a lone <span class="jp">ゃ</span> renders full-size), so <code>--units small</code> adds no rows — it gives each of them two-glyph digraph <i>items</i> (<span class="jp">あっ きゃ ニャ</span>) for a size reference. The sentence step adds word rows and the phrase file's uncovered pieces, trained only through the lines that carry them.</td></tr>
+      <tr><td><i>w</i></td><td class="num">ρ<sub>g</sub> = 0.25</td><td><span class="tag h">hyperparam</span></td><td><code>--box_share</code>: the norm ‖·‖²<sub><i>w</i></sub> is <i>s</i>·mean(cells under the text box) + (1 − <i>s</i>)·mean(the rest), per item, with <i>s</i> = min(ρ<sub>g</sub> · glyphs in the item, 0.75). Per <b>glyph</b>, not per box — so glyph size, glyph count and canvas shape stop moving a row's share of the loss. It replaced <code>--box_weight</code> (weigh in-box cells 4, divide by the weight sum over the whole canvas), which made the share follow the box <b>area</b>: the same row got 6.8 % of the loss at a 64-cell box and 2.9 % at a small one, and the glyph-size arms that read 0/24 were measuring that, not the size. At a 64-cell box ρ<sub>g</sub> 0.25 = <code>--box_weight</code> 20; on the full table the switch took singles 10 → 20/36 and native 8 → 19/64 with the scene held. Under the paired loss the box is the <b>union</b> of the two drawn boxes, so both strings are inside it and the outside region is pixel-identical between the siblings.</td></tr>
+      <tr><td>μ</td><td class="num">10⁻³</td><td><span class="tag h">hyperparam</span></td><td>L2 pull on <b class="v">f</b><sub>r</sub>, averaged over trained rows (<code>--free_residual</code>). The one guard against norm creep besides the cosine decay.</td></tr>
+      <tr><td>σ</td><td class="num">U[0.7, 0.9]</td><td><span class="tag h">hyperparam</span></td><td>The band where glyph identity is decided (<code>--t_min/--t_max</code>).</td></tr>
+      <tr><td><b class="v">x</b><sub>A</sub>, <b class="v">c</b><sub>A</sub></td><td class="num">1 per item</td><td><span class="tag z">no_grad</span></td><td>The sibling (<code>--pair_ref en</code>): same scene, same erase, same font / size / position / tilt, Latin letters one per glyph, captioned under the <b>same</b> JA frame with only the quoted string swapped. Never the target's romaji. Four references per (scene, glyph count) (<code>--pair_ref_pool 4</code>), which keeps the text cache near 1 k captions.</td></tr>
+      <tr><td>ρ</td><td class="num">≈ 195</td><td><span class="tag k">constant</span></td><td>Mean pack-row norm over <span class="cal">R</span><sub>tr</sub>, measured once from <b class="v">E</b>. Sets the units, so ‖<b class="v">f</b><sub>r</sub>‖ = 1 moves a row by its own length.</td></tr>
+      <tr><td><b class="v">E</b></td><td class="num">69 558 × 1024</td><td><span class="tag z">frozen</span></td><td>Pack ext-row table, row <b class="v">e</b><sub>r</sub>. Qwen3, the LLM adapter, DiT and VAE are frozen too.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="lede">The hook exists only while training. Afterwards each trained vector is added into its pack row, <code>ext_embed[r] += ρ · f_r</code>, and what ships is an ordinary vocab pack.</p>
+</section>
+
+<section>
+  <h2>How it is trained: pack → step 1 → step 2 → bake</h2>
+  <p class="lede">One table, grown in stages. Step 1 binds single glyphs; step 2 adds punctuation, words and sentence order to the same rows; the bake writes the result into an ordinary pack. Only the table passes between stages.</p>
+  <div class="scroll">
+  <svg viewBox="0 0 1080 300" role="img" aria-label="Four boxes left to right: the r256 vocab pack, where f is still zero; step 1, which binds one glyph per row; step 2, which adds words, punctuation and order to the same rows; and the bake, which adds rho times f into the pack rows. Arrows carry trained.pt between stages. A red dashed path under the step 1 to step 2 arrow is the warm-start guard: without warmup and anchor the warm start is erased by Adam in about 50 steps.">
+    <defs>
+      <marker id="ah3" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="ink-fill"/></marker>
+      <marker id="ahr3" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="red-fill"/></marker>
+    </defs>
+
+    <!-- stage 0: the pack -->
+    <rect x="20" y="40" width="220" height="110" class="f-lav"/>
+    <text x="130" y="74" text-anchor="middle">r256 pack · <tspan class="m v">E</tspan></text>
+    <text x="130" y="112" text-anchor="middle" class="m" font-size="18"><tspan class="v">f</tspan><tspan dy="5" font-size="14">r</tspan><tspan dy="-5"> = 0 · ρ ≈ 195</tspan></text>
+
+    <!-- stage 1 -->
+    <line class="wire" x1="240" y1="95" x2="282" y2="95" marker-end="url(#ah3)"/>
+    <rect x="290" y="40" width="250" height="110" class="f-lav"/>
+    <text x="415" y="74" text-anchor="middle">step 1 · the table</text>
+    <text x="415" y="112" text-anchor="middle" class="sm">binds one glyph per row</text>
+
+    <!-- stage 2 -->
+    <line class="wire" x1="540" y1="95" x2="582" y2="95" marker-end="url(#ah3)"/>
+    <rect x="590" y="40" width="250" height="110" class="f-lav"/>
+    <text x="715" y="74" text-anchor="middle">step 2 · sentences</text>
+    <text x="715" y="112" text-anchor="middle" class="sm">adds words, punctuation and order</text>
+
+    <!-- bake -->
+    <line class="wire" x1="840" y1="95" x2="882" y2="95" marker-end="url(#ah3)"/>
+    <rect x="890" y="40" width="175" height="110" class="f-mint"/>
+    <text x="977" y="70" text-anchor="middle">bake</text>
+    <text x="977" y="104" text-anchor="middle" class="m" font-size="18"><tspan class="v">e</tspan><tspan dy="5" font-size="13">r</tspan><tspan dy="-5"> += ρ </tspan><tspan class="v">f</tspan><tspan dy="5" font-size="13">r</tspan></text>
+    <text x="977" y="132" text-anchor="middle" class="sm">ordinary pack · no hook</text>
+
+    <!-- the warm-start guard -->
+    <path class="grad" d="M415 150 V 196 H 715 V 158" marker-end="url(#ahr3)"/>
+    <text x="565" y="224" text-anchor="middle" class="red" font-size="15">--init_rows · --lr_warmup 500 · --init_anchor μ</text>
+    <text x="565" y="252" text-anchor="middle" class="sm">without them AdamW moves every coordinate ≈ lr per step and the warm start is gone within ~50 steps</text>
+    <text x="565" y="276" text-anchor="middle" class="sm">anchor = μ · mean ‖f − f⁰‖² on inherited rows (its gradient is 0 at the start, so the warmup carries the first steps)</text>
+  </svg>
+  </div>
+  <figcaption>Each stage starts from the table the last one left, and the bake folds ρ<b class="v">f</b> into the pack rows. Dashed red: AdamW erases a warm start before the data can use it, so every continuation carries a learning-rate warmup and an anchor term (<code>--init_anchor</code>) holding the inherited rows near where they started.</figcaption>
+</section>
+
+<section>
+  <h2>What it sees, what it draws</h2>
+  <p class="lede">Every item is a <b>scene composite</b>. The base model draws a character scene with an English speech bubble or sign, the anchor text is erased with the bubble's own colour, and the Japanese text is drawn into the cleared region in one of 16 manga faces. The caption is the scene's own tags with the quoted string swapped, under the frame the scene was drawn with.</p>
+  <div class="specimens">
+    <div class="group-label">What it sees · a training item</div>
+    <figure class="spec"><img src="data:image/jpeg;base64,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" alt="Scene composite with 快 drawn into the erased bubble"><figcaption><span class="read">快</span><br>composite · reads as · 448×512</figcaption></figure>
+    <div class="group-label">What it draws · frozen DiT, rows only</div>
+    <figure class="spec"><img src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAkGBwgHBgkIBwgKCgkLDRYPDQwMDRsUFRAWIB0iIiAdHx8kKDQsJCYxJx8fLT0tMTU3Ojo6Iys/RD84QzQ5Ojf/2wBDAQoKCg0MDRoPDxo3JR8lNzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzf/wgARCAEsASwDASIAAhEBAxEB/8QAGwABAAIDAQEAAAAAAAAAAAAAAAYHAgMFBAH/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAGcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGg3vDsPUAAAAAAAAAAAAAAAAc831X95ph6Z5DSx+vSk+Ja+fQAAAAAAAAAAAABq26CJQnvajizHbAy3NVUDsccO5PamtY7YAAAAAAAAAAAAGvYKk0T3ikSxwmh3YZZdXHcmNNWASX1/QAAAAAAAAAAAAABya7sipTV6vf1SJ42N2SpMbjrEmsljEnAAAAAAAAAAAAAAGOQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/8QAIxAAAgICAgEEAwAAAAAAAAAAAwQCBQABFEASEBFQkBMVIP/aAAgBAQABBQL6SyFGLXMWwZxF38Ec0ADfck4bAGmuVB4bg/gHGxKQedI4SOty2lTjis6mRMoyTFOvuIF705xHF27jrClmaY4SJKs4Cuv2KeGYQYG6pAO8Sszq4jYCc7hRQNCyq5q4nVHZx+Aa1H+qpXSyvbnre4kdcjPbrW8mSZMjHcpQCvXou2Gj5UtgJnFXzir949OA57GuVTWygT8pFkLxsQBCbKey/J37BzSULF3bpc5BvDe/f08Ze2t+2VFhyod2wByU4wnPY6xwmDoTbwVEvHBIKixlcbAd17PKr6mC0u9rWtfQL//EABQRAQAAAAAAAAAAAAAAAAAAAID/2gAIAQMBAT8BNP8A/8QAFBEBAAAAAAAAAAAAAAAAAAAAgP/aAAgBAgEBPwE0/wD/xAA2EAACAQICBQcLBQAAAAAAAAABAgMAERIhBDFAQVEQEyIjUnGSFDIzNEJQYXKQobEgJIGRsv/aAAgBAQAGPwL6Jd5HVb8TXrEfioiORWI4H3GZJTZRWM5KPNXhyCSM2YVcZOPOX3DilOe5d5q75KNS8KAAuTTDSBeRx4awvq9luNB42KsN9CPSLJJ2tx27E7BVG80V0QXPbNF5GLMeNYUFzWOSdWm/zXrCf3RSWaJl76xQTpKnwbMclr44+y1HBcONanbCki4lNc5FdovxQLDm04tXNwjrJcsR12/WvRs7ZtfbCAbEjXTK2kSXGWus9Il8VdYxbvNBVzJoc8gbCOkcN86wxQpGnyi9CDSYo8XsthGdegj8Ir0EfhG3PKzuMRvYUXxSFzkoJ5PKXGQySiJWWx7Rr9vKrodwOrkGjznp+y3Hb1doywJtlQa2FQMl5AnOvhGoXrPkvY241cVzcp61fvt0ke+1x31ZFJPwFZQkfNlXWSovdnXWO7/auhAv8i9GJxl+KaBUJYb91CWRsUo4aht+QA+gL//EACoQAQABAwMCBAYDAAAAAAAAAAERACExQVFhEEBxgZHRIFCQobHB4fDx/9oACAEBAAE/IfolmhqgYpr/ADdHXyUNj5GHkt39U30VsPfpNPPrw1iTrrc5OPkOT1gon1ovH8qVsiANaAven9eainLwYFYwABoFOAYezRck717nAkFeCrNjwNayQwVQt76FRrZrDHAt96EpO0Giaa6CweYdIcwNbHg6UGCZIMefeFWyBpx/I/H71fkdK74FOtdcjV/efjKpClynbvJHUANHehjFVhWRHnpCVjCzQIKoA1acr0XBVEu/xJ89K2K9fKvPT6CmACAgMd64DmQxPpUuKQi76dJzTI6urQgkoQAaaOL5Tx6R9jN9rz390hoohp+2lNMbvS2CKBYFIpSvPRAsmwQs0iEhLjRQyL0799EBL8iuVxg5GoyH3R+VRaDtJVckdphVzkmsj70DqZaNW5Uoq4WhvNOqxMPc78+DOCPoC//aAAwDAQACAAMAAAAQ8888888888888888888888888888888888888s88888888888888888888888888888888888888888888888888888888s888888888888888888s8888888888888888888888888884088888888888888884wQU888888888888884oYgA88888888888888sgwIIs888888888888880UAM088888888888888s88s888888848888888888888888884888888888888888888888888888888888888888888888888888888888888888888888888888o8888888888888888888//EABQRAQAAAAAAAAAAAAAAAAAAAID/2gAIAQMBAT8QNP8A/8QAFBEBAAAAAAAAAAAAAAAAAAAAgP/aAAgBAgEBPxA0/wD/xAArEAEAAQMDAgYBBAMAAAAAAAABEQAhMUFRYXGREECBobHwIFDB0eGAkPH/2gAIAQEAAT8Q/wBJcUpiiswTX3X96PHxch1Y/Q5apEyugNV0KKBCypOXdZX+PBaU4Og1DUdSjqg2UfcW/f8AQVoQGbK7Bty2Kuwxn2N3fl8UNYg8qcAUEIkGRkHscuuMZZIeoP6zuUhkZik/rireJZC53+3xSAQRJE186SqJDD1aBymMTmydTBw0hBMo9DY4KlkRAaF1dgMtMWfd3bMuW/ZzjPWh80AybjI6I5E3KTFWxJbSX6nY8OQ2Bh3vhxWk3H9MSCyT68ecF1EDn1NnkqaVN2Jn0hk/6pJWMsQO+9WCoNJqQkznQiCC35MtQYyMJaLFsad9fOM9yBGIB0aPAVjgjDjpX2AfWipchBDiWi/iOlRgCnPhQ7y4SYlgm0FML9lQeQdh3qHTaeGxY9Dr1z9m/ajAD6bUbMCAEAbedniwQhZiU3b+tFgGiNcqAsEvbfwyLSJw+jg5nakZ8OA5GWlAwoL90ZNn6iiIwmtYr5J4Gt7HXrnzyqPQAikmd79qSXv0l5ILtux4IwiQy2AYpO8ZVL4SlwBibDiaTgoAwiYSoWV+to9HJr388Yd0B+QiPWrpuicz0Cp850T2U+1b8UAHwe9RuqgHYL+9RIuL3hJrOkaAQxsJRLmAUjw1YE/irwEJlcRbXLLbjz/CkiHt+UXn/P8A/9k=" alt="Generated bubble containing 会"><figcaption><span class="read">会 → 会</span> <span class="ok">✓</span><br>kanji</figcaption></figure>
+  </div>
+</section>
+
+<section>
+  <h2>Why a row, not a script</h2>
+  <div class="prose">
+    <p>A row is an <em>address</em>, not a shape coordinate. Nothing about how a glyph looks predicts which direction it gets, so every row has to be bound on its own: <b>≈ 1 000 composite draws</b>.</p>
+    <p>A row can be a whole word: Qwen merges <span class="jp">します</span> into one piece and the DiT draws it as one unit. But a sequence of trained rows still renders as <em>one</em> unit, while the same frozen stack reads pretrained English sequences in order. Closing that gap is the <b>sentence line</b>: Manga109 dialogue drawn into sentence-anchored scenes, continuing from the singles table.</p>
+  </div>
+</section>
+
+<section>
+  <h2>Why it is hard: the row → glyph map is a hash</h2>
+  <p class="lede">Every shortcut assumes a glyph's <em>shape</em> predicts its row: smoothness, linearity, a metric, a shared codebook. None of it is there. The frozen stack reads a row as one unit and any near-orthogonal direction will do, so the only thing that binds a direction to a glyph is the gradient sent back while the model draws it.</p>
+  <div class="scroll">
+  <svg viewBox="0 0 1080 500" role="img" aria-label="Six trained rows (か が き 木 林 森) plotted in row space are randomly placed, while the same six glyphs in pixel space sit in shape neighbourhoods (か beside が, 木 inside 林 inside 森). The lines from each row to its glyph cross through the frozen adapter and DiT, so no neighbourhood survives the map. A red dotted arc from the pixel side back to row space, labelled with every shortcut that predicts f from shape, is crossed out; the one dashed red path into row space is the flow-matching gradient, about one thousand draws per row.">
+    <defs>
+      <marker id="ah2" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="ink-fill"/></marker>
+      <marker id="ahr2" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="4.6" markerHeight="4.6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="red-fill"/></marker>
+    </defs>
+
+    <!-- the shortcuts: predict f from shape, right → left, crossed out -->
+    <path d="M880 120 C 880 30, 200 30, 200 112" fill="none" stroke="var(--red)" stroke-width="2" stroke-dasharray="3 6" marker-end="url(#ahr2)"/>
+    <text x="540" y="26" text-anchor="middle" class="sm red">g(shape) · Δa + Δb · contrastive · codebook · nearest-row init · warm start</text>
+    <text x="540" y="90" text-anchor="middle" class="red" font-size="17">✕ nothing in row space to predict</text>
+
+    <!-- panels -->
+    <rect x="40" y="120" width="320" height="300" class="f-lav trained"/>
+    <text x="200" y="148" text-anchor="middle">row space · <tspan class="m v">f</tspan><tspan class="m" dy="5" font-size="14">r</tspan><tspan dy="-5"> 🔥</tspan></text>
+    <rect x="720" y="120" width="320" height="300" class="f-sky"/>
+    <text x="880" y="148" text-anchor="middle">pixels · what the DiT organises</text>
+
+    <!-- row → glyph lines (under the box) -->
+    <g class="zoomline">
+      <line x1="112" y1="196" x2="796" y2="200"/>
+      <line x1="288" y1="190" x2="982" y2="336"/>
+      <line x1="122" y1="286" x2="898" y2="336"/>
+      <line x1="248" y1="256" x2="972" y2="200"/>
+      <line x1="168" y1="376" x2="812" y2="336"/>
+      <line x1="318" y1="366" x2="876" y2="200"/>
+    </g>
+
+    <!-- the frozen reader, drawn over the lines -->
+    <rect x="430" y="220" width="220" height="100" class="f-butter"/>
+    <rect x="430" y="220" width="220" height="100" fill="none" stroke="currentColor" stroke-width="1.2"/>
+    <text x="540" y="254" text-anchor="middle">LLM adapter · DiT</text>
+    <text x="540" y="278" text-anchor="middle" class="sm">frozen · reads a row as one unit</text>
+    <text x="540" y="300" text-anchor="middle" class="sm">any direction is an address</text>
+    <rect x="404" y="334" width="272" height="24" style="fill:var(--bg)"/>
+    <text x="540" y="351" text-anchor="middle" class="sm">no neighbourhood survives the map</text>
+
+    <!-- row-space points: shape neighbours deliberately far apart -->
+    <g class="jp" font-size="26" text-anchor="middle">
+      <circle cx="112" cy="196" r="5" class="ink-fill"/><text x="112" y="184">か</text>
+      <circle cx="288" cy="190" r="5" class="ink-fill"/><text x="288" y="178">森</text>
+      <circle cx="122" cy="286" r="5" class="ink-fill"/><text x="122" y="274">林</text>
+      <circle cx="248" cy="256" r="5" class="ink-fill"/><text x="248" y="244">き</text>
+      <circle cx="168" cy="376" r="5" class="ink-fill"/><text x="168" y="364">木</text>
+      <circle cx="318" cy="366" r="5" class="ink-fill"/><text x="318" y="354">が</text>
+    </g>
+    <text x="200" y="404" text-anchor="middle" class="sm">か↔が no closer than two rows drawn at random · no manifold</text>
+
+    <!-- pixel-space tiles: grouped by shape -->
+    <g class="jp" font-size="30" text-anchor="middle">
+      <rect x="774" y="178" width="44" height="44" class="thumb-edge"/><text x="796" y="211">か</text>
+      <rect x="854" y="178" width="44" height="44" class="thumb-edge"/><text x="876" y="211">が</text>
+      <rect x="950" y="178" width="44" height="44" class="thumb-edge"/><text x="972" y="211">き</text>
+      <rect x="790" y="314" width="44" height="44" class="thumb-edge"/><text x="812" y="347">木</text>
+      <rect x="876" y="314" width="44" height="44" class="thumb-edge"/><text x="898" y="347">林</text>
+      <rect x="960" y="314" width="44" height="44" class="thumb-edge"/><text x="982" y="347">森</text>
+    </g>
+    <text x="836" y="246" text-anchor="middle" class="sm">one dakuten apart</text>
+    <text x="880" y="384" text-anchor="middle" class="sm">林 → 木, 森 → 木林: the DiT composes here</text>
+    <text x="880" y="404" text-anchor="middle" class="sm">and only here</text>
+
+    <!-- the one thing that binds: gradient from the drawing -->
+    <path class="grad" d="M720 286 H 662" marker-end="url(#ahr2)"/>
+    <path class="grad" d="M430 286 H 372" marker-end="url(#ahr2)"/>
+    <line class="grad" x1="540" y1="440" x2="540" y2="366" marker-end="url(#ahr2)"/>
+    <text x="540" y="466" text-anchor="middle" class="red">∂<tspan class="cal">L</tspan>/∂<tspan class="m v">f</tspan><tspan class="m" dy="5" font-size="14">r</tspan><tspan dy="-5">, the gradient of drawing this glyph, sent back through the frozen stack</tspan></text>
+    <text x="540" y="490" text-anchor="middle" class="sm">≈ 1 000 composite draws per row binds one direction to one glyph</text>
+  </svg>
+  </div>
+  <figcaption><b>Left:</b> six trained rows in row space, where shape neighbours land nowhere near each other. <b>Right:</b> the same six glyphs as the DiT draws them, where composition happens in pixels (<span class="jp">森</span> out of <span class="jp">木</span> and <span class="jp">林</span>). <b>Between:</b> the frozen stack, which reads any near-orthogonal direction as an address. The crossed-out arc is every shortcut that computes <b class="v">f</b> from the right side; the dashed path is the only one that has ever bound a row.</figcaption>
+
+  <p class="lede">The other half is already in the weights: kana, kanji atoms, Hangul syllables and simplified hanzi all render from rows alone, so nothing has to be added to them.</p>
+
+  <div class="cols">
+    <div class="prose">
+      <p><b>The cost is exposure.</b> KO and ZH need no new mechanism: ordinary new rows, paid for at the same rate.</p>
+      <p>Inventory choice is the other half: the 11 172 Hangul syllables are the headache; KS X 1001's 2 350 cover everyday text.</p>
+    </div>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>Inventory</th><th>Rows</th><th>Cost</th></tr></thead>
+      <tbody>
+        <tr><td>jōyō kanji</td><td class="num">2 136</td><td>≈ 1 GPU-day, one table</td></tr>
+        <tr><td>KS X 1001 Hangul</td><td class="num">2 350</td><td>≈ 1 GPU-day at the same rate (extrapolated)</td></tr>
+        <tr><td>GB2312 level 1 hanzi</td><td class="num">3 755</td><td>≈ 2 GPU-days at the same rate (extrapolated)</td></tr>
+        <tr><td><b>all three</b></td><td class="num">≈ 8 200</td><td>≈ 4 GPU-days; nothing above shortens it</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+</div>
+
+</body>
+</html>

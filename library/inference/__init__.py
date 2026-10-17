@@ -20,6 +20,7 @@ _ATTR_TO_MODULE = {
     "save_latent": "output",
     "save_images": "output",
     "save_output": "output",
+    "write_gen_manifest": "output",
     "load_dit_model": "models",
     "attach_adapters": "models",
     "load_text_encoder": "models",

@@ -6,6 +6,12 @@
       <span class="text-caption text-medium-emphasis">{{ totalLabel }}</span>
     </header>
 
+    <v-tabs v-model="datasetTab" class="mb-4 flex-shrink-0" aria-label="Dataset workspace">
+      <v-tab value="browse">{{ t('dsTitle') }}</v-tab>
+      <v-tab value="curation">{{ curationTitle }}</v-tab>
+    </v-tabs>
+    <CurationWorkspace v-if="datasetTab === 'curation' || curationVisited" v-show="datasetTab === 'curation'" class="dataset-curation-pane" :input-dir="directory" @vue:mounted="curationVisited = true" />
+    <template v-else>
     <!-- Toolbar: directory, search, sort, view toggle -->
     <v-card variant="flat" class="mb-4 ds-header dataset-toolbar">
       <v-row align="center" density="comfortable">
@@ -724,10 +730,15 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+    </template>
   </v-container>
 </template>
 
 <script setup lang="ts">
+import CurationWorkspace from '../components/curation/CurationWorkspace.vue'
+import { curationText } from '../i18n/curation'
+import { useAppStore } from '../stores/app'
+const appStore = useAppStore()
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from '../composables/useI18n'
 import { useNotifyStore } from '../stores/notify'
@@ -756,6 +767,9 @@ const notify = useNotifyStore()
 // ── state ─────────────────────────────────────────────────────
 
 const directories = ref<Directory[]>([])
+const datasetTab = ref('browse')
+const curationVisited = ref(false)
+const curationTitle = computed(() => curationText(appStore.language, 'title'))
 const directory = ref('image_dataset')
 const customPath = ref('')
 const images = ref<ImageItem[]>([])
@@ -1764,6 +1778,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.dataset-curation-pane { flex: 1 1 0; min-height: 0; overflow-y: auto; }
 .dataset-page {
   display: flex;
   flex-direction: column;

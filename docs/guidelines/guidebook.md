@@ -1,180 +1,98 @@
-# Anima LoRA 指南手册
+# Anima LoRA Guidebook
 
-本文档是从零开始使用 **Anima LoRA** 训练/推理全流程的中文综合指南。涵盖从 CUDA 驱动安装到数据集准备、训练、推理、ComfyUI 部署的完整过程。本指南仅面向 Windows 初级用户，WSL、Linux 以及（本项目核心目标的）训练优化等内容请参考其他文档。
-
----
-
-## 目录
-
-1. [系统要求](#1-系统要求)
-2. [CUDA 13.0.2 安装](#2-cuda-1302-安装)
-3. [Python 环境与仓库准备](#3-python-环境与仓库准备)
-4. [Hugging Face 认证与模型下载](#4-hugging-face-认证与模型下载)
-5. [数据集准备](#5-数据集准备)
-6. [预处理：缩放 · 潜变量 · 文本嵌入缓存](#6-预处理缩放--潜变量--文本嵌入缓存)
-7. [GUI 使用方法](#7-gui-使用方法)
-8. [训练执行](#8-训练执行)
-9. [LoRA / 适配器变体选择指南](#9-lora--适配器变体选择指南)
-10. [推理](#10-推理)
-11. [部署到 ComfyUI](#11-部署到-comfyui)
-12. [更新](#12-更新)
+A complete guide to the Anima LoRA training/inference pipeline: install → dataset → preprocessing → training → inference → ComfyUI deployment. It assumes Windows and the GUI; every terminal command is collected in [Appendix A](#appendix-a-cli-reference). For WSL, Linux, and training optimization, see the other docs.
 
 ---
 
-## 1. 系统要求
+## Table of Contents
 
-| 项目 | 最低配置 | 推荐配置 |
+1. [System Requirements](#1-system-requirements)
+2. [Installation](#2-installation)
+3. [Hugging Face Sign-in and Model Download](#3-hugging-face-sign-in-and-model-download)
+4. [Dataset Preparation](#4-dataset-preparation)
+5. [Preprocessing](#5-preprocessing)
+6. [Using the GUI](#6-using-the-gui)
+7. [Training](#7-training)
+8. [Adapter Variant Selection Guide](#8-adapter-variant-selection-guide)
+9. [Inference](#9-inference)
+10. [Deploying to ComfyUI](#10-deploying-to-comfyui)
+11. [Updating](#11-updating)
+
+- [Appendix A. CLI Reference](#appendix-a-cli-reference)
+- [Appendix B. Manual Install (uv · git)](#appendix-b-manual-install-uv--git)
+- [Appendix C. Manual CUDA Install](#appendix-c-manual-cuda-install)
+- [Appendix D. Other Settings](#appendix-d-other-settings)
+
+---
+
+## 1. System Requirements
+
+| Item | Minimum | Recommended |
 |---|---|---|
-| GPU | **RTX 3060 起步，2xxx 系列及以下不可用** | VRAM 16 GB 以上 |
-| 系统内存 | 16 GB | 32 GB 以上 |
-| 磁盘 | 60 GB 可用空间 | 200 GB 以上（用于缓存 + 输出累积） |
-| 操作系统 | Windows 11 / Ubuntu 22.04+ | Ubuntu 24.04（FA2/CUDA 13 构建稳定） |
-| Python | **必须 3.13** | - |
+| GPU | RTX 3060 or better (20xx series and below unsupported) | 16 GB VRAM or more |
+| System RAM | 16 GB | 32 GB or more |
+| Disk | 60 GB free | 200 GB or more (caches + accumulated outputs) |
+| OS | Windows 11 / Ubuntu 22.04+ | Ubuntu 24.04 |
+| Python | 3.13 required | - |
+| NVIDIA driver | 595 or newer (CUDA 13.x requirement) | - |
 
 ---
 
-## 2. CUDA 13.0.2 安装
+## 2. Installation
 
-需要最新的 CUDA 才能让 PyTorch 2.x + Flash Attention 2 稳定运行。请从 NVIDIA 官方存档下载并安装 13.0.2 版本。
+Paste this one line into PowerShell. It installs `uv`, the CUDA 13.2 toolkit, Python 3.13, and all dependencies automatically, then opens the GUI for you when it's done.
 
-下载页面：<https://developer.nvidia.com/cuda-13-0-2-download-archive>
+```powershell
+irm https://raw.githubusercontent.com/sorryhyun/anima_lora/main/install.ps1 | iex
+```
 
-### 2.1 Windows 安装
-
-1. 在上述页面选择 **Operating System: Windows → Architecture: x86_64 → Version: 11/10 → Installer Type: exe (local)**。
-2. 运行下载的 `cuda_13.0.2_windows.exe` → 选择"Express（推荐）"安装。
-3. 安装完成后在 PowerShell 中验证：
-
-   ```powershell
-   nvidia-smi
-   nvcc --version
-   ```
-
-4. 如果 `nvcc` 无法识别，请在系统环境变量 `Path` 中添加以下路径：
-
-   ```
-   C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin
-   C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\libnvvp
-   ```
-
-5. 重启计算机后再次运行 `nvcc --version` 验证。
-
-> **驱动注意事项**：CUDA 13.x 需要 NVIDIA 驱动 580 以上版本。如果驱动版本较旧，请先通过 GeForce Experience 或 NVIDIA 下载中心进行更新。
-
-### 2.2 （可选）切换到 CUDA 13.2 + torch 2.12 nightly
-
-默认安装的是 CUDA 13.0 + torch 2.11 stable。如果在 RTX 50 系列等显卡上希望获得约 **10% 的训练速度提升**，可以切换到 CUDA 13.2 + torch 2.12 nightly（基准测试见 `docs/optimizations/`）。不需要编译工具——`pyproject.toml` 的 URL 中已上传了预编译的精简版 FA2 轮子包，`uv sync` 可以直接下载安装。
-
-操作步骤：
-
-1. **下载并安装 CUDA 13.2。**
-   在 <https://developer.nvidia.com/cuda-downloads?target_os=Windows> 页面选择 **Windows → x86_64 → 11/10 → exe (local)**。可以直接覆盖安装在 13.0 之上，两个版本也可以共存（会分别创建 `v13.2` 和 `v13.0` 目录）。
-
-2. **修改 `pyproject.toml` 中的注释切换。** 需要修改两处：
-
-   **(a) torch / torchvision** — 在 `dependencies` 中注释掉"Windows: stable"的两行，并取消注释"Windows: cuda132 opt-in"的两行：
-
-   ```toml
-   # Windows: stable (default).
-   # "torch>=2.11.0,<2.12 ; sys_platform == 'win32'",
-   # "torchvision>=0.26.0,<0.27 ; sys_platform == 'win32'",
-   # Windows: cuda132 opt-in. ...
-   "torch>=2.12.0.dev0,<2.13 ; sys_platform == 'win32'",
-   "torchvision>=0.27.0.dev0,<0.28 ; sys_platform == 'win32'",
-   ```
-
-   **(b) flash-attn** — 在同一 `dependencies` 中注释掉"Windows: stable (default) — built against torch 2.11 + CUDA 13.0"行，并取消注释下方的"Windows: cuda132 opt-in — trimmed FA2"行：
-
-   ```toml
-   # Windows: stable (default) — built against torch 2.11 + CUDA 13.0.
-   # "flash-attn @ https://github.com/mjun0812/.../flash_attn-2.8.3+cu130torch2.11-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
-   # Windows: cuda132 opt-in — trimmed FA2 ...
-   "flash-attn @ https://github.com/sorryhyun/flash-attention-sm120-fix/releases/download/fa2cuda132/flash_attn-2.8.4-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
-   ```
-
-3. **重新同步**：运行 `uv sync`。会从 cu132 索引下载 torch 2.12 nightly，从 release 下载精简版 FA2 轮子包并安装。
-
-> 如需回退：将 `pyproject.toml` 中的注释恢复原样，然后重新运行 `uv sync`。
+> **New feature:** Try caption with Japanese text in the image — e.g. `1girl, solo, speech bubble. Japanese text reads as "何言ってるの?".` ([§4.1](#41-caption-writing-tips))
 >
-> 如果需要自行编译（例如不是 RTX 5060 Ti 的其他 GPU、Python 版本不同、或需要在自己的 fork 中管理轮子包）：请参考 `docs/optimizations/` 下的相关文档。
+> **v2.0.0** — Anima with the [CJK vocab pack](../methods/cjk_vocab_pack.md): it renders Japanese text natively, and you can train LoRAs on it. The pack is on by default and installed with the models in §3; English prompts are unchanged.
+
+- Installs into `.\anima_lora\` (change with `$env:ANIMA_DIR`, pin a version with `$env:ANIMA_VERSION='v2.0.0'`).
+- If it asks for a reboot (common after the CUDA step), reboot and re-run the same one-liner — it picks up where it left off.
+- To reopen it later, use the "Anima LoRA GUI" desktop shortcut.
+
+Once installed, continue in the GUI with §3 → §4 → §5.
+
+> Prefer to `git clone` yourself, or the automatic install failed? See [Appendix B](#appendix-b-manual-install-uv--git) / [Appendix C](#appendix-c-manual-cuda-install).
 
 ---
 
-## 3. Python 环境与仓库准备
+## 3. Hugging Face Sign-in and Model Download
 
-本项目使用 [`uv`](https://github.com/astral-sh/uv) 管理依赖。使用 Python 3.13。
+### 3.1 Sign in
 
-### 3.1 安装 `uv`
+1. Create a read token at <https://huggingface.co/settings/tokens>.
+2. Paste it into the Hugging Face sign-in field in the GUI.
 
-  ```powershell
-  irm https://astral.sh/uv/install.ps1 | iex
-  ```
+The token is stored in the standard Hugging Face cache, so the GUI and the CLI share the same credentials.
 
-安装完成后打开新的终端窗口，确认 `uv --version` 能正常输出。
+### 3.2 Download models
 
-### 3.2 克隆仓库
+The Models dialog in the GUI lists every weight grouped into packs; Download the first-run set fetches everything a first training run needs with one button.
 
-```bash
-git clone https://github.com/sorryhyun/anima_lora.git
-cd anima_lora
-```
-
-> 本指南中所有路径均以 `anima_lora/` 目录为基准。所有命令都在此文件夹内执行。
-
-### 3.3 安装依赖
-
-```bash
-winget install ezwinports.make
-uv sync
-```
-
-`uv sync` 会根据 `pyproject.toml`/`uv.lock` 创建虚拟环境并安装所有依赖。安装完成后通过以下任一方式激活环境：
-
-- 每次会话手动激活（推荐）：`.venv\Scripts\activate`
-- 使用 VSCode 可以更方便地自动激活环境。
-
----
-
-## 4. Hugging Face 认证与模型下载
-
-### 4.1 创建令牌并登录
-
-1. 在 <https://huggingface.co/settings/tokens> 创建一个 **read** 权限的令牌。
-2. 在终端中登录：
-
-   ```bash
-   hf auth login
-   ```
-
-   粘贴令牌并按回车。
-
-### 4.2 下载模型
-
-In the GUI, the **Models** dialog downloads everything below with one button. The CLI equivalent is:
-
-```bash
-make download-models
-```
-
-此命令会自动下载以下三个模型到 `models/` 目录下并分类存放。
-
-| 文件 | 路径 |
+| File | Path |
 |---|---|
-| Anima DiT（扩散模型主体） | `models/diffusion_models/anima-base-v1.0.safetensors` |
-| Qwen3 0.6B 文本编码器 | `models/text_encoders/qwen_3_06b_base.safetensors` |
+| Anima DiT (the diffusion model itself) | `models/diffusion_models/anima-base-v1.0.safetensors` |
+| Qwen3 0.6B text encoder | `models/text_encoders/qwen_3_06b_base.safetensors` |
 | QwenImage VAE | `models/vae/qwen_image_vae.safetensors` |
+| CJK vocab pack (Japanese / Korean / Chinese captions and prompts; on by default) | `models/vocab_packs/anima_cjk_vocab_pack_jp_v1.{safetensors,json}` |
 
-如果还需要使用遮罩功能，请一并下载 SAM3 和 MIT 模型（上述命令已包含）。
+The set also pulls the PE vision encoders, the Anima Tagger checkpoint and the Danbooru tag DB, which preprocessing uses. The vocab pack is enabled by default since v2 (`vocab_pack` in `configs/base.toml`; set it to `""` to turn it off — English captions are identical either way).
 
-> **下载中断时**：可以使用 `make download-anima`、`make download-sam3`、`make download-mit` 等单独的命令分批重新下载。
+SAM3 (masking) and the OCR models are opt-in packs on the Curation tab — each has its own Download pack button. Masking is off by default; SAM3 is only needed for the optional masked-loss feature ([§7.4](#74-masked-loss-excluding-text-bubbles)).
 
-> **SAM3 是受限模型。** 其权重存放在受限的 Hugging Face 仓库中，因此在下载成功之前，您必须访问 <https://huggingface.co/facebook/sam3>，点击 **Request access**，并**等待批准**（由仓库所有者授予——这可能需要几分钟到几天不等）。在获得访问权限之前，SAM3 下载将因 403/gated 错误而失败。上述三个核心模型（DiT、文本编码器、VAE）*不受限制*，`make download-models` 会在 SAM3 被阻止时继续执行——因此待批准的 SAM3 请求不会阻止您在不使用遮罩损失的情况下进行训练。获得批准后，运行 `make download-sam3` 来获取它。
+> SAM3 is a gated model. Go to <https://huggingface.co/facebook/sam3>, click Request access, and wait for approval (minutes to days); until then the SAM3 download fails with a 403. Nothing in the first-run set is gated, so you can train while waiting for SAM3 approval.
+>
+> If downloads keep breaking, fetch them individually with the targets in [Appendix A](#appendix-a-cli-reference).
 
 ---
 
-## 5. 数据集准备
+## 4. Dataset Preparation
 
-Anima LoRA 使用*图像 + 同名 `.txt` 标注旁文件*的结构。以下是 `image_dataset/` 文件夹的示例。
+The structure is image + same-name `.txt` caption sidecar. Put originals in `image_dataset/` (subfolders are free).
 
 ```
 image_dataset/
@@ -182,308 +100,275 @@ image_dataset/
 ├─ 00001.txt
 ├─ 00002.jpg
 ├─ 00002.txt
-├─ subfolder/
-│  ├─ 00010.webp
-│  └─ 00010.txt
-└─ ...
+└─ subfolder/
+   ├─ 00010.webp
+   └─ 00010.txt
 ```
 
-### 5.1 标注编写建议
+### 4.1 Caption Writing Tips
 
-- 按照 anima 官方规范，标签顺序始终为 [meta] [character] [series] [artist] [general]。例如：
+Following Anima's official guidelines, tag order is always `[meta] [character] [series] [artist] [general]`.
 
 ```
 absurdres, safe, 1girl, chitanda eru, hyouka, @channel (caststation), full body, serafuku, She is saying hi.
 ```
 
-- 经过个人实验，absurdres、highres、masterpiece 等质量标签建议不写或尽量少写。或者使用后续正式发布的 mod guidance 后可以完全省略。
-- 原始图像放在 `image_dataset/` 中（命名不限，请使用此路径）。
-- **不想手动写标注？** 使用内置的 **Anima Tagger** 自动按 Anima 标签顺序生成标注。在 WebUI 的 **Dataset** 标签页选中图像后点击 **Autotag** 填充标注（见 [§7.4](#74-dataset-tab-autotag--grouping)）；命令行可用 `make autotag --image <path>` 输出单张图像的预测标注（标注模型在首次使用时自动下载）。请将结果作为起点——训练前请复核并修正标签。
-
-### 5.2 `num_repeats` 是什么，什么时候需要调整？（总结：**不要动**）
-
-在 `configs/base.toml` 的 `[[datasets.subsets]]` 中可以看到 `num_repeats = 1` 这一项。这是一个 kohya-ss 风格的选项，用于指定**每个 epoch 内每张图像重复使用的次数**，在跟随其他 LoRA 训练器指南时经常会遇到。
-
-- **在本指南的标准工作流中请保持为 `1`。** 在将所有图像放在 `image_dataset/` 单一文件夹中训练的常见使用场景下，增大 `num_repeats` 只会*延长单个 epoch 的长度*，效果等同于增加 `max_train_epochs`。训练量始终通过 epoch 数来调节更直观，本项目的所有预设和方法配置均以 `num_repeats = 1` 为前提进行调优。
-- **什么时候增大有意义？** 当一次训练中有*多个不同子集（文件夹）*且各文件夹图像数量差异很大时，`num_repeats` 可作为*平衡工具*使小文件夹的曝光频率匹配大文件夹（例如：角色 A 1000 张 + 角色 B 50 张，则仅对 B 子集设置 `num_repeats = 20`）。单一文件夹训练不适用。
-- **在哪里修改？** `num_repeats` 属于*数据集配置*而非方法配置，因此不会暴露在 `configs/methods/`、`configs/gui-methods/` 或 GUI 训练标签页中。如果确实需要修改，请直接编辑 `configs/base.toml` 中的 `[[datasets.subsets]]`（或通过 `--dataset_config <path>` 指定的 TOML 文件）。*如果只是想让同一张图像训练更多次数*，正确做法是增大 `max_train_epochs`，而非修改 `num_repeats`。
+- Omit quality tags such as `absurdres`, `highres`, and `masterpiece`, or keep them to a minimum. (Once the officially released mod guidance is available, you can skip them entirely.)
+- Don't want to caption by hand? Open the anime_tools panel (the **anime_tools** tab) and run Autotag — the built-in Anima Tagger fills captions in the correct order ([§6.3](#63-curation-the-anime_tools-panel)). Treat the result as a starting point: review the tags, especially character/series/artist names, before training.
+- Want Japanese text drawn in the image? Keep the tags in English and put the text in double quotes inside an English clause: `1girl, solo, speech bubble. Japanese text reads as "はい".` LoRA captions use the same form, so a LoRA can learn to render that text. Write Japanese as text to draw, not as tags (`猫耳` → `cat ears`). Details: [CJK vocab pack](../methods/cjk_vocab_pack.md#intended-use).
 
 ---
 
-## 6. 预处理：缩放 · 潜变量 · 文本嵌入缓存
+## 5. Preprocessing
 
-为了优化训练速度和 VRAM 使用，需要预先执行**缩放 → VAE 潜变量缓存 → 文本嵌入缓存**三个步骤。
+To optimize training speed and VRAM, resize → VAE latent caching → text embedding caching are done in advance. The GUI's Preprocess tab runs all three with one button.
 
-```bash
-make preprocess              # 执行全部三个步骤（LoRA / 通用训练用）
-# 或按步骤执行
-make preprocess-resize       # 1) image_dataset/ → post_image_dataset/resized/
-make preprocess-vae          # 2) VAE 潜变量缓存 → post_image_dataset/lora/
-make preprocess-te           # 3) 文本编码器输出缓存 → post_image_dataset/lora/
-make preprocess-pe           # （可选）PE-Core 视觉编码器特征缓存 — 仅用于 IP-Adapter / REPA
-```
-
-> **缓存会被重复利用——不会自动删除。**
-> `make preprocess`（以及 GUI 中的 *Preprocess* 按钮）会**复用已有的缓存**。`post_image_dataset/lora/` 中的 `.npz` / `_te.safetensors` / `_pe.safetensors` 文件*不会被覆盖或删除*，仅处理缺失的项目。因此重新执行非常快速，中途断开也是安全的。
->
-> 也就是说，已有缓存的状态下再次运行 `make preprocess` 不会丢失现有数据，请放心。反过来说，如果**修改了标注、分词器或缩放选项，想要*从头*重新生成缓存**，需要手动删除缓存文件夹（`post_image_dataset/lora/` 或 `post_image_dataset/easycontrol/`）后再重新执行。
-
-### 6.1 缩放的作用
-
-- 按照 VAE 要求的像素对齐方式缩放图像
-- 根据所选 `target_res` 档位进入 free-fit token 区间，尽量保留原始宽高比并减少裁剪
-- 自动排除过小的图像（默认低于 0.5MP），并生成报告
-- 结果以 PNG 格式保存到 `post_image_dataset/resized/`
-
-#### 6.1.1 单个 epoch 内使用多种分辨率
-
-如果希望**同一张源图在每个 epoch 中按所有选中分辨率各训练一次**，可在 WebUI 的 **Preprocess** 页面选择至少两个分辨率档位并启用“每张图遍历全部档位”，或编辑 `configs/custom/preprocess.toml`：
-
-```toml
-target_res = [512, 896, 1024]
-multires_per_image = true
-```
-
-随后运行完整预处理：
-
-```bash
-make preprocess
-```
-
-可用档位为 `512`、`768`、`896`、`1024`、`1280`、`1536`，启用本模式时至少需要两个不同档位。额外缩放图写入 `post_image_dataset/multires/<档位>/`，每个图像/档位会生成独立 VAE latent；标注、文本嵌入、PE 特征和 mask 仍由同一源图共享。
-
-若有 `N` 张源图、`T` 个档位且 `num_repeats = 1`，一个 epoch 会包含 `N × T` 个样本。训练/验证划分在多分辨率展开之前完成，因此同一源图的所有档位不会跨到训练集和验证集两侧。修改档位后重新运行 `make preprocess` 即可补齐新缓存；训练启动时会拒绝缺失或损坏的选中档位缓存。
-
-这与[分阶段分辨率训练](staged-resolution-training.md)不同：本模式在**每个 epoch 内混合所有档位**，分阶段训练则按训练进度整体切换数据集。
-
-### 6.2 潜变量缓存
-
-- 对所有缩放后的图像只运行一次 VAE，将结果保存到磁盘
-- 训练过程中不需要在 GPU 上加载 VAE，大幅节省 VRAM
-- 缓存位置：`post_image_dataset/lora/{stem}_{WxH}_anima.npz`
-- 脚本：`scripts/preprocess/cache_latents.py`
-
-### 6.3 文本嵌入缓存
-
-- 预先计算 Qwen3 0.6B + LLM 适配器的输出
-- 当 `use_shuffled_caption_variants = true` 时，还会缓存标注逗号随机重排的变体（训练时随机选取）
-- 缓存位置：`post_image_dataset/lora/{stem}_anima_te.safetensors`
-- 标注始终从 `image_dataset/` 中的原始 `.txt` 读取（不会复制到缩放文件夹中）
-- 脚本：`scripts/preprocess/cache_text_embeddings.py`
-
-### 6.4 PE 视觉特征缓存（可选）
-
-- 仅在启用 REPA 辅助损失（`use_repa = true`）时需要
-- 预先计算 PE-Core-L14-336 视觉编码器的输出，以便训练时不需要加载视觉编码器
-- 缓存位置：`post_image_dataset/lora/{stem}_anima_pe.safetensors`
-
-> **什么时候需要重新生成缓存？**
-> - 新增了图像 → 直接重新运行 `make preprocess` 即可（现有缓存保持不变，仅添加新项目）。
-> - **修改了标注**或**更改了分词器/填充相关选项** → 请按照上述说明手动删除缓存文件夹（`post_image_dataset/lora/`）后重新执行。直接重新运行会*复用现有缓存*，不会反映更改。
-
----
-
-## 7. GUI 使用方法
-
-使用基于 WebUI 的浏览器界面，可以在一个界面中完成配置编辑、数据集浏览、预处理、训练执行/监控以及 LoRA 合并。
-
-```bash
-python -m webui              # 启动 WebUI 服务（http://127.0.0.1:8000）
-```
-
-GUI 主要标签页：
-
-- **训练配置（Training Config）**：从下拉菜单选择 LoRA 系列变体（推荐：`tlora` — Ortho + T-LoRA / 其他如 `lora`、`tlora-8gb`、`tlora_ortho_reft`、`hydralora`、`reft` 等），并直接修改 `presets.toml` 预设（default / low_vram 等）和所有训练参数，然后开始训练
-- **预处理（Preprocess）**：一键完成缩放 + VAE + 文本嵌入缓存
-- **数据集（Dataset）**：预览图像/标注并直接编辑标注。还可使用 Anima Tagger **自动生成标注**（*Autotag* 按钮），并**按视觉相似度对图像分组**，便于发现重复或同场景的图像——见 [§7.4](#74-dataset-tab-autotag--grouping)。
-- **合并（Merge）**：将训练好的 LoRA 烘焙到基础 DiT 中，保存为 ComfyUI 独立检查点（仅支持基础 LoRA / OrthoLoRA / T-LoRA）
-
-GUI 训练在内部也是调用 `train.py`，因此相同参数完全可以在 CLI 中复现。GUI 读取的是 `configs/gui-methods/<variant>.toml`（无切换块的单文件变体），因此 GUI 中暴露的变体列表与 CLI 的 `make lora-gui GUI_PRESETS=<variant>` 产生的结果一致。变体列表的当前状态可通过 `ls configs/gui-methods/` 查看。
-
-### 7.1 表单编辑与保存行为
-
-训练/预处理子进程会重新读取磁盘上的变体 TOML 文件，因此如果只修改了表单而未保存，这些更改不会反映到训练中。GUI 通过以下两种方式处理：
-
-- **变更检测**：当编辑了表单中的任何字段（或 `+ Extra args` 文本框）时，`Save` 按钮会变为橙色并显示 `Save *` 标记。这表示*磁盘上的变体文件与屏幕显示不一致*。点击 `Save` 或重新选择变体从磁盘重新加载即可消除标记。
-- **自动保存**：即使忘记保存就点击了 `Train` / `Preprocess`，当前表单的值会先自动写入变体文件，然后再执行子进程。也就是说，屏幕上显示的值就是实际用于训练的值。（`Test` 是对最后一次训练结果的检查点进行推理，因此不触发自动保存。）
-
-> 如果只想*试用*更改而不想保存，编辑表单后不要点击 `Train`，而是切换到其他变体再切回来——会从磁盘重新加载，编辑会被丢弃。
-
-### 7.2 自动续训（checkpointing_epochs）
-
-即使训练中途中断，再次点击 `Train` 就能**自动从最后保存的检查点继续训练**。这是应对断电、OOM、误关窗口等情况最有用的功能之一，默认已启用。
-
-GUI 中的使用方法：
-
-- 训练配置标签页的 **Training** 分组中有 `checkpointing_epochs` 字段（gui-methods 变体默认值 `2`，`methods/lora.toml` 默认值 `4`）。每 N 个 epoch 保存一次续训状态，覆盖写入同一文件，不会膨胀磁盘。
-- 训练中断后用相同变体再次点击 `Train`，日志窗口中会显示 `auto-resuming from checkpoint at step N`，并从该点继续训练。无需手动修改任何标志。
-- 训练正常结束后，续训临时文件会自动删除，最终结果保存为 `output/ckpt/<output_name>.safetensors`。
-- **如果更改了数据集或核心配置（rank、LR、epoch 数等）**，想要重新训练，请手动删除 `output/ckpt/<output_name>-checkpoint-state/` 文件夹后再点击 `Train`。否则会在旧状态上继续训练。
-
-详细行为请参见 [§8.6 自动续训](#86-自动续训checkpointing_epochs)——其中也说明了与 `save_every_n_epochs` 的区别。
-
-### 7.4 Dataset Tab: Autotag & Grouping
-
-The **Dataset** tab is for getting your `image_dataset/` into shape before preprocessing — previewing images, writing captions, and tidying up the collection. Two helpers make this much faster.
-
-**Autotag — auto-generate captions.** Select an image and click **Autotag** to run the **Anima Tagger**, which predicts tags in the correct Anima order (`[meta] [character] [series] [artist] [general]`) and fills them into the caption box. The first click downloads the tagger model automatically and may take a moment; after that the model stays loaded in the background so subsequent images tag almost instantly. A small status line shows whether the tagger is loading or ready.
-
-- The tagger frees its GPU memory automatically before you start any other GPU work (grouping, preprocessing, or training), so you never have to unload it by hand.
-- Autotag is a **starting point, not a final answer** — review the tags and fix mistakes (especially character/series/artist names) before training. See the caption tips in [§5.1](#51-标注编写建议).
-- CLI equivalent for a single image: `make autotag --image <path>`.
-
-**Grouping — cluster similar images.** Click **Group** to scan the dataset and cluster images that look near-identical or show the same scene/character. When it finishes, the image list folds these into collapsible **green group headers**, so duplicates, alternate versions, and near-twins sit together — making it easy to thin out redundancy or balance how much of each concept you keep.
-
-- Grouping runs as a background job with its own progress bar; you can keep working while it runs.
-- It compares images by *visual content* (not filenames or captions), and groups are computed **per top-level folder** (artist/character bucket) so different folders never merge together.
-- Re-running is cheap — it reuses cached image features — so feel free to click **Group** again after adding images.
-- CLI equivalent: `make curate-group` (writes `post_image_dataset/groups/groups.json`, which the GUI reads). Tighten or loosen the clustering with `ARGS="--match-frac-min 0.4 --cell-match-min 0.9"` (higher = stricter, fewer images per group).
-
-> Both features operate on your **original** `image_dataset/` images and don't touch the preprocessing caches — run them before `make preprocess` to clean up captions and trim duplicates first.
-
----
-
-## 8. 训练执行
-
-所有训练均通过 TOML 配置文件和 HuggingFace Accelerate 执行。模型默认路径来自 `configs/model.toml`，本机路径由 `configs/custom/model.toml` 覆盖；随后合并 `configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI 参数`，方法配置会覆盖预设配置。
-
-### 8.1 快速开始
-
-**最推荐的起步方案是 OrthoLoRA + T-LoRA（即 `tlora` 变体）**。这是稳定性、细节和风格保持之间平衡最好的组合，可直接用于常规角色/风格 LoRA 训练。
-
-```bash
-# 推荐：Ortho + T-LoRA (gui-methods/tlora.toml)
-make lora-gui GUI_PRESETS=tlora                  # 一般环境
-PRESET=low_vram make lora-gui GUI_PRESETS=tlora-8gb   # VRAM 8~12GB
-
-# 其他变体 (configs/gui-methods/<variant>.toml — 无切换块的单文件)
-make lora-gui GUI_PRESETS=lora                   # 仅基础 LoRA
-make lora-gui GUI_PRESETS=tlora_ortho_reft       # Ortho + T-LoRA + ReFT 组合
-make lora-gui GUI_PRESETS=hydralora              # MoE 多头路由
-make lora-gui GUI_PRESETS=reft                   # 单独 ReFT
-
-# 切换块方式 (在 configs/methods/lora.toml 中直接选择变体)
-make lora                          # presets.toml[default]
-PRESET=low_vram make lora          # presets.toml[low_vram] — VRAM 8~12GB
-PRESET=half make lora              # 使用数据集的一半进行快速实验
-```
-
-> **在 CLI 中直接覆盖参数**：可以像 `make lora -- --network_dim 32 --max_train_epochs 24` 这样传递额外参数（`tasks.py` 也相同）。
-
-### 8.2 遮罩损失（排除文字气泡）
-
-在漫画/漫画风格数据中，将*文字气泡或文本区域*从训练损失中排除，可以让结果更加干净。
-
-```bash
-make mask          # SAM3 + MIT（在临时目录中运行）→ post_image_dataset/masks/
-make mask-clean    # 删除 post_image_dataset/masks/
-```
-
-结果 PNG 为黑白图像：**白色（255）= 训练目标**，**黑色（0）= 排除区域**。数据集子集会自动优先使用 `post_image_dataset/masks/`（如果存在），否则依次回退到旧版 `masks/{merged,sam,mit}/`（使用旧布局的用户也能正常工作）。如果没有遮罩文件则直接忽略，不创建也无妨。
-
-### 8.3 常用配置参数（LoRA 基准默认值）
-
-| 参数 | 默认值 | 说明 |
+| Step | What it does | Output |
 |---|---|---|
-| `network_dim` | `32` | LoRA rank。越大表达能力越强，参数也越多 |
-| `network_alpha` | `32` | LoRA 缩放系数（通常与 `network_dim` 相同） |
-| `learning_rate` | `2e-5` | 学习率。Hydra 可以进一步降低 |
-| `max_train_epochs` | `4` | 数据集越小，epoch 数应越大 |
-| `save_every_n_epochs` | `2`（gui-methods）/ `4`（methods） | 适配器权重累积保存周期 |
-| `checkpointing_epochs` | `2`（gui-methods）/ `4`（methods） | 续训状态保存周期（覆盖单文件） |
-| `caption_dropout_rate` | `0.1` | 将部分标注替换为空字符串（有助于 CFG） |
-| `use_shuffled_caption_variants` | `true` | 使用标注逗号重排变体 |
+| Resize | Resizes to the pixel alignment the VAE requires, assigns each image a fixed token bucket, and excludes images that are too small (default: below 0.25 MP) | `post_image_dataset/resized/` |
+| VAE latent caching | Runs the VAE once and saves the result — the VAE is never loaded onto the GPU during training | `post_image_dataset/lora/{stem}_{WxH}_anima.npz` |
+| Text embedding caching | Pre-computes Qwen3 0.6B + LLM adapter outputs (including comma-shuffled caption variants) | `post_image_dataset/lora/{stem}_anima_te.safetensors` |
 
-各变体的切换开关（`use_ortho`、`use_timestep_mask`、`add_reft`、`use_moe_style`、`router_source` 等）可通过取消 `configs/methods/lora.toml` 中的注释块来激活，或直接使用 `configs/gui-methods/<variant>.toml` 中的变体专用文件。**推荐起步方案 `tlora` 变体是已预设 `use_ortho = true` + `use_timestep_mask = true` 的 OrthoLoRA + T-LoRA 组合。**
+PE vision feature caching (`{stem}_anima_pe.safetensors`) is an optional step needed only for CMMD validation.
 
-### 8.4 训练过程中发生了什么
+> ⚠️ Caches are reused and never automatically deleted.
+> Re-running preprocessing never overwrites or deletes existing `.npz` / `_te.safetensors` / `_pe.safetensors` files — only missing entries are processed. That makes re-runs very fast and safe to interrupt.
+>
+> - Added images → just run it again.
+> - Edited captions or changed tokenizer/resize options → a plain re-run will not pick the change up. Delete the cache directory (`post_image_dataset/lora/`) manually, then re-run.
 
-1. 加载文本编码器 → 创建/验证缓存 → 卸载
-2. 加载 VAE → 创建/验证缓存 → 卸载
-3. *延迟加载* DiT，避免缓存阶段的 VRAM 冲突
-4. 将适配器网络注入 DiT 的 attention / FFN 模块（不同变体的注入目标不同）
-5. 噪声采样 → DiT 前向传播 → flow-matching 损失 → 反向传播 → 优化器更新
-6. （可选）通过 `validation_split` 测量验证损失并生成样本图像
+---
 
-### 8.5 输出物
+## 6. Using the GUI
 
-- 训练后的权重：`output/ckpt/<output_name>.safetensors`（按变体自动分支为 `anima`、`anima_tlora_ortho`、`anima_tlora_reft`、`anima_hydra`、`anima_postfix` 等）
-- 检查点：按 `save_every_n_epochs` 周期保存到 `output/ckpt/`（附带 `.snapshot.toml` 旁文件，Hydra 还有 `_moe` 伴随文件）
-- 验证样本：`output/ckpt/sample/`
-- 推理结果图像：`output/tests/`
+Edit configs, preprocess, start/monitor training, and merge LoRA — all in one window.
 
-### 8.6 自动续训（checkpointing_epochs）
+- Training Config: pick a variant from the dropdown (recommended: `tlora`) and your card in the Hardware dropdown (Default 16GB+ / Low VRAM 8GB), edit the training keys, then start training. Data scope (`sample_ratio`, `artists_shard`) is a plain form field in the Basic section.
+- Preprocess: resize + VAE + text embedding caching in one shot.
+- Curation — captions, Autotag, masks, Grouping, excluding images — happens in the anime_tools panel, opened from the Preprocess tab ([§6.3](#63-curation-the-anime_tools-panel)).
+- Merge: bake a trained LoRA into the base DiT to produce a standalone ComfyUI checkpoint (base LoRA / T-LoRA only).
 
-即使训练中途中断，也可以**自动从最后保存的检查点继续训练**的功能。在断电、OOM、误关窗口、需要临时关机休息等情况下非常有用。默认方法文件中已启用，无需额外配置。
+The GUI reads `configs/gui-methods/<variant>.toml` (one clean file per variant) and calls `train.py` internally, so any GUI setup is reproducible from the CLI ([Appendix A](#appendix-a-cli-reference)).
 
-```toml
-checkpointing_epochs = 2     # 每 2 个 epoch 保存一次续训状态（覆盖写入）
-```
+### 6.1 Form Editing and Save Behavior
 
-与 `save_every_n_epochs` 的作用不同。
+Training/preprocess subprocesses re-read the variant TOML from disk, so edits you don't save never reach training. The GUI handles this two ways:
 
-| 配置键 | 保存内容 | 累积？ | 用途 |
+- Change detection: editing any field (or the `+ Extra args` box) turns the `Save` button orange and marks it `Save *` — the signal that the screen and the disk differ.
+- Auto-save: if you forget and press `Train` / `Preprocess` anyway, the current form values are written to the variant file first, then the subprocess starts. (`Test` infers from the last checkpoint, so it is not auto-saved.)
+
+> To discard edits, switch to another variant and back — the file is reloaded from disk.
+
+### 6.2 Stopping Training and Closing the GUI
+
+Training does not run inside the GUI window — pressing `Train` hands the job to a background training daemon that runs `train.py` as a detached process.
+
+- `Stop` cancels the current job only. The daemon stays up and moves on to the next queued job.
+- Closing the GUI does not stop training. Reopen it and it automatically re-attaches to the running job (`Re-attached to running job …`), with the progress bar and logs resuming live.
+- Exceptions: `Test` and `Preprocess` run as in-window subprocesses, so closing the GUI cancels them.
+- To shut training down completely and release the GPU, use the CLI's `make daemon-terminate` ([Appendix A](#appendix-a-cli-reference)).
+
+### 6.3 Curation: the anime_tools panel
+
+Captioning, Autotag, position clauses, masks, Grouping and excluding images happen in the anime_tools panel, shown in the GUI's **anime_tools** tab. The panel starts the first time you open the tab and stops when you close the GUI. If it fails to start, switch to another tab and back to retry.
+
+The panel never edits the images in `image_dataset/`. It works in its own `workspace/` folder and publishes only its decisions:
+
+1. Curate in the panel.
+2. Run **Export** in the panel. The GUI sets Export to *sidecars only*: captions go to `post_image_dataset/resized/`, masks to `post_image_dataset/masks/`, and the revised master caption back next to the image in `image_dataset/`. No images are copied.
+3. Run preprocessing in the Preprocess tab. Resize skips the images you excluded, and the text cache re-encodes every caption that is newer than its cache.
+
+The Preprocess tab's status line says when the panel has edits newer than its last Export.
+
+**Resize preview** (Preprocess tab) lists each source image with the bucket and tier it lands in under the current resize settings, and draws the crop on the selected image.
+
+---
+
+## 7. Training
+
+The config merge order is `configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI args`, and method settings win over preset settings.
+
+Start with the `tlora` variant (T-LoRA; see [§8](#8-adapter-variant-selection-guide)): in the GUI, pick `tlora` in the variant dropdown plus your Hardware preset.
+
+### 7.1 Commonly Adjusted Settings (LoRA defaults)
+
+| Parameter | Default | Description |
+|---|---|---|
+| `network_dim` | `32` | LoRA rank. Higher = more expressive, more parameters |
+| `network_alpha` | `32` (gui-methods) / `128` (methods) | LoRA scale |
+| `learning_rate` | `2e-5` | Learning rate. Hydra can go lower |
+| `max_train_epochs` | `4` (gui-methods) / `8` (methods) | Smaller dataset → more epochs |
+| `save_every_n_epochs` | `2` (gui-methods) / `8` (methods) | Cumulative adapter-weight save interval |
+| `checkpointing_epochs` | `2` (gui-methods) / `8` (methods) | Resume-state save interval (single file, overwritten) |
+| `caption_dropout_rate` | `0.1` | Replaces some captions with an empty string (helps CFG) |
+| `use_shuffled_caption_variants` | `true` | Use comma-shuffled caption variants |
+
+Variant toggles (`use_timestep_mask`, `use_moe_style`, `router_source`, …) are already set in each variant file.
+
+### 7.2 Auto-Resume (checkpointing_epochs)
+
+If training is interrupted (power loss, OOM, closed window), it resumes from the last saved point. It is on by default: press `Train` again, and `auto-resuming from checkpoint at step N` in the log confirms it worked.
+
+This is a different job from `save_every_n_epochs`:
+
+| Key | What it saves | Cumulative? | Purpose |
 |---|---|---|---|
-| `save_every_n_epochs` | 适配器权重（如 `anima_lora-000004.safetensors`） | **累积**（或受 `save_last_n_epochs` 限制） | 用中间结果跑推理或比较过拟合时间点 |
-| `checkpointing_epochs` | 训练续训完整状态（优化器 / 调度器 / RNG / 适配器权重） | **覆盖单文件** | 训练中断后自动续训 |
+| `save_every_n_epochs` | Adapter weights (`anima_lora-000004.safetensors`, …) | Cumulative (cap with `save_last_n_epochs`) | Run inference on intermediate results, compare overfitting points |
+| `checkpointing_epochs` | Full resume state (optimizer / scheduler / RNG / weights) | Overwrites a single file (disk doesn't grow) | Continue after an interruption |
 
-工作方式：
+- When training finishes normally the resume files are deleted automatically, leaving only the final output.
+- If you changed the dataset or core settings (rank, LR, epoch count, …), don't resume from the old state: delete `output/ckpt/<output_name>-checkpoint-state/` manually and start fresh.
 
-- **自动保存**：按 `checkpointing_epochs` 周期，将 `output/ckpt/<output_name>-checkpoint-state/`（状态目录）+ `<output_name>-checkpoint.safetensors`（权重）一起保存，覆盖上次内容。不会膨胀磁盘。
-- **自动续训**：重新运行相同命令（如 `make lora`）时，如果存在已保存的检查点且尚未达到 `max_train_steps`，会**自动续训**。无需手动添加 `--resume` 等标志。日志中出现 `auto-resuming from checkpoint at step N` 即表示续训成功。
-- **自动清理**：训练正常结束后，上述两个文件会被自动删除——续训状态是临时文件，最终产物是 `output/ckpt/<output_name>.safetensors`（参见 §8.5）。
-- **手动续训**：如需回到其他时间点的状态，可以手动指定 `--resume <state_dir>`。
+### 7.3 Outputs
 
-> **什么时候禁用？** 在短时间实验训练或磁盘空间不足时，注释掉 `checkpointing_epochs` 即可。对于数据集较大的正式训练，建议始终保持启用。
->
-> **注意**：如果更改了数据集、标注或训练配置（rank、LR、epoch 数等），从旧检查点续训没有意义甚至可能有风险。这种情况下请手动删除 `output/ckpt/<output_name>-checkpoint-state/` 文件夹后重新开始。
+- Trained weights: `output/ckpt/<output_name>.safetensors` (named per variant — `anima`, `anima_tlora`, `anima_hydra`, `anima_postfix`, …)
+- Intermediate checkpoints: `output/ckpt/` (with a `.snapshot.toml` sidecar, plus a `_moe` companion file for Hydra)
+- Validation samples: `output/ckpt/sample/` · inference images: `output/tests/`
+
+### 7.4 Masked Loss (Excluding Text Bubbles)
+
+For manga/comic-style data, excluding speech bubbles and text regions from the loss gives cleaner results. This is optional and off by default:
+
+1. Download SAM3 ([§3.2](#32-download-models)) and generate masks with `make mask` ([Appendix A](#appendix-a-cli-reference)). The PNGs are black-and-white: white (255) = trained on, black (0) = excluded.
+2. Turn on `masked_loss` in the training config (`--masked_loss` from the CLI). Without it, masks on disk are ignored.
+
+Images without a mask are trained on in full. Mask lookup details are in [`training.md`](training.md#masked-loss-sam3).
 
 ---
 
-## 9. LoRA / 适配器变体选择指南
+## 8. Adapter Variant Selection Guide
 
-> **推荐**：如果是初次使用或需要制作通用角色/风格 LoRA，请从 **`tlora`（OrthoLoRA + T-LoRA）** 开始。细节/风格保持和训练稳定性表现最佳。
+> **🌟 Recommended**: if this is your first run or an ordinary character/style LoRA, start with `tlora` (T-LoRA).
 
-| 变体 | 运行方式 | 适用场景 |
+| Variant | GUI variant name | When to use |
 |---|---|---|
-| **OrthoLoRA + T-LoRA** | `make lora-gui GUI_PRESETS=tlora` | **推荐**。基于 SVD 的正交旋转（OrthoLoRA）+ 按时间步的 rank 屏蔽（T-LoRA）组合。输出 `anima_tlora_ortho.safetensors` |
-| **OrthoLoRA + T-LoRA（8GB）** | `make lora-gui GUI_PRESETS=tlora-8gb` 或 `PRESET=low_vram make lora-gui GUI_PRESETS=tlora` | 在 VRAM 8~12GB 环境下使用上述推荐组合 |
-| **基础 LoRA** | `make lora-gui GUI_PRESETS=lora` 或 `make lora` | 最简基线，用于对比实验 |
-| **基础 LoRA（8GB）** | `make lora-gui GUI_PRESETS=lora-8gb` 或 `PRESET=low_vram make lora` | VRAM 8~12GB |
-| **T-LoRA + Ortho + ReFT** | `make lora-gui GUI_PRESETS=tlora_ortho_reft` | 在推荐组合基础上增加表达编辑（ReFT），用更少的额外参数进行微调 |
-| **HydraLoRA** | `make lora-gui GUI_PRESETS=hydralora`（8GB 版本为 `hydralora-8gb`） | MoE 多头路由，将多种概念整合到一个适配器中 |
-| **单独 ReFT** | `make lora-gui GUI_PRESETS=reft` 或在 `methods/lora.toml` 中设置 `add_reft = true` | 表达编辑（Representation Fine-Tuning），极少参数量 |
-| **ChimeraHydra**（*实验性*） | `make exp-chimera` 或 `make lora-gui GUI_PRESETS=chimera_hydra` | 内容/频率双池 MoE — 仅用于研究 |
-| **EasyControl**（*实验性*） | `make easycontrol` 或 GUI 适配器标签页 | 扩展自注意力图像条件。冻结 DiT，训练逐块条件 LoRA + 标量偏置。数据集：`easycontrol-dataset/` |
-| **Colorize**（*实验性*） | `make easycontrol EASYADAPTER=colorize` | EasyControl 的漫画/线稿上色变体。条件图 = 合成 B&amp;W（XDoG + 网点），目标 = 彩色插图 |
+| T-LoRA ⭐ | `tlora` | Recommended. SVD-Down LoRA stacked with per-timestep rank masking (T-LoRA). Produces `anima_tlora.safetensors` |
+| Plain LoRA | `lora` | Simplest baseline, for comparison runs |
+| HydraLoRA | `hydralora` | MoE multi-head routing, many concepts in one adapter |
 
-各变体的详细选项请参阅 [`docs/guidelines/training.md`](training.md) 和 `docs/methods/` 中的各单独文档。
+For 8–12 GB VRAM, don't switch variants — pick Low VRAM in the Hardware dropdown instead (`PRESET=low_vram` from the CLI). The current list of variants is whatever is in `configs/gui-methods/`.
 
-> **兼容性说明**
-> - HydraLoRA / ReFT 等适配器变体需要默认启用 `cache_llm_adapter_outputs = true` 才能正常运行。
-> - `tlora` 和 `tlora_ortho_reft` 中的 OrthoLoRA + T-LoRA 部分可以通过 `make merge` 烘焙到基础 DiT 中，制作独立的 ComfyUI 检查点（ReFT 部分无法烘焙——需要 `--allow-partial`）。
+> Compatibility notes
+> - Adapter variants such as HydraLoRA require `cache_llm_adapter_outputs = true` (on by default).
+> - `tlora` can be baked into the base DiT with `make merge` to produce a standalone ComfyUI checkpoint.
+
+For per-variant options see [`docs/guidelines/training.md`](training.md) and the individual documents under `docs/methods/`.
 
 ---
 
-## 10. 推理
+## 9. Inference
 
-### 10.1 最快测试方式
+To sample from the adapter you just trained, press Test in the GUI — it automatically picks the most recent checkpoint in `output/ckpt/` and writes results to `output/tests/`. For batch generation and fine-grained flag control the CLI is easier ([Appendix A](#appendix-a-cli-reference)).
 
-如果想立即使用刚训练的适配器生成样本，请使用对应变体的 `make test-*`。所有命令都会自动从 `output/ckpt/` 中选取最近保存的相应适配器进行推理。
+Commonly used options:
+
+| Option | Description |
+|---|---|
+| `--lora_weight` | Path to the trained adapter (multiple allowed) |
+| `--lora_multiplier` | Adapter strength (0.0–1.5) |
+| `--image_size H W` | Output resolution (e.g. `1024 1024`, `1024 1536`) |
+| `--infer_steps` | Denoising steps (typically 20–50) |
+| `--guidance_scale` | CFG strength (3.0–5.0 recommended) |
+| `--sampler` | `er_sde`, `euler`, `lcm` |
+| `--seed` | Seed for reproducibility |
+| `--spectrum` | Enable Spectrum acceleration |
+| `--pgraft` | P-GRAFT (LoRA cutoff late in denoising) — the base model handles late detail |
+
+The full option list is in [`docs/guidelines/inference.md`](inference.md).
+
+---
+
+## 10. Deploying to ComfyUI
+
+ComfyUI core supports the Anima base DiT natively (load it with `UNETLoader` / `CLIPLoader`). Deployment differs by adapter type.
+
+### 10.1 Classic LoRA / T-LoRA
+
+Copy the `.safetensors` from `output/ckpt/` into `ComfyUI/models/loras/` and use ComfyUI's stock LoraLoader node.
+
+For a cleaner standalone checkpoint, bake it into the base DiT from the GUI's Merge tab (or `make merge`, [Appendix A](#appendix-a-cli-reference)). The resulting `*_merged.safetensors` loads as a standalone model in `UNETLoader`.
+
+### 10.2 HydraLoRA / Postfix
+
+These carry routing and token insertion rather than a plain weight delta, so the stock LoraLoader cannot load them — they need dedicated nodes:
+
+- Anima Adapter Loader — <https://github.com/sorryhyun/ComfyUI-Anima_lora-Adapter> (unified LoRA / Hydra / postfix handling)
+- Spectrum KSampler / Mod Guidance / DCW nodes — <https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler>
+
+---
+
+## 11. Updating
+
+Run this inside the install folder to pull the latest GitHub release and sync dependencies (no git required).
 
 ```bash
-make test                        # 普通 LoRA / OrthoLoRA / T-LoRA / ReFT
-make test SPECTRUM=1             # Spectrum 加速推理
-make test MOD=1                  # Modulation guidance (pooled_text_proj) — 可与 SPECTRUM=1 组合
-make test NOLORA=1               # 单独基础 DiT 推理（省略 --lora_weight）；与 MOD=1 组合即为 mod-only 路径
-make test-hydra                  # HydraLoRA（路由器在线，anima_hydra*_moe.safetensors）
-make test-merge                  # 用烘焙后的独立 DiT（`*_merged.safetensors`）推理
-make test-dcw                    # LoRA + DCW 标量校正（采样器级 SNR-t 校正）
-make test-dcw-v4                 # LoRA + DCW v4 学习型校正器
-make test-easycontrol REF_IMAGE=... PROMPT="..."  # EasyControl 图像条件推理
+python tasks.py update              # Apply
+python tasks.py update -- --dry-run # Preview which files change
 ```
 
-### 10.2 通用推理（手动）
+Updating never touches `image_dataset/`, `post_image_dataset/`, `output/`, or `models/`, and asks before overwriting config files you have modified.
+
+---
+
+## Appendix A. CLI Reference
+
+Everything the GUI does is also available from the CLI. `make <target>` and `python tasks.py <target>` are equivalent, and since the one-line install does not install `make`, use `python tasks.py` if `make` is missing (or `winget install ezwinports.make`).
+
+> Getting `ModuleNotFoundError`? Prefix commands with `uv run` or activate the venv — see [Appendix B](#appendix-b-manual-install-uv--git).
+
+Model download
+
+```bash
+hf auth login                # Same token cache as the GUI sign-in
+make download-models         # First-run set: DiT + text encoder + VAE + PE-Spatial + CJK vocab pack + tagger + tag DB
+make download-list           # What is installed and what is missing, grouped by pack (offline, no network)
+make download-anima          # Retry pieces individually if a download breaks
+make download-sam3           # Masking is opt-in — run this once SAM3 access is approved
+make download-model ARGS=ocr # Anything else, by pack (anima pe cjk tagger tags masking ocr grouping) or catalog id
+```
+
+Preprocessing
+
+```bash
+make preprocess              # All three steps
+make preprocess-resize       # 1) image_dataset/ → post_image_dataset/resized/
+make preprocess-vae          # 2) VAE latent caching
+make preprocess-te           # 3) Text embedding caching
+make preprocess-pe           # (Optional) PE vision features — CMMD validation only
+make mask                    # Generate masks for masked loss (SAM3)
+make mask-clean              # Delete post_image_dataset/masks/
+make autotag ARGS="--image <path>"  # Print the predicted caption for one image
+make curate-group            # Group similar images → workspace/groups/groups.json
+```
+
+Training
+
+```bash
+make lora-gui GUI_PRESETS=tlora                  # Recommended combo (same per-variant files as the GUI)
+PRESET=low_vram make lora-gui GUI_PRESETS=tlora  # 8–12 GB VRAM
+make lora-gui GUI_PRESETS=lora                   # Plain LoRA
+make lora-gui GUI_PRESETS=hydralora              # MoE multi-head
+make exp-soft-tokens                             # Soft Tokens (experimental)
+
+make lora                                        # Method config (configs/methods/lora.toml)
+PRESET=half make lora                            # Half the dataset, for quick experiments
+
+make lora ARGS="--network_dim 32 --max_train_epochs 24"   # Override any key
+make daemon-terminate                            # Kill the running job + stop the daemon (frees the GPU)
+```
+
+Inference
+
+```bash
+make test                        # Plain LoRA / T-LoRA
+make test SPECTRUM=1             # Spectrum acceleration
+make test MOD=1                  # Modulation guidance (composes with SPECTRUM=1)
+make test NOLORA=1               # Base DiT only
+make test-hydra                  # HydraLoRA (router-live)
+make test-merge                  # Inference with a baked standalone DiT
+```
+
+Manual inference:
 
 ```bash
 python inference.py \
@@ -503,66 +388,95 @@ python inference.py \
     --save_path output/tests
 ```
 
-常用参数：
-
-| 参数 | 说明 |
-|---|---|
-| `--lora_weight` | 训练好的适配器路径。可以同时指定多个 |
-| `--lora_multiplier` | 适配器强度（0.0~1.5） |
-| `--image_size H W` | 输出分辨率（例如：`1024 1024`、`1024 1536`） |
-| `--infer_steps` | 去噪步数（通常 20~50） |
-| `--guidance_scale` | CFG 强度（推荐 3.0~5.0） |
-| `--sampler` | `er_sde`、`euler`、`dpm++` 等 |
-| `--seed` | 用于复现的随机种子 |
-| `--spectrum` | 启用 Spectrum 加速 |
-| `--pgraft` | P-GRAFT（去噪后期 LoRA 截断），让基础模型负责后期细节 |
-
-推理选项的完整列表和 P-GRAFT 推理方法请参阅 [`docs/guidelines/inference.md`](inference.md)。
-
----
-
-## 11. 部署到 ComfyUI
-
-ComfyUI 核心已原生支持 Anima 基础 DiT（通过 `UNETLoader` / `CLIPLoader` 直接加载）。根据适配器种类不同，部署方式也不同。
-
-### 11.1 经典 LoRA / OrthoLoRA / T-LoRA
-
-将 `output/ckpt/` 中生成的 `.safetensors` 文件直接复制到 `ComfyUI/models/loras/`，即可通过 ComfyUI 默认的 LoraLoader 节点使用。如果想制作更简洁的独立检查点：
+Merge · GUI · update
 
 ```bash
-make merge ADAPTER_DIR=output/ckpt                 # 将最新权重烘焙到基础 DiT
-make merge ADAPTER_DIR=output/ckpt MULTIPLIER=0.8  # 调整强度
+make merge ADAPTER_DIR=output/ckpt                 # Bake the latest weights into the base DiT
+make merge ADAPTER_DIR=output/ckpt MULTIPLIER=0.8  # Adjust strength
+make gui                                           # Launch the GUI
+make gui-shortcut                                  # Create a Windows desktop shortcut
+make update                                        # = python tasks.py update
 ```
 
-烘焙后的 `*_merged.safetensors` 可直接作为独立模型在 ComfyUI 的 `UNETLoader` 中加载。
-
-### 11.2 HydraLoRA / Postfix
-
-这些变体无法通过 ComfyUI 默认的 LoraLoader 加载（因为不仅仅是权重增量，还涉及路由和 token 插入），需要专用节点：
-
-- **Anima Adapter Loader**（`custom_nodes/comfyui-hydralora/`）——统一处理 LoRA / Hydra / ReFT / postfix。详细用法请参阅该文件夹中的 `README.md`。
-- **Spectrum KSampler / Mod Guidance / DCW 节点**——独立仓库 <https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler>
+`make help` lists every target.
 
 ---
 
-## 12. 更新
+## Appendix B. Manual Install (uv · git)
+
+Only needed if you want to set things up yourself instead of the one-liner in [§2](#2-installation).
+
+```powershell
+irm https://astral.sh/uv/install.ps1 | iex   # 1) Install uv (check `uv --version` in a new shell)
+```
 
 ```bash
-make update              # 从 GitHub release 下载最新版本并应用 + 自动运行 uv sync
-make update -- --dry-run # 预览哪些文件会被更改
+git clone https://github.com/sorryhyun/anima_lora.git   # 2) Clone
+cd anima_lora
+winget install ezwinports.make                          # 3) (Optional) make
+uv sync                                                 # 4) Install dependencies
 ```
 
-`update` 不会触及 `image_dataset/`、`post_image_dataset/`、`output/`、`models/` 目录，对于用户修改过的配置文件会在冲突时询问确认。
+`uv sync` installs everything into `.venv/` inside `anima_lora/`; you don't need `pip install`.
+
+Running `python tasks.py ...` in a fresh terminal uses the *system* Python and fails with `ModuleNotFoundError`. Fix it either way:
+
+- Prefix with `uv run` (no activation needed, works anywhere): `uv run python tasks.py lora`
+- Activate the venv (once per terminal window):
+
+  ```powershell
+  .venv\Scripts\activate        # Windows
+  ```
+  ```bash
+  source .venv/bin/activate     # Linux / macOS / WSL
+  ```
+
+  A `(anima_lora)` or `(.venv)` prefix in the prompt means it worked; `deactivate` to exit. In VSCode, pick the `.venv` interpreter once (Command Palette → Python: Select Interpreter) and the integrated terminal activates it automatically.
 
 ---
 
-## 更多资料
+## Appendix C. Manual CUDA Install
 
-- [`docs/guidelines/training.md`](training.md) — 适配器变体、标注随机重排、遮罩损失、数据集配置详情
-- [`docs/guidelines/inference.md`](inference.md) — 推理参数、DCW、Spectrum、提示词文件格式
-- [`docs/guidelines/difference_between_comfy.md`](difference_between_comfy.md) — anima_lora 与 ComfyUI 核心实现差异
-- [`docs/methods/timestep_mask.md`](../methods/timestep_mask.md) — T-LoRA 时间步遮罩
-- [`docs/methods/psoft-integrated-ortholora.md`](../methods/psoft-integrated-ortholora.md) — OrthoLoRA 细节（推荐 `tlora` 变体的正交旋转部分）
-- [`docs/methods/hydra-lora.md`](../methods/hydra-lora.md) — HydraLoRA 多头路由
+The one-liner in [§2](#2-installation) handles CUDA 13.2 automatically and skips the step if it's already installed. This appendix is only for when that fails.
 
-如有问题或 Bug 报告，欢迎在 GitHub Issues 中用中文提交。祝训练愉快！
+- CUDA 13.x requires NVIDIA driver 595 or newer. If you already have a newer driver, keep it (deselect the bundled driver in the Linux `.run` installer menu).
+- To manage CUDA yourself, set `$env:ANIMA_SKIP_CUDA='1'` (PowerShell) / `ANIMA_SKIP_CUDA=1` (shell) to skip the automatic CUDA step.
+
+Manual install: get 13.2 from the NVIDIA archive at <https://developer.nvidia.com/cuda-13-2-0-download-archive>
+
+1. Windows: choose Operating System: Windows → Architecture: x86_64 → Version: 11/10 → Installer Type: exe (local), run it, and pick "Express (Recommended)".
+2. Verify with `nvidia-smi` and `nvcc --version` (expect `release 13.2`).
+3. If `nvcc` isn't found, add these to the system `Path`, reboot, and check again:
+
+   ```
+   C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin
+   C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\libnvvp
+   ```
+
+---
+
+## Appendix D. Other Settings
+
+### `num_repeats`
+
+A kohya-ss style option in `configs/base.toml`'s `[[datasets.subsets]]`: how many times each image is used per epoch.
+
+- Leave it at `1`. With all images in one folder, raising it has the same effect as raising `max_train_epochs`, and every preset and method config assumes `num_repeats = 1`.
+- It only makes sense as a balancing tool when a run has multiple subsets (folders) with very different image counts (e.g. Character A with 1000 images + B with 50: set only the B subset to `num_repeats = 20`).
+- It's a dataset setting, so it is not exposed in the GUI or method files. If you really need it, edit `configs/base.toml` (or the TOML given via `--dataset_config`) directly.
+
+---
+
+## Further Reading
+
+- [`docs/guidelines/base-config.md`](base-config.md) — per-key reference for `base.toml` (model paths, noise schedule, caching, compile, memory knobs, dataset blueprint)
+- [`docs/guidelines/training.md`](training.md) — adapter variants, caption shuffling, masked loss, dataset config details
+- [`docs/guidelines/inference.md`](inference.md) — inference workflow, flags, Spectrum, prompt file format
+- [`docs/guidelines/difference_between_comfy.md`](difference_between_comfy.md) — anima_lora ↔ ComfyUI core implementation differences
+- [`docs/methods/timestep_mask.md`](../methods/timestep_mask.md) — T-LoRA timestep mask
+- [`docs/methods/svd-down-lora.md`](../methods/svd-down-lora.md) — SVD-Down LoRA (weight-seeded down-projection init)
+- [`docs/inference/spectrum.md`](../inference/spectrum.md) — how Spectrum acceleration works and its options
+- [`docs/inference/mod-guidance.md`](../inference/mod-guidance.md) — modulation guidance
+- [`docs/methods/hydra-lora.md`](../methods/hydra-lora.md) — HydraLoRA multi-head routing
+
+Questions and bug reports are welcome on GitHub Issues. Happy training!

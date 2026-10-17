@@ -10,43 +10,37 @@ Architecture (adapter-only — DiT frozen):
 
 Init:
   - Per-block ``ip_gate`` scalar at 0 — THIS is what guarantees step 0 ≡
-    baseline DiT. The patched cross-attn adds ``gate * scale * ip_out`` to
-    the text path; with gate=0 every block, the IP contribution is exactly
-    zero on the first forward regardless of K/V weight magnitudes. The
-    optimizer opens each gate as it learns to use the IP path.
-  - to_k_ip / to_v_ip default (PyTorch Kaiming-uniform). The gate is the
-    sole mechanism for step-0 baseline equivalence — once it opens, K/V
-    have meaningful magnitude immediately and the IP path can carry signal
-    without first growing the projections from near-zero. ``ip_init_std``
-    is exposed in the toml as a defense-in-depth override (set it to a
-    small value like 1e-4 to also zero-init the projections) but is no
-    longer required for correctness. The earlier "std=1e-4 acts as a soft
-    gate" theory was incorrect — the DiT's ``v_norm = nn.Identity()`` so
-    V was never being normalized, and small-std weights grew fast enough
-    under Adam that the IP/text ratio still hit ~3.7 by step 2.
+    baseline DiT: the patched cross-attn adds ``gate * scale * ip_out`` to
+    the text path, so with gate=0 the IP contribution is exactly zero
+    regardless of K/V weight magnitude. The optimizer opens each gate as it
+    learns to use the IP path.
+  - to_k_ip / to_v_ip default (PyTorch Kaiming-uniform) — the gate alone
+    handles step-0 equivalence, so K/V can be at normal magnitude once the
+    gate opens. ``ip_init_std`` is exposed as a defense-in-depth override
+    but isn't required: the earlier "small std acts as a soft gate" theory
+    was wrong (the DiT's ``v_norm`` is Identity, so V was never normalized,
+    and small-std weights grew fast enough under Adam that the IP/text
+    ratio still hit ~3.7 by step 2).
   - set_ip_tokens deliberately does NOT run the IP K/V through the
-    cross_attn RMSNorms. ``v_norm`` is Identity (no-op), but ``k_norm``
-    would rescale K to unit RMS, concentrating the IP-side softmax on a
-    single token instead of averaging — keeping K small lets uniform
-    attention smear ip_out across all K_ip slots.
+    cross_attn RMSNorms: ``v_norm`` is a no-op, but ``k_norm`` would
+    concentrate the IP-side softmax on a single token instead of averaging
+    — keeping K small lets uniform attention smear ip_out across all slots.
   - Resampler queries init at N(0, 0.15) (img2emb's PerceiverResampler default).
 
 Hooking:
   apply_to() monkey-patches each Block.cross_attn.forward. The patched closure
-  captures (orig_attn, block_idx, network), runs the existing text cross-attn
-  via attention_dispatch.dispatch_attention(), then computes a decoupled SDPA over IP K/V and
-  adds scale * ip_out before the output projection. Lives on the instance, so
-  gradient-checkpointing rerolls inside Block._forward see the same patch.
+  runs the existing text cross-attn via attention_dispatch.dispatch_attention(),
+  then computes a decoupled SDPA over IP K/V and adds scale * ip_out before the
+  output projection. Lives on the instance, so gradient-checkpointing rerolls
+  inside Block._forward see the same patch.
 
 Train-time contract:
   Caller invokes network.set_ip_tokens(ip_tokens) ONCE per batch before the
   DiT forward. set_ip_tokens precomputes per-block (K, V) in SDPA layout
   ([B, n_h, K, d_h]) plus a per-block ``gate * scale`` scalar so the patched
-  cross-attn forward is a single SDPA call followed by a single multiply —
-  no per-call transpose, dtype cast, or scalar arithmetic. K/V are
-  intentionally un-normalized — see set_ip_tokens for the init-gate
-  rationale. Pass ``None`` (or call clear_ip_tokens) for unconditional
-  passes / CFG dropout.
+  cross-attn forward is a single SDPA call followed by a single multiply.
+  Pass ``None`` (or call clear_ip_tokens) for unconditional passes / CFG
+  dropout.
 
 Inference VRAM:
   After set_ip_tokens, the PE encoder is dead weight (K/V live on the
@@ -99,13 +93,11 @@ DEFAULT_NUM_IP_TOKENS = 16
 DEFAULT_RESAMPLER_HEADS = 8
 DEFAULT_RESAMPLER_LAYERS = 2
 DEFAULT_ENCODER_NAME = "pe"
-# None ⇒ leave nn.Linear's default Kaiming-uniform init in place. Step-0 ≡
-# baseline DiT is enforced by the per-block ``ip_gate`` scalar (init 0), not
-# by shrinking K/V — small init was the old "soft gate" trick that was
-# misdiagnosed (the DiT's v_norm is Identity, so ip_init_std=1e-4 alone could
-# not actually pin step-0 to baseline; see docs/methods/ip-adapter-0502.md).
-# Set ``ip_init_std`` explicitly in the toml to override (e.g. for a
-# defense-in-depth run with both gate AND tiny init).
+# None => leave nn.Linear's default Kaiming-uniform init in place. Step-0 ==
+# baseline DiT is enforced by the per-block `ip_gate` scalar (init 0), not by
+# shrinking K/V — small init was the old "soft gate" trick, misdiagnosed
+# (v_norm is Identity, so ip_init_std alone can't pin step-0 to baseline).
+# Set `ip_init_std` explicitly in the toml for a defense-in-depth override.
 DEFAULT_IP_INIT_STD: Optional[float] = None
 
 
@@ -129,20 +121,15 @@ def create_network(
     raw_ip_init_std = kwargs.get("ip_init_std", DEFAULT_IP_INIT_STD)
     ip_init_std = float(raw_ip_init_std) if raw_ip_init_std is not None else None
     ip_scale = float(kwargs.get("ip_scale", 1.0))
-    # Optional per-group LR override for the gate. None ⇒ use the global
-    # adapter LR for the gate too. Set e.g. "gate_lr=1e-3" in network_args
-    # to open the gate ~10× faster than the resampler/KV move.
+    # None => global adapter LR. e.g. "gate_lr=1e-3" opens the gate faster.
     raw_gate_lr = kwargs.get("gate_lr", None)
     gate_lr = float(raw_gate_lr) if raw_gate_lr is not None else None
-    # Optional precomputed PE centroid sidecar (produced by
-    # `scripts/preprocess/cache_pe_encoder.py --centroid_only`). Subtracted from every
-    # token before the resampler — see IPAdapterNetwork.__init__ comment on
-    # ip_centroid.
+    # Optional precomputed PE centroid sidecar (see IPAdapterNetwork.__init__
+    # comment on ip_centroid), subtracted from every token before the resampler.
     ip_centroid_path = kwargs.get("ip_centroid_path", None) or None
 
-    # PE-Core LoRA prototype: when enabled, the network owns the PE encoder
-    # and trains LoRA on every resblock (qkv + attn_out + mlp). Forces live
-    # PE encoding (cached features can't track a moving encoder).
+    # PE-Core LoRA prototype: network owns the PE encoder and trains LoRA on
+    # every resblock (qkv + attn_out + mlp); forces live PE encoding.
     pe_lora_enabled = _parse_bool(kwargs.get("pe_lora_enabled", False))
     pe_lora_rank = int(kwargs.get("pe_lora_rank", 16))
     pe_lora_alpha = float(kwargs.get("pe_lora_alpha", 16.0))
@@ -151,11 +138,8 @@ def create_network(
     pe_lora_qkv = _parse_bool(kwargs.get("pe_lora_qkv", True))
     pe_lora_attn_out = _parse_bool(kwargs.get("pe_lora_attn_out", True))
     pe_lora_mlp = _parse_bool(kwargs.get("pe_lora_mlp", True))
-    # Trailing-layer count: -1 (default) ⇒ adapt every PE resblock. Positive
-    # N adapts only the last N (e.g. =8 trains the deepest 8 of 24 in
-    # PE-Core-L14-336, freezing layers 0..15). Cuts trainable param count
-    # roughly proportionally and concentrates capacity on the high-level
-    # semantic layers most likely to need manga/anime adaptation.
+    # -1 (default) adapts every PE resblock; positive N adapts only the last N,
+    # concentrating capacity on the high-level semantic layers.
     pe_lora_layer_from = int(kwargs.get("pe_lora_layer_from", -1))
 
     num_blocks = (
@@ -332,7 +316,7 @@ class IPAdapterNetwork(AdapterNetworkBase):
         self.resampler_heads = resampler_heads
         self.ip_init_std = ip_init_std
         self.ip_scale = ip_scale
-        # None ⇒ gate uses the global adapter LR. Set explicitly to override.
+        # None => gate uses the global adapter LR. Set explicitly to override.
         self.gate_lr = gate_lr
         self.multiplier = multiplier
         self.pe_lora_enabled = pe_lora_enabled
@@ -356,20 +340,17 @@ class IPAdapterNetwork(AdapterNetworkBase):
         )
 
         # Dataset-mean centroid in PE feature space, subtracted from every
-        # token before the resampler. Targets the participation-ratio-6
-        # manifold collapse measured in bench/ip_adapter/analysis.md: pooled
-        # PE features sit on a ~6-dim sub-space with cross-pair sim ~0.69, so
-        # the resampler is hunting a small per-image delta on top of a strong
-        # shared-aesthetic background. Subtracting the centroid gives the
-        # resampler the per-image delta directly. Init zero ⇒ no-op until a
-        # centroid is loaded; the buffer round-trips through state_dict, so
-        # inference inherits the same shift the network was trained with.
+        # token before the resampler: pooled PE features sit on a low-rank
+        # sub-space with high cross-pair similarity, so the resampler is
+        # hunting a small per-image delta on top of a strong shared-aesthetic
+        # background — subtracting the centroid gives it that delta directly.
+        # Init zero => no-op until a centroid is loaded; round-trips through
+        # state_dict so inference inherits the same shift.
         self.register_buffer(
             "ip_centroid", torch.zeros(encoder_dim), persistent=True
         )
-        # Cached "is centroid populated?" bit. None ⇒ recompute on next encode
-        # (one-time GPU→CPU sync). load_centroid_from_file flips it to True;
-        # load_state_dict invalidates it so a fresh checkpoint is re-checked.
+        # "is centroid populated?" bit. None => recompute on next encode (one-
+        # time GPU->CPU sync); load_state_dict invalidates it.
         self._centroid_active: Optional[bool] = False
 
         # Per-block IP projections. Bias=False matches the existing kv_proj.
@@ -379,29 +360,23 @@ class IPAdapterNetwork(AdapterNetworkBase):
         self.to_v_ip = nn.ModuleList(
             [nn.Linear(context_dim, hidden_size, bias=False) for _ in range(num_blocks)]
         )
-        # When ip_init_std is None, leave PyTorch's default Linear init
-        # (Kaiming-uniform) in place — the gate is responsible for step-0
-        # baseline equivalence, so K/V can be at "normal" magnitude. An
-        # explicit toml override is honored as a defense-in-depth knob.
+        # None: leave PyTorch's default Kaiming-uniform init — the gate
+        # handles step-0 equivalence, so K/V can be at normal magnitude.
         if ip_init_std is not None:
             for proj in list(self.to_k_ip) + list(self.to_v_ip):
                 nn.init.normal_(proj.weight, std=ip_init_std)
 
-        # Per-block learned scalar gate, init 0. Step 0 ≡ baseline DiT because
-        # the patched cross-attn applies ``gate * scale * ip_out`` and gate=0.
-        # ``ip_init_std`` alone can't enforce this: the DiT's v_norm is
-        # nn.Identity, so once Adam takes a step on to_v_ip the V output
-        # grows fast and ip_out shoots up — empirically the IP/text ratio
-        # was ~3.7 at step 2 with std=1e-4 alone. The gate decouples
-        # "step 0 = baseline" from the K/V weight scale; the optimizer
-        # learns when (and per which block) to open the IP path.
+        # Per-block learned scalar gate, init 0 — decouples "step 0 =
+        # baseline" from the K/V weight scale (ip_init_std alone can't
+        # enforce it; see module docstring). Optimizer learns when/where to
+        # open the IP path.
         #
         # Stored as a ParameterList of 0-d Parameters (not a single
         # Parameter[num_blocks]) so apply_to can hand each block's gate
-        # directly to its cross_attn as ``cross_attn._ip_gate``. The patched
-        # forward reads ``orig_attn._ip_gate`` — no Python-int indexing into
-        # a single tensor, which keeps torch.compile from specializing a
-        # separate graph per block (same rationale as the diagnostic accumulators).
+        # directly to its cross_attn as ``cross_attn._ip_gate`` — no
+        # Python-int block_idx indexing, which would make torch.compile
+        # specialize a separate graph per block (same rationale as the
+        # diagnostic accumulators below).
         self.ip_gate = nn.ParameterList(
             [nn.Parameter(torch.zeros(())) for _ in range(num_blocks)]
         )
@@ -415,23 +390,17 @@ class IPAdapterNetwork(AdapterNetworkBase):
 
         # Diagnostic accumulators: per-block running sum of ‖ip_out‖/‖text_result‖
         # plus call count. Stored as 0-d tensors ON THE cross_attn MODULES (not
-        # here) so the patched forward can read them via ``orig_attn`` and
-        # never has to read ``block_idx`` as a Python int — that would force
-        # torch.compile to specialize a separate graph per block (28 of them)
-        # and blow past recompile_limit. Allocated lazily on first
-        # ``set_diagnostics_enabled(True)`` call. Read out via
+        # here) so the patched forward reads them via ``orig_attn`` rather than
+        # a Python-int block_idx (torch.compile graph-per-block trap again).
+        # Allocated lazily on ``set_diagnostics_enabled(True)``; read via
         # ``diagnostic_summary()``.
         self._diag_enabled: bool = False
 
         # PE-Core encoder + LoRA. When enabled, the network owns the encoder so
-        # FM gradients flow back through PE during training and inference can
-        # reuse the same instance. Base PE params are frozen — only the LoRA
-        # ModuleDict trains. Saved metadata round-trips the pe_lora_* config
-        # so create_network_from_weights can rebuild this surface before
-        # load_state_dict.
-        #
-        # PE base params live under ``self._pe_inner.*`` and are EXCLUDED from
-        # save_weights (they're loaded fresh from the .pt checkpoint each time).
+        # FM gradients flow back through PE; base PE params are frozen, only
+        # the LoRA ModuleDict trains. PE base params live under
+        # ``self._pe_inner.*`` and are EXCLUDED from save_weights (loaded
+        # fresh from the .pt checkpoint each time).
         self._pe_inner: Optional[nn.Module] = None
         self._pe_lora: Optional[nn.ModuleDict] = None
         self._pe_bundle_info = None
@@ -570,17 +539,13 @@ class IPAdapterNetwork(AdapterNetworkBase):
         )
 
     def set_ip_tokens(self, ip_tokens: Optional[torch.Tensor]) -> None:
-        """Pre-compute per-block (K, V) post-norm and cache on each cross_attn.
+        """Pre-compute per-block (K, V) and cache on each cross_attn.
 
         Pass ``None`` (or call ``clear_ip_tokens``) for unconditional / CFG
-        dropout passes.
-
-        K/V are stored in SDPA layout ``[B, n_h, K, d_h]`` so the patched
-        cross-attn forward feeds them straight to ``F.scaled_dot_product_attention``
-        without a per-step transpose. ``gate * effective_scale`` is also
-        cached per block (in K/V dtype), removing the per-call dtype cast and
-        multiplication in the inner loop. The cached scalar tensor still
-        carries grad back to ``ip_gate`` at training time.
+        dropout passes. K/V are stored in SDPA layout ``[B, n_h, K, d_h]`` so
+        the patched forward feeds them straight to SDPA with no per-step
+        transpose; ``gate * effective_scale`` is also pre-cached per block
+        (still carries grad back to ``ip_gate`` at training time).
         """
         if not self._patched:
             raise RuntimeError("set_ip_tokens called before apply_to")
@@ -592,8 +557,7 @@ class IPAdapterNetwork(AdapterNetworkBase):
                 f"ip_tokens must be [B, K, {self.context_dim}], got {tuple(ip_tokens.shape)}"
             )
 
-        # All to_k_ip / to_v_ip Linears were created with the same dtype
-        # (see __init__), so a single cast on ip_tokens covers every block.
+        # all to_k_ip/to_v_ip share dtype, so one cast covers every block
         proj_dtype = self.to_k_ip[0].weight.dtype
         ip_in = ip_tokens.to(proj_dtype)
         n_h, d_h = self.num_heads, self.head_dim
@@ -601,26 +565,18 @@ class IPAdapterNetwork(AdapterNetworkBase):
         for idx, cross_attn in enumerate(self._cross_attn_modules):
             k = self.to_k_ip[idx](ip_in)  # [B, K, hidden]
             v = self.to_v_ip[idx](ip_in)
-            # Store in SDPA layout so the per-step .transpose(1,2) is gone.
-            # contiguous() materializes the small K cache (B*n_h*K*d_h
-            # elements) once here instead of letting SDPA re-stride per call.
+            # SDPA layout; contiguous() materializes the small K cache once
+            # here instead of letting SDPA re-stride per call.
             k = k.unflatten(-1, (n_h, d_h)).transpose(1, 2).contiguous()
             v = v.unflatten(-1, (n_h, d_h)).transpose(1, 2).contiguous()
-            # Intentionally skip cross_attn.k_norm/v_norm here.
-            # - v_norm is nn.Identity in the DiT so this is a no-op for V,
-            #   listed only for symmetry with the K branch.
-            # - k_norm (RMSNorm) WOULD rescale ip_k to unit RMS. With
-            #   unit-RMS k, qk^T scores are large and the IP-side softmax
-            #   concentrates on a single ip-token; with k left small,
-            #   softmax stays near-uniform and ip_out averages across all
-            #   K_ip slots — gentler when the gate first opens.
-            # The "step 0 = baseline DiT" invariant is enforced by ``ip_gate``
-            # (per-block 0-init scalar applied in the patched forward), NOT
-            # by the K-norm bypass.
+            # Intentionally skip cross_attn.k_norm/v_norm: v_norm is Identity
+            # anyway, but k_norm (RMSNorm) would concentrate the IP-side
+            # softmax on a single token instead of averaging across K_ip
+            # slots. The step-0-baseline invariant comes from ip_gate, not
+            # this bypass.
             cross_attn._ip_k_cached = k
             cross_attn._ip_v_cached = v
-            # Pre-cast (gate * scale) so the inner loop is one multiply.
-            # Still a tensor → autograd flows through to ip_gate at training.
+            # pre-cast (gate * scale); still a tensor, so autograd flows to ip_gate
             cross_attn._ip_gate_scale_cached = (
                 self.ip_gate[idx] * eff_scale
             ).to(proj_dtype)
@@ -671,15 +627,11 @@ class IPAdapterNetwork(AdapterNetworkBase):
         """Drop the owned PE encoder + LoRA after the reference image has been
         encoded into ``ip_k`` / ``ip_v`` caches.
 
-        Inference-only safety valve: at generation time the PE encoder runs
-        exactly once (in ``_setup_ip_adapter``) to produce ``ip_features``;
-        ``set_ip_tokens`` then materializes the per-block K/V and the
-        encoder is never touched again. PE-Core-L14-336 is ~600 MB bf16;
-        freeing it claws back significant VRAM for the actual diffusion
-        forward.
-
-        After this call ``encode_images`` / ``encode_ip_tokens`` will fail —
-        do not call it during training.
+        Inference-only: the PE encoder runs exactly once (in
+        ``_setup_ip_adapter``); freeing it claws back VRAM (~600 MB bf16 for
+        PE-Core-L14-336) for the diffusion forward. After this call
+        ``encode_images`` / ``encode_ip_tokens`` will fail — do not call it
+        during training.
         """
         had_inner = self._pe_inner is not None
         had_lora = self._pe_lora is not None
@@ -693,11 +645,10 @@ class IPAdapterNetwork(AdapterNetworkBase):
         """Run the owned PE encoder on [B, 3, H, W] in [-1, 1]; gradient flows
         through the injected LoRA. Returns ``[B, T_pe, encoder_dim]``.
 
-        Bucketing: dataloader is per-batch homogeneous, so we resize to one
-        bucket-pixels target and run a single PE forward. Mirrors
+        Dataloader is per-batch homogeneous, so resizes to one bucket-pixels
+        target and runs a single PE forward. Mirrors
         ``library.vision.encoder.encode_pe_from_imageminus1to1(same_bucket=True)``
-        but skips the VisionEncoderBundle indirection and the ``torch.no_grad``
-        context that path bakes in.
+        but without its VisionEncoderBundle indirection / ``torch.no_grad``.
         """
         if not self.pe_lora_enabled or self._pe_inner is None:
             raise RuntimeError("encode_images requires pe_lora_enabled=True")
@@ -725,10 +676,8 @@ class IPAdapterNetwork(AdapterNetworkBase):
         """Toggle per-step accumulation of ‖scale·ip_out‖/‖text_result‖.
 
         Buffers are lazy-allocated on first enable, as 0-d tensors on each
-        cross_attn module (so the patched forward never indexes by block_idx
-        and torch.compile doesn't specialize per-block). They are NOT
-        registered as nn.Buffers — this is pure runtime state, not part of
-        ``state_dict``.
+        cross_attn module (so the patched forward never indexes by block_idx).
+        NOT registered as nn.Buffers — pure runtime state, not in ``state_dict``.
         """
         if not self._patched:
             raise RuntimeError("set_diagnostics_enabled called before apply_to")
@@ -754,10 +703,9 @@ class IPAdapterNetwork(AdapterNetworkBase):
     def diagnostic_summary(self, *, reset: bool = True, log: bool = True) -> dict:
         """Return per-block ‖to_k_ip‖, ‖to_v_ip‖, mean ip/text ratio.
 
-        Heavy logging is gated on ``log=True``: prints aggregate stats
-        (min/mean/max across blocks) plus a few representative per-block lines
-        (first / middle / last block). The full per-block tensors are returned
-        in the dict for further inspection.
+        ``log=True`` prints aggregate stats plus a few representative
+        per-block lines (first/middle/last); the full per-block tensors are
+        always returned in the dict.
         """
         with torch.no_grad():
             k_norms = torch.tensor(
@@ -826,26 +774,17 @@ class IPAdapterNetwork(AdapterNetworkBase):
     def metrics(self, ctx) -> dict[str, float]:
         """Step-cadence tfevents scalars for the IP path. Single CPU sync.
 
-        Always emits ``ip_adapter/to_k_ip_norm/{mean,max}`` and
-        ``ip_adapter/to_v_ip_norm/{mean,max}`` — pure weight reads with no
-        forward overhead, so they track across the full run regardless of
-        ``ip_diagnostics_epochs``.
+        Always emits ``ip_adapter/to_{k,v}_ip_norm/{mean,max}`` (pure weight
+        reads, no forward overhead). Emits ``ip_adapter/ip_text_ratio/{mean,max}``
+        only while ``_diag_enabled`` is True; each call resets the
+        accumulator so the scalar reflects the window since the previous log
+        step, not a running epoch mean.
 
-        Emits ``ip_adapter/ip_text_ratio/{mean,max}`` only while
-        ``_diag_enabled`` is True (the patched cross-attn forward populates
-        the per-block accumulator). Each call resets the accumulator so the
-        scalar reflects the window since the previous log step rather than a
-        running mean over the whole epoch — matters once the value moves.
-
-        Reading these:
-        - ``to_k_ip_norm/mean`` flat near init (~4.6e-3 for fan-in 1024 with
-          std 1e-4) ⇒ projections aren't growing, the resampler+KV are
-          undertrained.
-        - ``ip_text_ratio/mean`` < 1e-2 ⇒ IP signal is too small to nudge
-          cross-attn output regardless of what the resampler emits.
-        - Both growing but the validation ``no_ip`` Δ stays ≤ 0 ⇒ projections
-          are moving but in a direction that doesn't help held-out loss
-          (overfit / noise direction; see ip_adapter.py:717-723).
+        Reading these: flat ``to_k_ip_norm/mean`` near init => projections
+        aren't growing (resampler+KV undertrained). ``ip_text_ratio/mean``
+        < 1e-2 => IP signal too small to nudge cross-attn output. Both
+        growing but validation ``no_ip`` delta stays <= 0 => projections are
+        moving in a direction that doesn't help held-out loss.
         """
         del ctx
         if not self._patched:
@@ -857,9 +796,8 @@ class IPAdapterNetwork(AdapterNetworkBase):
             v_norms = torch.stack(
                 [self.to_v_ip[i].weight.float().norm() for i in range(self.num_blocks)]
             )
-            # Signed mean keeps the sign of the gate visible (it can go
-            # negative — nothing in the loss prevents it). Abs-mean/max
-            # tracks how far the gate has opened in either direction.
+            # signed mean keeps the gate's sign visible (it can go negative);
+            # abs-mean/max tracks how far it has opened either direction
             gates = torch.stack([self.ip_gate[i].float() for i in range(self.num_blocks)])
             agg = [
                 k_norms.mean(), k_norms.max(),
@@ -917,11 +855,9 @@ class IPAdapterNetwork(AdapterNetworkBase):
     ):
         del text_encoder_lr
         lr = unet_lr or default_lr
-        # Gate is 28 scalars (one per block). Default to the global LR — Adam's
-        # per-param adaptive rates handle the magnitude difference fine in
-        # most runs. ``gate_lr`` overrides this when the gate moves too slowly
-        # at the global LR (empirically: 8 epochs at lr=1e-4 only opened the
-        # gate to abs_max ~0.004, leaving the IP path largely unused).
+        # gate is 28 scalars; defaults to the global LR (Adam's adaptive rates
+        # usually handle it) but can move too slowly at the global LR, hence
+        # the override.
         gate_lr = self.gate_lr if self.gate_lr is not None else lr
         params = [
             {"params": list(self.resampler.parameters()), "lr": lr},
@@ -944,9 +880,7 @@ class IPAdapterNetwork(AdapterNetworkBase):
     # ------------------------------------------------------------ I/O
 
     def state_dict_for_save(self, dtype):
-        # Drop the frozen PE base — it's loaded fresh from the .pt checkpoint
-        # at create_network_from_weights time. Only the LoRA delta + adapter
-        # state actually need to be persisted.
+        # drop the frozen PE base; it's loaded fresh from the .pt checkpoint
         return {
             k: v.detach().cpu().to(dtype)
             for k, v in self.state_dict().items()
@@ -984,12 +918,9 @@ class IPAdapterNetwork(AdapterNetworkBase):
         else:
             sd = torch.load(file, map_location="cpu")
         missing, unexpected = self.load_state_dict(sd, strict=False)
-        # Force a re-check of ip_centroid on the next encode_ip_tokens call.
-        self._centroid_active = None
-        # PE base params are intentionally absent from the saved state dict
-        # (see state_dict_for_save) — they come from the .pt checkpoint loaded
-        # inside _build_pe_with_lora. Filter them so the warning only flags
-        # real gaps.
+        self._centroid_active = None  # force a re-check on next encode_ip_tokens
+        # PE base params are intentionally absent (see state_dict_for_save);
+        # filter them so the warning only flags real gaps.
         real_missing = [m for m in missing if not m.startswith("_pe_inner.")]
         if real_missing or unexpected:
             logger.warning(
@@ -1007,8 +938,8 @@ def _make_patched_forward(
 ):
     """Build a closure that replaces ``Attention.forward`` for one block's cross-attn.
 
-    Mirrors the original ``Attention.forward`` logic (library/anima/models.py:446)
-    but additionally computes a decoupled SDPA over the cached IP K/V and adds
+    Mirrors the original ``Attention.forward`` logic but additionally
+    computes a decoupled SDPA over the cached IP K/V and adds
     ``scale * ip_attn_out`` to the text attention output before ``output_proj``.
     """
 
@@ -1029,11 +960,9 @@ def _make_patched_forward(
         ip_k = orig_attn._ip_k_cached
         ip_v = orig_attn._ip_v_cached
         if ip_k is not None and ip_v is not None:
-            # q: [B, S, n_h, d_h] from compute_qkv.
-            # ip_k, ip_v: [B_ip, n_h, K, d_h] (SDPA layout, cached post-norm
-            # by set_ip_tokens). Broadcast B_ip=1 -> B (free view) for
-            # inference where the same reference image conditions every CFG
-            # branch.
+            # q: [B, S, n_h, d_h]; ip_k/ip_v: [B_ip, n_h, K, d_h] (SDPA layout,
+            # cached by set_ip_tokens). Broadcast B_ip=1 -> B for inference,
+            # where the same reference image conditions every CFG branch.
             B = q.shape[0]
             if ip_k.shape[0] == 1 and B > 1:
                 ip_k = ip_k.expand(B, -1, -1, -1)
@@ -1046,19 +975,15 @@ def _make_patched_forward(
             ip_out = F.scaled_dot_product_attention(q_sdpa, ip_k, ip_v)
             # Back to [B, S, n_h*d_h] to match text_result's flattened layout.
             ip_out = ip_out.transpose(1, 2).reshape(text_result.shape)
-            # Per-block 0-init learned gate, pre-multiplied by effective scale
-            # and pre-cast to ip_out dtype in set_ip_tokens. Tensor still
-            # carries grad back to ip_gate at training time. At step 0 this
-            # is exactly zero ⇒ IP path contributes nothing regardless of
-            # K/V weight magnitudes.
+            # per-block 0-init gate, pre-multiplied by effective scale and
+            # pre-cast in set_ip_tokens; still carries grad to ip_gate. At
+            # step 0 this is exactly zero regardless of K/V magnitude.
             gate_scale = orig_attn._ip_gate_scale_cached
             ip_contribution = gate_scale * ip_out
             diag_sum = orig_attn._ip_diag_ratio_sum
             if ip_net._diag_enabled and diag_sum is not None:
-                # Detached, on-device scalar update on tensors that live on
-                # ``orig_attn`` itself — read via the captured closure object,
-                # never via ``block_idx`` as a Python int (which would specialize
-                # one compiled graph per block and break recompile_limit).
+                # detached, on-device update via the captured `orig_attn`
+                # object — never a Python-int block_idx (torch.compile trap)
                 with torch.no_grad():
                     ip_norm = ip_contribution.float().norm()
                     txt_norm = text_result.float().norm().clamp_min(1e-12)
@@ -1093,13 +1018,11 @@ class IPAdapterMethodAdapter(MethodAdapter):
         self._vision_bundle: Optional[VisionEncoderBundle] = None
         self._epochs_completed: int = 0
         # Set by the validation-baseline sweep to force ip_tokens=None on the
-        # next prime_for_forward, so the baseline forward measures DiT-only
-        # behavior (no IP path). Restored to False after the baseline forward.
+        # next prime_for_forward (measures DiT-only behavior); restored after.
         self._force_drop_ip_tokens: bool = False
-        # Set by the shuffled_ref validation baseline to source IP tokens from
-        # ``batch["ip_features_shuffled"]`` (an unrelated image) instead of the
-        # matched-distinct reference, isolating identity-specificity. None ⇒
-        # use the primary reference. Restored after the baseline forward.
+        # Set by the shuffled_ref baseline to source IP tokens from
+        # ``batch["ip_features_shuffled"]`` instead of the matched-distinct
+        # reference, isolating identity-specificity. None => primary reference.
         self._ref_override: Optional[str] = None
 
     def on_network_built(self, ctx: SetupCtx) -> None:
@@ -1113,20 +1036,18 @@ class IPAdapterMethodAdapter(MethodAdapter):
             )
         pe_lora = getattr(net, "pe_lora_enabled", False)
         if pe_lora:
-            # PE-LoRA owns the encoder and needs gradient-flowing live encoding.
-            # Pre-cached PE features are frozen-encoder-only; reject the combo.
+            # PE-LoRA needs gradient-flowing live encoding; cached features
+            # can't track a moving encoder.
             if getattr(args, "ip_features_cache_to_disk", False):
                 raise ValueError(
                     "PE-LoRA: ip_features_cache_to_disk=true is incompatible with "
                     "pe_lora_enabled=true (cached features can't track a moving "
                     "encoder). Set ip_features_cache_to_disk=false."
                 )
-            # cache_latents is fine — VAE is frozen and independent of PE.
-            # train.py sets dataset.force_load_images_for_ip=True so the
-            # dataloader still surfaces batch["images"] alongside the cached
-            # latent. Trade-off: cached latents are cropped deterministically,
-            # so subset.random_crop must stay False (the live image reload
-            # uses the same deterministic crop).
+            # cache_latents is fine (VAE is frozen, independent of PE); train.py
+            # sets force_load_images_for_ip so the dataloader also surfaces
+            # batch["images"]. subset.random_crop must stay False so the live
+            # reload matches the cached latent's deterministic crop.
             accelerator.print(
                 f"IP-Adapter + PE-LoRA: encoder owned by network "
                 f"(rank={getattr(net, 'pe_lora_rank', None)}, "
@@ -1136,9 +1057,7 @@ class IPAdapterMethodAdapter(MethodAdapter):
             )
         else:
             cache_features = getattr(args, "ip_features_cache_to_disk", False)
-            # cache_latents=true + live PE is now supported via
-            # force_load_images_for_ip — VAE stays cached, PE runs live, and
-            # the dataset surfaces batch["images"] from a fresh image decode.
+            # cache_latents=true + live PE is supported via force_load_images_for_ip
             if cache_features:
                 accelerator.print(
                     f"IP-Adapter: reading cached vision features "
@@ -1189,8 +1108,7 @@ class IPAdapterMethodAdapter(MethodAdapter):
         )
         cached = batch.get(feature_key) if isinstance(batch, dict) else None
         if self._ref_override == "shuffled" and cached is None:
-            # No shuffled reference available for this val item (e.g. self-only
-            # target) — drop IP so the baseline still runs cleanly.
+            # no shuffled reference for this val item; drop IP so the baseline still runs
             network.set_ip_tokens(None)
             return
         if pe_lora:
@@ -1200,8 +1118,7 @@ class IPAdapterMethodAdapter(MethodAdapter):
                     "PE-LoRA expected batch['images'] but got None — set "
                     "cache_latents=false in the IP-Adapter config."
                 )
-            # No torch.no_grad: gradient flows through PE-LoRA. Base PE params
-            # are frozen via prepare_grad_etc; only the LoRA params accumulate.
+            # no torch.no_grad: gradient flows through PE-LoRA (base PE frozen)
             ip_features = network.encode_images(images.to(accelerator.device)).to(
                 ctx.weight_dtype
             )
@@ -1229,27 +1146,20 @@ class IPAdapterMethodAdapter(MethodAdapter):
                 ip_features = torch.stack(feats_list, dim=0).to(
                     ctx.weight_dtype
                 )  # [B, T_pe, d_enc]
-        # Resampler runs in network-param dtype (bf16 typically); gradient
-        # flows from here.
         ip_tokens = network.encode_ip_tokens(ip_features)
         network.set_ip_tokens(ip_tokens)
 
     def validation_baselines(self) -> list[ValidationBaseline]:
-        # Under distinct-pair training the validation primary forward uses the
-        # *matched_distinct* reference (a held-out different image of the
-        # target's identity — the deployment condition; the val dataset
-        # populates ``batch["ip_features"]`` with it). Two baselines isolate
-        # what the IP path contributes, both relative to that primary:
-        #
-        #   no_ip       — ip_tokens=None. delta>0 ⇒ the IP path helps at all.
-        #   shuffled_ref— reference swapped for an unrelated image. delta>0 ⇒
-        #                 the help is *identity-specific*, not "any image".
-        #
-        # Phase-1 gate: matched_distinct beats both ⇒ both deltas positive.
-        # (Self-paired training could never show the shuffled_ref contrast.)
-        # NB: FM-MSE deltas are necessary-not-sufficient on Anima
-        # (project_fm_val_loss_uninformative) — confirm with the CMMD/exp-test-ip
-        # ladder before trusting a win.
+        # Validation primary forward uses the matched_distinct reference (a
+        # held-out different image of the target's identity — the deployment
+        # condition). Two baselines isolate what the IP path contributes,
+        # both relative to that primary:
+        #   no_ip        — ip_tokens=None. delta>0 => the IP path helps at all.
+        #   shuffled_ref — reference swapped for an unrelated image. delta>0
+        #                  => the help is identity-specific, not "any image".
+        # Phase-1 gate: matched_distinct beats both (both deltas positive).
+        # NB: FM-MSE deltas are necessary-not-sufficient on Anima — confirm
+        # with the CMMD/exp-test-ip ladder before trusting a win.
         def _no_ip_enter() -> None:
             self._force_drop_ip_tokens = True
 
@@ -1270,16 +1180,12 @@ class IPAdapterMethodAdapter(MethodAdapter):
         ]
 
     def on_epoch_end(self, ctx: StepCtx) -> None:
-        # Dump per-block param norms + ‖ip_out‖/‖text_result‖ ratio averaged
-        # over the just-finished epoch, then reset. Main process only — the
-        # caller already gates on is_main_process.
+        # dump per-block norms + ip/text ratio for the finished epoch, then reset
         net = ctx.accelerator.unwrap_model(ctx.network)
         if hasattr(net, "diagnostic_summary"):
             net.diagnostic_summary(reset=True, log=True)
-        # Diagnostics add 56 fp32 norm reductions per step (2 per block × 28
-        # blocks). Keep them on only for the warm-up window — once we've
-        # confirmed the IP path is contributing, the per-block norms become
-        # pure overhead on the forward critical path.
+        # diagnostics add 56 fp32 norm reductions per step; keep them on only
+        # for the warm-up window, then drop the overhead
         self._epochs_completed += 1
         diag_epochs = int(getattr(ctx.args, "ip_diagnostics_epochs", 1) or 0)
         if (

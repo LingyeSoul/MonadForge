@@ -264,6 +264,57 @@ def test_provenance_returned():
     assert set(provenance) == set(merged)
 
 
+def test_train_adaln_defaults_on_and_reaches_the_network():
+    """``train_adaln`` is a base.toml default (2026-07-16) that must survive the
+    merge AND be forwarded to the network. It rides the top-level allowlist, not
+    ``network_args``, so a regression in either half silently un-trains adaln.
+    See docs/methods/adaln.md.
+    """
+    from networks import all_network_kwargs
+
+    merged, provenance = load_method_preset("lora", "default", return_provenance=True)
+    assert merged["train_adaln"] is True
+    assert provenance["train_adaln"] == "configs/base.toml"
+    # train.py::resolve_network_kwargs only forwards allowlisted top-level keys.
+    assert {"train_adaln", "adaln_rank", "adaln_alpha"} <= set(all_network_kwargs())
+
+
+def test_preset_gui_metadata_stripped():
+    """``[<preset>.gui]`` display metadata (label/group for the GUI Hardware
+    picker) must never reach the flat argparse merge."""
+    merged = load_method_preset("lora", "low_vram")
+    assert "gui" not in merged
+    for key in ("label", "group", "description", "order"):
+        assert key not in merged
+    # ...while the preset's real knobs still land.
+    assert merged["gradient_checkpointing"] is True
+    assert merged["unsloth_offload_checkpointing"] is True
+
+
+def test_hardware_preset_composes_with_gui_variant():
+    """The GUI's Hardware picker composes presets.toml[low_vram] with a clean
+    gui-methods variant (replaces the retired per-variant ``-8gb`` copies).
+    Regression guard: a variant file pinning the hardware keys would silently
+    defeat the preset (method wins over preset in the merge)."""
+    import toml as _toml
+
+    gui_dir = Path(__file__).resolve().parent.parent / "configs" / "gui-methods"
+    hw_keys = ("gradient_checkpointing", "unsloth_offload_checkpointing")
+    for path in sorted(gui_dir.glob("*.toml")):
+        # Named legacy low-memory variants remain explicit hardware profiles.
+        if path.stem.endswith("-8gb") or path.stem == "lora-convrot-vram":
+            continue
+        data = _toml.loads(path.read_text(encoding="utf-8"))
+        for key in hw_keys:
+            assert key not in data, (
+                f"{path.name} pins {key}, which would defeat the Hardware "
+                "preset picker (method wins over preset in the merge)"
+            )
+    merged = load_method_preset("lora", "low_vram", methods_subdir="gui-methods")
+    assert merged["gradient_checkpointing"] is True
+    assert merged["unsloth_offload_checkpointing"] is True
+
+
 def _reparse_without_comments(text: str) -> dict:
     # toml.loads ignores comments natively, but our output has `# --- from ... ---`
     # headers that are valid TOML comments, so it round-trips directly.

@@ -1,0 +1,10 @@
+# Search-scope exclusions (ripgrep/fd honor this; git does NOT); tracked files
+# stay committable — they are just noise in code search.
+#
+# Rules live in per-directory .ignore files, not here: ripgrep applies a rule
+# with a path in it (anchored, `a/b`, `**/a/*.png`, `!` re-includes) from this
+# root file only when the search starts at the repo root — from a subdirectory
+# it leaks or over-hides. Only bare-basename rules work from here. Current ones:
+#   docs/{findings,experimental}/assets/.ignore   figure PNGs
+#   library/anima/assets/.ignore                  the uncond TE safetensors
+#   project/finished/<line>/.ignore               finished lines' record material

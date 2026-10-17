@@ -64,6 +64,18 @@ except ImportError:
     sageattn_varlen = None
     sageattn = None
 
+# Deterministic flash-attn backward (--deterministic): the dK/dV atomic-add
+# reduction order is the one un-seedable noise source in training. GOTCHA:
+# read at trace time under compile, so it must be set BEFORE the first
+# forward (train.py setup does).
+_deterministic = False
+
+
+def set_deterministic(value: bool) -> None:
+    global _deterministic
+    _deterministic = bool(value)
+
+
 try:
     from torch.nn.attention.flex_attention import create_block_mask
     from torch.nn.attention.flex_attention import flex_attention as _flex_attention
@@ -162,11 +174,11 @@ class AttentionParams:
         if attention_mask is None:
             return AttentionParams(attn_mode, None, None, None, None, None)
         else:
-            # Note: attention_mask is only for text tokens, not including image tokens
+            # attention_mask is only for text tokens, not including image tokens
             seqlens = attention_mask.sum(dim=1).to(torch.int32) + img_len  # [B]
             max_seqlen = attention_mask.shape[1] + img_len
 
-            # Convert attention mask to cumulative sequence lengths for flash attention
+            # Cumulative sequence lengths for flash attention
             batch_size = attention_mask.shape[0]
             cu_seqlens = torch.zeros(
                 [2 * batch_size + 1], dtype=torch.int32, device=attention_mask.device
@@ -207,21 +219,10 @@ def dispatch_attention(
     attn_params: Optional[AttentionParams] = None,
     drop_rate: float = 0.0,
 ) -> torch.Tensor:
-    """
-    Compute scaled dot-product attention with variable sequence lengths.
+    """Scaled dot-product attention, routed to the active backend.
 
-    Handles batches with different sequence lengths by splitting and
-    processing each sequence individually.
-
-    Args:
-        qkv_or_q: Query tensor [B, L, H, D]. or list of such tensors.
-        k: Key tensor [B, L, H, D].
-        v: Value tensor [B, L, H, D].
-        attn_params: Attention parameters including mask and sequence lengths.
-        drop_rate: Attention dropout rate.
-
-    Returns:
-        Attention output tensor [B, L, H*D].
+    ``qkv_or_q``/``k``/``v`` are ``[B, L, H, D]`` (or ``qkv_or_q`` a list of
+    such tensors). Returns ``[B, L, H*D]``.
     """
     if isinstance(qkv_or_q, list):
         q, k, v = qkv_or_q
@@ -237,7 +238,7 @@ def dispatch_attention(
     if attn_params is None:
         attn_params = AttentionParams.create_attention_params("torch")
 
-    # Flex attention: early return using BlockMask for variable-length handling (compile-friendly)
+    # Flex attention: early return using BlockMask for variable-length handling
     if attn_params.attn_mode == "flex":
         q = q.transpose(1, 2)  # [B, H, L, D]
         k = k.transpose(1, 2)
@@ -281,7 +282,7 @@ def dispatch_attention(
         x = x.flatten(2)  # [B, L, H*D]
         return x
 
-    # If attention mask is provided and all sequence lengths are the same, we can trim the sequence
+    # If mask is provided and all sequence lengths are the same, trim the sequence
     seqlen_trimmed = False
     if attn_params.attention_mask is not None and attn_params.seqlens is not None:
         if attn_params.uniform_seqlens or torch.all(
@@ -377,7 +378,9 @@ def dispatch_attention(
 
     elif attn_params.attn_mode == "flash":
         if attn_params.cu_seqlens is None:  # all tokens are valid
-            x = flash_attn_func(q, k, v, drop_rate, softmax_scale=scale)  # B, L, H, D
+            x = flash_attn_func(
+                q, k, v, drop_rate, softmax_scale=scale, deterministic=_deterministic
+            )  # B, L, H, D
             del q, k, v
         else:
             # Reshape to [(bxs), a, d]
@@ -397,6 +400,7 @@ def dispatch_attention(
                 attn_params.max_seqlen,
                 drop_rate,
                 softmax_scale=scale,
+                deterministic=_deterministic,
             )
             del q, k, v
 
@@ -440,24 +444,16 @@ def attention_with_lse(
     ``[B, H, S_q, S_t+S_c]`` attention matrix that the masked-SDPA path falls
     into when a per-key bias forces dispatch to the math kernel.
 
-    Args:
-        q, k, v: BLHD tensors. K_q and K_kv may differ.
-        attn_mode: only ``"flash"`` (FA2) is supported. Other backends raise
-            ``NotImplementedError``; callers should fall back to the masked
-            path.
-        softmax_scale: 1/sqrt(d) by default.
-        drop_rate: attention dropout (typically 0).
+    ``q, k, v`` are BLHD tensors (K_q/K_kv may differ). ``attn_mode`` only
+    supports ``"flash"`` (FA2) — other backends raise ``NotImplementedError``;
+    callers should fall back to the masked path. Returns
+    ``out [B,S_q,H,D]`` (same dtype as q) and ``lse [B,H,S_q]`` (fp32).
 
-    Returns:
-        out: ``[B, S_q, H, D]``, same dtype as ``q``.
-        lse: ``[B, H, S_q]`` log-sum-exp of scaled QK^T over keys, fp32.
-
-    Caveat: FA2's standard ``FlashAttnFunc.backward`` does NOT propagate
-    gradient through the returned ``lse`` (the upstream gradient on ``lse``
-    is silently dropped — see flash_attn 2.x source). Callers that need
+    GOTCHA: FA2's standard ``FlashAttnFunc.backward`` does NOT propagate
+    gradient through the returned ``lse`` (silently dropped). Callers needing
     correct gradients through ``lse`` must use a custom
-    ``torch.autograd.Function`` that calls FA's lower-level ops directly —
-    see ``networks/methods/easycontrol.py:_ExtendedSelfAttnLSEFunc``.
+    ``torch.autograd.Function`` calling FA's lower-level ops directly — see
+    ``networks/methods/easycontrol.py:_ExtendedSelfAttnLSEFunc``.
     """
     if attn_mode != "flash" or flash_attn_func is None:
         raise NotImplementedError(

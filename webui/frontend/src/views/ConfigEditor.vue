@@ -3,7 +3,7 @@
     <header class="workspace-heading">
       <div>
         <h1>{{ t('cfgWorkspaceTitle') }}</h1>
-        <p>{{ t('cfgWorkspaceMeta') }}</p>
+        <p>{{ workspace.family === 'anima' ? t('cfgWorkspaceMeta') : `${qwen.label} / ${t('qwTrainingParameters')}` }}</p>
       </div>
       <span v-if="workspaceDirty" class="config-dirty" role="status">
         <v-icon icon="mdi-circle-small" size="20" />{{ t('cfgPendingChanges') }}
@@ -11,6 +11,7 @@
     </header>
     <div class="config-toolbar">
       <v-select :model-value="workspace.family" :items="modelItems" :label="t('qwBaseModel')" density="compact" variant="outlined" hide-details data-testid="config-model-family" :disabled="trainingLaunching || qwen.busy || continuation.active" @update:model-value="requestModelChange" />
+      <RuntimeSelector :disabled="trainingLaunching || qwen.busy || continuation.active || taskStore.loading" />
       <template v-if="workspace.family === 'anima'">
       <div class="config-toolbar__method">
         <v-select
@@ -149,12 +150,12 @@
       </div>
       </template>
       <template v-else>
-        <v-text-field model-value="LoRA" :label="t('cfgMethod')" readonly variant="outlined" density="compact" hide-details />
+        <v-text-field :model-value="String(qwen.draft?.train.algo || 'LoRA').toUpperCase()" :label="t('cfgMethod')" readonly variant="outlined" density="compact" hide-details />
         <div class="config-toolbar__variant">
           <v-select :model-value="qwen.profile" :items="qwen.profiles" :label="t('qwProfile')" :disabled="qwen.busy" hide-details density="compact" variant="outlined" data-testid="qwen-profile-select" @update:model-value="requestProfileChange" />
           <v-btn data-testid="qwen-profile-new" icon="mdi-plus" variant="text" size="small" :aria-label="t('qwNewProfile')" :disabled="!qwen.draft || qwen.busy" @click="profileDialog = true" />
         </div>
-        <v-text-field :model-value="t('qwAutomaticHardware')" :label="t('cfgPreset')" readonly density="compact" variant="outlined" hide-details />
+        <v-text-field :model-value="qwen.family === 'moss' ? mossText(appStore.language, 'hardware') : t('qwAutomaticHardware')" :label="t('cfgPreset')" readonly density="compact" variant="outlined" hide-details />
         <div class="config-toolbar__actions">
           <v-btn data-testid="qwen-profile-save" icon="mdi-content-save-outline" variant="text" :aria-label="t('cfgSave')" :disabled="!qwen.dirty || qwen.busy" @click="qwen.perform(qwen.save)" />
           <v-btn data-testid="qwen-profile-reload" icon="mdi-refresh" variant="text" :aria-label="t('cfgReload')" :disabled="!qwen.draft || qwen.busy" @click="requestProfileChange(qwen.profile)" />
@@ -163,7 +164,7 @@
         </div>
       </template>
     </div>
-    <QwenConfigFields v-if="workspace.family === 'qwen21'" />
+    <QwenConfigFields v-if="workspace.family !== 'anima'" :key="workspace.family" />
     <template v-else>
     <!-- WandB Tracking Panel -->
     <v-expansion-panels v-if="selectedVariant" v-model="wandbPanel" class="mb-4 config-tracking" variant="accordion">
@@ -600,7 +601,7 @@ decompose_both = false</pre>
       </v-card>
     </v-dialog>
     <v-dialog v-model="qwenCacheDialog" max-width="540">
-      <v-card :title="t('qwCacheNotReady')">
+      <v-card :title="qwen.family === 'moss' ? mossText(appStore.language, 'cacheNotReady') : t('qwCacheNotReady')">
         <v-card-text>{{ t('qwenChainHint', { path: String(qwen.draft?.cache.out ?? '') }) }}<pre class="text-caption" style="white-space: pre-wrap">{{ cacheProblem }}</pre></v-card-text>
         <v-alert v-if="qwen.error" type="error" variant="tonal">{{ qwen.error }}</v-alert>
         <v-card-actions class="flex-wrap"><v-btn @click="qwenCacheDialog = false">{{ t('dsCancel') }}</v-btn><v-btn to="/preprocess">{{ t('navPreprocess') }}</v-btn><v-spacer /><v-btn data-testid="qwen-cache-then-train" color="primary" :loading="qwen.busy" @click="chainQwenTraining">{{ t('qwenChain') }}</v-btn></v-card-actions>
@@ -613,8 +614,10 @@ decompose_both = false</pre>
 import { ref, reactive, computed, nextTick, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useModelWorkspace, type ModelFamily } from '../stores/modelWorkspace'
-import { useQwenWorkspace } from '../stores/qwenWorkspace'
+import { useActiveModelWorkspace, useQwenWorkspace, useMossWorkspace } from '../stores/qwenWorkspace'
+import { mossText } from '../i18n/modelWorkspace'
 import QwenConfigFields from '../components/QwenConfigFields.vue'
+import RuntimeSelector from '../components/RuntimeSelector.vue'
 import { useConfigStore } from '../stores/config'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
@@ -628,24 +631,25 @@ import { matchesConfigSearch } from '../utils/configSearch'
 import { useTrainingContinuation, type ContinuationCandidate } from '../composables/useTrainingContinuation'
 
 const workspace = useModelWorkspace()
-const qwen = useQwenWorkspace()
+const qwen = useActiveModelWorkspace()
+const lineWorkspaces = { qwen21: useQwenWorkspace(), moss: useMossWorkspace() }
 const router = useRouter()
 const route = useRoute()
-const modelItems = [{ title: 'Anima', value: 'anima' }, { title: 'Qwen-Image 2.1', value: 'qwen21' }]
+const modelItems = [{ title: 'Anima', value: 'anima' }, { title: 'Qwen-Image 2.1', value: 'qwen21' }, { title: 'MOSS', value: 'moss' }]
 const workspaceError = ref('')
 const switching = ref(false)
 type WorkspaceChange = { kind: 'model'; family: ModelFamily } | { kind: 'profile'; name: string }
 const pendingChange = ref<WorkspaceChange | null>(null)
-const workspaceDirty = computed(() => workspace.family === 'qwen21' ? qwen.dirty : configStore.dirty || !!extraArgs.value)
+const workspaceDirty = computed(() => workspace.family !== 'anima' ? qwen.value.dirty : configStore.dirty || !!extraArgs.value)
 const profileDialog = ref(false)
 const profileName = ref('')
 const qwenCacheDialog = ref(false)
 const cacheProblem = ref('')
 
 async function applyWorkspaceChange(change: WorkspaceChange): Promise<void> {
-  if (change.kind === 'profile') await qwen.loadProfile(change.name)
+  if (change.kind === 'profile') await qwen.value.loadProfile(change.name)
   else {
-    if (change.family === 'qwen21') await qwen.ensureLoaded()
+    if (change.family !== 'anima') await lineWorkspaces[change.family].ensureLoaded()
     workspace.select(change.family)
   }
   pendingChange.value = null
@@ -653,10 +657,11 @@ async function applyWorkspaceChange(change: WorkspaceChange): Promise<void> {
 async function requestWorkspaceChange(change: WorkspaceChange): Promise<void> {
   workspaceError.value = ''
   if (workspaceDirty.value) { pendingChange.value = change; return }
-  qwen.busy = true // guard the profile/model selects while the switch is in flight
+  const switchingFrom = qwen.value
+  switchingFrom.busy = true // guard the profile/model selects while the switch is in flight
   try { await applyWorkspaceChange(change) }
   catch (err) { workspaceError.value = err instanceof Error ? err.message : String(err) }
-  finally { qwen.busy = false }
+  finally { switchingFrom.busy = false }
 }
 async function requestModelChange(family: ModelFamily): Promise<void> {
   if (family !== workspace.family) await requestWorkspaceChange({ kind: 'model', family })
@@ -668,7 +673,7 @@ async function discardWorkspaceChange(): Promise<void> {
   if (!pendingChange.value) return
   switching.value = true
   try {
-    if (workspace.family === 'qwen21') qwen.discard()
+    if (workspace.family !== 'anima') qwen.value.discard()
     else { extraArgs.value = ''; await loadConfig() }
     await applyWorkspaceChange(pendingChange.value)
   } catch (err) { workspaceError.value = err instanceof Error ? err.message : String(err) }
@@ -678,7 +683,7 @@ async function saveWorkspaceChange(): Promise<void> {
   if (!pendingChange.value) return
   switching.value = true
   try {
-    if (workspace.family === 'qwen21') await qwen.save()
+    if (workspace.family !== 'anima') await qwen.value.save()
     else {
       await onSave()
       if (configStore.dirty || extraArgs.value) throw new Error(configStore.error || t('qwSaveRequired'))
@@ -688,12 +693,12 @@ async function saveWorkspaceChange(): Promise<void> {
   finally { switching.value = false }
 }
 async function createQwenProfile(): Promise<void> {
-  await qwen.perform(async () => {
-    const previous = qwen.profile
-    const previousSaved = qwen.saved
-    qwen.createProfile(profileName.value)
-    try { await qwen.save() }
-    catch (err) { qwen.profile = previous; qwen.saved = previousSaved; throw err }
+  await qwen.value.perform(async () => {
+    const previous = qwen.value.profile
+    const previousSaved = qwen.value.saved
+    qwen.value.createProfile(profileName.value)
+    try { await qwen.value.save() }
+    catch (err) { qwen.value.profile = previous; qwen.value.saved = previousSaved; throw err }
     profileDialog.value = false
     profileName.value = ''
   })
@@ -703,26 +708,26 @@ async function openQwenTask(taskId: string): Promise<void> {
   await router.push({ path: '/tasks', query: { task: taskId } })
 }
 async function startQwenTraining(): Promise<void> {
-  await qwen.perform(async () => {
-    if (qwen.dirty) await qwen.save()
-    const status = await qwen.preflight()
+  await qwen.value.perform(async () => {
+    if (qwen.value.dirty) await qwen.value.save()
+    const status = await qwen.value.preflight()
     if (!status.ready) {
       cacheProblem.value = [status.directory, ...status.errors, t('qwCacheSummary', { pairs: status.pairs, text: status.missing_text, latents: status.missing_latents })].join('\n')
       qwenCacheDialog.value = true
       return
     }
-    await openQwenTask(await qwen.submit('train', {}))
+    await openQwenTask(await qwen.value.submit('train', {}))
   })
 }
 async function startQwenTest(): Promise<void> {
-  await qwen.perform(async () => {
-    if (qwen.dirty) await qwen.save()
-    await openQwenTask(await qwen.submit('generate', {}))
+  await qwen.value.perform(async () => {
+    if (qwen.value.dirty) await qwen.value.save()
+    await openQwenTask(await qwen.value.submit('generate', {}))
   })
 }
 async function chainQwenTraining(): Promise<void> {
-  await qwen.perform(async () => {
-    const id = await qwen.chain()
+  await qwen.value.perform(async () => {
+    const id = await qwen.value.chain()
     qwenCacheDialog.value = false
     await openQwenTask(id)
   })
@@ -1102,8 +1107,8 @@ async function onFieldHelp(key: string, origin: string) {
 }
 
 onMounted(async () => {
-  if (route.query.model === 'qwen21') await requestModelChange('qwen21')
-  if (workspace.family === 'qwen21') await qwen.perform(qwen.ensureLoaded)
+  if (route.query.model === 'qwen21' || route.query.model === 'moss') await requestModelChange(route.query.model)
+  if (workspace.family !== 'anima') await qwen.value.perform(qwen.value.ensureLoaded)
   await Promise.all([
     configStore.fetchMethods(),
     configStore.fetchPresets(),

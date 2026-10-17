@@ -32,8 +32,9 @@ def test_band_family_counts():
         assert n == expected_families[edge], (edge, lo, hi)
 
 
-def test_1024_band_frozen_for_dcw():
-    # The 1024 tier stays at its natural (4032, 4200) — DCW calibration keys off it.
+def test_1024_band_frozen():
+    # The 1024 tier stays at its natural (4032, 4200) — the frozen top-5 aspect
+    # set (DCW_ASPECT_BUCKETS, consumed by CNS/mod-distill) is drawn from it.
     assert EDGE_TOKEN_BANDS[1024] == (4032, 4200)
 
 

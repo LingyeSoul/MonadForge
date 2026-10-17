@@ -421,7 +421,7 @@ def create_network(
         network._repa_grad_heatmap = float(kwargs.get("repa_grad_heatmap", 0) or 0)
         # REPA-DoG target band-pass (_archive/proposals/repa_dog_target.md): when on
         # replaces the spatial_norm block in relational target preprocess (no head).
-        network._repa_target_dog = _as_bool(kwargs.get("repa_target_dog"))
+        network._repa_target_dog = _as_bool(kwargs.get("repa_target_dog"), default=True)
         network._repa_dog_sigma1_div = float(
             kwargs.get("repa_dog_sigma1_div", 16.0) or 16.0
         )
@@ -663,6 +663,21 @@ def create_network_from_weights(
     # split q/k/v first so the attention refuser + detection loop see fused
     # runtime keys. Chimera dual-A files have their own per-pool ups
     # (.lora_ups_{c,f}.{i}) handled by a separate stack/refuse pair.
+    # ComfyUI-native adaln LoRAs carry keys in the comfy layout
+    # (adaln_modulation_{br}_2); rename to runtime names (adaln_up_{br}) so
+    # create_modules attaches them. Presence-gated. See adaln.md.
+    from networks.lora_utils import (
+        has_comfy_adaln_keys,
+        relayout_adaln_comfy_to_runtime,
+    )
+
+    if has_comfy_adaln_keys(weights_sd):
+        weights_sd = relayout_adaln_comfy_to_runtime(weights_sd)
+        logger.info(
+            "Renamed ComfyUI-layout adaln LoRA keys to in-repo runtime names "
+            "(adaln_modulation_{br}_2 → adaln_up_{br}) for loading."
+        )
+
     weights_sd = _stack_lora_ups(weights_sd)
     weights_sd = _stack_chimera_lora_ups(weights_sd)
     weights_sd = _refuse_split_stacked_experts_keys(weights_sd)

@@ -11,6 +11,13 @@ def clean_memory():
     torch.cuda.empty_cache()
 
 
+def free_vram_gb(device: int = 0) -> float:
+    """``mem_get_info`` free bytes in GiB (the allocator's reserve and other
+    processes included, unlike ``total - max_allocated``)."""
+    free, _total = torch.cuda.mem_get_info(device)
+    return free / 1024**3
+
+
 def clean_memory_on_device(device: Optional[Union[str, torch.device]]):
     r"""
     Clean memory on the specified device, will be called from training scripts.

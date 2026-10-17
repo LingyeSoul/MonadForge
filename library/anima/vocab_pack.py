@@ -1,0 +1,495 @@
+"""CJK vocab pack as a first-class text-encoder asset.
+
+A vocab pack is **not a LoRA**: it is a table of extra T5-side embedding rows
+(``ext_embed [rows, 1024]``, ids ``>= T5_TABLE_SIZE``) plus a JSON sidecar
+carrying the segmentation / row maps (``library.anima.ext_vocab`` owns the
+primitives). Applying it patches two places, both owned by this module and
+shared by the trainer, the preprocess TE cache, the inference CLI and the
+embedder API:
+
+1. **Tokenizer** — :class:`VocabPackTokenizeStrategy` re-routes the T5 id
+   stream of any prompt that carries a routed character through
+   :class:`~library.anima.ext_vocab.HybridT5Encoder`. Prompts with no routed
+   character take the stock path untouched, so pure-English captions and
+   prompts are bit-identical with or without the pack.
+2. **Embedding table** — :func:`attach_vocab_pack` hooks ``llm_adapter.embed``
+   so ext ids resolve to pack rows. It is a hook pair (clamp pre-hook +
+   row-substitution forward hook), not a widened ``nn.Embedding``: the module's state dict stays at
+   the stock 32128 rows, so ``make merge`` / checkpoint saves / ``ss_``
+   metadata are unaffected and the pack composes with any DiT or LoRA.
+
+The active pack is selected by the ``vocab_pack`` config key (``configs/
+base.toml`` ships the CJK pack enabled since v2; empty = off), ``--vocab_pack``
+on ``train.py`` / ``inference.py`` / ``cache_text_embeddings.py``, or
+``ANIMA_VOCAB_PACK``. When the configured prefix is the shipped default and the
+pair is not on disk, :func:`resolve_pack_prefix` fetches it through the catalog
+row before loading (a custom path still raises).
+Packs are loaded once per process (:func:`load_vocab_pack` memoises by
+resolved prefix) because the strategy and the DiT loader both need it.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional, Union
+
+import torch
+
+from library.anima import ext_vocab
+from library.anima.ext_vocab import T5_TABLE_SIZE, HybridT5Encoder
+from library.anima.strategy import AnimaTokenizeStrategy
+from library.env import resolve_under_home
+
+from library import downloads as _DL
+
+logger = logging.getLogger(__name__)
+
+#: Public test release of the CJK pack (JA / KO / ZH tag rows + symbol block).
+#: Repo, stem and destination are the catalog's (``library/downloads.py``) so
+#: the ``vocab_pack`` row's Download button and this loader cannot disagree.
+PACK_REPO = _DL.VOCAB_PACK_REPO
+PACK_STEM = _DL.VOCAB_PACK_STEM
+#: Where ``make download-models`` lands the pack (path prefix, no suffix) — the
+#: ``vocab_pack`` value ``configs/base.toml`` ships.
+DEFAULT_PACK_DIR = f"models/{_DL.VOCAB_PACK_DIR}"
+DEFAULT_PACK_PREFIX = f"{DEFAULT_PACK_DIR}/{PACK_STEM}"
+
+_PACK_SUFFIXES = (".safetensors", ".json")
+
+# safetensors metadata keys stamped into TE caches encoded through a pack.
+CACHE_META_NAME = "vocab_pack"
+CACHE_META_SHA = "vocab_pack_sha"
+
+# A merged checkpoint is a DiT file carrying a pack (`merge_pack_into_dit`; the
+# ComfyUI ``AnimaMergedLoader`` reads it — keep both sides' names in step): the
+# pack's raw ``ext_embed`` under ``<prefix>llm_adapter.ext_embed.weight`` beside
+# the stock 32128-row ``llm_adapter.embed``, its JSON sidecar verbatim under
+# MERGED_META_MAPPING. A stock loader sees one unexpected key and loads plain
+# Anima.
+MERGED_EXT_SUFFIX = "llm_adapter.ext_embed.weight"
+MERGED_META_MAPPING = "ss_ext_pack_mapping"
+
+
+def resolve_pack_prefix(path: Union[str, Path, None]) -> Optional[Path]:
+    """Path prefix of the ``.safetensors`` + ``.json`` pair, or ``None`` when off.
+
+    Accepts the bare prefix, either file of the pair, or a directory holding
+    exactly one pack. Repo-relative paths anchor on :func:`anima_home`. Raises
+    ``FileNotFoundError`` (with the download hint) when either half is missing —
+    a half-installed pack must never silently degrade to the stock tokenizer.
+    """
+    if path is None:
+        return None
+    raw = str(path).strip()
+    if not raw:
+        return None
+    p = resolve_under_home(raw)
+    if p.is_dir():
+        candidates = sorted(p.glob("*.safetensors"))
+        candidates = [c for c in candidates if c.with_suffix(".json").exists()]
+        if len(candidates) != 1:
+            raise FileNotFoundError(
+                f"vocab pack dir {p} must hold exactly one .safetensors/.json pair "
+                f"(found {len(candidates)}); point vocab_pack at the file prefix."
+            )
+        p = candidates[0]
+    if p.suffix in _PACK_SUFFIXES:
+        p = p.with_suffix("")
+    missing = _missing_halves(p)
+    if missing and _is_shipped_default(p):
+        _fetch_shipped_pack(p, missing)
+        missing = _missing_halves(p)
+    if missing:
+        raise FileNotFoundError(_missing_message(p, missing))
+    return p
+
+
+def _missing_halves(prefix: Path) -> list[str]:
+    return [s for s in _PACK_SUFFIXES if not prefix.with_suffix(s).exists()]
+
+
+def _missing_message(prefix: Path, missing: list[str]) -> str:
+    return (
+        f"vocab pack {prefix} is missing {', '.join(missing)}. Fetch the shipped "
+        f"pack with `make download-vocab-pack` (→ {DEFAULT_PACK_PREFIX}) or "
+        "point vocab_pack at a local build's path prefix."
+    )
+
+
+def _is_shipped_default(prefix: Path) -> bool:
+    """Is ``prefix`` the pack ``configs/base.toml`` ships enabled?"""
+    try:
+        return prefix.resolve() == _DL.default_vocab_pack_prefix().resolve()
+    except OSError:
+        return False
+
+
+def _fetch_shipped_pack(prefix: Path, missing: list[str]) -> None:
+    """Install the shipped pack through the catalog row, once, on first use.
+
+    ``configs/base.toml`` enables the pack by default and ``make update``
+    overwrites base.toml, so a checkout that skipped ``make download-models``
+    would otherwise hit ``FileNotFoundError`` at the first train / inference /
+    node load. Only the *shipped default* is fetched: a custom ``vocab_pack``
+    path still raises. Any failure re-raises the original missing-pack error
+    with the download hint.
+    """
+    print(
+        f"vocab pack {prefix.name}: {', '.join(missing)} not installed — fetching "
+        f"the shipped pack ({_DL.VOCAB_PACK_REPO}) into {prefix.parent}",
+        flush=True,
+    )
+    try:
+        _DL.fetch(_DL.by_id()["vocab_pack"])
+    except Exception as exc:  # noqa: BLE001 — surfaced as the original error
+        raise FileNotFoundError(
+            f"{_missing_message(prefix, missing)} (auto-fetch failed: "
+            f"{type(exc).__name__}: {exc})"
+        ) from exc
+
+
+@dataclass
+class VocabPack:
+    """A loaded pack: the row table, its JSON mapping and a stable identity."""
+
+    prefix: Path
+    table: torch.Tensor
+    mapping: dict = field(repr=False)
+    digest: str
+
+    @property
+    def name(self) -> str:
+        return self.prefix.name
+
+    @property
+    def rows(self) -> int:
+        return int(self.table.shape[0])
+
+    @property
+    def training(self) -> dict:
+        """The pack builder's training label (empty for hand-built packs)."""
+        t = self.mapping.get("training")
+        return dict(t) if isinstance(t, dict) else {}
+
+    def cache_metadata(self) -> dict[str, str]:
+        return {CACHE_META_NAME: self.name, CACHE_META_SHA: self.digest}
+
+    def build_encoder(self, t5_tokenizer, qwen3_tokenizer) -> HybridT5Encoder:
+        """``ANIMA_VOCAB_GLYPH_ROUTE`` / ``ANIMA_VOCAB_GLYPH_ROUTE_KO`` (``1`` /
+        ``0``) override the pack's ``glyph_route`` / ``glyph_route_ko``
+        (per-glyph routing, :mod:`~library.anima.ext_vocab`)."""
+        return HybridT5Encoder.from_mapping(
+            t5_tokenizer,
+            qwen3_tokenizer,
+            self.mapping,
+            glyph_route_override(),
+            glyph_route_override("ANIMA_VOCAB_GLYPH_ROUTE_KO"),
+        )
+
+    @classmethod
+    def load(cls, prefix: Union[str, Path]) -> "VocabPack":
+        prefix = resolve_pack_prefix(prefix)
+        if prefix is None:
+            raise ValueError("VocabPack.load needs a pack prefix")
+        table, mapping = ext_vocab.load_ext_assets(prefix)
+        digest = ext_vocab.pack_digest(table, mapping)
+        logger.info(
+            "vocab pack %s: %d ext rows (sha %s…)",
+            prefix.name,
+            table.shape[0],
+            digest[:12],
+        )
+        return cls(prefix=prefix, table=table, mapping=mapping, digest=digest)
+
+
+def glyph_route_override(var: str = "ANIMA_VOCAB_GLYPH_ROUTE") -> Optional[bool]:
+    """``var``: ``1`` on, ``0`` off, unset = the pack's."""
+    v = os.environ.get(var, "").strip()
+    return None if not v else v not in ("0", "false", "False")
+
+
+_LOADED: dict[Path, VocabPack] = {}
+
+
+def load_vocab_pack(
+    path: Union[str, Path, VocabPack, None],
+) -> Optional[VocabPack]:
+    """Resolve ``path`` to a loaded pack (memoised per process), ``None`` when off.
+
+    The strategy install and the DiT load both need the pack; loading the
+    ~285 MB table once and sharing it keeps the second call free.
+    """
+    if path is None or isinstance(path, VocabPack):
+        return path
+    prefix = resolve_pack_prefix(path)
+    if prefix is None:
+        return None
+    pack = _LOADED.get(prefix)
+    if pack is None:
+        pack = VocabPack.load(prefix)
+        _LOADED[prefix] = pack
+    return pack
+
+
+def default_vocab_pack() -> str:
+    """The configured pack prefix (``ANIMA_VOCAB_PACK`` > base.toml ``vocab_pack``), or ``""``."""
+    from library.env import default_checkpoints
+
+    return default_checkpoints().vocab_pack
+
+
+def resolve_active_pack(args) -> Optional[VocabPack]:
+    """The pack an argparse namespace selects.
+
+    ``--no_vocab_pack`` wins; then an explicit ``--vocab_pack``; then the
+    config default (``vocab_pack`` in base.toml / ``ANIMA_VOCAB_PACK``). The
+    inference parser leaves ``vocab_pack`` at ``None`` so the config default
+    applies; the training chain fills it from the merged config (``""`` = off).
+    """
+    if getattr(args, "no_vocab_pack", False):
+        return None
+    explicit = getattr(args, "vocab_pack", None)
+    if explicit is None:
+        explicit = default_vocab_pack()
+    return load_vocab_pack(explicit)
+
+
+# --- Patch point 1: the tokenizer -------------------------------------------
+
+
+class VocabPackTokenizeStrategy(AnimaTokenizeStrategy):
+    """The stock dual tokenizer with the T5 stream re-routed through the pack.
+
+    ``super().tokenize`` still produces the Qwen3 ids (the text-encoder side is
+    untouched by the pack) and the stock T5 ids; rows whose text carries a
+    routed character get their T5 ids / mask replaced by the hybrid encoding
+    (eos-terminated, padded to ``t5_max_length`` — the same max-padding the
+    pretrained model expects). Everything else is bit-identical to the parent.
+    """
+
+    def __init__(self, pack: VocabPack, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.pack = pack
+        self.encoder = pack.build_encoder(self.t5_tokenizer, self.qwen3_tokenizer)
+
+    def tokenize(self, text):
+        texts = [text] if isinstance(text, str) else list(text)
+        q_ids, q_mask, t5_ids, t5_mask = super().tokenize(texts)
+        for i, t in enumerate(texts):
+            if self.encoder.routes(t):
+                ids, mask = self.encoder.encode(t, self.t5_max_length)
+                t5_ids[i] = torch.tensor(ids, dtype=t5_ids.dtype)
+                t5_mask[i] = torch.tensor(mask, dtype=t5_mask.dtype)
+        return [q_ids, q_mask, t5_ids, t5_mask]
+
+
+def make_tokenize_strategy(
+    pack: Optional[VocabPack], **kwargs
+) -> AnimaTokenizeStrategy:
+    """``VocabPackTokenizeStrategy`` when a pack is active, else the stock one."""
+    if pack is None:
+        return AnimaTokenizeStrategy(**kwargs)
+    return VocabPackTokenizeStrategy(pack, **kwargs)
+
+
+def strategy_pack(strategy) -> Optional[VocabPack]:
+    """The pack a tokenize strategy carries (``None`` for the stock strategy)."""
+    return getattr(strategy, "pack", None)
+
+
+# --- Patch point 2: the embedding table --------------------------------------
+
+_HOOK_ATTR = "_vocab_pack_hooks"
+_DIGEST_ATTR = "_vocab_pack_digest"
+_ROWS_ATTR = "_vocab_pack_rows"
+
+
+def _embed_module(model_or_adapter) -> torch.nn.Embedding:
+    adapter = getattr(model_or_adapter, "llm_adapter", model_or_adapter)
+    embed = getattr(adapter, "embed", None)
+    if not isinstance(embed, torch.nn.Embedding):
+        raise RuntimeError(
+            "vocab pack needs an Anima DiT (with llm_adapter) or an LLMAdapter — "
+            f"got {type(model_or_adapter).__name__}"
+        )
+    return embed
+
+
+def attached_pack_digest(model_or_adapter) -> Optional[str]:
+    """Digest of the pack hooked onto this model / adapter, ``None`` if none."""
+    try:
+        return getattr(_embed_module(model_or_adapter), _DIGEST_ATTR, None)
+    except RuntimeError:
+        return None
+
+
+def attached_pack_rows(model_or_adapter) -> Optional[int]:
+    """Ext-row count of the pack hooked onto this model / adapter, ``None`` if none."""
+    try:
+        return getattr(_embed_module(model_or_adapter), _ROWS_ATTR, None)
+    except RuntimeError:
+        return None
+
+
+def attach_vocab_pack(model_or_adapter, pack: VocabPack) -> None:
+    """Hook the pack rows onto ``llm_adapter.embed`` (idempotent per pack).
+
+    The pre-hook clamps ext ids to ``<unk>`` so the stock table never sees an
+    out-of-range index, remembers which positions were ext, and the forward
+    hook overwrites those positions with the pack rows. The table stays on CPU
+    in its stored dtype; only the rows a batch actually uses are gathered and
+    moved (a few KB per encode — no resident VRAM cost). Prompts with no ext
+    id pass through with zero overhead beyond the mask test.
+
+    Re-attaching the same pack is a no-op; a different pack replaces the hooks
+    (the previous handles are removed first).
+    """
+    embed = _embed_module(model_or_adapter)
+    if getattr(embed, _DIGEST_ATTR, None) == pack.digest:
+        return
+    detach_vocab_pack(model_or_adapter)
+
+    if embed.weight.shape[0] != T5_TABLE_SIZE:
+        raise RuntimeError(
+            f"llm_adapter.embed has {embed.weight.shape[0]} rows, expected "
+            f"{T5_TABLE_SIZE} — was the table widened by hand?"
+        )
+    table = pack.table
+    unk = ext_vocab.T5_UNK_ID
+    state: dict = {}
+
+    def _clamp_pre_hook(module, args):
+        if not args or not torch.is_tensor(args[0]):
+            state.pop("mask", None)
+            return None
+        ids = args[0]
+        mask = ids >= T5_TABLE_SIZE
+        if not bool(mask.any()):
+            state.pop("mask", None)
+            return None
+        state["mask"] = mask
+        state["ext"] = ids[mask] - T5_TABLE_SIZE
+        return (ids.masked_fill(mask, unk),) + tuple(args[1:])
+
+    def _rows_hook(module, args, output):
+        mask = state.pop("mask", None)
+        if mask is None:
+            return None
+        ext = state.pop("ext")
+        rows = table[ext.to("cpu", torch.long)]
+        out = output.clone()
+        out[mask] = rows.to(device=output.device, dtype=output.dtype)
+        return out
+
+    handles = (
+        embed.register_forward_pre_hook(_clamp_pre_hook),
+        embed.register_forward_hook(_rows_hook),
+    )
+    setattr(embed, _HOOK_ATTR, handles)
+    setattr(embed, _DIGEST_ATTR, pack.digest)
+    setattr(embed, _ROWS_ATTR, int(table.shape[0]))
+    logger.info(
+        "vocab pack %s: %d ext rows hooked onto llm_adapter.embed", pack.name, pack.rows
+    )
+
+
+def detach_vocab_pack(model_or_adapter) -> None:
+    """Remove the hook pair (no-op when nothing is attached)."""
+    embed = _embed_module(model_or_adapter)
+    for h in getattr(embed, _HOOK_ATTR, ()) or ():
+        h.remove()
+    if hasattr(embed, _HOOK_ATTR):
+        delattr(embed, _HOOK_ATTR)
+    if hasattr(embed, _DIGEST_ATTR):
+        delattr(embed, _DIGEST_ATTR)
+    if hasattr(embed, _ROWS_ATTR):
+        delattr(embed, _ROWS_ATTR)
+
+
+# --- Merged checkpoints (DiT + pack in one file) -----------------------------
+
+
+def merge_pack_into_dit(
+    dit_path: Union[str, Path],
+    pack_prefix: Union[str, Path],
+    out_path: Union[str, Path],
+) -> None:
+    """Write ``dit_path`` + the pack at ``pack_prefix`` as one safetensors.
+
+    Every DiT tensor and metadata key is copied unchanged; the pack's raw
+    ``ext_embed`` (as stored — a seed-only ``iso`` block stays seed-only) and
+    its JSON text are added.
+    """
+    from safetensors import safe_open
+    from safetensors.torch import load_file, save_file
+
+    prefix = resolve_pack_prefix(pack_prefix)
+    if prefix is None:
+        raise ValueError("merge_pack_into_dit needs a pack prefix")
+    raw = load_file(str(prefix.with_suffix(".safetensors")))["ext_embed"]
+    mapping_text = prefix.with_suffix(".json").read_text(encoding="utf-8")
+
+    with safe_open(str(dit_path), framework="pt") as f:
+        metadata = dict(f.metadata() or {})
+        keys = list(f.keys())
+        if any(k.endswith(MERGED_EXT_SUFFIX) for k in keys):
+            raise ValueError(f"{dit_path} already carries a vocab pack")
+        embed = [k for k in keys if k.endswith("llm_adapter.embed.weight")]
+        if len(embed) != 1:
+            raise ValueError(
+                f"{dit_path}: expected one llm_adapter.embed.weight, found {embed}"
+            )
+        sd = {k: f.get_tensor(k) for k in keys}
+    sd[embed[0][: -len("embed.weight")] + "ext_embed.weight"] = raw.contiguous()
+    metadata[MERGED_META_MAPPING] = mapping_text
+    save_file(sd, str(out_path), metadata=metadata)
+    logger.info(
+        "merged %s (%d ext rows) into %s → %s",
+        prefix.name,
+        raw.shape[0],
+        Path(dit_path).name,
+        out_path,
+    )
+
+
+_warned_cache_stamps: set[str] = set()
+
+
+def check_cache_stamp(
+    metadata: Optional[dict], cache_path: str, active: Optional[VocabPack]
+) -> None:
+    """Warn once per (pack-state, kind) when a TE cache's stamp disagrees.
+
+    TE caches skip on existence only (no content hash), so a cache encoded
+    through one pack — or through none — silently trains against whatever the
+    active pack now is. The stamp turns that into a visible warning; the fix is
+    always ``make preprocess-te ARGS=--overwrite``.
+    """
+    md = metadata or {}
+    cached_sha = str(md.get(CACHE_META_SHA, "") or "")
+    active_sha = active.digest if active is not None else ""
+    if cached_sha == active_sha:
+        return
+    key = f"{cached_sha}->{active_sha}"
+    if key in _warned_cache_stamps:
+        return
+    _warned_cache_stamps.add(key)
+    if cached_sha and not active_sha:
+        what = f"was encoded through vocab pack {md.get(CACHE_META_NAME, '?')} but no pack is active"
+    elif active_sha and not cached_sha:
+        what = f"was encoded without a vocab pack but {active.name} is active"
+    else:
+        what = (
+            f"was encoded through vocab pack {md.get(CACHE_META_NAME, '?')} "
+            f"but {active.name} is active"
+        )
+    logger.warning(
+        "TE cache %s %s — the cached T5 ids / crossattn no longer match the "
+        "tokenizer. Re-run `make preprocess-te ARGS=--overwrite` (EN-only "
+        "captions are unaffected). Further mismatches of this kind are not repeated.",
+        cache_path,
+        what,
+    )

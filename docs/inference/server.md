@@ -1,11 +1,10 @@
 # Resident inference server
 
-`scripts/inference_server.py` — load the DiT / VAE / text-encoder **once** and
+`scripts/inference_server.py` — load the DiT / VAE / text-encoder once and
 serve many generations over a localhost HTTP port, instead of paying the
 model-load cost per image. It's the inference counterpart of the training
-`scripts/daemon/`: same discoverability skin (a localhost port + a pidfile at a
-fixed per-user location), wrapped around the resident-model lifetime the Anima
-Tagger's `scripts/anima_tagger/autotag_server.py` worker established.
+`anima_daemon/`, with the same discovery mechanism (a localhost port + a pidfile
+at a fixed per-user location).
 
 The generation engine is unchanged — the server is a thin HTTP shell over the
 existing programmatic API (`get_generation_settings` → `generate(…,
@@ -13,13 +12,12 @@ shared_models=…)` → `decode_to_pil`, the same calls `examples/01_generate.py
 makes). `generate()` already reuses a warm DiT out of `shared_models["model"]`
 and never frees it; the server just keeps that dict alive across requests.
 
-## Why a separate process (and not a daemon job kind)
+## Separate process from the training daemon
 
-The training daemon's whole contract is to **free** the GPU between serial,
+The training daemon's whole contract is to free the GPU between serial,
 mutually-exclusive jobs — `manager._gpu_guard` actively reaps VRAM before each
-launch. A resident inference model is the opposite workload, so it can't live
-*inside* the daemon. Instead it runs as its own "polite tenant" process that
-**yields** the card when training needs it (see *Coexistence* below).
+launch. A resident inference model is the opposite workload, so it runs as its own
+process that yields the card when training needs it (see *Coexistence* below).
 
 | | Resident inference server | Training daemon |
 |---|---|---|
@@ -58,15 +56,15 @@ python scripts/inference_server.py stop     # graceful shutdown
 
 Only `prompt` is required; everything else defaults (`get_generation_settings`
 fills every knob via `GenerationRequest.to_args()`). Long-tail method flags
-(DCW / Spectrum / etc.) ride `extra_argv`, exactly as in
+(Spectrum / etc.) ride `extra_argv`, exactly as in
 `examples/03_generate_with_correction.py`. The decoded PNG is written to disk
 (`output/inference/samples/<ts>_<seed>.png` by default, or your `save_path`) and
 the path is returned.
 
 ## Discovery
 
-Mirrors `scripts/daemon/config.py`. The server writes its `{pid, create_time,
-port}` to **two** places so any client finds it without hardcoding:
+Mirrors `anima_daemon/config.py`. The server writes its `{pid, create_time,
+port}` to two places so any client finds it without hardcoding:
 
 1. in-repo — `output/inference/server.json`
 2. per-user mirror — `~/.anima/inference.json` (override `$ANIMA_INFERENCE_PIDFILE`)
@@ -85,13 +83,10 @@ starve a training launch of VRAM:
    (`manager._evict_resident_inference`) — it frees VRAM but stays alive and
    reloads lazily on its next `/generate`. Best-effort: if no server is running
    it's a couple of cheap `stat()`s; all failures are swallowed.
-2. **Idle TTL.** A background reaper auto-unloads after
+2. Idle TTL. A background reaper auto-unloads after
    `$ANIMA_INFERENCE_IDLE_TTL` seconds idle (default 600; `0` disables, also
    `--idle-ttl`), so a forgotten server doesn't camp on the card. The reaper
    skips an in-flight generation (non-blocking lock acquire).
-
-The net effect: the daemon stays the GPU's traffic cop, and the inference server
-is warm-but-yielding.
 
 ## Adapter switching
 

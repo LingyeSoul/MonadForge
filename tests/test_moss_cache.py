@@ -1,0 +1,217 @@
+"""MOSS cache contract: latent pack/unpack inverse, sizing, flat-cache reading."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+import torch
+from PIL import Image
+from safetensors.torch import save_file
+
+from library.moss.cache import (
+    LATENT_SUFFIX,
+    TE_SUFFIX,
+    find_pairs,
+    fit,
+    list_items,
+    load_item,
+    target_size,
+)
+from library.moss.model import pack_latents, unpack_latents
+from library.moss.scan import caption_sha, scan
+
+
+def _fake_vae(channels=32):
+    g = torch.Generator().manual_seed(0)
+    bn = SimpleNamespace(
+        running_mean=torch.randn(channels * 4, generator=g),
+        running_var=torch.rand(channels * 4, generator=g) + 0.5,
+    )
+    return SimpleNamespace(
+        bn=bn, config=SimpleNamespace(batch_norm_eps=1e-4), dtype=torch.float32
+    )
+
+
+def test_pack_is_inverse_of_unpack():
+    vae = _fake_vae()
+    z = torch.randn(2, 32, 12, 18, dtype=torch.float64).float()
+    packed = pack_latents(z, vae)
+    assert packed.shape == (2, 128, 6, 9)
+    torch.testing.assert_close(unpack_latents(packed, vae), z, rtol=1e-5, atol=1e-5)
+    d = torch.randn(1, 128, 5, 7)
+    torch.testing.assert_close(
+        pack_latents(unpack_latents(d, vae), vae), d, rtol=1e-5, atol=1e-5
+    )
+
+
+def test_pack_matches_flux2_patchify():
+    # Channel 4c + 2a + b of the packed latent holds pixel (2i + a, 2j + b) of channel c.
+    vae = _fake_vae(channels=1)
+    vae.bn.running_mean = torch.zeros(4)
+    vae.bn.running_var = torch.ones(4) - 1e-4
+    z = torch.arange(16.0).view(1, 1, 4, 4)
+    packed = pack_latents(z, vae)
+    for a in range(2):
+        for b in range(2):
+            torch.testing.assert_close(packed[0, 2 * a + b], z[0, 0, a::2, b::2])
+
+
+@pytest.mark.parametrize(
+    "size",
+    [
+        (896, 1152),
+        (1024, 1024),
+        (3000, 2000),
+        (1200, 4000),
+        (640, 480),
+        (1023, 1023),
+        (5000, 300),
+        (17, 33),
+    ],
+)
+def test_target_size_invariants(size):
+    w, h = size
+    tw, th = target_size(w, h, 1024)
+    assert tw % 16 == 0 and th % 16 == 0 and tw >= 16 and th >= 16
+    assert tw <= max(16, w) and th <= max(16, h)  # never upscaled
+    assert tw * th <= 1024 * 1024 * 1.10
+    if min(w, h) >= 256:
+        assert abs((tw / th) / (w / h) - 1) < 0.05
+
+
+def test_target_size_keeps_grid_images():
+    assert target_size(960, 1120, 1024) == (960, 1120)  # 1.075 MP, already on the grid
+    assert target_size(1536, 1536, 1024) == (1024, 1024)
+
+
+def test_fit_exact_size():
+    im = Image.new("RGB", (1000, 1500))
+    assert fit(im, 832, 1248).size == (832, 1248)
+    assert fit(im, 1000, 1500) is im
+
+
+def test_list_and_load_items(tmp_path):
+    save_file(
+        {"latent": torch.randn(128, 72, 56)}, tmp_path / f"a_b_896x1152{LATENT_SUFFIX}"
+    )
+    save_file(
+        {"embeds": torch.randn(37, 4096).bfloat16()}, tmp_path / f"a_b{TE_SUFFIX}"
+    )
+    save_file(
+        {"latent": torch.randn(128, 64, 64)},
+        tmp_path / f"lonely_1024x1024{LATENT_SUFFIX}",
+    )
+    save_file(
+        {"embeds": torch.randn(5, 4096).bfloat16()}, tmp_path / f"textonly{TE_SUFFIX}"
+    )
+    items = list_items(tmp_path)
+    assert [(i.stem, i.width, i.height, i.n_text) for i in items] == [
+        ("a_b", 896, 1152, 37)
+    ]
+    latent, embeds = load_item(items[0])
+    assert latent.dtype == torch.float32 and latent.shape == (128, 72, 56)
+    assert embeds.dtype == torch.bfloat16 and embeds.shape == (37, 4096)
+
+
+def test_find_pairs_prefixes_colliding_stems(tmp_path):
+    for sub in ("x", "y"):
+        (tmp_path / sub).mkdir()
+        Image.new("RGB", (32, 32)).save(tmp_path / sub / "img.png")
+        (tmp_path / sub / "img.txt").write_text(
+            f" caption {sub}, tag \n", encoding="utf-8"
+        )
+    Image.new("RGB", (32, 32)).save(tmp_path / "x" / "solo.png")
+    (tmp_path / "x" / "solo.txt").write_text("solo", encoding="utf-8")
+    Image.new("RGB", (32, 32)).save(tmp_path / "x" / "nocap.png")
+    pairs = {p.stem: p.caption for p in find_pairs(tmp_path)}
+    assert pairs == {
+        "x__img": "caption x, tag",
+        "y__img": "caption y, tag",
+        "solo": "solo",
+    }
+
+
+def test_find_pairs_layout_json(tmp_path, monkeypatch):
+    pytest.importorskip("anime_tools.captions.layout_json")
+    import anime_tools.captions.correction as correction
+
+    csv = tmp_path / "tags.csv"
+    csv.write_text(
+        'name,category,post_count,description\nhatsune_miku,4,10,"[캐릭터 > x] c"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(correction, "find_tag_csv", lambda root=None, lang=None: csv)
+    src = tmp_path / "src"
+    src.mkdir()
+    Image.new("RGB", (32, 32)).save(src / "a.png")
+    (src / "a.txt").write_text("1girl, hatsune miku, long hair\n", encoding="utf-8")
+    (pair,) = find_pairs(src, "layout_json")
+    assert pair.caption == (
+        '{"summary":{"characters":["hatsune miku"],"caption":"1girl, long hair"}}'
+    )
+    assert pair.source_sha == caption_sha("1girl, hatsune miku, long hair")
+
+
+def test_layout_json_passes_layout_captions_through(monkeypatch):
+    import library.moss.cache as cache
+
+    def no_kb():
+        raise AssertionError("an already-converted caption needs no tag CSV")
+
+    monkeypatch.setattr(cache, "_tag_knowledge_base", no_kb)
+    convert = cache.caption_converter("layout_json")
+    done = '{"summary":{"characters":["hatsune miku"],"caption":"1girl"}}'
+    assert convert(done) == done
+    assert not cache.is_layout_json('{"items":[]}')
+    assert not cache.is_layout_json("{broken, tags")
+
+
+def test_find_pairs_prefers_a_current_layout_sidecar(tmp_path, monkeypatch):
+    import os
+
+    import library.moss.cache as cache
+
+    monkeypatch.setattr(
+        cache, "caption_converter", lambda fmt: lambda raw: f"converted:{raw}"
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    for stem in ("fresh", "edited", "bare"):
+        Image.new("RGB", (32, 32)).save(src / f"{stem}.png")
+        (src / f"{stem}.txt").write_text(f"{stem} tags", encoding="utf-8")
+    (src / "fresh.layout.txt").write_text('{"summary":{}}', encoding="utf-8")
+    edited = src / "edited.layout.txt"
+    edited.write_text('{"old":1}', encoding="utf-8")
+    t = (src / "edited.txt").stat().st_mtime
+    os.utime(edited, (t - 10, t - 10))  # the caption was edited after the export
+    pairs = {p.stem: p for p in find_pairs(src, "layout_json")}
+    assert pairs["fresh"].caption == '{"summary":{}}'
+    assert pairs["fresh"].source_sha == caption_sha("fresh tags")
+    assert pairs["edited"].caption == "converted:edited tags"
+    assert pairs["bare"].caption == "converted:bare tags"
+    # ``text`` ignores the sidecar.
+    monkeypatch.undo()
+    assert {p.caption for p in find_pairs(src, "text")} == {
+        "fresh tags",
+        "edited tags",
+        "bare tags",
+    }
+
+
+def test_scan_reads_source_sha(tmp_path):
+    src, out = tmp_path / "src", tmp_path / "out"
+    src.mkdir()
+    out.mkdir()
+    for stem, meta in (
+        ("new", {"caption_sha256": "json-sha", "source_sha256": caption_sha("cap")}),
+        ("old", {"caption_sha256": caption_sha("cap")}),
+        ("stale", {"caption_sha256": "x", "source_sha256": "y"}),
+    ):
+        Image.new("RGB", (32, 32)).save(src / f"{stem}.png")
+        (src / f"{stem}.txt").write_text("cap", encoding="utf-8")
+        save_file(
+            {"embeds": torch.zeros(1, 4)}, out / f"{stem}{TE_SUFFIX}", metadata=meta
+        )
+    s = scan(src, out)
+    assert (s.text_cached, s.stale_text) == (2, 1)

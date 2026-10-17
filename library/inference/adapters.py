@@ -56,6 +56,78 @@ def set_hydra_sigma(model: Any, timesteps: torch.Tensor) -> None:
             set_sigma(sigma)
 
 
+def set_xattn_gain(model: Any, gain: float) -> None:
+    """Set the per-block cross-attn residual gain.
+
+    Writes each Block's non-persistent ``_xattn_gain`` buffer in place so
+    compiled block graphs pick the new value up without a recompile. 1.0
+    restores exact identity; callers gating on σ must reset it themselves
+    (and before any uncond forward when boosting the cond pass only).
+    """
+    for block in model.blocks:
+        block._xattn_gain.fill_(gain)
+
+
+def set_xattn_renorm(
+    model: Any, on: bool, *, per_token: bool = True, frac: float = 1.0
+) -> None:
+    """Toggle norm-matched cross-attn gain.
+
+    While True, each Block rescales its post-cross-attn hidden state back
+    toward the gain-1.0 norm, so ``set_xattn_gain`` rotates the state
+    toward the cross-attn residual without leaving the norm shell.
+    ``per_token=False`` matches the per-image MEAN token norm instead of
+    each token's (per-token matching flattens the token-norm distribution →
+    grey tone, muted highlights). ``frac`` ρ
+    applies ``scale**ρ`` (1.0 = full correction, 0.0 = raw boost). Same
+    cond-only discipline as :func:`set_xattn_gain` — toggle together with
+    the gain and reset both before uncond forwards.
+    """
+    for block in model.blocks:
+        block._xattn_renorm = on
+        block._xattn_renorm_pertoken = per_token
+        block._xattn_renorm_frac = frac
+
+
+def set_xattn_boost_state(
+    model: Any, gain: float, *, renorm_mode: str = "off", frac: float = 1.0
+) -> None:
+    """Set the cross-attn boost gain + its norm matching in one call.
+
+    The single entry point denoise-loop runners should use for
+    ``--xattn_boost`` (gain λ on the cond forward at σ ≥ band, reset with
+    ``gain=1.0`` before uncond forwards and on loop exit). ``renorm_mode``:
+    ``"img"`` (shipped default — per-image mean-norm matching, keeps the
+    token-norm peaks that carry neon/highlights), ``"tok"`` (per-token,
+    flattens peaks → grey tone; bench reference), ``"off"`` (raw gain).
+    ``frac`` is the partial exponent ρ (scale**ρ). Renorm is forced off at
+    gain 1.0 so a reset always restores exact identity.
+    """
+    set_xattn_gain(model, gain)
+    on = renorm_mode != "off" and gain != 1.0
+    set_xattn_renorm(
+        model,
+        on,
+        per_token=renorm_mode == "tok",
+        frac=frac if on else 1.0,
+    )
+
+
+def set_xattn_kbias(model: Any, bias: Optional[torch.Tensor]) -> None:
+    """Set (or clear, with ``None``) the cross-attn per-key logit bias.
+
+    ``bias`` is a ``(L_ctx,)`` float tensor added to every cross-attn QK^T
+    row (allocation probe), or ``(N_q, L_ctx)`` — one row per image token in
+    the block's flattened order (spatial probe). Writes each
+    Block's ``cross_attn._ctx_k_bias`` buffer; ``None`` restores exact
+    identity (and the fused flash path — a set bias drops that call to
+    SDPA). Same cond-only discipline as :func:`set_xattn_gain`: callers
+    must clear it before any uncond forward.
+    """
+    for block in model.blocks:
+        block.cross_attn._ctx_k_bias = bias
+
+
 def clear_hydra_sigma(model: Any) -> None:
     """Clear cached sigma from router-live HydraLoRA adapters."""
     for network in iter_hydra_networks(model):
@@ -105,38 +177,10 @@ def _resolve_fei_sigma_low_div(model: Any) -> Optional[float]:
     return None
 
 
-def set_hydra_content(model: Any, crossattn_emb: torch.Tensor) -> None:
-    """Fire the ChimeraHydra ContentRouter on a pooled text vector.
-
-    Mirrors :func:`set_hydra_fei`. ``crossattn_emb`` is the post-LLM-adapter
-    text feature tensor (B, L, D) — the same one fed into the DiT's
-    cross-attention. No-op on networks without a ContentRouter (chimera off).
-
-    Call BEFORE each forward in the denoising loop, separately for cond
-    and uncond branches — the two have different captions and therefore
-    different ``π_c`` gates. The freq router has no cond/uncond asymmetry
-    (FEI is identical) so it fires once per step.
-    """
-    for network in iter_hydra_networks(model):
-        if not getattr(network, "use_content_router", False):
-            continue
-        set_content = getattr(network, "set_content", None)
-        if callable(set_content):
-            set_content(crossattn_emb)
-
-
-def clear_hydra_content(model: Any) -> None:
-    for network in iter_hydra_networks(model):
-        clear_content = getattr(network, "clear_content_routing_weights", None)
-        if callable(clear_content):
-            clear_content()
-
-
 def set_hydra_crossattn(model: Any, crossattn_emb: torch.Tensor) -> None:
     """Fire the network-level GlobalRouter on a pooled text vector.
 
-    Mirrors :func:`set_hydra_content`, but for the non-chimera Hydra / FeRA
-    pool routed on text (``router_source="crossattn_emb"``,
+    For the Hydra pool routed on text (``router_source="crossattn_emb"``,
     ``route_per_layer=False``). ``crossattn_emb`` is the post-LLM-adapter
     feature tensor (B, L, D) fed into the DiT's cross-attention. No-op on
     networks without a crossattn GlobalRouter.
@@ -144,6 +188,7 @@ def set_hydra_crossattn(model: Any, crossattn_emb: torch.Tensor) -> None:
     Call BEFORE each forward, separately for cond and uncond branches — the
     two have different captions and therefore different gates.
     """
+    set_hydra_content(model, crossattn_emb)
     for network in iter_hydra_networks(model):
         if not getattr(network, "use_crossattn_router", False):
             continue
@@ -210,3 +255,30 @@ def compute_and_set_hydra_fei(model: Any, z: torch.Tensor) -> None:
     sigma_low = fei_sigma_low(h_lat, w_lat, div)
     fei = compute_fei_2band(z, sigma_low)
     set_hydra_fei(model, fei)
+
+
+def set_hydra_content(model: Any, crossattn_emb: torch.Tensor) -> None:
+    """Fire the ChimeraHydra ContentRouter on a pooled text vector.
+
+    Mirrors :func:`set_hydra_fei`. ``crossattn_emb`` is the post-LLM-adapter
+    text feature tensor (B, L, D) — the same one fed into the DiT's
+    cross-attention. No-op on networks without a ContentRouter (chimera off).
+
+    Call BEFORE each forward in the denoising loop, separately for cond
+    and uncond branches — the two have different captions and therefore
+    different ``π_c`` gates. The freq router has no cond/uncond asymmetry
+    (FEI is identical) so it fires once per step.
+    """
+    for network in iter_hydra_networks(model):
+        if not getattr(network, "use_content_router", False):
+            continue
+        set_content = getattr(network, "set_content", None)
+        if callable(set_content):
+            set_content(crossattn_emb)
+
+
+def clear_hydra_content(model: Any) -> None:
+    for network in iter_hydra_networks(model):
+        clear_content = getattr(network, "clear_content_routing_weights", None)
+        if callable(clear_content):
+            clear_content()

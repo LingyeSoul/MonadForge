@@ -1,53 +1,41 @@
 #!/usr/bin/env python3
-"""Generate with a training-free sampler correction (DCW or Spectrum).
+"""Generate with a training-free sampler correction (SMC-CFG or Spectrum).
 
-Same flow as 01_generate.py, but this one shows the **escape hatch** for the
-long tail of method knobs that `GenerationRequest` doesn't model as typed
-fields: `extra_argv`. Anything you'd pass on the `inference.py` command line —
-`--dcw`, `--spectrum`, their sub-knobs — goes here as verbatim CLI tokens, and
-`.to_args()` feeds them through `inference.parse_args` so the generation code
-sees them exactly as a CLI run would. `extra_argv` is appended last, so it can
-also override a structured field.
+Same flow as 01_generate.py, plus `extra_argv` — the channel for method knobs
+`GenerationRequest` doesn't model as typed fields. Anything you'd pass on the
+`inference.py` command line —
+`--smc_cfg`, `--spectrum`, their sub-knobs — goes here as verbatim CLI tokens,
+and `.to_args()` feeds them through `inference.parse_args` so the generation
+code sees them exactly as a CLI run would. `extra_argv` is appended last, so it
+can also override a structured field.
 
-Two corrections are wired as examples (both compose with the normal sampler,
-both are training-free):
+Two training-free corrections are wired up:
 
-  * **dcw**      — SNR-t bias correction at the post-step boundary. `--dcw`
-                   turns it on; `--dcw_lambda` is the scaler (negative on Anima —
-                   see docs/inference/dcw.md). Negligible overhead.
+  * **smc_cfg**  — Sliding-Mode Control CFG (arXiv:2603.03281). `--smc_cfg`
+                   turns it on; `--smc_cfg_alpha` is the adaptive gain. Modifies
+                   the cond/uncond combine; no extra forwards. See
+                   docs/inference/smc_cfg.md.
   * **spectrum** — Chebyshev feature-forecasting acceleration. `--spectrum`
                    turns it on; cached steps skip the transformer blocks.
                    `--spectrum_warmup` is the full-forward warmup count.
 
-The same pattern carries any other tail knob (ip-adapter, easycontrol, smc-cfg,
-cns, …): build the token list and hand it to `extra_argv`.
+Any other untyped knob works the same way.
 
 Run from the repo root (anima_lora/):
 
-    python examples/03_generate_with_correction.py --correction dcw
-    python examples/03_generate_with_correction.py --correction dcw --dcw_lambda -0.012
+    python examples/03_generate_with_correction.py --correction spectrum
     python examples/03_generate_with_correction.py --correction spectrum --spectrum_warmup 6
+    python examples/03_generate_with_correction.py --correction smc_cfg --smc_cfg_alpha 0.2
     python examples/03_generate_with_correction.py --correction none   # baseline
-
-Compare the saved PNGs against `--correction none` to eyeball the effect.
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
-# Allow `python examples/<script>.py`: put the repo root on sys.path so
-# `import library` / `inference` resolve. Model/config paths resolve against the
-# repo home regardless of CWD (set ANIMA_HOME for a relocated checkout); only the
-# output paths below are written relative to your CWD.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
 
-# The curated entry points live on the top-level `anima_lora` package — the
-# programmatic front door (a thin lazy re-export of the `library.*` homes).
 from anima_lora import (
     GenerationRequest,
     default_checkpoints,
@@ -69,12 +57,11 @@ TEXT_ENCODER = _ckpt.text_encoder
 def correction_argv(opts: argparse.Namespace) -> list[str]:
     """Build the verbatim `inference.py` tokens for the chosen correction.
 
-    These are exactly what you'd type after `python inference.py …` — the
-    request doesn't model them as typed fields, so they ride `extra_argv`.
+    The same tokens you'd pass to `python inference.py …`.
     """
-    if opts.correction == "dcw":
-        # store_true flag + one sub-knob. λ is negative on Anima (see docs).
-        return ["--dcw", "--dcw_lambda", str(opts.dcw_lambda)]
+    if opts.correction == "smc_cfg":
+        # store_true flag + one sub-knob (adaptive gain α).
+        return ["--smc_cfg", "--smc_cfg_alpha", str(opts.smc_cfg_alpha)]
     if opts.correction == "spectrum":
         return ["--spectrum", "--spectrum_warmup", str(opts.spectrum_warmup)]
     return []  # "none" → plain sampler, no correction
@@ -91,7 +78,7 @@ def build_request(opts: argparse.Namespace) -> GenerationRequest:
         guidance_scale=opts.cfg,
         image_size=tuple(opts.size),  # (H, W)
         seed=opts.seed,
-        # The escape hatch: long-tail method flags as raw CLI tokens.
+        # Untyped method flags as raw CLI tokens.
         extra_argv=correction_argv(opts),
     )
 
@@ -100,15 +87,15 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--correction",
-        choices=["dcw", "spectrum", "none"],
-        default="dcw",
+        choices=["smc_cfg", "spectrum", "none"],
+        default="spectrum",
         help="Which training-free correction to enable via extra_argv.",
     )
     p.add_argument(
-        "--dcw_lambda",
+        "--smc_cfg_alpha",
         type=float,
-        default=-0.015,
-        help="DCW scaler λ (negative on Anima). Used when --correction dcw.",
+        default=0.2,
+        help="SMC-CFG adaptive gain α. Used when --correction smc_cfg.",
     )
     p.add_argument(
         "--spectrum_warmup",
@@ -146,7 +133,7 @@ def main() -> None:
         disable_mmap=True,
         spatial_chunk_size=args.vae_chunk_size,
         disable_cache=args.vae_disable_cache,
-        dtype=torch.bfloat16,  # load_vae handles the bf16 cast + eval() for you
+        dtype=torch.bfloat16,
         eval=True,
     )
     save_output(args, vae, latent, device)

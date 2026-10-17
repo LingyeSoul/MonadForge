@@ -1,0 +1,8 @@
+# run0925_300f — the freeze arm (next.md A-F, 2026-09-25), the first run of the
+# one-file shape (plan.md § 6-3: its numbers must match the stage-shaped run's —
+# _archive/configs/runs/run0925_300f.toml, data_{stage0507,stage0305}_run0925_300f):
+# 300 warm one-token pieces train, every other row rides frozen at the seed.
+# はい = two frozen singles → a same-as-seed control.
+
+vocabs = "ja_pieces_0925_300.txt"
+read = ["はい", "おしい", "やったネ", "ちょっと来い", "こんにちは"]

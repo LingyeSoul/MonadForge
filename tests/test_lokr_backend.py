@@ -116,6 +116,7 @@ def test_backend_round_trip_through_webui_toml_and_trainer(monkeypatch, tmp_path
     assert toml.loads((overlays / "lokr.toml").read_text(encoding="utf-8")) == saved
 
 
+@pytest.mark.training_step
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("full_factor", [False, True])

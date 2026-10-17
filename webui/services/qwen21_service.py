@@ -40,14 +40,16 @@ REQUEST_TYPES: dict[
 
 
 class ValuesRequest(BaseModel):
-    model_config = ConfigDict(strict=True, extra="ignore")
+    model_config = ConfigDict(strict=True, extra="forbid")
     values: dict[str, Scalar]
+    runtime_profile: Literal["default", "curation", "v100"] = "default"
 
 
 class ChainRequest(BaseModel):
-    model_config = ConfigDict(strict=True, extra="ignore")
+    model_config = ConfigDict(strict=True, extra="forbid")
     cache: ValuesRequest
     train: ValuesRequest
+    runtime_profile: Literal["default", "curation", "v100"] = "default"
 
 
 class FormField(BaseModel):

@@ -177,6 +177,7 @@ def test_get_optimizer_adafactor_warmup_init_forces_relative_step():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.training_step
 def test_get_optimizer_came_branch_normalizes_betas_and_steps():
     pytest.importorskip("pytorch_optimizer")
     import torch
@@ -264,6 +265,7 @@ def test_get_optimizer_came_preserves_explicit_beta3():
     assert optimizer_args == "betas=(0.8, 0.95, 0.97)"
 
 
+@pytest.mark.training_step
 def test_came_steps_across_multiple_input_resolutions():
     pytest.importorskip("pytorch_optimizer")
     import torch

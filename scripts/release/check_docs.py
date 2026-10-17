@@ -17,7 +17,7 @@ Source of truth, never hard-coded here:
   * cli flags    : every ``--flag`` literal appearing in any tracked ``.py``.
   * file paths   : the working tree itself.
 
-Design choices that keep it low-noise:
+Skipped references:
   * Paths are only checked when their first segment is a git-tracked top-level
     entry, so URLs (``claude.ai/code``), repo slugs (``sorryhyun/anima_lora``)
     and runtime/data dirs (``output/…``, ``post_image_dataset/…``) are skipped,
@@ -25,12 +25,12 @@ Design choices that keep it low-noise:
   * ``make <x>`` and flags are read only from inline-code spans and fenced
     blocks, so English prose ("make sure", "we make use of") never trips the
     target check.
+  * Gitignored paths (``configs/gui-methods/custom/…``, ``output/…``) are
+    machine-local, so a doc citing one is never flagged.
 
 CLI-flag caveat: the "known flags" set is every ``--x`` mentioned anywhere in
-the ``.py`` sources — permissive on purpose (a noisy linter gets disabled). It
-reliably catches a *fully removed* flag but won't notice one that lingers only
-in a comment. Several benign mentions are suppressed so they don't read as
-drift, since that's why flags are WARN, not ERROR:
+the ``.py`` sources, so it catches a *fully removed* flag but not one that
+lingers only in a comment. Suppressed mentions:
   * foreign tool flags in shell snippets (uv / gh / ruff …) → ``FOREIGN_FLAGS``;
   * bare placeholders in example payloads (``--some_flag``) → ``PLACEHOLDER_FLAGS``;
   * truncated glob/prefix families (``--region-*`` → ``--region-``, ``--ddp_*``
@@ -58,6 +58,7 @@ import re
 import subprocess
 import sys
 from collections import namedtuple
+from functools import lru_cache
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -121,10 +122,15 @@ Issue = namedtuple("Issue", "level path line kind token message")
 def _git(*args: str) -> str:
     # ``core.quotepath=false`` keeps non-ASCII paths (translated guidebooks)
     # as raw UTF-8, not C-style escapes — else they're unopenable + skipped.
+    # Decoding is pinned to UTF-8 for the same reason: `text=True` alone uses the
+    # locale encoding, so on a non-UTF-8 Windows box (cp949, cp932 …) those very
+    # paths raise UnicodeDecodeError inside the reader thread — which surfaces
+    # only as a `None` stdout here, i.e. an AttributeError far from the cause.
     return subprocess.run(
         ["git", "-C", str(REPO_ROOT), "-c", "core.quotepath=false", *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     ).stdout
 
@@ -188,8 +194,40 @@ def known_make_targets() -> set[str]:
     return targets
 
 
-def _check_path(tok: str, top: set[str]) -> str | None:
-    """Return the token if it's a broken repo-rooted path, else None."""
+@lru_cache(maxsize=None)
+def _is_ignored(rel: str) -> bool:
+    """True when git ignores ``rel`` (repo-relative), tracked files excluded.
+
+    Pattern-based, so it answers for paths that don't exist — which is exactly
+    the case that matters: a doc citing a user-local artifact
+    (``configs/gui-methods/custom/x.toml``) must not read as drift just because
+    this checkout never generated it.
+    """
+    return (
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "check-ignore", "-q", "--", rel],
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
+def _check_path(
+    tok: str, top: set[str], base: Path | None = None, line_root: Path | None = None
+) -> str | None:
+    """Return the token if it's a broken path reference, else None.
+
+    Resolved against the repo root first, then — when ``base`` is given — the
+    referencing doc's own directory. Self-contained doc trees cite their
+    siblings relatively: every ``project/<line>/`` digest says
+    ``bench/report.md`` / ``bench/run_*.py`` meaning *that line's* bench dir
+    (see ``project/README.md``), which is a correct reference that a
+    root-only resolver reads as broken because ``bench/`` is also a real
+    top-level dir. Root-first ordering keeps repo-rooted refs authoritative.
+    ``line_root`` covers the same convention one level down: a report under
+    ``project/<line>/reports/`` citing ``configs/x.toml`` means
+    ``project/<line>/configs/x.toml`` (see ``_line_root``).
+    """
     tok = tok.strip().rstrip(".")
     if not tok or tok.startswith(("http", "..", "/", "~", "mailto")):
         return None
@@ -209,12 +247,54 @@ def _check_path(tok: str, top: set[str]) -> str | None:
         return None
     if first not in top:  # not rooted in the repo (URL / data dir / bare name)
         return None
-    if (REPO_ROOT / tok).exists():
-        return None
-    # Docs often cite a module without its extension (`bench/_common`) — accept.
-    if (REPO_ROOT / f"{tok}.py").exists():
-        return None
+    roots = [REPO_ROOT] + [r for r in (base, line_root) if r is not None]
+    for root in roots:
+        if (root / tok).exists():
+            return None
+        # Docs often cite a module without its extension (`bench/_common`).
+        if (root / f"{tok}.py").exists():
+            return None
+    # Missing *and* gitignored → machine-local, not drift (see ``_is_ignored``).
+    for root in roots:
+        try:
+            rel = (root / tok).resolve().relative_to(REPO_ROOT)
+        except ValueError:
+            continue  # base outside the repo (tests' tmp_path)
+        if _is_ignored(str(rel)):
+            return None
     return tok
+
+
+def _line_root(doc: Path) -> Path | None:
+    """``project/<line>/`` (or ``project/finished/<line>/``) holding ``doc``."""
+    try:
+        parts = doc.relative_to(REPO_ROOT).parts
+    except ValueError:
+        return None
+    if parts[:1] != ("project",):
+        return None
+    depth = 3 if parts[1:2] == ("finished",) else 2
+    if len(parts) <= depth:
+        return None  # a file directly under project/ or project/finished/
+    return REPO_ROOT.joinpath(*parts[:depth])
+
+
+def _anchor_family_ref(tok: str, next_char: str) -> str | None:
+    """The path token to verify, or ``None`` when there is nothing to verify.
+
+    A glob prefix (``results/20260607-*``) or a brace expansion
+    (``results/20260816-16{18,34}-2c-*``) is a *family* reference, not a literal
+    path claim — and :data:`_MULTI_RE` truncates it at the ``*`` / ``{``, so the
+    partial stem would read as a broken path. Anchor on the parent directory
+    instead: the family ref still verifies its root, while the stem is left
+    alone. A family with no parent (``foo*``) has nothing to anchor on and is
+    skipped. (The make-target check does the same for
+    ``make preprocess-{resize,vae,…}``.)
+    """
+    if next_char not in ("*", "{"):
+        return tok
+    head, sep, _ = tok.rpartition("/")
+    return head + "/" if sep else None
 
 
 def _code_fragments(line: str, in_fence: bool) -> list[str]:
@@ -234,6 +314,7 @@ def collect_issues(include_bench: bool = False) -> list[Issue]:
 
     for doc in doc_files(include_bench):
         rel = str(doc.relative_to(REPO_ROOT))
+        line_root = _line_root(doc)
         in_fence = False
         try:
             text = doc.read_text(encoding="utf-8", errors="ignore")
@@ -252,7 +333,14 @@ def collect_issues(include_bench: bool = False) -> list[Issue]:
             seen: set[str] = set()
             for rx in (_MULTI_RE, _SINGLE_RE):
                 for m in rx.finditer(line):
-                    bad = _check_path(m.group(0), top)
+                    # The tail of an absolute or home path (``~/anima_lora/output``)
+                    # names another machine's tree, not this checkout.
+                    if line[m.start() - 1 : m.start()] in ("/", "~"):
+                        continue
+                    tok = _anchor_family_ref(m.group(0), line[m.end() : m.end() + 1])
+                    if tok is None:
+                        continue
+                    bad = _check_path(tok, top, base=doc.parent, line_root=line_root)
                     if bad and bad not in seen:
                         seen.add(bad)
                         issues.append(

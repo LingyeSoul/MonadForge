@@ -282,6 +282,7 @@ def test_rms_norm_keeps_explicit_cpu_formula(monkeypatch):
     assert torch.equal(actual, expected)
 
 
+@pytest.mark.training_step
 def test_eager_rms_norm_rematerializes_explicit_input_gradient():
     torch.manual_seed(80)
     x0 = torch.randn(33, 4, 128, dtype=torch.float16)
@@ -320,6 +321,7 @@ def test_eager_rms_norm_saves_original_storage_only():
     assert ((33, 4, 128), torch.float32) not in saved
 
 
+@pytest.mark.training_step
 def test_eager_rms_norm_chunks_all_leading_dimensions(monkeypatch):
     x = torch.randn(1, 5, 4, 8, dtype=torch.float16, requires_grad=True)
     weight = torch.ones(8, dtype=torch.float16)
@@ -338,6 +340,7 @@ def test_eager_rms_norm_chunks_all_leading_dimensions(monkeypatch):
     assert max(chunk_rows) <= 6
 
 
+@pytest.mark.training_step
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
 def test_eager_rms_norm_cuda_preserves_explicit_input_gradient():
     torch.manual_seed(81)

@@ -118,3 +118,24 @@ def test_create_tb_writer_enabled_makes_timestamped_dir(tmp_path):
     finally:
         if w is not None:
             w.close()
+
+
+@pytest.mark.training_step
+def test_make_scheduler_cosine_anneals_to_a_tenth_of_peak():
+    """The turbo scheduler is warmup → cosine to 0.1·lr, and nothing else.
+
+    The 'constant' shape was removed 2026-07-14 (superturbo_B2: never settles,
+    rendered worse than its cosine twin) — pin that the anneal really lands at
+    0.1·lr so a regression back to a flat tail can't slip in silently.
+    """
+    import torch
+
+    from scripts.distill_turbo.primitives import make_scheduler
+
+    total, lr = 1000, 3e-5
+    opt = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=lr)
+    cosine = make_scheduler(opt, total, lr)
+    for _ in range(total):
+        opt.step()
+        cosine.step()
+    assert cosine.get_last_lr()[0] == pytest.approx(0.1 * lr, rel=1e-3)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Mapping, Optional, Type, Union
 
@@ -204,6 +205,7 @@ class LoRANetworkCfg:
 
     reg_dims: Optional[Dict[str, int]] = None
     reg_lrs: Optional[Dict[str, float]] = None
+    reg_alphas: Optional[Dict[str, float]] = None
 
     use_timestep_mask: bool = False
     min_rank: int = 1
@@ -307,6 +309,8 @@ class LoRANetworkCfg:
     # ortho/Hydra/Chimera classes. docs/methods/svd-down-lora.md,
     # docs/proposal/grad_basis_init.md.
     down_init: str = "kaiming"
+    svd_slice: int = 0
+    svd_slice_count: int = 0
 
     # Gradient-SVD basis, {lora_name: V (in, r_store)} — required by
     # down_init="grad_svd"/"basis_file", built by networks/grad_basis.py.
@@ -453,6 +457,21 @@ class LoRANetworkCfg:
         exclude_patterns.append(_DEFAULT_EXCLUDE)
         include_patterns = _as_str_list(kwargs.get("include_patterns"))
 
+        # adaln convenience knobs: train_adaln adds adaln_up_{branch} Linears to
+        # the target set (they sit in _DEFAULT_EXCLUDE, rescued via
+        # include_patterns). adaln_rank/adaln_alpha give them their own
+        # rank/alpha (0/absent = derived below); injected into reg_dims/
+        # reg_alphas after those strings are parsed.
+        train_adaln = _as_bool(kwargs.get("train_adaln"))
+        adaln_rank_raw = kwargs.get("adaln_rank")
+        adaln_rank = int(adaln_rank_raw) if adaln_rank_raw is not None else 0
+        adaln_alpha_raw = kwargs.get("adaln_alpha")
+        adaln_alpha = float(adaln_alpha_raw) if adaln_alpha_raw is not None else 0.0
+        if adaln_rank > 0 and not train_adaln:
+            raise ValueError("adaln_rank > 0 requires train_adaln = true")
+        if adaln_alpha > 0 and not train_adaln:
+            raise ValueError("adaln_alpha > 0 requires train_adaln = true")
+
         layer_start = kwargs.get("layer_start")
         layer_start = int(layer_start) if layer_start is not None else None
         layer_end = kwargs.get("layer_end")
@@ -502,6 +521,29 @@ class LoRANetworkCfg:
                 "with bench/grad_init/build_universal_basis.py). grad_svd: run "
                 "through train.py, which sketches the run's own cached dataset "
                 "before the network is built."
+            )
+
+        svd_slice = int(kwargs.get("svd_slice", 0) or 0)
+        if svd_slice < 0:
+            raise ValueError(f"svd_slice={svd_slice}: must be a non-negative integer.")
+        if svd_slice and down_init != "weight_svd":
+            raise ValueError(
+                f"svd_slice={svd_slice} only applies to down_init='weight_svd' "
+                f"(got {down_init!r})."
+            )
+        svd_slice_count = int(kwargs.get("svd_slice_count", 0) or 0)
+        if svd_slice_count < 0:
+            raise ValueError(
+                f"svd_slice_count={svd_slice_count}: must be a non-negative integer."
+            )
+        if svd_slice_count and down_init != "weight_svd":
+            raise ValueError(
+                f"svd_slice_count={svd_slice_count} only applies to "
+                f"down_init='weight_svd' (got {down_init!r})."
+            )
+        if svd_slice_count and svd_slice >= svd_slice_count:
+            raise ValueError(
+                f"svd_slice={svd_slice} must be < svd_slice_count={svd_slice_count}."
             )
 
         _legacy_router_keys = [
@@ -809,6 +851,23 @@ class LoRANetworkCfg:
         reg_lrs_str = kwargs.get("network_reg_lrs")
         reg_lrs = _parse_kv_pairs(reg_lrs_str, is_int=False) if reg_lrs_str else None
 
+        reg_alphas_str = kwargs.get("network_reg_alphas")
+        reg_alphas = (
+            _parse_kv_pairs(reg_alphas_str, is_int=False) if reg_alphas_str else None
+        )
+
+        if train_adaln:
+            _adaln_pat = ".*adaln_up_.*"
+            include_patterns = (include_patterns or []) + [_adaln_pat]
+            if adaln_rank > 0:
+                reg_dims = {**(reg_dims or {}), _adaln_pat: adaln_rank}
+            if adaln_alpha <= 0:
+                # √r law (alpha ∝ √r — docs/methods/adaln.md) instead of
+                # inheriting network_alpha at a smaller rank.
+                _r = adaln_rank if adaln_rank > 0 else network_dim
+                adaln_alpha = network_alpha * math.sqrt(_r / max(network_dim, 1))
+            reg_alphas = {**(reg_alphas or {}), _adaln_pat: adaln_alpha}
+
         verbose = _as_bool(kwargs.get("verbose"))
 
         return cls(
@@ -825,6 +884,7 @@ class LoRANetworkCfg:
             module_dropout=module_dropout,
             reg_dims=reg_dims,
             reg_lrs=reg_lrs,
+            reg_alphas=reg_alphas,
             use_timestep_mask=use_timestep_mask,
             min_rank=min_rank,
             alpha_rank_scale=alpha_rank_scale,
@@ -865,6 +925,8 @@ class LoRANetworkCfg:
             dylora_algo=dylora_algo,
             use_ve=use_ve,
             down_init=down_init,
+            svd_slice=svd_slice,
+            svd_slice_count=svd_slice_count,
             fera_fecl_weight=fera_fecl_weight,
             fera_num_bands=fera_num_bands,
             use_chimera_hydra=use_chimera_hydra,
@@ -899,7 +961,7 @@ class LoRANetworkCfg:
         modules_alpha: Dict[str, float],
         module_class: Type,
         train_llm_adapter: bool,
-        is_hydra_or_ortho_hydra: bool,
+        is_hydra_or_ortho_hydra: bool = False,
         hydra_num_experts: int,
         sigma_feature_dim_detected: Optional[int],
         sigma_router_names: Optional[List[str]],
@@ -950,6 +1012,7 @@ class LoRANetworkCfg:
         # per-module ``extra_kwargs`` injection (``if cfg.use_dylora and ...``)
         # fires on warm-started/inference checkpoints, not just fresh train.
         use_dylora: bool = False,
+        is_hydra: Optional[bool] = None,
     ) -> "LoRANetworkCfg":
         """Build cfg from a checkpoint key-sniff (warm-start / inference path).
 
@@ -971,6 +1034,9 @@ class LoRANetworkCfg:
         StackedExperts) must carry all three stamps — plan2 task #6 retired
         the legacy ``ss_use_hydra`` / ``ss_use_fei_router`` fallback.
         """
+        # Accept the upstream name alongside the retained OrthoHydra API.
+        is_hydra_or_ortho_hydra = is_hydra_or_ortho_hydra or bool(is_hydra)
+
         if (
             new_use_moe_style is not None
             and new_route_per_layer is not None

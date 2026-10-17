@@ -1,0 +1,6 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>Colorize</h2>
+<p>EasyControl 控制任务：为黑白网点漫画页面上色。使用与基础变体相同的冻结 DiT EasyControl 网络，但条件为合成漫画化黑白渲染（XDoG 边缘 + 网点），标注仅包含颜色信息（色调 / 饱和度词汇）。</p>
+<p>&bull; <b>空提示</b> &rarr; 自动上色（模型自行选择合理的颜色）。<br>
+&bull; <b>颜色提示</b> &rarr; 引导调色板（例如 "blue hair, red dress"）。</p>
+<p>纯色文本缓存包含多个变体（完整集 + 随机丢弃约 30% 颜色标签的打乱版），使部分颜色提示依然有效；漫画条件是有损提示，因此训练时的条件扰动保持较小以保留线条结构。条件潜在变量缓存到 <code>post_image_dataset/colorize_cond/</code>。</p>
+<p>从 EasyControl 标签页进行训练 &mdash; 会自动设置 <code>EASYADAPTER=colorize</code> &mdash; 预处理时会在 VAE 编码条件前运行漫画化滤镜。参见 <code>easycontrol_adapters/colorization/</code> 和 <code>docs/experimental/easycontrol.md</code>。</p>

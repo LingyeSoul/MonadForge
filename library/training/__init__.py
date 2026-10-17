@@ -3,7 +3,7 @@
 # This is a *curated* facade: it re-exports the public, stable surface of the
 # training package, grouped by concern below. Two things are deliberately NOT
 # re-exported here and must be imported by their submodule path:
-#   - The argparse / CLI surface, which now lives in `library.config.cli_args`
+#   - The argparse / CLI surface, which lives in `library.config.cli_args`
 #     (it is config, not training).
 #   - Loop-internal machinery only `train.py`/`loop.py` compose:
 #       library.training.loop          (build_loop_state, run_training_loop)
@@ -38,6 +38,11 @@ from library.training.samplers import (
     SamplerOut,
     SAMPLER_REGISTRY,
 )
+
+# The default rectified-flow training step as plain kwargs — the bench-friendly
+# entry point. Home is library.runtime.noise; re-exported here so
+# training-adjacent callers find it next to the sampler surface.
+from library.runtime.noise import fm_training_batch
 
 from library.training.losses import (
     LivenessLedger,
@@ -154,6 +159,7 @@ __all__ = [
     "SamplerContext",
     "SamplerOut",
     "SAMPLER_REGISTRY",
+    "fm_training_batch",
     "LivenessLedger",
     "LossContext",
     "LossComposer",

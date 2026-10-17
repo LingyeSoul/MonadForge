@@ -2,6 +2,7 @@
 
 import math
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Callable, Optional, Tuple, Union
 
 import numpy as np
@@ -104,40 +105,87 @@ def pyramid_noise_like(latents, iterations=6, discount=0.4):
     return noise
 
 
-def get_noisy_model_input_and_timesteps(
-    args, noise_scheduler, latents: torch.Tensor, noise: torch.Tensor, device, dtype
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    bsz, h, w = latents.shape[0], latents.shape[-2], latents.shape[-1]
-    assert bsz > 0, "Batch size not large enough"
 
-    pyramid_iters = getattr(args, "pyramid_noise_iterations", 0)
-    if pyramid_iters > 0:
-        discount = getattr(args, "pyramid_noise_discount", 0.4)
-        noise = pyramid_noise_like(latents, iterations=pyramid_iters, discount=discount)
+def _restrict_sigma_range(args, sigmas: torch.Tensor) -> torch.Tensor:
+    """P-GRAFT-inspired timestep restriction: affine-map σ into [t_min, t_max]."""
+    t_min = getattr(args, "t_min", None)
+    t_max = getattr(args, "t_max", None)
+    if t_min is not None or t_max is not None:
+        lo = t_min if t_min is not None else 0.0
+        hi = t_max if t_max is not None else 1.0
+        sigmas = lo + sigmas * (hi - lo)
+    return sigmas
 
-    num_timesteps = noise_scheduler.config.num_train_timesteps
+
+def draw_flat_sigmas(
+    args, bsz: int, h: int, w: int, device, generator: "torch.Generator | None" = None
+) -> Optional[torch.Tensor]:
+    """Per-sample flat σ ∈ [0,1], shape ``(bsz,)`` — the draw half of
+    :func:`get_noisy_model_input_and_timesteps`, split out so σ-first callers
+    (sigma_lowres: pick the latent grid from σ, then noise it) share the exact
+    density with the default draw-inside path. ``t_min``/``t_max`` restriction
+    is applied here. Returns ``None`` for the scheduler-grid density modes
+    (``weighting_scheme`` fallback), which need ``latents.ndim`` broadcasting
+    and stay in the main body. ``h``/``w`` are the latent grid (flux_shift's
+    resolution-dependent shift); pass the *native* grid so the σ marginal is
+    identical whether or not a demote later swaps the latent.
+
+    ``generator`` (paired-step-RNG mode) decouples the draw from the global
+    torch stream so arms with identical seeds share the exact σ sequence.
+    """
     # logit-space mean shift; >0 skews σ toward high-noise, 0.0 (default) = unbiased
     sigmoid_bias = getattr(args, "sigmoid_bias", 0.0)
     if args.timestep_sampling == "uniform" or args.timestep_sampling == "sigmoid":
         if args.timestep_sampling == "sigmoid":
             sigmas = torch.sigmoid(
-                args.sigmoid_scale * torch.randn((bsz,), device=device) + sigmoid_bias
+                args.sigmoid_scale
+                * torch.randn((bsz,), device=device, generator=generator)
+                + sigmoid_bias
             )
         else:
-            sigmas = torch.rand((bsz,), device=device)
+            sigmas = torch.rand((bsz,), device=device, generator=generator)
     elif args.timestep_sampling == "shift":
         shift = args.discrete_flow_shift
-        sigmas = torch.randn(bsz, device=device)
+        sigmas = torch.randn(bsz, device=device, generator=generator)
         sigmas = sigmas * args.sigmoid_scale + sigmoid_bias
         sigmas = sigmas.sigmoid()
         sigmas = (sigmas * shift) / (1 + (shift - 1) * sigmas)
     elif args.timestep_sampling == "flux_shift":
-        sigmas = torch.randn(bsz, device=device)
+        sigmas = torch.randn(bsz, device=device, generator=generator)
         sigmas = sigmas * args.sigmoid_scale + sigmoid_bias
         sigmas = sigmas.sigmoid()
         mu = get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
         sigmas = time_shift(mu, 1.0, sigmas)
     else:
+        return None
+    return _restrict_sigma_range(args, sigmas)
+
+
+def get_noisy_model_input_and_timesteps(
+    args,
+    noise_scheduler,
+    latents: torch.Tensor,
+    noise: torch.Tensor,
+    device,
+    dtype,
+    sigmas: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """``sigmas`` (flat ``(bsz,)``, already range-restricted — e.g. a
+    :func:`draw_flat_sigmas` result) skips the internal draw; None (default)
+    preserves the original draw-inside behavior bit-exactly."""
+    bsz, h, w = latents.shape[0], latents.shape[-2], latents.shape[-1]
+    assert bsz > 0, "Batch size not large enough"
+    pyramid_iters = getattr(args, "pyramid_noise_iterations", 0)
+    if pyramid_iters > 0:
+        noise = pyramid_noise_like(
+            latents, iterations=pyramid_iters,
+            discount=getattr(args, "pyramid_noise_discount", 0.4),
+        )
+
+    num_timesteps = noise_scheduler.config.num_train_timesteps
+    if sigmas is None:
+        sigmas = draw_flat_sigmas(args, bsz, h, w, device)
+    if sigmas is None:
         u = compute_density_for_timestep_sampling(
             weighting_scheme=args.weighting_scheme,
             batch_size=bsz,
@@ -151,14 +199,7 @@ def get_noisy_model_input_and_timesteps(
         sigmas = get_sigmas(
             noise_scheduler, sched_timesteps, device, n_dim=latents.ndim, dtype=dtype
         )
-
-    # restrict sigma range (P-GRAFT-inspired timestep restriction)
-    t_min = getattr(args, "t_min", None)
-    t_max = getattr(args, "t_max", None)
-    if t_min is not None or t_max is not None:
-        lo = t_min if t_min is not None else 0.0
-        hi = t_max if t_max is not None else 1.0
-        sigmas = lo + sigmas * (hi - lo)
+        sigmas = _restrict_sigma_range(args, sigmas)
 
     # σ∈[0,1] IS the DiT's time argument — nothing downstream rescales it. Keep the
     # flat per-sample σ as the returned `timesteps`; broadcast a copy for noising.
@@ -189,6 +230,83 @@ def get_noisy_model_input_and_timesteps(
         noisy_model_input = (1.0 - sigmas) * latents + sigmas * noise
 
     return noisy_model_input.to(dtype), timesteps.to(dtype), sigmas
+
+
+def fm_training_batch(
+    latents: torch.Tensor,
+    noise: torch.Tensor,
+    *,
+    timestep_sampling: str = "sigmoid",
+    discrete_flow_shift: float = 1.0,
+    sigmoid_scale: float = 1.0,
+    sigmoid_bias: float = 0.0,
+    weighting_scheme: str = "uniform",
+    logit_mean: float = 0.0,
+    logit_std: float = 1.0,
+    mode_scale: float = 1.29,
+    ip_noise_gamma: Optional[float] = None,
+    ip_noise_gamma_random_strength: bool = False,
+    t_min: Optional[float] = None,
+    t_max: Optional[float] = None,
+    device: Optional[torch.device] = None,
+    dtype: torch.dtype = torch.float32,
+    noise_scheduler: Optional[object] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The default rectified-flow training step, as plain kwargs.
+
+    The exact recipe ``train.py`` runs, without a full ``args`` Namespace or a
+    scheduler — it delegates to ``get_noisy_model_input_and_timesteps``
+    (``tests/test_fm_training_batch.py`` pins the bit-match), with the trainer's
+    argument **defaults** baked in as kwarg defaults.
+
+    Args:
+        latents: clean latents ``(B, C, H, W)`` (or 5D — ndim is honored).
+        noise: ``torch.randn_like(latents)`` drawn by the caller (kept explicit so
+            the caller owns the RNG stream / seeding).
+        The remaining kwargs mirror the identically-named ``args`` fields; the
+        defaults match ``configs/base.toml`` / the argparse defaults. ``device`` /
+        ``dtype`` default to the latents' device and float32 (the trainer casts the
+        noisy input to the weight dtype — pass ``dtype=weight_dtype`` to match).
+
+    Returns:
+        ``(noisy_model_input, timesteps, target)`` where
+
+        * ``noisy_model_input`` is ``(1-σ)·latents + σ·noise`` cast to ``dtype``,
+          same ndim as ``latents`` (NOT unsqueezed to the DiT's 5D — the caller
+          adds the ``dim=2`` singleton, see the 5D-latent invariant in CLAUDE.md);
+        * ``timesteps`` is the flat per-sample ``σ ∈ [0, 1]`` — this IS the DiT
+          time argument, and ``timesteps.view(-1, 1, 1, 1)`` recovers the broadcast
+          ``sigmas`` for loss weighting (``compute_loss_weighting_for_sd3``);
+        * ``target`` is the rectified-flow target ``noise - latents`` (native dtype,
+          uncast — matches ``train.py``'s ``target = noise - latents``).
+    """
+    if device is None:
+        device = latents.device
+    if noise_scheduler is None:
+        # Only consulted by the "sigma" (weighting-scheme) branch; built to match
+        # AnimaTrainer.get_noise_scheduler exactly so that path stays bit-faithful.
+        noise_scheduler = FlowMatchEulerDiscreteScheduler(
+            num_train_timesteps=1000, shift=discrete_flow_shift
+        )
+    args = SimpleNamespace(
+        timestep_sampling=timestep_sampling,
+        discrete_flow_shift=discrete_flow_shift,
+        sigmoid_scale=sigmoid_scale,
+        sigmoid_bias=sigmoid_bias,
+        weighting_scheme=weighting_scheme,
+        logit_mean=logit_mean,
+        logit_std=logit_std,
+        mode_scale=mode_scale,
+        ip_noise_gamma=ip_noise_gamma,
+        ip_noise_gamma_random_strength=ip_noise_gamma_random_strength,
+        t_min=t_min,
+        t_max=t_max,
+    )
+    noisy_model_input, timesteps, _sigmas = get_noisy_model_input_and_timesteps(
+        args, noise_scheduler, latents, noise, device, dtype
+    )
+    target = noise - latents
+    return noisy_model_input, timesteps, target
 
 
 def apply_model_prediction_type(args, model_pred, noisy_model_input, sigmas):

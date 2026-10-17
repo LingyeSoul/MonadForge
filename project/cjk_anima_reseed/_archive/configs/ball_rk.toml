@@ -1,0 +1,12 @@
+# ball_rk — grid_small r0 with its stick held at retrain_kana's (user, 10-04, after
+# _archive/reports/ball_2026_10_04.md): the 81 hiragana rows cold at retrain_kana's mean
+# over them, that mean held, the rows less it trained on grid_small r0's data dir
+# at its bands and budget. Against gs_rkstick (the same data's ball trained on its
+# own stick, moved onto retrain_kana's at render), the one change is the stick
+# under the ball while it trains.
+rows = ["chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをんゔ"]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0921"
+steps_per_row = 135
+ball_on = "retrain_kana"
+data_from = "run1002_grid_small/data"

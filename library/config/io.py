@@ -31,10 +31,9 @@ from library.runtime.proc import no_window_kwargs
 logger = logging.getLogger(__name__)
 
 _DATASET_CONFIG_SECTIONS = {"general", "datasets"}
-# Top-level TOML tables that exist to carry metadata for tooling (variant
-# registry for the GUI), not values for the argparse namespace. They're
-# stripped before flattening so their keys never reach the trainer / schema.
-_METADATA_CONFIG_SECTIONS = {"variant"}
+# tooling metadata (GUI variant registry, [<preset>.gui] display info, [soup]
+# pipeline knobs), not argparse values — stripped before flattening
+_METADATA_CONFIG_SECTIONS = {"variant", "gui", "soup"}
 _NON_FLAT_SECTIONS = _DATASET_CONFIG_SECTIONS | _METADATA_CONFIG_SECTIONS
 # ``methods_subdir`` value selecting the GUI per-variant tree (builtin +
 # sparse user overlay merged via ``_load_gui_method_merged``). Centralized so
@@ -120,11 +119,10 @@ def _read_text_silent(path: Optional[str]) -> Optional[str]:
 def toml_get(cfg: dict, key_path: str, default: Any = None) -> Any:
     """Look up a dotted ``a.b.c`` path in a nested (TOML) dict.
 
-    Returns ``default`` if any segment is missing or a non-dict is hit before
-    the leaf. This is the dotted-path reader the bespoke-schema distill scripts
-    use (``spd.toml`` / ``turbo.toml`` are sectioned configs read raw, not
-    through :func:`load_method_preset`). Unlike :func:`_flatten_toml` it does
-    NOT collapse sections into one namespace — it walks the exact path.
+    Returns ``default`` if any segment is missing. Used by the bespoke-schema
+    distill scripts (``spd.toml`` / ``turbo.toml``, read raw rather than
+    through :func:`load_method_preset`). Unlike :func:`_flatten_toml` this
+    does NOT collapse sections — it walks the exact path.
     """
     node: Any = cfg
     for part in key_path.split("."):
@@ -211,19 +209,15 @@ def _substitute_templates(value: Any, ctx: dict) -> Any:
 def _resolve_method_path(
     configs_dir: str, methods_subdir: str, method: Optional[str]
 ) -> Optional[str]:
-    """Resolve the on-disk path of a method TOML, honoring the self-contained
-    per-method-directory layout.
+    """Resolve the on-disk path of a method TOML.
 
-    A method may live either in the flat folder (``configs/<methods_subdir>/
-    <method>.toml`` — the original layout) or in its own consolidated directory
+    A method may live in the flat folder (``configs/<methods_subdir>/
+    <method>.toml``) or in its own consolidated directory
     (``configs/<method>/<method>.toml`` — method config + inline dataset
-    blueprint in one file, the EasyControl pilot). The per-method dir is
-    preferred when present, but only for the default ``methods`` subdir — the
-    ``gui-methods`` tree stays flat.
-
-    Returns the flat-folder path when no per-method file exists (callers that
-    require the file raise on the missing flat path), or ``None`` when
-    ``method`` is falsy.
+    blueprint in one file). The per-method dir wins
+    when present, but only for the default ``methods`` subdir — ``gui-methods``
+    stays flat. Returns the flat-folder path when no per-method file exists,
+    or ``None`` when ``method`` is falsy.
     """
     if not method:
         return None
@@ -445,11 +439,11 @@ def load_dataset_config_from_base(
     ``configs/base.toml``. Returns ``None`` if no dataset sections are present,
     so callers can fall back to the DreamBooth/in_json code paths.
 
-    String values in the blueprint may reference top-level scalar keys via
-    ``{key}`` placeholders; these are substituted at load time. ``overrides``
-    (typically the merged preset/method args namespace) wins over the raw
-    base.toml top-level — that's how preset / CLI overrides of
-    ``resized_image_dir`` etc. propagate into the dataset subset paths.
+    String values may reference top-level scalar keys via ``{key}``
+    placeholders, substituted at load time; ``overrides`` (the merged
+    preset/method namespace) wins over the raw base.toml top-level, which is
+    how preset/CLI overrides of ``resized_image_dir`` etc. propagate into
+    subset paths.
 
     When ``method`` is given, ``[general]`` and ``[[datasets]]`` sections in
     the matching method TOML shallow-override the base blueprint (top-level
@@ -553,18 +547,10 @@ def load_path_overrides(
     """Top-level scalar keys from model/preprocess → base → custom model →
     preset → method (when given).
 
-    ``configs/preprocess.toml`` holds the preprocess-only knobs
-    (``source_image_dir`` / ``drop_lowres_images`` / ``min_pixels``) split out
-    of base.toml; it's read first so a legacy copy of any of those keys left in
-    base.toml still wins (backward compatible — see the inline note below).
-
     Lightweight — used by ``tasks.py`` preprocess commands so they pick up
     ``source_image_dir`` / ``resized_image_dir`` / ``lora_cache_dir`` overrides
-    without launching accelerate. The method layer is the same one training
-    uses (so a value set in ``configs/gui-methods/lora.toml`` is honored by
-    preprocess too). Missing files / unknown presets are silently ignored —
-    callers fall back to whatever earlier layer provided a value, then to
-    hard-coded defaults.
+    without launching accelerate. Missing files / unknown presets are silently
+    ignored — callers fall back to an earlier layer, then hard-coded defaults.
     """
     configs_dir = str(resolve_under_home(configs_dir))
     out: dict = {}
@@ -579,10 +565,8 @@ def load_path_overrides(
             with open(preprocess_path, "r", encoding="utf-8") as f:
                 out.update(_flat_scalars(toml.load(f)))
 
-    # `target_res` is the exception to the "legacy base.toml copy wins" rule
-    # above: it's owned by preprocess.toml (user-edited, preserved across
-    # `make update`), so a stray copy left in base.toml must NOT clobber it.
-    # preset / method layers may still override per run.
+    # exception: target_res is owned by preprocess.toml (preserved across
+    # `make update`), so a stray copy in base.toml must NOT clobber it
     pp_has_target_res = "target_res" in out
 
     # base → preset → method, each projected to its flat scalars (later wins).
@@ -647,6 +631,10 @@ def _resolve_preset(preset: str, configs_dir: str = "configs") -> tuple[dict, st
     legacy ``configs/custom/`` location.
     """
     configs_dir = str(resolve_under_home(configs_dir))
+
+    def _strip_meta(section: dict) -> dict:
+        return {k: v for k, v in section.items() if k not in _METADATA_CONFIG_SECTIONS}
+
     presets_path = os.path.join(configs_dir, "presets.toml")
     if os.path.exists(presets_path):
         with open(presets_path, "r", encoding="utf-8") as f:
@@ -656,7 +644,7 @@ def _resolve_preset(preset: str, configs_dir: str = "configs") -> tuple[dict, st
             if not isinstance(section, dict):
                 raise ValueError(f"Preset '{preset}' in {presets_path} is not a table")
             return (
-                dict(section),
+                _strip_meta(section),
                 presets_path,
                 f"{_display_path(presets_path)}[{preset}]",
             )
@@ -673,7 +661,7 @@ def _resolve_preset(preset: str, configs_dir: str = "configs") -> tuple[dict, st
                 data = toml.load(f)
             if not isinstance(data, dict):
                 raise ValueError(f"Custom preset {cp} is not a TOML table")
-            return data, cp, _display_path(cp)
+            return _strip_meta(data), cp, _display_path(cp)
     available: list[str] = []
     if os.path.exists(presets_path):
         with open(presets_path, "r", encoding="utf-8") as f:
@@ -748,9 +736,8 @@ def _iter_method_preset_layers(
     ``load_path_overrides`` takes every scalar), so each prepends it itself.
 
     Error policy follows ``require_files``: True (training path) raises
-    ``FileNotFoundError`` on a missing base/method TOML and lets an unknown
-    preset raise; False (lightweight preprocess path) skips missing files and
-    unknown presets silently.
+    ``FileNotFoundError`` on a missing base/method TOML; False (lightweight
+    preprocess path) skips missing files and unknown presets silently.
     """
     base_path = os.path.join(configs_dir, "base.toml")
     model_path = os.path.join(configs_dir, "model.toml")
@@ -827,12 +814,9 @@ def load_method_preset(
     """Merge model paths → base → preset → method into a flat dict.
 
     Method settings win over preset settings on overlap (e.g. postfix can force
-    blocks_to_swap=0 regardless of the hardware preset).
-
-    `methods_subdir` selects which folder under `configs_dir` holds the method
-    files. Defaults to ``"methods"``; pass ``"gui-methods"`` to pick up the
-    clean, self-contained per-variant files used by the GUI / `make lora-gui`
-    path instead of the toggle-block method files.
+    blocks_to_swap=0 regardless of the hardware preset). ``methods_subdir``
+    defaults to ``"methods"``; pass ``"gui-methods"`` for the clean per-variant
+    files used by the GUI / `make lora-gui` path.
 
     When ``return_provenance=True`` returns ``(merged, provenance)`` where
     ``provenance[key]`` is a short human-readable source tag (e.g.
@@ -862,13 +846,12 @@ def load_method_preset(
         if os.path.exists(preprocess_path):
             with open(preprocess_path, "r", encoding="utf-8") as f:
                 pp_raw = toml.load(f)
-            for key in ("target_res", "multires_per_image"):
+            for key in ("target_res", "multires_per_image", "mask_dir"):
                 if key in pp_raw:
                     merged[key] = pp_raw[key]
                     provenance[key] = _display_path(preprocess_path)
 
-    # preprocess.toml owns target_res; a stale copy in base.toml must not clobber
-    # the seed above (preset / method / CLI may still override per run).
+    # a stale target_res copy in base.toml must not clobber the seed above
     pp_has_target_res = "target_res" in merged
 
     for kind, path, tag, raw in _iter_method_preset_layers(
@@ -979,7 +962,7 @@ def _render_merged_toml(
         lines.append(f"# Git: {sha}")
     lines.append("")
 
-    # Group by source so the dump reads top-down: model → base → preset → method → CLI.
+    # group by source so the dump reads top-down: base -> preset -> method -> CLI
     by_source: dict[str, list[tuple[str, Any]]] = {}
     for key, value, source in entries:
         by_source.setdefault(source, []).append((key, value))
@@ -1071,10 +1054,8 @@ def _write_config_snapshot(
         return None
     logger.info(f"Config snapshot written: {path}")
 
-    # Mirror into the run's TB log dir so the timestamped run dir becomes a
-    # self-contained record of "this run + the config that produced it".
-    # The canonical copy at output_dir/<output_name>.snapshot.toml stays in
-    # place; a failure here is logged but not fatal.
+    # mirror into the run's TB log dir too, so it's a self-contained record;
+    # failure here is logged but not fatal
     if getattr(args, "logging_dir", None):
         try:
             from library.runtime.accelerator import resolve_run_log_dir
@@ -1127,7 +1108,7 @@ def read_config_from_file(
     print_config = bool(getattr(args, "print_config", False))
     write_snapshot = bool(getattr(args, "config_snapshot", False))
 
-    # New-style chain: --method / --preset
+    # --method / --preset chain
     method = getattr(args, "method", None)
     preset = getattr(args, "preset", None) or "default"
     methods_subdir = getattr(args, "methods_subdir", None) or "methods"

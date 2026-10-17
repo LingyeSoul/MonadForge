@@ -1,0 +1,14 @@
+# kana_up — kana_mix with every tier's upper σ edge 0.1 higher (user, 10-04):
+# the table's tops sit at the gradient's half point (grid_44 0.75, read 0.74 on
+# 10-03), retrain_kana trained above them; kana_big (a 65 px tier inside its
+# band) tied kana_mix (_archive/reports/grid_64_2026_10_03.md).
+rows = [
+    "chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをん",
+    "chars:ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロワヲン・ー",
+    "chars:ヴヶゔヵ",
+]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0921"
+steps_per_row = 135
+shares = { grid_44 = 10, grid_29 = 10, grid_16 = 5, lone_44 = 2.5, lone_28 = 2.5, lone_16 = 2.5, bubble1_52 = 13.5, bubble1_32 = 20.25, bubbleN_34 = 20.25, bubbleN_18 = 13.5, grid_64 = 0 }
+upper_shift = 0.1

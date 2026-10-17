@@ -16,6 +16,65 @@ from library.models import qwen_vae as qwen_image_autoencoder_kl
 logger = logging.getLogger(__name__)
 
 
+def write_gen_manifest(
+    args: argparse.Namespace,
+    image_paths: list[str],
+    *,
+    label: Optional[str] = None,
+) -> Optional[str]:
+    """Under a daemon spawn, record a generation manifest + result pointer.
+
+    The daemon exports ``ANIMA_DAEMON_JOB_DIR`` into every job's env. When set,
+    we write a manifest (``gen_manifest.json``) into the job dir and drop
+    ``result_path.json`` → ``{"path": <abs manifest>}`` so the monitor lifts
+    ``result_path`` + ``result_summary`` (``{label, metrics}``) onto the job
+    record, as for bench results.
+
+    Absent the env var (a plain inline ``python inference.py``) this is a
+    no-op. Best-effort: a bad
+    job dir must never fail a completed generation. Returns the manifest path (or
+    None when inline / on failure).
+
+    The manifest carries ``label`` + ``metrics`` (the two keys the daemon lifts)
+    plus the full image list; ``label`` defaults to the adapter stem so
+    ``daemon-wait`` / ``python -m anima_daemon status <id>`` shows what was
+    rendered.
+    """
+    import json
+
+    job_dir = os.environ.get("ANIMA_DAEMON_JOB_DIR")
+    if not job_dir:
+        return None
+    if label is None:
+        lw = getattr(args, "lora_weight", None)
+        # lora_weight may be a list (stacked adapters) or a str; take the first.
+        if isinstance(lw, (list, tuple)):
+            lw = lw[0] if lw else None
+        label = os.path.splitext(os.path.basename(str(lw)))[0] if lw else "base"
+    manifest = {
+        "kind": "generation",
+        "label": label,
+        "metrics": {
+            "n_images": len(image_paths),
+            "infer_steps": getattr(args, "infer_steps", None),
+            "guidance_scale": getattr(args, "guidance_scale", None),
+            "sampler": getattr(args, "sampler", None),
+        },
+        "save_path": str(getattr(args, "save_path", "")),
+        "images": list(image_paths),
+    }
+    try:
+        jd = os.path.abspath(job_dir)
+        manifest_path = os.path.join(jd, "gen_manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+        with open(os.path.join(jd, "result_path.json"), "w", encoding="utf-8") as f:
+            json.dump({"path": manifest_path}, f)
+        return manifest_path
+    except OSError:
+        return None
+
+
 def get_time_flag():
     return datetime.datetime.fromtimestamp(time.time()).strftime("%Y%m%d-%H%M%S-%f")[
         :-3
@@ -46,6 +105,9 @@ def decode_latent(
 ) -> torch.Tensor:
     logger.info(f"Decoding image. Latent shape {latent.shape}, device {device}")
 
+    # Restore the caller's placement afterwards: a VAE the batch path parked on
+    # the GPU stays resident; a CPU-loaded one goes back to CPU.
+    home = next(vae.parameters()).device
     vae.to(device)
     with torch.no_grad():
         pixels = vae.decode_to_pixels(latent.to(device, dtype=vae.dtype))
@@ -57,7 +119,7 @@ def decode_latent(
     pixels = pixels.to(
         "cpu", dtype=torch.float32
     )  # move to CPU and convert to float32 (bfloat16 is not supported by numpy)
-    vae.to("cpu")
+    vae.to(home)
 
     logger.info(f"Decoded. Pixel shape {pixels.shape}")
     return pixels[0]  # remove batch dimension
@@ -120,8 +182,7 @@ def decode_to_pil(
     """Decode a clean latent straight to a ``PIL.Image`` — the in-memory exit.
 
     Composes ``decode_latent`` (VAE decode → ``[-1,1]`` CHW tensor) with
-    ``pixels_to_pil``, so embedders who want an image to composite / return over
-    HTTP / score don't have to round-trip through a temp PNG via ``save_output``.
+    ``pixels_to_pil``, with no temp PNG round-trip through ``save_output``.
     """
     return pixels_to_pil(decode_latent(vae, latent, device))
 

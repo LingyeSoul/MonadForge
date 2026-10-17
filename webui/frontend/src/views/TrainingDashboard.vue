@@ -274,7 +274,7 @@ async function fetchHwStats() {
 const selectedTaskId = ref('')
 const selectedTaskModel = computed(() => {
   const task = taskStore.tasks.find(item => item.task_id === selectedTaskId.value)
-  return task ? task.command.startsWith('qwen21-') ? 'Qwen-Image 2.1' : 'Anima' : '—'
+  return task ? task.command.startsWith('moss-') ? 'MOSS' : task.command.startsWith('qwen21-') ? 'Qwen-Image 2.1' : 'Anima' : '—'
 })
 const streamHandle = shallowRef<ReturnType<typeof useTrainingStream> | null>(null)
 

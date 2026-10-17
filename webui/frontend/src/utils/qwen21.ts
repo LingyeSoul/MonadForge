@@ -18,16 +18,19 @@ export interface QwenSchema {
   cache: QwenField[]
   train: QwenField[]
   generate: QwenField[]
+  tune?: QwenField[]
 }
 export interface QwenDraft {
   models: Values
   cache: Values
   train: Values
   generate: Values
+  tune?: Values
 }
 export interface QwenResult {
   file: string
-  multiplier: number
+  multiplier: number | null
+  model?: string
   seed: number
   prompt: string
 }
@@ -69,14 +72,14 @@ function field(value: Json): QwenField {
 }
 export function parseSchema(value: Json): QwenSchema {
   const row = object(value, 'Qwen schema')
-  function fields(phase: Phase): QwenField[] {
+  function fields(phase: Phase | 'tune'): QwenField[] {
     const entries = row[phase]
     if (!Array.isArray(entries)) throw new Error(`Missing ${phase} fields`)
     const result = entries.map(field)
     if (new Set(result.map(item => item.name)).size !== result.length) throw new Error(`Duplicate ${phase} fields`)
     return result
   }
-  return { cache: fields('cache'), train: fields('train'), generate: fields('generate') }
+  return { cache: fields('cache'), train: fields('train'), generate: fields('generate'), ...(row.tune ? { tune: fields('tune') } : {}) }
 }
 export function initialDraft(schema: QwenSchema): QwenDraft {
   const defaults = (fields: QwenField[]): Values => Object.fromEntries(fields.map(item => [item.name, item.value]))
@@ -85,6 +88,7 @@ export function initialDraft(schema: QwenSchema): QwenDraft {
     cache: defaults(schema.cache.filter(item => !modelFields.has(item.name))),
     train: defaults(schema.train.filter(item => !modelFields.has(item.name))),
     generate: defaults(schema.generate.filter(item => !modelFields.has(item.name))),
+    ...(schema.tune ? { tune: defaults(schema.tune.filter(item => !modelFields.has(item.name))) } : {}),
   }
 }
 export function checkedValues(fields: QwenField[], value: Json): Values {
@@ -113,6 +117,7 @@ export function readDraft(schema: QwenSchema, text: string | null): QwenDraft {
     cache: checkedValues(schema.cache.filter(item => !modelFields.has(item.name)), row.cache),
     train: checkedValues(schema.train.filter(item => !modelFields.has(item.name)), row.train),
     generate: checkedValues(schema.generate.filter(item => !modelFields.has(item.name)), row.generate),
+    ...(schema.tune ? { tune: checkedValues(schema.tune.filter(item => !modelFields.has(item.name)), row.tune) } : {}),
   }
 }
 export async function requestJson(path: string, init: RequestInit): Promise<Json> {
@@ -133,16 +138,16 @@ export function jobId(value: Json): string {
   if (!id) throw new Error('Empty task_id in Qwen response')
   return id
 }
-export function resolvedPaths(value: Json): Record<string, string> {
+export function resolvedPaths(value: Json, family: 'qwen21' | 'moss' = 'qwen21'): Record<string, string> {
   const row = object(value, 'Qwen model paths')
-  return Object.fromEntries(['dit', 'text_encoder', 'vae', 'processor', 'scheduler'].map(name => [name, string(row[name], name)]))
+  return Object.fromEntries((family === 'moss' ? ['dit', 'text_encoder', 'vae', 'tokenizer'] : ['dit', 'text_encoder', 'vae', 'processor', 'scheduler']).map(name => [name, string(row[name], name)]))
 }
-export function resultImages(value: Json): QwenResult[] {
+export function resultImages(value: Json, family: 'qwen21' | 'moss' = 'qwen21'): QwenResult[] {
   const row = object(value, 'Qwen results')
   if (!Array.isArray(row.images)) throw new Error('Missing Qwen result images')
   return row.images.map(value => {
     const image = object(value, 'Qwen image')
-    return { file: string(image.file, 'file'), prompt: string(image.prompt, 'prompt'), multiplier: number(image.multiplier, 'multiplier'), seed: number(image.seed, 'seed') }
+    return { file: string(image.file, 'file'), prompt: string(image.prompt, 'prompt'), multiplier: family === 'moss' ? null : number(image.multiplier, 'multiplier'), seed: number(image.seed, 'seed'), ...(family === 'moss' ? { model: string(image.model, 'model') } : {}) }
   })
 }
 

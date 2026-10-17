@@ -1,0 +1,83 @@
+{
+ "_comment": "Phase-K0 KO eval set (plan_ko.md K0 step 1). Same 20 ids as ja_eval_prompts.json; `en` is copied verbatim (teacher side identical). `ko` is the wording a Korean user would type (Arca Live register), not textbook translation. Per-row register decisions, recorded per plan: 1girl -> '소녀 1명' (hangul chosen over latin '1girl' so the row exercises ext rows; latin-tag input is covered by G1/EN bit-exactness), looking at viewer -> '카메라 응시', twintails -> '트윈테일' (loanword), armor -> '갑옷' (native chosen; loanword '아머' axis goes to the K1 glossary review), cape -> '망토', maid -> '메이드', hoodie -> '후드티', depth of field -> '피사계 심도', from above -> '부감', wide shot -> '와이드샷', monochrome -> '흑백'. Quotes use Korean double quotes, not 「」. Tag rows join with ', '; prose rows are plain sentences with ', ' punctuation (nobody types '、' in Korean — plan_ko.md K1 step 4).",
+ "t1_tags_school": {
+  "en": "1girl, black hair, long hair, school uniform, classroom, sitting, looking at viewer, smile, anime style",
+  "ko": "소녀 1명, 검은 머리, 긴 머리, 교복, 교실, 앉아 있음, 카메라 응시, 미소, 애니메이션 스타일"
+ },
+ "t2_tags_maid": {
+  "en": "1girl, maid, white apron, blonde hair, twintails, blue eyes, holding a tray, indoors, detailed background",
+  "ko": "소녀 1명, 메이드, 하얀 앞치마, 금발, 트윈테일, 파란 눈, 쟁반을 들고 있음, 실내, 세밀한 배경"
+ },
+ "t3_tags_armor": {
+  "en": "1girl, knight, silver armor, red cape, sword, standing, castle, cloudy sky, dramatic lighting",
+  "ko": "소녀 1명, 기사, 은색 갑옷, 빨간 망토, 검, 서 있음, 성, 흐린 하늘, 극적인 조명"
+ },
+ "t4_tags_cat": {
+  "en": "1girl, cat ears, animal ear fluff, hoodie, sitting on bed, night, room, soft lighting, looking away",
+  "ko": "소녀 1명, 고양이 귀, 복슬복슬한 짐승 귀, 후드티, 침대에 앉아 있음, 밤, 방, 부드러운 조명, 시선 돌림"
+ },
+ "t5_tags_two": {
+  "en": "2girls, twins, matching outfits, holding hands, cherry blossoms, spring, outdoors, full body",
+  "ko": "소녀 2명, 쌍둥이, 커플룩, 손을 잡음, 벚꽃, 봄, 야외, 전신"
+ },
+ "t6_tags_boy": {
+  "en": "1boy, short hair, glasses, white shirt, library, reading a book, from side, depth of field",
+  "ko": "소년 1명, 짧은 머리, 안경, 하얀 셔츠, 도서관, 책을 읽음, 옆모습, 피사계 심도"
+ },
+ "s1_scene_rain": {
+  "en": "a girl with an umbrella standing at a crosswalk in the rain at night, neon signs reflected on the wet road",
+  "ko": "비 오는 밤 우산을 쓴 소녀가 횡단보도에 서 있고, 젖은 도로에 네온 간판이 비친다"
+ },
+ "s2_scene_kitchen": {
+  "en": "a young woman cooking breakfast in a sunlit kitchen, steam rising from the pan, warm morning light",
+  "ko": "햇살이 드는 부엌에서 젊은 여자가 아침을 만들고 있고, 프라이팬에서 김이 피어오른다, 따뜻한 아침 햇살"
+ },
+ "s3_scene_train": {
+  "en": "a schoolgirl dozing off by the window of an empty train, late afternoon sunlight across the seats",
+  "ko": "텅 빈 전철 창가에서 여학생이 졸고 있다, 늦은 오후 햇살이 좌석을 가로지른다"
+ },
+ "s4_scene_festival": {
+  "en": "two friends in yukata eating shaved ice at a summer festival, paper lanterns glowing behind them",
+  "ko": "여름 축제에서 유카타를 입은 두 친구가 빙수를 먹고 있다, 뒤에서 종이 등불이 빛나고 있다"
+ },
+ "s5_scene_studio": {
+  "en": "an illustrator drawing on a tablet in a cluttered room at midnight, only the monitor lighting her face",
+  "ko": "한밤중 어질러진 방에서 일러스트레이터가 태블릿에 그림을 그리고 있다, 모니터 불빛만이 그녀의 얼굴을 비춘다"
+ },
+ "q1_quote_sign": {
+  "en": "1girl, school uniform, classroom, holding a wooden sign with \"GOOD MORNING\" written on it, anime style",
+  "ko": "소녀 1명, 교복, 교실, \"좋은 아침\"이라고 적힌 나무 팻말을 들고 있음, 애니메이션 스타일"
+ },
+ "q2_quote_shop": {
+  "en": "a small cafe storefront with a hanging cloth curtain reading \"OPEN\", potted plants beside the door",
+  "ko": "\"영업중\"이라고 적힌 가림천이 걸린 작은 카페 앞, 문 옆에 화분"
+ },
+ "q3_quote_book": {
+  "en": "1girl, holding an open notebook toward the viewer with \"THANK YOU\" written on the page, smiling",
+  "ko": "소녀 1명, \"감사합니다\"라고 적힌 펼친 노트를 이쪽으로 들어 보임, 미소"
+ },
+ "n1_name_hakurei": {
+  "en": "hakurei reimu, touhou, red and white miko outfit, detached sleeves, shrine, standing, anime style",
+  "ko": "하쿠레이 레이무, 동방프로젝트, 홍백 무녀복, 분리형 소매, 신사, 서 있음, 애니메이션 스타일"
+ },
+ "n2_name_asuka": {
+  "en": "souryuu asuka langley, neon genesis evangelion, red plugsuit, interface headset, serious expression",
+  "ko": "소류 아스카 랑그레이, 신세기 에반게리온, 빨간 플러그슈트, 인터페이스 헤드셋, 진지한 표정"
+ },
+ "n3_name_place": {
+  "en": "a shrine on a mountain in kyoto in autumn, red maple leaves, stone stairs, no humans",
+  "ko": "가을의 교토, 산 위의 신사, 단풍, 돌계단, 인물 없음"
+ },
+ "c1_comp_closeup": {
+  "en": "close-up portrait, 1girl, freckles, green eyes, wind-blown hair, shallow depth of field, backlighting",
+  "ko": "클로즈업 초상화, 소녀 1명, 주근깨, 초록 눈, 바람에 날리는 머리, 얕은 피사계 심도, 역광"
+ },
+ "c2_comp_wide": {
+  "en": "wide shot, 1girl, tiny figure in a vast field of sunflowers, blue sky, from above, summer",
+  "ko": "와이드샷, 소녀 1명, 광활한 해바라기 밭 속의 작은 인영, 파란 하늘, 부감, 여름"
+ },
+ "c3_comp_mono": {
+  "en": "monochrome, greyscale, 1girl, sitting on a windowsill, cigarette smoke, film grain, 1990s anime style",
+  "ko": "흑백, 그레이스케일, 소녀 1명, 창턱에 앉아 있음, 담배 연기, 필름 그레인, 1990년대 애니메이션 스타일"
+ }
+}

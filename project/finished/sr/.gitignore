@@ -1,0 +1,4 @@
+# vendored source (resshift/) IS committed; the old venv, weights and data are not
+/.venv/
+/data/
+**/weights/

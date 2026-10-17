@@ -6,9 +6,9 @@ table (see ``webui/services/config_service.py``). This module pins:
 * every built-in is loadable via ``load_method_preset(..., methods_subdir="gui-methods")``
 * every built-in carries a ``[variant].family`` string
 * no built-in surfaces a retired router knob as a TOML key
-* output_name is unique across built-ins, with one explicit exception:
-  the plain ``lora`` family ships three hardware/length variants that all
-  bake to the same ``"anima"`` adapter on purpose.
+* output_name is unique across built-ins (the allowlist below covers
+  families that may again ship same-model variants; hardware now composes
+  via the presets.toml Hardware picker instead of per-variant file copies).
 
 Customs under ``configs/gui-methods/custom/`` are intentionally exempt —
 users name and structure those freely.
@@ -33,9 +33,9 @@ GUI_METHODS_DIR = REPO_ROOT / "configs" / "gui-methods"
 _LEGACY_ROUTER_KEYS = ("use_hydra", "use_sigma_router", "use_fei_router")
 
 # Built-in variants in the same family may legitimately share an output_name
-# when they're hardware/length variants of the same model (e.g. all three
-# plain-LoRA variants bake the same adapter under different VRAM/epoch
-# budgets). Listed here as (family, output_name) pairs.
+# when they're same-model variants under different length/quality budgets
+# (hardware variants no longer exist as file copies — the GUI composes the
+# presets.toml Hardware preset instead). Listed as (family, output_name) pairs.
 _INTENTIONAL_OUTPUT_NAME_COLLISIONS: set[tuple[str, str]] = {
     ("lora", "anima"),
     ("tlora", "anima_tlora_ortho"),
@@ -82,9 +82,7 @@ def test_builtin_loads_clean(path: Path, caplog):
     chain — no schema warnings, no missing files."""
     caplog.clear()
     with caplog.at_level(logging.WARNING):
-        merged = load_method_preset(
-            path.stem, "default", methods_subdir="gui-methods"
-        )
+        merged = load_method_preset(path.stem, "default", methods_subdir="gui-methods")
     # Required keys must show up downstream — guarantees the merge didn't
     # silently drop everything.
     assert "network_module" in merged
@@ -92,8 +90,7 @@ def test_builtin_loads_clean(path: Path, caplog):
     offenders = [
         rec.getMessage()
         for rec in caplog.records
-        if rec.levelno >= logging.WARNING
-        and rec.name.startswith("library.")
+        if rec.levelno >= logging.WARNING and rec.name.startswith("library.")
     ]
     assert not offenders, f"{path.name} produced warnings: {offenders}"
 
@@ -117,7 +114,11 @@ def test_no_unintentional_output_name_collisions():
         if len(owners) == 1:
             continue
         families = {f for f, _ in owners}
-        if len(families) == 1 and (next(iter(families)), output_name) in _INTENTIONAL_OUTPUT_NAME_COLLISIONS:
+        if (
+            len(families) == 1
+            and (next(iter(families)), output_name)
+            in _INTENTIONAL_OUTPUT_NAME_COLLISIONS
+        ):
             continue
         owner_str = ", ".join(f"{stem} (family={family})" for family, stem in owners)
         bad.append(f"output_name={output_name!r} shared by: {owner_str}")

@@ -22,6 +22,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.mark.training_step
 def test_v100_flash_dense_inductor_fullgraph_dynamic_backward():
     from networks.attention_dispatch import (
         flash_attn_func,
@@ -61,6 +62,7 @@ def test_v100_flash_dense_inductor_fullgraph_dynamic_backward():
         assert x.grad is not None and torch.isfinite(x.grad).all()
 
 
+@pytest.mark.training_step
 def test_v100_flash_varlen_inductor_fullgraph_backward():
     from networks.attention_dispatch import flash_attn_varlen_func
 

@@ -223,6 +223,7 @@ def test_collate_mask_and_pe():
 # ── unsloth-ckpt grad flow ────────────────────────────────────────────────────
 
 
+@pytest.mark.training_step
 def test_unsloth_ckpt_propagates_param_grads_via_input():
     """The REPA forward is wrapped in selective_block_grad_ckpt (unsloth path).
 

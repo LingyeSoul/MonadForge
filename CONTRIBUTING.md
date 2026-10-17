@@ -48,56 +48,43 @@ The shape of the Tier 2 PR (new method + paper + a turbo bench + docs/methods en
 
 If Phase 1 fails after one rank bump, the proposal explicitly says kill it — don't grind. The phase gates are there to bound the contributor's downside.
 
-### 3. DCW calibration
-
-DCW v4 (`make dcw` → `fusion_head.safetensors`) ships. The wall is calibration coverage: each released LoRA needs its own fusion head, and several v4 controller paths are stubbed. See [`docs/inference/dcw.md`](docs/inference/dcw.md) "Limitations / open questions".
-
-- **σ̂² channel re-train (3-seed rerun).** Prototype fails Gate B on the variance head, so the shipped controller is α̂-only (no σ̂²-shrinkage path) until this clears. Run `make dcw` across 3 independent seeds, retrain `train_fusion_head.py` with the combined pool, re-evaluate Gate B. If it still fails, document the failure and keep the controller α̂-only permanently. *[Tier 1.5 — bench script exists, the contribution is the seed sweep + write-up]*
-- **Tiled inference path.** v4 controller currently no-ops under tiled VAE/DiT. The single-tile `c_pool` / `g_obs` is ill-defined at tile boundaries. Two paths: (a) compute one global `c_pool` / `g_obs` before tiling and broadcast it across tiles, (b) keep the no-op and document. Either is a valid PR; (a) is preferred. *[Tier 1.5]*
-- **CFG drift.** v4 is calibrated at CFG=4 only — the production setting. CFGs other than 4 fall back to scalar. A CFG=1 / CFG=7 calibration pool + a (not-yet-built) CFG-select switch on the calibrator would close the gap. The CFG=1 case in particular intersects with paper-direction sign-flips (`project_dcw_cfg_aspect_signflip`). *[Tier 2-shaped — new calibration pool counts as a bench artifact]*
-- **Cached-Spectrum `x0_pred` ablation.** v4 should still help under Spectrum because the correction is bias-agnostic, but the Chebyshev forecaster biases `x0_pred` and the row hasn't been measured. One bench run, one ablation table. *[Tier 1.5]*
-- **Per-released-LoRA fusion heads.** Each major LoRA release should ship its calibrated head as a sibling artifact (`<lora_name>.fusion_head.safetensors`). The current `make dcw` is incremental — the contribution is running it on each released checkpoint and publishing the head. *[Tier 1 — operational, no code]*
-- **`scripts/dcw/` documentation pass.** `measure_bias.py`, `train_fusion_head.py`, `haar.py`, `trajectory.py`, `collect_fei_sidecar.py` are under-commented. Reviewing each as a contributor would, and improving the docstrings / `--help` strings, is welcome. *[Tier 1]*
-
-### 4. Filling the bench gaps
+### 3. Filling the bench gaps
 
 The `bench/<method>/` convention from Tier 2 below requires every method bench to ship a `README.md` (what it measures, run command, output layout, baseline run, interpretation). Several existing subdirs predate that requirement and are missing it:
 
 | Subdir | Status | What it has | What's needed |
 |---|---|---|---|
-| `bench/dcw/` | **No README** | `covariance_ceiling.py`, `k_supervision_sweep.py`, `stability_predictor_check.py`, `sweep_buckets.py`, `transfer_hypothesis_check.py`, `plot_seed_band.py` + a `results/` corpus | One README that maps each script to a finding and links to a canonical results dir |
-| `bench/spd/`, `bench/dave/`, `bench/mod_guidance/` | Has README | per-method probe ladder + `results/` | Use these as the shape template |
+| `bench/dave/`, `bench/memorization/` | Has README | per-method probe ladder + `results/` | Use these as the shape template |
 
-Each missing README is a self-contained Tier 1 PR. Use `bench/spd/README.md` as the model: headline, what each script does, a copy-pasteable run command, the headline number(s) and what "good" looks like, links to representative `results/<timestamp>/` runs, and an "Observed on Anima" section.
+Each missing README is a self-contained Tier 1 PR. Use `_archive/spd/bench/README.md` as the model (the SPD bench is retired, but its README remains the shape to copy): headline, what each script does, a copy-pasteable run command, the headline number(s) and what "good" looks like, links to representative `results/<timestamp>/` runs, and an "Observed on Anima" section.
 
 A second-order bench-gap contribution worth calling out:
 
 - **Envelope conformance.** Older bench scripts predate `bench/_common.py` and don't drop a `result.json` via `make_run_dir` + `write_result`. Auditing each script and converting the holdouts (so cross-run indexing actually works) is a clean Tier 1 PR per script.
 - **A dedicated turbo bench** lands as part of the Turbo LoRA contribution in (2) above (currently `bench/turbo/`).
 
-### 5. Translations & localization
+### 4. Translations & localization
 
-Translatable content lives in four places, each with its own contribution shape but all reviewed as Tier 1 (no bench, no test — `python -m webui` walkthrough screenshots in the PR description are the proof). Missing entries in every surface below **fall back to English**, so it's fine to ship an incomplete translation and grow it over time. Currently shipped: `en` (canonical), `ko` (mostly complete), `cn` (machine-translated stub, unproofread).
+Translatable content lives in four places, each with its own contribution shape but all reviewed as Tier 1 (no bench, no test — `make gui` walkthrough screenshots in the PR description are the proof). Missing entries in every surface below **fall back to English**, so it's fine to ship an incomplete translation and grow it over time. Currently shipped: `en` (canonical), `ko` (mostly complete), `cn` (machine-translated stub, unproofread).
 
-**(a) UI strings — `webui/i18n/strings/<code>.py`.** One module per language, each exporting `STRINGS: dict[str, str]`. `webui/i18n/loader.py` assembles these via `get_translations()` and exposes `current_language()` / `set_language()`. To **add a new language**, drop in `webui/i18n/strings/<code>.py` mirroring `en.py`'s key set, and register it in the `get_translations()` loop. Every key you do include must use the same `{placeholder}` names as the English source — the i18n lookup calls `.format(**kwargs)` and will raise at runtime on a typo. *[Tier 1]*
+**(a) GUI strings — `gui/i18n/<code>.py`.** One module per language, each exporting `STRINGS: dict[str, str]`. `gui/i18n/__init__.py` assembles these into `TRANSLATIONS` and `t(key, **kwargs)` resolves keys against the current language. To **add a new language**, drop in `gui/i18n/<code>.py` mirroring `en.py`'s key set, register it in `TRANSLATIONS`, and add a friendly label to `LANG_NAMES` in `gui/app.py` (e.g. `"ja": "日本語"`). Every key you do include must use the same `{placeholder}` names as the English source — `t()` calls `.format(**kwargs)` and will raise at runtime on a typo. *[Tier 1]*
 
-**(b) Per-field tooltips — `webui/explanations/__init__.py`.** Two dict-of-dicts power the form-field help: `FIELD_HELP` (config-form tooltips, ~50 keys) and `PREPROCESS_FIELD_HELP` (Preprocessing tab knobs, ~10 keys). Each entry is `{"en": "...", "ko": "..."}`. Add your language code as a sibling key in every entry you want translated. `field_help()` / `preprocess_field_help()` fall back to `"en"` for missing language keys. These are the strings users see when they click a form-row label, so translation quality matters more than for transient buttons — keep technical terms (LoRA, MoE, σ-bucket, VAE) untranslated. *[Tier 1]*
+**(b) Per-field tooltips — `gui/explanations/__init__.py`.** Two dict-of-dicts power the form-field help: `FIELD_HELP` (config-form tooltips, ~50 keys) and `PREPROCESS_FIELD_HELP` (Preprocessing tab knobs, ~10 keys). Each entry is `{"en": "...", "ko": "..."}`. Add your language code as a sibling key in every entry you want translated. `field_help()` / `preprocess_field_help()` fall back to `"en"` for missing language keys. These are the strings users see when they click a form-row label, so translation quality matters more than for transient buttons — keep technical terms (LoRA, MoE, σ-bucket, VAE) untranslated. *[Tier 1]*
 
-**(c) Long-form method guides — `webui/explanations/guides/<name>.<lang>.html`.** Right-panel HTML blocks for method variants and the Preprocessing tab. Filename convention is `<name>.<lang>.html`; the loader (`_read_guide` in `webui/explanations/__init__.py`) auto-falls back to `.en.html` when the language version is absent. Names currently present: `lora`, `tlora`, `hydralora`, `fera`, `reft`, `postfix`, `preprocess`, plus the shared snippets `_apply_note` and `_not_mergeable`. To translate, drop in `<name>.<code>.html` files alongside the English ones — no code change required. Preserve any `<a href="…">`, `<code>`, and color-coded `<span>` markup. *[Tier 1]*
+**(c) Long-form method guides — `gui/explanations/guides/<name>.<lang>.html`.** Right-panel HTML blocks for method variants and the Preprocessing tab. Filename convention is `<name>.<lang>.html`; the loader (`_read_guide` in `gui/explanations/__init__.py`) auto-falls back to `.en.html` when the language version is absent. Names currently present: `lora`, `tlora`, `hydralora`, `preprocess`, plus the shared snippets `_apply_note` and `_not_mergeable`. To translate, drop in `<name>.<code>.html` files alongside the English ones — no code change required. Preserve any `<a href="…">`, `<code>`, and color-coded `<span>` markup; the GUI's QTextBrowser renders these. *[Tier 1]*
 
 **(d) Docs and structure images — `docs/`.**
-- `docs/guidelines/가이드북.md` is the end-to-end onboarding doc and only exists in Korean. An English translation (or any other language) would significantly widen the audience.
-- `docs/structure_images_korean/` holds Korean-labeled versions of the architecture diagrams under `docs/structure_images/` (e.g. `animakor.png` ↔ `anima.png`). English/other-language equivalents are welcome under the natural sibling tree (`docs/structure_images/` is the English baseline; `docs/structure_images_<lang>/` for translations). Mention which markdown files reference the diagram so the reviewer can update the embed paths.
-- Method docs under `docs/methods/`, `docs/experimental/`, `docs/proposal/`, and `docs/optimizations/` are **English-only by convention** — translations are welcome as `<name>.<code>.md` siblings, but nothing reads them at runtime yet. Don't translate `CLAUDE.md` — that file is consumed by Claude Code and is single-source-of-truth for project conventions.
+- `docs/guidelines/가이드북.md` is the end-to-end onboarding doc and only exists in Korean. An English translation (or any other language) would significantly widen the audience. The `guidebook_tooltip` string in `gui/i18n/en.py` currently points users at the Korean file — once a translation lands, wire the Guidebook button (in `gui/app.py`) to pick the right file based on `current_language()`.
+- `docs/structure_images_korean/` holds Korean-labeled versions of the architecture diagrams under `docs/structure_images/` (e.g. `animakor.png` ↔ `anima.png`). English/other-language equivalents are welcome under the natural sibling tree (`docs/structure_images/` is the English baseline; e.g. the existing `docs/structure_images_korean/`). Mention which markdown files reference the diagram so the reviewer can update the embed paths.
+- Method docs under `docs/methods/`, `docs/experimental/`, `docs/proposal/`, and `docs/optimizations/` are **English-only by convention** — translations are welcome as `<name>.<code>.md` siblings, but nothing reads them at runtime yet. If you contribute one, also propose how it should surface (e.g. a language switcher in the README's docs table, or wiring it into a GUI "Open method doc" button). Don't translate `CLAUDE.md` — that file is consumed by Claude Code and is single-source-of-truth for project conventions.
 
-**(e) Tag knowledge-base descriptions — `models/danbooru_tags_classified.csv` (KR) + `.en.csv` (EN).** The Dataset tab's tag-explanation view (click a tag in the caption editor → a KB tooltip with its category and a written description) is powered by these CSVs (`name,category,post_count,description`; loaded by `library/captioning/correction.py::load_tag_knowledge_base`). The base CSV's `description` column is **Korean** (from `Localsmile/danbooru_KR_wiki_tag_search`); `download-danbooru-tags` also builds an **English** sibling `danbooru_tags_classified.en.csv` (`scripts/anima_tagger/build_english_tag_csv.py`, joining tag names against the `isek-ai/danbooru-wiki-2024` wiki mirror). `find_tag_csv(root, lang)` resolves per UI language: `ko` → Korean base; any other language → same-language sibling `danbooru_tags_classified.<code>.csv` if present, else the English `.en.csv`. `ImageViewerTab._on_tag_clicked` (`gui/tabs/image_tab.py`) shows the tooltip whenever the resolved file is **not** the Korean base — so `en`/`ja`/`cn` all show English today, and only a hypothetical language with neither sibling nor English would suppress it. (The autocomplete *helper* is never gated — tag names and categories are language-neutral.) To add a fully-translated language, ship `danbooru_tags_classified.<code>.csv` and it's picked up automatically. ~114k rows, so partial coverage is fine — untranslated rows fall back to the name+category head with no description line. *[Tier 1]*
+**(e) Tag knowledge-base descriptions — `models/danbooru_tags_classified.csv` (KR) + `.en.csv` (EN).** The anime_tools panel's tag-explanation view (a KB tooltip with a tag's category and a written description) is powered by these CSVs (`name,category,post_count,description`; loaded by `anime_tools.captions.correction.load_tag_knowledge_base`). The base CSV's `description` column is **Korean** (from `Localsmile/danbooru_KR_wiki_tag_search`); `download-danbooru-tags` also builds an **English** sibling `danbooru_tags_classified.en.csv` (`anime_tools.tagger.cli.build_english_tag_csv`, joining tag names against the `isek-ai/danbooru-wiki-2024` wiki mirror). `find_tag_csv(root, lang)` resolves per UI language: `ko` → Korean base; any other language → same-language sibling `danbooru_tags_classified.<code>.csv` if present, else the English `.en.csv`. To add a fully-translated language, ship `danbooru_tags_classified.<code>.csv` and it's picked up automatically. ~114k rows, so partial coverage is fine — untranslated rows fall back to the name+category head with no description line. *[Tier 1]*
 
 **Parity check (covers all per-language surfaces):**
 ```bash
 python -c "
-from webui.i18n.loader import get_translations
-from webui.explanations import FIELD_HELP, PREPROCESS_FIELD_HELP
-T = get_translations()
+from gui.i18n import TRANSLATIONS as T
+from gui.explanations import FIELD_HELP, PREPROCESS_FIELD_HELP
 en_keys = set(T['en'])
 for lang in T:
     if lang == 'en': continue
@@ -111,11 +98,11 @@ for name, d in (('FIELD_HELP', FIELD_HELP), ('PREPROCESS_FIELD_HELP', PREPROCESS
 "
 ```
 
-If a translated string is too long for its widget, mention it in the PR.
+If a translated string is too long for its widget, mention it in the PR — the fix is usually a layout tweak in the relevant `gui/tabs/*.py`, not a shorter translation.
 
 ## Tier 1 — bug fixes, typos, UI, arg/CLI tweaks
 
-Lightweight contributions. Examples: fixing a regex in a LoRA target list, a typo in a docstring, a confused error message, a UI label, a missing CLI flag, a `tasks.py` argument-forwarding bug.
+Lightweight contributions. Examples: fixing a regex in a LoRA target list, a typo in a docstring, a confused error message, a GUI label, a missing CLI flag, a `tasks.py` argument-forwarding bug.
 
 **Requirements:**
 - Existing tests pass:
@@ -123,7 +110,7 @@ Lightweight contributions. Examples: fixing a regex in a LoRA target list, a typ
   make test-unit
   ```
 - The change is minimal and scoped. No drive-by refactors, no new abstractions, no "while I'm here" reformatting in unrelated files.
-- For WebUI changes, actually launch the WebUI (`python -m webui`) and exercise the affected view before claiming the PR is done. Type-checking is not a substitute for clicking the button.
+- For GUI changes, actually launch the GUI (`make gui`) and exercise the affected tab before claiming the PR is done. Type-checking is not a substitute for clicking the button.
 - For training-path changes, smoke-test one short run end-to-end (`PRESET=low_vram make lora` truncated to a few steps is fine) and paste the tail of the log into the PR description.
 
 That's it. Open the PR.
@@ -137,8 +124,8 @@ These sit between Tier 1 and Tier 2: no new paper or new docs page is required, 
 **Requirements:**
 
 1. **Bench script.** A runnable script that quantifies the change. Two acceptable shapes:
-   - **Add to an existing `bench/<method>/`** if the change is scoped to one method (e.g. a router tweak goes under that method's bench dir such as `bench/dcw/`). Append a new script and a new section to that bench's README.
-   - **Add a small `bench/<topic>/`** for cross-cutting changes (e.g. a sampler-correction optimization belongs in a new dir alongside `bench/dave/`).
+   - **Add to an existing `bench/<method>/`** if the change is scoped to one method (e.g. a router tweak goes under that method's bench dir such as `bench/turbo/`). Append a new script and a new section to that bench's README.
+   - **Add a small `bench/<topic>/`** for cross-cutting changes (e.g. a sampler-correction optimization belongs in a new dir alongside `bench/dave/`). Start from the copy-me skeleton `bench/_template/run_bench.py`; the directory conventions (envelope, layout, per-bench README) are in `bench/README.md`.
 
    The script must report the headline number(s) it claims to move — wall-clock, peak VRAM, loss-at-N-steps, drift, whatever the change targets — for **both before and after**. A single-number claim ("20% faster") with no reproducible script does not clear the bar. If the script loads the DiT, use `bench/_anima.py` (`add_common_args` + `build_anima`) — same rationale as Tier 2 §2 below: every DiT-loading bench needs to expose `--compile` and load the adapter in the right order, and the helper enforces both.
 
@@ -168,7 +155,7 @@ A new entry in `networks/lora_modules/` or `networks/methods/`, or a new variant
 
    Hand-rolled methods without prior art are not categorically rejected, but the bar is higher: in the absence of a paper, the bench results have to carry the argument alone, and reviewers will be skeptical. If you are confident, propose the method in an issue first.
 
-2. **Dedicated bench subdirectory.** Create `bench/<method_name>/` with the same shape as the existing ones (`bench/dcw/`, `bench/spd/`, `bench/dave/`):
+2. **Dedicated bench subdirectory.** Create `bench/<method_name>/` with the same shape as the existing ones (`bench/dave/`, `bench/memorization/`):
 
    ```
    bench/<method_name>/
@@ -214,7 +201,7 @@ A new entry in `networks/lora_modules/` or `networks/methods/`, or a new variant
    - **Interpretation** — what the numbers mean, including what would falsify the method.
    - **Baseline run** — at least one results directory checked in (or linked from a release artifact if large), with the exact CLI used to produce it.
 
-   `bench/spd/README.md` is a good template — it documents the measurement, has an "Observed on Anima" section with a dated baseline, and a "Next actions" section. Aim for that.
+   `_archive/spd/bench/README.md` is a good template (the SPD bench itself is retired — the README shape is what to copy): it documents the measurement, has an "Observed on Anima" section with a dated baseline, and a "Next actions" section. Aim for that.
 
 3. **Documentation.** A method doc at `docs/methods/<name>.md` covering the algorithm, config knobs, training/inference flow, and known failure modes. Cross-link from the README's "Experimental features" table.
 
@@ -222,7 +209,7 @@ A new entry in `networks/lora_modules/` or `networks/methods/`, or a new variant
 
 5. **Make/`tasks.py` entry points.** A new method needs `make <name>` and matching `python tasks.py <name>` invocations, plus a `test-<name>` target that runs `inference.py` against a checkpoint produced by the method. Follow the patterns in the `Makefile`.
 
-6. **Mergeability statement.** If the method produces weights that fold into the base DiT (LoRA family), confirm that `make merge` works and ship a merge-equivalence check in the bench. If it does not (Hydra moe / postfix / prefix / IP-Adapter / EasyControl), say so explicitly in the doc and update `scripts/merge_to_dit.py`'s refusal list.
+6. **Mergeability statement.** If the method produces weights that fold into the base DiT (LoRA family), confirm that `make merge` works and ship a merge-equivalence check in the bench. If it does not (Hydra moe / postfix / prefix / IP-Adapter / EasyControl), say so explicitly in the doc and update `scripts/toolkits/merge_to_dit.py`'s refusal list.
 
 7. **Empirical result.** The PR must show the method works on Anima specifically. Cite a bench run from `bench/<method_name>/results/<timestamp>/` and link to a small set of side-by-side images (3–6 seeds is fine) demonstrating the claimed effect. "It compiles and trains without crashing" is not a result — both `LoRA + this` and `LoRA alone` need to be in the comparison.
 

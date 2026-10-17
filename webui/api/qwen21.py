@@ -55,7 +55,9 @@ async def submit_job(
     }[phase]
     try:
         req = svc.request_from_values(request_type, body.values)
-        task = await task_service.start_task(f"qwen21-{phase}", req.to_argv())
+        task = await task_service.start_task(
+            f"qwen21-{phase}", req.to_argv(), runtime_profile=body.runtime_profile,
+        )
         return JobResponse(task_id=task.id, command=task.command)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -76,7 +78,9 @@ async def submit_chain(body: svc.ChainRequest) -> JobResponse:
             "--train-args",
             json.dumps(train.to_argv()),
         ]
-        task = await task_service.start_task("qwen21-cache-train", args)
+        task = await task_service.start_task(
+            "qwen21-cache-train", args, runtime_profile=body.runtime_profile,
+        )
         return JobResponse(task_id=task.id, command=task.command)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

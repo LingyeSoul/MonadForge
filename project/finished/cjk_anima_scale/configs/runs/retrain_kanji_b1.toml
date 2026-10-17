@@ -1,0 +1,9 @@
+# retrain_kanji_b1 — plan_retrain § 2: batch 1 of 3 of retrain_kanji (329 kanji, the most
+# frequent first), cold, on retrain_kana's merged rows: the windows carry its trained singles
+# (the kana, and the earlier batches' kanji) frozen beside this batch's own; a kanji of a
+# later batch (still the seed's row) stays out of the windows. The read is C3's six
+# kanji-bearing words (floor / c3_kanji routed reads cached), held out of the windows.
+
+vocabs = "ja_retrain_kanji_b1.txt"
+read = ["山田太郎", "小山田", "日本人", "大丈夫", "何時間", "愛してる"]
+context = "retrain_kana"

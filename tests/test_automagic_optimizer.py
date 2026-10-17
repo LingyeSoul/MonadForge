@@ -176,6 +176,7 @@ def test_lr_mask_decreases_on_sign_flip_and_clamps_at_min():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.training_step
 def test_step_reduces_loss_on_linear_regression():
     """One Automagic step on convex MSE must descend (update is preconditioned grad)."""
     pytest.importorskip("torch")
@@ -200,6 +201,7 @@ def test_step_reduces_loss_on_linear_regression():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.training_step
 def test_step_rejects_sparse_gradient():
     pytest.importorskip("torch")
     import torch
@@ -232,6 +234,7 @@ def test_state_keys_for_1d_grad():
     assert {"step", "lr_mask", "avg_lr", "last_polarity", "RMS"} <= keys
 
 
+@pytest.mark.training_step
 def test_state_keys_for_2d_grad():
     pytest.importorskip("torch")
     import torch
@@ -275,6 +278,7 @@ def test_get_learning_rates_after_step_returns_avg_lr_mean():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.training_step
 def test_weight_decay_shrinks_param_magnitude():
     """With grad zeroed, the update term is ~0 so only WD acts; wd>0 shrinks |p|."""
     pytest.importorskip("torch")

@@ -1,0 +1,6 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>Colorize</h2>
+<p>EasyControl 컨트롤 태스크: 흑백 스크린톤 망가 페이지를 채색합니다. 베이스 변형과 동일한 DiT 동결 EasyControl 네트워크를 사용하지만, 컨디션은 합성 망가화된 흑백 렌더 (XDoG 엣지 + 스크린톤)이며 캡션은 색상 전용 (색조 / 채도 단어)입니다.</p>
+<p>&bull; <b>빈 프롬프트</b> &rarr; 자동 채색 (모델이 적절한 색상을 선택합니다).<br>
+&bull; <b>색상 프롬프트</b> &rarr; 팔레트를 유도합니다 (예: "blue hair, red dress").</p>
+<p>색상 전용 텍스트 캐시는 다중 변형 (전체 세트 + 색상 태그의 ~30%가 드롭된 셔플 버전)으로 구성되어 부분 색상 프롬프트도 동작합니다; 망가 컨디션은 손실성 힌트이므로 선 구조를 보존하기 위해 학습 시 컨디션 퍼터베이션은 작게 유지됩니다. 컨디션 레이턴트는 <code>post_image_dataset/colorize_cond/</code>에 캐시됩니다.</p>
+<p>EasyControl 탭에서 학습하세요 &mdash; <code>EASYADAPTER=colorize</code>가 자동으로 설정되며 &mdash; 전처리 시 VAE 인코딩 전에 흑백화 필터가 실행됩니다. <code>easycontrol_adapters/colorization/</code> 및 <code>docs/experimental/easycontrol.md</code>를 참조하세요.</p>

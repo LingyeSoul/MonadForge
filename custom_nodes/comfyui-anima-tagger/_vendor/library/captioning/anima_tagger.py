@@ -322,6 +322,14 @@ class AnimaTagger:
             self.ckpt_dir / "thresholds.safetensors", n_tags=self.cfg.n_tags
         )
         self.thresholds_dev = self.thresholds.to(self.device)
+        # Per-tag keep thresholds by name, in ``tag_entries`` order (the same
+        # alignment ``predict`` keys ``scores``/``kept`` by). Built once and
+        # attached to every ``predict`` output so a downstream consumer can
+        # reason about how far a score fell short of the tagger's own decision
+        # (the position-clause bag relaxation reads it).
+        self.threshold_map: Dict[str, float] = {
+            e.name: float(t) for e, t in zip(self.tag_entries, self.thresholds)
+        }
 
         self.rules = tr.load_rules(self.ckpt_dir / "rules.yaml")
 
@@ -477,6 +485,8 @@ class AnimaTagger:
             },
             "scores": scores,
             "kept": kept,
+            # A shared reference, not a copy — treat as read-only.
+            "thresholds": self.threshold_map,
         }
         if people_logits is not None and self.people_count_labels:
             people_probs = people_logits.softmax(dim=-1)[0]

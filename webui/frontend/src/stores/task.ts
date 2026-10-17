@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useNotifyStore } from './notify'
 import { useI18n } from '../composables/useI18n'
+import { useModelWorkspace } from './modelWorkspace'
 
 export interface TaskAttempt {
   job_id: string
@@ -225,10 +226,11 @@ export const useTaskStore = defineStore('task', () => {
   async function startTask(command: string, args: string[] = [], env?: Record<string, string>, throwOnError = false): Promise<string | null> {
     loading.value = true
     try {
+      const runtime_profile = await useModelWorkspace().runtimeForSubmit()
       const res = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command, args, env: env || {} }),
+        body: JSON.stringify({ command, args, env: env || {}, runtime_profile }),
       })
       // A 502 from the proxy is HTML, not JSON — don't let the parse error
       // mask the real status code.

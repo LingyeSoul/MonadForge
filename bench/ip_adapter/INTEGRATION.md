@@ -17,7 +17,7 @@ re-integration doesn't require commit archaeology.
 - **PE feature cache.** `scripts/preprocess/cache_pe_encoder.py`, `make preprocess-pe`,
   `library/preprocess/pe.py`, and the `{stem}_anima_pe.safetensors` /
   `anima_pe_centroid_{encoder}.safetensors` sidecars. Shared with **CMMD validation**
-  (`library/training/cmmd.py`) and **DCW v4** — not IP-Adapter-private.
+  (`library/training/cmmd.py`) — not IP-Adapter-private.
 - **`networks/methods/ip_adapter_pe_lora.py`** (`inject_pe_lora` / `PELoRALayer`).
   Vendored into the live **Anima-Tagger** ComfyUI node (`scripts/release/sync_vendor.py`
   `TAGGER_VERBATIM`, `custom_nodes/comfyui-anima-tagger/nodes.py` `pe_lora` UI). The
@@ -97,7 +97,7 @@ rewrite. Restoring is mechanical.
 
 ### 8. GUI surface (`gui/`)
 - `gui/app.py`: `ip_adapter` in the methods list.
-- `gui/tabs/adapter_tab.py`, `gui/tabs/config_tab.py`, `gui/_paths.py`: the IP-Adapter
+- `gui/tabs/adapter_tab.py`, `gui/tabs/config_tab.py`, `gui/core/paths.py`: the IP-Adapter
   form fields / path handling.
 - `gui/i18n/{en,ja,ko,cn}.py`: the IP-Adapter UI strings (4 languages).
 
@@ -109,7 +109,7 @@ rewrite. Restoring is mechanical.
 - Restore `docs/experimental/ip-adapter.md` from `impl/`.
 - Re-thread the mentions in `CLAUDE.md` (methods table row + §Methods), `networks/CLAUDE.md`
   (layout table), `docs/guidelines/{inference,training}.md`, `docs/multi_model_support.md`,
-  `docs/experimental/anima_tagger.md` cross-ref.
+  `../anime_tools/docs/anima_tagger.md` cross-ref.
 
 ## Key facts the bench must honor (from removal-time state)
 

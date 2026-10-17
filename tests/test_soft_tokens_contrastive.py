@@ -62,6 +62,7 @@ def test_contrastive_loss_wrong_way_round():
     assert loss.item() == pytest.approx(2.0 + math.log(1 + math.exp(-2.0)), abs=1e-5)
 
 
+@pytest.mark.training_step
 def test_contrastive_loss_carries_grad_to_tokens():
     net = _net(contrastive_weight=0.1)
     target = torch.zeros(1, 4, 8, 8)

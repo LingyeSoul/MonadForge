@@ -1,0 +1,12 @@
+# punct — the green leaf's fix (user, 10-05; reports/ruler_2026_10_05.md): on
+# the punct pack (`〜` folded onto `～`, dot runs onto a new `…` row, `―` onto
+# `ー`, `，` onto `、`), the six mark rows `～ … ♡ ♥ 、 。` cold at the raw pack
+# (`…` at T5's `...`; 、。 trained lone in grid cells by retrain_kana too),
+# every other row frozen at seed_retrain_0930. The marks train inside words
+# (mark windows around the seed's letters, dialogue lines) and alone in a
+# bubble (not 、。); no grid or lone canvas (retrain_kana's 〜 trained 164 / 180 there).
+rows = ["chars:～…♡♥、。"]
+seed = "0930"
+pack = "punct"
+steps_per_row = 120  # 720 steps (user, 10-05: the budget up from 540)
+shares = { grid_44 = 0, grid_29 = 0, grid_16 = 0, lone_44 = 0, lone_28 = 0, lone_16 = 0, bubble1_52 = 5, bubble1_32 = 5, bubbleN_34 = 30, bubbleN_18 = 20, sent_34 = 20, sent_22 = 20 }

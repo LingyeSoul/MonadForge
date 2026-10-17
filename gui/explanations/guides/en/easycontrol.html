@@ -1,0 +1,6 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>EasyControl</h2>
+<p>Extended self-attention image conditioning. The DiT is frozen; training updates only a per-block cond LoRA on self-attn (q/k/v/o) + FFN, plus a per-block scalar gate <code>b_cond</code> (init&nbsp;-10) that controls how much of the reference image's tokens leak into each step's self-attention.</p>
+<div style='background:#33231e; padding:10px 14px; border-left:3px solid #e67e22; margin:12px 0; border-radius:3px;'>
+<p style='margin:0; color:#f0c14b;'><b>&#9888; Phase-1 baseline &mdash; not doing anything meaningful yet.</b> This is the <i>ref&nbsp;==&nbsp;target</i> setup, where the condition <i>is</i> the target image. With no real control task to learn, current checkpoints don't produce a useful conditioning effect &mdash; treat this variant as plumbing / scaffolding validation, <b>not</b> a usable control adapter. Pick <b>Colorize</b> for an actual control task.</p>
+</div>
+<p>Source data goes in <code>easycontrol-dataset/</code>; caches land in <code>post_image_dataset/easycontrol/</code>. See <code>docs/experimental/easycontrol.md</code>.</p>

@@ -7,12 +7,11 @@ STRINGS: dict[str, str] = {
     "window_title": "Anima LoRA",
     "tab_config": "Training Config",
     "tab_easycontrol": "EasyControl",
-    "tab_spd": "SPD",
     "tab_turbo": "Turbo",
     "tab_experimental": "Experimental",
-    "tab_images": "Dataset Viewer",
     "tab_merge": "Merge",
     "tab_queue": "Queue",
+    "tab_anime_tools": "anime_tools",
     "tab_preprocess": "Preprocessing",
     "tab_tensorboard": "TensorBoard",
     # PreprocessingTab
@@ -38,17 +37,6 @@ STRINGS: dict[str, str] = {
         "image_dataset/data_group1. This filter is then matched relative to "
         "that root. '*' (or blank) processes everything, '1/*' processes only "
         "data_group1/1, and '1/*|2/*' processes both subfolders."
-    ),
-    "preprocess_drop_lowres": "Drop low-resolution images",
-    "preprocess_drop_lowres_tip": (
-        "Skip source images smaller than the pixel threshold below so they "
-        "never enter the resize / VAE / text caches. Uncheck to keep every "
-        "image regardless of size."
-    ),
-    "preprocess_min_pixels": "Min pixels (filter threshold):",
-    "preprocess_min_pixels_tip": (
-        "Pixel-count threshold for the low-res filter. 500000 = 0.5MP. "
-        "Ignored when 'Drop low-resolution images' is unchecked."
     ),
     "preprocess_target_res": "Resolution tiers (target_res):",
     "preprocess_freefit_max_ratio": "Max aspect ratio:",
@@ -102,7 +90,6 @@ STRINGS: dict[str, str] = {
         "tagger's calibrated decisions alone; raise it for fewer, safer tags. "
         "The rating is always emitted regardless."
     ),
-    "preprocess_caption_editing": "Caption rewriting",
     "preprocess_caption_position_clauses": "Position clauses (multi-subject)",
     "preprocess_caption_position_clauses_tip": (
         "Detect the subjects in a multi-subject image (SAM3), tag each one, and "
@@ -118,6 +105,7 @@ STRINGS: dict[str, str] = {
         "dataset. Run `make caption-position` first for a dry-run report if you "
         "want to review the proposals before writing them."
     ),
+    "preprocess_caption_editing": "Caption rewriting",
     "preprocess_caption_correct_order": "Correct caption order",
     "preprocess_caption_correct_order_tip": (
         "Write corrected .txt captions next to resized images and use them for "
@@ -147,81 +135,32 @@ STRINGS: dict[str, str] = {
     "preprocess_run_pe": "Run PE caching",
     "preprocess_add_to_queue": "Add to queue",
     "preprocess_queued": "Queued {label} (job {job_id}) — watch it in the Queue tab.",
-    "preprocess_masking_sam": "SAM3 masking (text bubbles)",
-    "preprocess_masking_mit": "MIT masking (manga text)",
-    "preprocess_sam_prompts": "SAM prompts (one per line):",
-    "preprocess_sam_prompts_tip": (
-        "Text prompts SAM3 looks for. One per line. Defaults to 'speech bubble' "
-        "and 'text bubble'."
-    ),
-    "preprocess_sam_focus_prompts": "SAM focus prompts (one per line):",
-    "preprocess_sam_focus_prompts_tip": (
-        "Reversed polarity: subjects to KEEP. When set, the mask trains ONLY on "
-        "these subjects and ignores everything else (e.g. 'girl' masks all "
-        "background). Composes with the prompts above — final trainable region "
-        "is the focus subject minus those ignore regions. Leave empty for the "
-        "default ignore-only behaviour."
-    ),
-    "preprocess_sam_rule": "Mask rule",
-    "preprocess_sam_add_rule": "+ Add rule",
-    "preprocess_sam_add_rule_tip": (
-        "Add another mask rule. Each rule targets a subset of images by path "
-        "pattern; rules whose pattern matches an image compose together."
-    ),
-    "preprocess_sam_remove_rule": "Remove rule",
-    "preprocess_sam_rule_path_pattern": "Path pattern (this rule):",
-    "preprocess_sam_rule_path_pattern_tip": (
-        "Which images this rule applies to — an fnmatch glob ('|'-OR-combined) "
-        "on each image's path relative to the dataset root, e.g. 'character_a/*'. "
-        "Empty or '*' matches every image (a catch-all default rule)."
-    ),
-    "preprocess_sam_threshold": "SAM threshold (0.0–1.0):",
-    "preprocess_sam_threshold_tip": (
-        "Minimum confidence for a SAM3 detection to be kept. Lower = more masks "
-        "(may include false positives), higher = stricter. Default 0.5."
-    ),
-    "preprocess_dilate": "Dilate (px):",
-    "preprocess_dilate_tip": (
-        "Pixels of dilation applied to the binary mask. Larger values blur "
-        "mask edges outward. Default 5. Set to 0 to disable."
-    ),
-    "preprocess_mit_threshold": "MIT text threshold (0.0–1.0):",
-    "preprocess_mit_threshold_tip": (
-        "Confidence threshold for the MIT/ComicTextDetector text segmenter. "
-        "Default 0.8."
-    ),
-    "preprocess_mask_path_pattern": "Mask path filter:",
-    "preprocess_mask_path_pattern_tip": (
-        "fnmatch glob restricting which resized images get masked, matched on "
-        "each path relative to post_image_dataset/resized. Scopes BOTH SAM and "
-        "MIT. Same syntax as the training path_pattern: '*' (or blank) masks "
-        "everything; 'char_a/*' one subfolder; 'char_a/*|char_b/*' to OR-combine."
-    ),
-    "preprocess_run_mask": "Run masking",
-    "preprocess_run_sam_mask": "Run SAM masking",
-    "preprocess_run_sam_mask_tip": (
-        "Run SAM3 bubble segmentation as part of mask generation. "
-        "Uncheck to skip SAM and use only MIT (or whichever other "
-        "backends are enabled)."
-    ),
-    "preprocess_run_mit_mask": "Run MIT masking",
-    "preprocess_run_mit_mask_tip": (
-        "Run MIT/ComicTextDetector text segmentation as part of mask "
-        "generation. Uncheck to skip MIT and use only SAM."
-    ),
-    "preprocess_mask_nothing_enabled": (
-        "At least one of SAM or MIT masking must be enabled."
-    ),
+    "preprocess_invalid_stage": "{stage}: {err}",
     "preprocess_status_resized": "Resized images: {n}",
     "preprocess_status_caches": "Caches — latents: {lat}, text: {te}, PE: {pe}",
     "preprocess_status_masks": "Masks: {masks}",
     "preprocess_status_no_resized": "No resized images yet.",
-    "preprocess_no_resized_to_process": (
-        "No resized images found in post_image_dataset/resized/. Run Preprocess "
-        "(resize) first — masking and grouping operate on the resized images."
-    ),
     "preprocess_open_dataset_dir": "Open cache folder",
     "preprocess_open_dataset_dir_tooltip": "Open the post_image_dataset/ folder (resized images + caches) in your file manager.",
+    "preprocess_status_export_stale": "anime_tools has edits newer than its last Export",
+    "preprocess_resize_preview": "Resize preview",
+    "preprocess_resize_preview_tooltip": "Per source image: the bucket and tier the resize picks under the settings below, and the crop it takes. Source files are not modified.",
+    "preprocess_resize_preview_title": "Resize preview",
+    "preprocess_resize_preview_refresh": "Refresh",
+    "preprocess_resize_preview_col_image": "Image",
+    "preprocess_resize_preview_col_source": "Source",
+    "preprocess_resize_preview_col_bucket": "Bucket",
+    "preprocess_resize_preview_col_tier": "Tier",
+    "preprocess_resize_preview_col_kept": "Kept",
+    "preprocess_resize_preview_summary": "{n} images in {buckets} buckets",
+    "preprocess_resize_preview_skipped": "{n} excluded",
+    "preprocess_resize_preview_unreadable": "{n} unreadable",
+    "preprocess_resize_preview_empty": "No images under {path}",
+    "anime_tools_failed": "Could not start anime_tools: {err}",
+    "anime_tools_root_warning": "The panel's saved roots point into post_image_dataset/ ({roots}), so its stages would write over the trainer's tree. Clear them in the panel's ⚙ Settings (or in {path}).",
+    "anime_tools_starting": "Starting anime_tools… (log: {log})",
+    "anime_tools_timeout": "anime_tools did not come up. See the log: {log}",
+    "anime_tools_no_webengine": "Qt WebEngine is not installed, so the panel can't be shown here. Open {url} in your browser.",
     "preprocess_clear_scope_cache": "Delete current-scope cache",
     "preprocess_clear_scope_cache_tooltip": "Delete resized images and LoRA cache folders for the current path_scope.",
     "preprocess_clear_scope_cache_all_scope": "no scope / all",
@@ -390,6 +329,7 @@ STRINGS: dict[str, str] = {
     "queue_detail_config": "config: {path}",
     "queue_detail_stdout": "stdout: {path}",
     "daemon_reattached": "Re-attached to running job {job_id} (started in a previous session).\n",
+    "daemon_next_queued": "Following the next queued job {job_id} on the training daemon.\n",
     "daemon_job_finished": "--- Job {job_id} {state} ---",
     "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
     "daemon_error_cause": "↳ likely cause: {summary}",
@@ -422,6 +362,7 @@ STRINGS: dict[str, str] = {
     "locked_by_preset": "Locked by preset (performance settings are fixed for this VRAM profile)",
     "lora_variants": "LoRA Variants",
     "variant": "Variant:",
+    "hardware_preset": "Hardware:",
     "apply_variant": "Apply",
     "apply_variant_tooltip": "Fill the form below with this variant's preset values. Nothing is saved until you click Save.",
     "show_guide": "Guide",
@@ -438,7 +379,7 @@ STRINGS: dict[str, str] = {
     "new_variant_exists": "Variant '{name}' already exists.",
     "basic_section": "Basic",
     "advanced_section": "Advanced (click to expand)",
-    # SPD / Turbo distillation config tabs (gui/tabs/distill_tab.py)
+    # Turbo distillation config tab (gui/tabs/distill_tab.py)
     "distill_general_section": "general",
     "distill_job_running": "A job is already running on this tab.",
     "distill_config_missing": "Could not read the config file: {err}",
@@ -449,155 +390,29 @@ STRINGS: dict[str, str] = {
     "adapter_open_dir": "Open directory",
     "n_images": "{n} images",
     # ImageViewerTab
+    # Soup pipeline tab (gui/tabs/soup_tab.py) — run-only fields; the pool /
+    # dose / seeds / rank knobs are edited in the [soup] section form below.
+    "soup_run_section": "Run",
+    "soup_path_pattern": "Path pattern",
+    "soup_path_pattern_tip": "fnmatch glob selecting the fine-tune images, matched against each image's path relative to its subset image_dir. '|' separates alternatives, e.g. 'sincos/*' or 'art_a/*|art_b/*'. Required.",
+    "soup_name": "Output name",
+    "soup_name_tip": "Output slug → output/ckpt/anima_soup_<name>.safetensors. Blank = derived from the path pattern (a plain '<dir>/*' becomes '<dir>').",
+    "soup_ft_args": "Fine-tune args",
+    "soup_ft_args_tip": "Extra CLI args forwarded to each fine-tune run, e.g. --network_dim 32 --max_train_epochs 8.",
+    "soup_path_pattern_required": "Soup needs a path pattern (e.g. 'sincos/*' or 'art_a/*|art_b/*').",
+    # Shared labels
     "directory": "Directory:",
-    "dataset_reload": "Reload",
-    "dataset_reload_tooltip": "Re-scan the current directory and refresh the image list and selection.",
-    "dataset_open_dir": "Open",
-    "dataset_open_dir_tooltip": "Open the current directory in the system file manager.",
-    "dataset_add_dir": "Add directory…",
-    "dataset_add_dir_tooltip": "Pick another directory and add it to the dropdown for this session.",
-    "dataset_add_dir_picker": "Pick a directory to add",
-    "dataset_add_dir_already": "Directory '{name}' is already in the list.",
-    "dataset_search_placeholder": "Search filename…",
-    "dataset_sort_asc_tooltip": "Sort A→Z (click to reverse)",
-    "dataset_sort_desc_tooltip": "Sort Z→A (click to reverse)",
-    "dataset_group_first_tooltip": "Group-first ordering: float every group to the top, flattened across folders (ungrouped images follow below in the folder tree).",
-    "dataset_view_group": "Groups",
-    "dataset_view_tree": "Tree",
-    "dataset_group_sort_tooltip": "Sort order inside each group. Arrow-key navigation follows the visible tree order.",
-    "dataset_group_sort_name": "Name",
-    "dataset_group_sort_name_desc": "Name desc",
-    "dataset_group_sort_size": "File size",
-    "dataset_group_sort_size_desc": "File size desc",
-    "dataset_group_sort_resolution": "Resolution",
-    "dataset_group_sort_resolution_desc": "Resolution desc",
-    "dataset_mask_overlay": "Show mask overlay",
-    "dataset_resize_preview": "Show resize preview",
-    "dataset_resize_preview_tooltip": "Show the center-crop area and final bucket selected by preprocessing target_res. Source files are not modified.",
-    "dataset_resize_preview_label": "{width}x{height} @ {edge}",
-    "dataset_preprocess_skip_short": "Skip (S)",
-    "dataset_preprocess_skip_tooltip": "Mark the current image to be skipped by preprocess resize. Source files are not modified.",
-    "dataset_preprocess_clear_short": "Clear (F)",
-    "dataset_preprocess_clear_tooltip": "Clear the current image's use/skip/move mark. Use the right-side menu to clear all marks.",
-    "dataset_preprocess_clear_all": "Clear all marks",
-    "dataset_preprocess_save": "Save preprocess decisions",
-    "dataset_preprocess_save_tooltip": "Save per-image use/skip/move decisions as JSON for preprocessing. Move marks are excluded from preprocessing even before files are moved.",
-    "dataset_preprocess_saved": "Preprocess decisions saved:\n{path}",
-    "dataset_preprocess_decision_use": "Preprocess decision: use",
-    "dataset_preprocess_decision_skip": "Preprocess decision: skip",
-    "dataset_preprocess_decision_move": "Current state: marked to move",
-    "dataset_image_meta_empty": "No image",
-    "dataset_image_meta": "{width}x{height} · {size} · {fmt}",
-    "dataset_image_meta_resize": "Resize {width}x{height} @ {edge}",
-    "dataset_delete": "Move (D)",
-    "dataset_delete_tooltip": "Move the images marked with the Delete or D key to post_image_dataset/moved/, along with sidecars.",
-    "dataset_delete_confirm_title": "Move images",
-    "dataset_delete_confirm_body": "Move {n} image(s) and sidecars to post_image_dataset/moved/?",
-    "dataset_delete_failed": "Some images could not be moved:\n{err}",
-    "dataset_group_label": "Group {n} — {size} imgs",
-    "dataset_group_rebuild": "Group",
-    "dataset_group_rebuild_tooltip": "Group images by PE-Spatial visual similarity (per-artist). Runs in the job queue.",
-    "dataset_group_queued": "Grouping queued (job {job_id}). Reload this directory when it finishes to see the groups.",
-    "n_images_filtered": "{shown} / {total} images",
-    "caption": "Caption:",
-    "no_caption": "(no caption)",
-    "caption_save": "Save",
-    "caption_revert": "Revert",
-    "caption_autotag": "Autotag",
-    "caption_autotag_tooltip": (
-        "Run the Anima Tagger on this image and append its predicted tags to "
-        "the caption. The model is downloaded automatically on first use; "
-        "review the result, then Save to write the .txt."
-    ),
-    "caption_autotag_running": "Autotagging…",
-    "caption_autotag_loading": "Loading tagger…",
-    "caption_autotag_ready": "Tagger loaded · ready",
-    "caption_autotag_busy": (
-        "The GPU is busy with another job (training / preprocessing / "
-        "grouping). Try autotagging again once it finishes."
-    ),
-    "caption_autotag_error": "Autotag failed: {err}",
-    "caption_autotag_empty": "The tagger returned no tags for this image.",
-    "caption_correct": "Correct order",
-    "caption_correct_tooltip": (
-        "Use danbooru_tags_classified.csv to reorder this caption into the "
-        "recommended ANIMA order, optionally inserting @no-artist."
-    ),
-    "caption_correct_visible": "Correct current list",
-    "caption_correct_visible_confirm": "Correct {n} caption(s) in the current list?",
-    "caption_correct_visible_done": "Corrected {n} caption(s).",
-    "caption_correct_visible_failed": "Corrected {n} caption(s).\n\nFailed:\n{err}",
-    "caption_correct_no_change": "No caption changes to apply.",
-    "tag_kb_posts": "{n} posts",
-    "tag_kb_unknown": "{tag} — not in the tag knowledge base",
-    "caption_correct_db_missing": (
-        "danbooru_tags_classified.csv was not found.\n\n"
-        "Download the Danbooru tag DB from the Models dialog, or place it here:\n{paths}"
-    ),
-    "caption_correct_db_failed": "Failed to load tag DB: {err}",
-    "caption_versions": "Versions…",
-    "caption_variant_training": "Training caption",
-    "caption_variants_tooltip": (
-        "Preview the train-time caption variants (shuffle / tag-dropout / "
-        "identity-randomize) written by preprocess. Read-only — the editable "
-        "training caption is unaffected."
-    ),
-    "caption_dirty_marker": " *",
-    "caption_diff_stats": "(+{add} / −{rem})",
-    "caption_diff_clean": "(no changes)",
-    "caption_save_failed": "Failed to save caption: {err}",
-    "caption_unsaved_title": "Unsaved caption",
-    "caption_unsaved_body": "You have unsaved caption edits. Save before switching?",
-    "caption_versions_title": "Caption history — {name}",
-    "caption_versions_empty": "(no prior versions)",
-    "caption_versions_restore": "Restore selected",
-    "caption_versions_close": "Close",
-    "caption_no_history": "No history yet for this caption.",
-    "caption_guideline_html": (
-        "<b>Order:</b> rating → count → character (series) → series → "
-        "<span style='color:#c9a227;'>@artist</span> → content tags. "
-        "Per-region sub-sections: end the previous tag with <code>.</code> and "
-        "start the next with <span style='color:#5e8eb0;'>On the&nbsp;…,</span> "
-        "or <span style='color:#5e8eb0;'>In the&nbsp;…,</span>. "
-        "Tags up to and including the first <code>@artist</code> are kept fixed; "
-        "everything after is shuffled within each section. "
-        "<b>No artist?</b> Drop in "
-        "<span style='color:#c9a227;'>@no-artist</span> as a placeholder — "
-        "it anchors the shuffle boundary the same way and is stripped before "
-        "tokenization, so it never reaches the model."
-    ),
     # Language
     "language": "Language:",
     # Settings dialog
     "settings_btn": "⚙ Settings",
     "settings_btn_tooltip": "Application settings — language, preferences, MCP server registration",
+    "mode_label": "Model",
+    "mode_tooltip": "Which model the window trains and tests. Anima and MOSS-Image keep separate caches, settings and LoRAs; switching only changes the view, running jobs keep going.",
+    "mode_anima": "Anima",
+    "mode_moss": "MOSS-Image",
     "settings_title": "Settings",
     "settings_prefs_header": "Preferences",
-    "settings_autotag_confidence": "Autotag confidence:",
-    "settings_autotag_confidence_tooltip": (
-        "Extra probability floor (0–1) applied on top of the tagger's per-tag "
-        "thresholds. Higher = fewer, more confident tags. Default 0.50."
-    ),
-    "settings_caption_insert_no_artist": "Insert @no-artist during caption correction",
-    "settings_caption_insert_no_artist_tooltip": (
-        "If the corrected caption has no artist tag, insert @no-artist at the "
-        "artist position. It only anchors caption shuffle and is stripped before tokenization."
-    ),
-    "settings_caption_validate_artist_tags": "Validate artist tags with DB",
-    "settings_caption_validate_artist_tags_tooltip": (
-        "When enabled, only @tags classified as artists in danbooru_tags_classified.csv "
-        "move to the artist position. When disabled, any @tag is treated as an artist tag."
-    ),
-    "settings_group_match_frac": "Grouping tightness:",
-    "settings_group_match_frac_tooltip": (
-        "Inlier fraction (0–1) needed to group two Dataset images when you press "
-        "Group. Higher = tighter, cleaner groups. Default 0.25."
-    ),
-    "settings_group_cell_match": "Grouping cell match:",
-    "settings_group_cell_match_tooltip": (
-        "Per-cell cosine floor (0–1) for an inlier match during Dataset grouping. "
-        "Higher = stricter cell agreement. Default 0.93."
-    ),
     "settings_theme": "Theme:",
     "settings_theme_tooltip": (
         "Overall color theme for the interface. Applies immediately; the window "
@@ -649,7 +464,7 @@ STRINGS: dict[str, str] = {
     "ec_desc_group_top": "descriptor",
     # Top-bar buttons (models / update / report issue)
     "models_btn": "Models",
-    "models_btn_tooltip": "Download or re-download model checkpoints (Anima base, SAM3, MIT, PE vision encoder)",
+    "models_btn_tooltip": "Download or re-download model checkpoints — the Anima weights (incl. the CJK vocab pack) and the anime_tools curation packs, in one place",
     "update_btn": "Update",
     "update_btn_tooltip": "Pull the latest anima_lora release from GitHub and run uv sync",
     "update_btn_available": "Update ●",
@@ -657,12 +472,10 @@ STRINGS: dict[str, str] = {
     "report_issue": "Report Issue",
     "report_issue_tooltip": "Open the GitHub issue tracker in your browser",
     "visit_github": "Visit GitHub page",
-    "open_in_system_viewer": "Open in system viewer",
     # Models dialog
     "models_title": "Download Models",
-    "models_intro": "Pick a model group below or use 'Download all' for the standard set "
-    "(Anima + SAM3 + MIT + PE + tag DB). Files are saved under models/.",
-    "models_download_all": "Download all (Anima + SAM3 + MIT + PE + tag DB)",
+    "models_intro": "The weights a training or inference run needs, grouped by pack. 'Download the first-run set' fetches the three Anima weights, PE-Spatial (REPA), the CJK vocab pack (on by default since v2), the tagger checkpoint and the tag DB. SAM3 (masking) and OCR are opt-in packs on the Curation tab. Files are saved under models/.",
+    "models_download_all": "Download the first-run set",
     "models_download": "Download",
     "models_redownload": "Re-download",
     "models_installed": "✓ Installed",
@@ -673,16 +486,51 @@ STRINGS: dict[str, str] = {
     "models_failed_message": "Download exited with code {code}. See the log for details.",
     "model_anima": "Anima — DiT + text encoder + VAE",
     "model_sam3": "SAM3 — text-bubble masking",
-    "model_mit": "MIT — manga text masking",
-    "model_pe": "PE-Core-L14-336 — vision encoder (CMMD validation / DCW)",
+    "model_pe": "PE-Core-L14-336 — vision encoder (CMMD validation)",
+    "model_anima_dit": "Anima base DiT — the model being trained",
+    "model_anima_te": "Qwen3-0.6B text encoder — prompt embeddings",
+    "model_anima_vae": "Qwen-Image VAE — latent encode / decode",
+    "model_vocab_pack": "CJK vocab pack — JA / KO / ZH caption rows (on by default)",
+    "model_pe_spatial": "PE-Spatial-B16-512 — REPA + near-twin grouping",
+    "models_used_by": "Used by: {what}",
+    "models_tab_anima": "Anima",
+    "models_tab_curation": "Curation (anime_tools)",
+    "curation_models_intro": "Weights for the curation stages, grouped by pack — tagger, tag DB, masking (SAM3, opt-in), OCR (opt-in), grouping. Read straight from the anime_tools catalog. Each stage also fetches what it needs on first use; this only moves the wait.",
+    "models_download_missing": "Download all missing ({n})",
+    "models_all_installed": "✓ Everything installed",
+    "models_download_pack": "Download pack",
+    "models_redownload_pack": "Re-download pack",
+    "models_pack_anima": "Anima base",
+    "models_pack_anima_desc": "The DiT, the Qwen3-0.6B text encoder and the Qwen-Image VAE — every training and inference run needs all three.",
+    "models_pack_pe": "PE-Core",
+    "models_pack_pe_desc": "PE-Core-L14-336: the CMMD validation metric only (use_cmmd, off by default). The REPA feature cache uses PE-Spatial — the Grouping pack on the Curation tab.",
+    "models_pack_cjk": "CJK vocab pack",
+    "models_pack_cjk_desc": "Extra text-encoder rows for Japanese / Korean / Chinese caption and prompt spans. On by default since v2; English text is bit-exact either way.",
+    "models_pack_moss_base": "MOSS-Image Base",
+    "models_pack_moss_base_desc": "MOSS-Image-Base (not Anima): the 5B DiT, the Qwen3.5-9B text encoder, the FLUX.2 VAE and tokenizer — ~27 GB. The MOSS line's LoRA substrate.",
+    "models_pack_moss_sft": "MOSS-Image SFT",
+    "models_pack_moss_sft_desc": "MOSS-Image-SFT's DiT alone (~10 GB); it reuses the Base pack's text encoder, VAE and tokenizer.",
+    "models_pack_tagger": "Tagger",
+    "models_pack_tagger_desc": "The Anima Tagger: its checkpoint, the gated dbv4 backbone, and the ONNX graph traced from it.",
+    "models_pack_tags": "Danbooru tag DB",
+    "models_pack_tags_desc": "The ~114k-row tag table caption correction types against, and its English descriptions.",
+    "models_pack_masking": "Masking",
+    "models_pack_masking_desc": "SAM3 subject masks (gated; masking is opt-in since v2), and the subject soft prompt the position stages detect with.",
+    "models_pack_ocr": "OCR",
+    "models_pack_ocr_desc": "The AnimeText text-block detector and the manga VL reader (PaddleOCR-VL-1.6 base + the SFX fine-tune). Opt-in.",
+    "models_pack_grouping": "Grouping",
+    "models_pack_grouping_desc": "PE-Spatial-B16-512: the REPA feature cache (preprocess-pe) and the near-twin grouping tower.",
     "model_danbooru_tags": "Danbooru tag DB — caption order correction",
+    "model_tagger": "Anima Tagger — caformer_b36 backbone (gated)",
     # HuggingFace authentication (Models dialog)
     "models_hf_token_placeholder": "Paste your HuggingFace token (hf_…)",
     "models_hf_authenticate": "Authenticate",
     "models_hf_token_hint": "Needed for gated / rate-limited downloads (e.g. SAM3). "
     'Create a token at <a href="https://huggingface.co/settings/tokens">'
     "huggingface.co/settings/tokens</a> · request SAM3 access at "
-    '<a href="https://huggingface.co/facebook/sam3">huggingface.co/facebook/sam3</a>.',
+    '<a href="https://huggingface.co/facebook/sam3">huggingface.co/facebook/sam3</a>. '
+    "The Anima Tagger backbone is gated too — accept its terms at "
+    '<a href="https://huggingface.co/animetimm/caformer_b36.dbv4-full">animetimm/caformer_b36.dbv4-full</a>.',
     "models_hf_token_present": "✓ A HuggingFace token is already saved.",
     "models_hf_not_authenticated": "Not authenticated — paste a token to enable gated downloads.",
     "models_hf_token_empty": "Paste a token first.",
@@ -738,6 +586,47 @@ STRINGS: dict[str, str] = {
     "merge_pick_file": "Select adapter .safetensors",
     "merge_pick_dit": "Select base DiT .safetensors",
     "merge_pick_out": "Save merged DiT as...",
+    # LoRA ⊕ LoRA → LoRA merge (merge_loras.py)
+    "merge_mode": "Mode:",
+    "merge_mode_dit": "Into DiT",
+    "merge_mode_loras": "Merge LoRAs",
+    "merge_lora_options": "LoRA Merge Options",
+    "merge_lora_select_hint": "Pick 2+ adapters (Ctrl/Shift-click) to fuse into one LoRA, usable via the normal --lora_weight path.",
+    "merge_lora_selected": "Selected:",
+    "merge_lora_need_two": "Select at least 2 LoRAs.",
+    "merge_weights": "Weights:",
+    "merge_weights_placeholder": "(optional: e.g. 1.0,0.7,0.7 — list order)",
+    "merge_weights_tip": "Comma-separated per-LoRA strengths, one per selected adapter in list order. Blank = all 1.0.",
+    "merge_weights_mismatch": "{n} weights given but {m} LoRAs selected.",
+    "merge_normalize": "Normalize:",
+    "merge_normalize_tip": "Rescale the merged delta to single-LoRA magnitude. 'global' (default) matches the global RMS to the average single-LoRA norm; 'per_module' matches each module but reweights layers; 'off' = raw exact-concat sum (can overdrive the DiT).",
+    "merge_lora_button": "Merge LoRAs",
+    "merge_analyze_button": "Analyze interference",
+    "merge_analyze_tip": "Dry-run: report how the selected LoRAs interfere in weight space (constructive reinforce vs destructive cancel, per pair and per layer) without writing a merged file.",
+    "merge_analysis_safe": "✓ Safe to merge — LoRAs are near-orthogonal · strongest pair |cos| {cos} · energy ratio {ratio} · {shared}/{modules} shared modules",
+    "merge_analysis_reinforce": "⚠ {strength} reinforcing — {a} ↔ {b} cos {cos} · energy ratio {ratio} (normalize=global rescales the summed magnitude) · {shared}/{modules} shared modules",
+    "merge_analysis_cancel": "⚠ {strength} cancellation — {a} ↔ {b} cos {cos} · these LoRAs partially erase each other · energy ratio {ratio} · {shared}/{modules} shared modules",
+    "merge_analysis_overlap": "⚠ Subspace collision — {a} ↔ {b} write into the same weight subspaces (overlap {overlap}, {x}× random) despite near-orthogonal directions · styles may fight at inference · energy ratio {ratio} · {shared}/{modules} shared modules",
+    "merge_analysis_moderate": "Moderate",
+    "merge_analysis_strong": "Strong",
+    "merge_lora_out_placeholder": "(auto: <first-lora>_merged<N>.safetensors)",
+    "merge_mode_extract": "Extract LoRA",
+    "merge_extract_options": "Extract LoRA Options",
+    "merge_extract_hint": "Extract a plain LoRA from the weight delta (ΔW = tuned − base) between two full DiT checkpoints, SVD-truncated to the chosen rank. The result loads through every plain-LoRA consumer (--lora_weight, Merge into DiT, ComfyUI, turbo warm-start). Both checkpoints must be the net.-prefixed Anima layout.",
+    "merge_extract_base": "Base DiT:",
+    "merge_extract_tuned": "Tuned checkpoint:",
+    "merge_extract_tuned_placeholder": "(required: click a checkpoint in the list, or browse)",
+    "merge_extract_rank": "Rank:",
+    "merge_extract_rank_tip": "Rank the ΔW is SVD-truncated to (network_dim of the output LoRA). 96 captures most of a typical full-model delta.",
+    "merge_extract_include_adaln": "Include adaln up-projections",
+    "merge_extract_include_adaln_tip": "Also extract the adaln_up_{branch} deltas (the largest movers in an official turbo delta). Off by default: the plain student doesn't target adaln and stock loaders skip these keys.",
+    "merge_extract_adaln_layout": "adaln layout:",
+    "merge_extract_adaln_layout_tip": "Key naming for the adaln LoRAs: 'runtime' = in-repo module names (for the turbo warm-start path), 'comfy' = ComfyUI state-dict paths (loads natively in core). Only used when adaln is included.",
+    "merge_extract_out_placeholder": "(required: output LoRA .safetensors)",
+    "merge_extract_pick_ckpt": "Select full DiT .safetensors",
+    "merge_extract_no_tuned": "Select a tuned checkpoint to diff against the base.",
+    "merge_extract_no_out": "Choose an output path for the extracted LoRA.",
+    "merge_extract_button": "Extract LoRA",
     "browse": "Browse…",
     # Multi-scale target_res tiers
     "target_res_bucket_tooltip": "Limit preprocessing to this {edge}px bucket resolution. Leave all unchecked to use every bucket in the selected tiers.",

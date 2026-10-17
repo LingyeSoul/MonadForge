@@ -23,7 +23,7 @@ Three reasons, in order of weight. **Note which one is load-bearing** — the fi
 - **EasyControl** = *spatial / structural* control (extended self-attention, ControlNet-like) — "follow this layout."
 - **IP-Adapter** = *semantic / style / identity* image-prompt (decoupled cross-attention, uniform over the canvas) — "match this subject/vibe," no spatial constraint.
 
-EasyControl does not cover IP-Adapter's use. If IP-Adapter stays retired, the thing that replaces it is **personalization-LoRA**, not EasyControl. This is the opposite of the ReFT case: ReFT was genuinely *redundant* with live training-free levers (DCW / channel-scaling / mod-guidance); IP-Adapter is **not redundant — it's the only thing that did zero-shot image-prompt** — it's just expensive and unproven. So the gate is not "is something else better at the same job," it's **"does the product want this job at all, given the cheaper alternative."**
+EasyControl does not cover IP-Adapter's use. If IP-Adapter stays retired, the thing that replaces it is **personalization-LoRA**, not EasyControl. This is the opposite of the ReFT case: ReFT was genuinely *redundant* with live training-free levers (channel-scaling / mod-guidance); IP-Adapter is **not redundant — it's the only thing that did zero-shot image-prompt** — it's just expensive and unproven. So the gate is not "is something else better at the same job," it's **"does the product want this job at all, given the cheaper alternative."**
 
 ---
 
@@ -94,7 +94,7 @@ Arm B drives training through the existing trainer (a plain-LoRA config built on
 
 ## Scope & named follow-ups (out of phase 1)
 
-- **PE cache stays regardless.** `scripts/preprocess/cache_pe_encoder.py` (+ `make preprocess-pe`) and the `{stem}_anima_pe.safetensors` / `anima_pe_centroid_*.safetensors` sidecars are **not** IP-Adapter-private — CMMD validation (`library/training/cmmd.py`) and DCW v4 read them. They were left in the live tree. This bench reuses them for the metric.
+- **PE cache stays regardless.** `scripts/preprocess/cache_pe_encoder.py` (+ `make preprocess-pe`) and the `{stem}_anima_pe.safetensors` / `anima_pe_centroid_*.safetensors` sidecars are **not** IP-Adapter-private — CMMD validation (`library/training/cmmd.py`) reads them. They were left in the live tree. This bench reuses them for the metric.
 - **PE-LoRA stays too.** `networks/methods/ip_adapter_pe_lora.py` is vendored into the live Anima-Tagger ComfyUI node (`scripts/release/sync_vendor.py`, `comfyui-anima-tagger/nodes.py` `pe_lora` UI) — left in place. The IP-Adapter import of it was the thing removed.
 - **EasyControl:** *not* a candidate to replace IP-Adapter — spatial conditioning is a different axis (see above). Excluded by design, not by experiment.
 - **`ip_scale` / CFG / aspect:** swept in phase 1 only enough to find the fidelity-matched operating point; not a full optimization.

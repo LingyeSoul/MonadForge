@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import torch
 
 from library.runtime.convrot.quant import (
@@ -100,6 +102,7 @@ def test_rotate_and_quantize_weight_uses_rotated_domain() -> None:
     assert torch.allclose(scale, scale_ref)
 
 
+@pytest.mark.training_step
 def test_fake_quantize_activation_int8_ste_passes_grad() -> None:
     torch.manual_seed(2)
     x = torch.randn(4, 32, requires_grad=True)

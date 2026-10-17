@@ -1,0 +1,7 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>LoRA</h2>
+<p>经典低秩适应。向现有权重层添加小型可训练矩阵（down &times; up）。<br>
+<code>y = x + (x @ down @ up) &times; scale &times; multiplier</code><br>
+简单、有效，是大多数微调任务的默认选择。可完全烘焙到基础 DiT 中。</p>
+<p><b>变体</b><br>
+&bull; <b>lora</b> &mdash; 默认 16GB+ 配置。<br>
+&bull; <b>lora-8gb</b> &mdash; 低显存配置（块交换 + 卸载检查点）；如果默认配置 OOM，请选此变体。</p>

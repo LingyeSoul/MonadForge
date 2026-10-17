@@ -73,6 +73,7 @@ def test_fused_w8a16_matches_legacy_dense_path() -> None:
     assert rel.item() < 1e-4
 
 
+@pytest.mark.training_step
 def test_fused_w8a16_default_path_finite_and_grad() -> None:
     torch.manual_seed(3)
     linear = nn.Linear(128, 64, bias=False)
@@ -88,6 +89,7 @@ def test_fused_w8a16_default_path_finite_and_grad() -> None:
     assert rel.item() < 0.08
 
 
+@pytest.mark.training_step
 def test_fused_w8a8_matches_legacy_and_has_grad() -> None:
     torch.manual_seed(4)
     w = torch.randn(64, 128)

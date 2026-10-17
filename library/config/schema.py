@@ -10,9 +10,7 @@ Once populated, :func:`validate_entry` is the single place that decides:
 * whether a value is within declared ``choices``,
 * type-coercion of soft mismatches (e.g. TOML ``1`` where ``float`` is wanted).
 
-Warnings get a ``file:line`` locator when possible so a typo in
-``configs/methods/lora.toml`` surfaces with the exact offending line before
-a two-hour run starts.
+Warnings get a ``file:line`` locator when possible.
 """
 
 from __future__ import annotations
@@ -116,9 +114,9 @@ def populate_schema(
             continue
         CONFIG_SCHEMA[key.name] = key
 
-    # Back-compat aliases: the cache surface collapsed from four flags
-    # (cache_latents{,_to_disk}, cache_text_encoder_outputs{,_to_disk}) to two
-    # semantic knobs. Old configs / snapshots still resolve onto the new keys.
+    # Back-compat aliases: the four old cache flags
+    # (cache_latents{,_to_disk}, cache_text_encoder_outputs{,_to_disk}) resolve
+    # onto the two semantic knobs.
     for _canon, _old in (
         ("use_vae_cache", ("cache_latents", "cache_latents_to_disk")),
         (
@@ -132,8 +130,7 @@ def populate_schema(
                 aliases=CONFIG_SCHEMA[_canon].aliases + _old,
             )
 
-    # Manual TOML-only / non-argparse extras. `base_config` is the only one
-    # essential today; future methods can extend via ``extras``.
+    # Manual TOML-only / non-argparse extras; callers extend via ``extras``.
     CONFIG_SCHEMA.setdefault(
         "base_config",
         ConfigKey(
@@ -155,12 +152,12 @@ def populate_schema(
         (
             "source_image_dir",
             "image_dataset",
-            "Where raw images and .txt captions live. Read by scripts/preprocess/resize_images.py and scripts/preprocess/cache_text_embeddings.py.",
+            "Where raw images and .txt captions live. Read by the resize stage (make preprocess-resize) and scripts/preprocess/cache_text_embeddings.py.",
         ),
         (
             "resized_image_dir",
             "post_image_dataset/resized",
-            "Where scripts/preprocess/resize_images.py writes VAE-aligned PNGs. Also resolved into the dataset subset's image_dir at training time.",
+            "Where the resize stage (make preprocess-resize) writes VAE-aligned PNGs. Also resolved into the dataset subset's image_dir at training time.",
         ),
         (
             "lora_cache_dir",
@@ -179,39 +176,24 @@ def populate_schema(
             ),
         )
 
-    # Preprocess input filter — consumed by scripts/tasks/preprocess.py (forwarded
-    # to scripts/preprocess/resize_images.py and scripts/preprocess/cache_text_embeddings.py as
-    # ``--min_pixels``). Not an argparse arg on train.py — preprocess reads it
-    # straight from the merged config chain via load_path_overrides().
-    CONFIG_SCHEMA.setdefault(
-        "drop_lowres_images",
-        ConfigKey(
-            name="drop_lowres_images",
-            type="bool",
-            default=True,
-            help=(
-                "When true, the preprocess auto-chain skips source images "
-                "smaller than ``min_pixels`` (see below) so they never enter "
-                "the resize/VAE/TE caches. Set false to keep every image."
+    # Retired preprocess input filter (the resize stage lost its pixel floor in
+    # anime_tools 0.7.5 — every source image lands in the tree). Nothing reads
+    # these; they stay registered so a user-owned configs/preprocess.toml that
+    # still carries them loads without an unknown-key warning.
+    for _name, _type, _default in (
+        ("drop_lowres_images", "bool", True),
+        ("min_pixels", "int", 500_000),
+    ):
+        CONFIG_SCHEMA.setdefault(
+            _name,
+            ConfigKey(
+                name=_name,
+                type=_type,
+                default=_default,
+                help="Retired — no effect. The resize stage keeps every image.",
+                source="manual",
             ),
-            source="manual",
-        ),
-    )
-    CONFIG_SCHEMA.setdefault(
-        "min_pixels",
-        ConfigKey(
-            name="min_pixels",
-            type="int",
-            default=500_000,
-            help=(
-                "Pixel-count threshold for ``drop_lowres_images`` "
-                "(default 500_000 = 0.5MP). Forwarded to "
-                "scripts/preprocess/resize_images.py + cache_text_embeddings.py as "
-                "``--min_pixels``. Ignored when ``drop_lowres_images=false``."
-            ),
-            source="manual",
-        ),
-    )
+        )
 
     # Generic percent-based dataset curriculum. These values are TOML-only;
     # ``--staged_resolution`` remains the CLI shorthand for the common three-row

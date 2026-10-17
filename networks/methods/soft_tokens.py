@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # Anima cached crossattn_emb dimension (Qwen3 hidden size, post LLM-adapter).
 DEFAULT_EMBED_DIM = 1024
 
-# Contrastive negative-sourcing modes (docs/proposal/soft_tokens_contrastive.md):
+# Contrastive negative-sourcing modes (_archive/proposals/soft_tokens_contrastive.md):
 # ``shuffled`` = unrelated cached-TE negative; ``jaccard`` = shuffled but logit
 # down-weighted by caption tag-overlap; ``hard`` = same-artist/different-character
 # sibling (falls back to shuffled for orphan artists); ``hard_backoff`` = tiered
@@ -52,9 +52,7 @@ CONTRASTIVE_MODES = ("shuffled", "jaccard", "hard", "hard_backoff")
 #                  candidates (``L = softtorch.rank(r)[matched] − 1``). Gradient
 #                  flows *through* the ordering yet stays bounded by the SoftSort
 #                  relaxation (unlike InfoNCE's unbounded negative push). Needs k
-#                  live negative forwards only (docs/proposal/soft_tokens_softrank.md).
-# (AGSM was removed 2026-05-30 — its w_matched stayed pinned at chance in both the
-# soft-tokens A/B and the mod-guidance probe; softrank won on eyeball + curves.)
+#                  live negative forwards only (_archive/proposals/soft_tokens_softrank.md).
 CONTRASTIVE_OBJECTIVES = ("infonce", "softrank")
 
 
@@ -127,8 +125,8 @@ def create_network(
     contrastive_objective = str(kwargs.get("contrastive_objective", "infonce"))
     softrank_softness = float(kwargs.get("softrank_softness", 0.1))
     softrank_method = str(kwargs.get("softrank_method", "neuralsort"))
-    # ``dual_bank`` (ψ⁺/ψ⁻ token banks). ``agsm_dual_bank`` kept as a deprecated
-    # alias so pre-2026-05-30 configs/snapshots don't silently drop the flag.
+    # ``dual_bank`` (ψ⁺/ψ⁻ token banks). ``agsm_dual_bank`` is a deprecated
+    # alias so older configs/snapshots don't silently drop the flag.
     _dual_bank = kwargs.get("dual_bank", kwargs.get("agsm_dual_bank", "false"))
     dual_bank = str(_dual_bank).lower() in ("true", "1", "yes")
     network = SoftTokensNetwork(
@@ -345,8 +343,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
         self.contrastive_objective = str(contrastive_objective)
         # softrank: SoftSort softness (softtorch's temperature). NOT contrastive_tau
         # — softtorch's standardize=True puts the candidate axis at unit scale, so
-        # the right softness is ~0.1 (its default), not the sigmoid τ=0.5 the
-        # proposal floated reusing. Separate knob (the τ-reuse was the wrong scale).
+        # the right softness is ~0.1 (its default).
         self._softrank_softness = float(softrank_softness)
         # SoftSort vs NeuralSort relaxation for softrank. neuralsort (default) has
         # a smooth gradient through ties (the near-miss regime); softsort goes flat
@@ -500,7 +497,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
     def _make_block_hook(self, layer_idx: int, org_forward):
         """Closure that splices layer_idx's tokens into crossattn_emb tail.
 
-        Block.forward signature (from library/anima/models.py:1179):
+        Block.forward signature (from library/anima/models.py::Block.forward):
           forward(x_B_T_H_W_D, emb_B_T_D, crossattn_emb, attn_params,
                   rope_cos_sin=None, adaln_lora_B_T_3D=None)
         """
@@ -518,9 +515,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
         ):
             step_tokens = net._step_layer_tokens
             if step_tokens is not None:
-                # net.multiplier is intentionally NOT applied — soft tokens splice
-                # at full magnitude (no `* multiplier`), so set_multiplier(0) does
-                # NOT disable them (see the self.multiplier note in __init__).
+                # multiplier not applied — see the self.multiplier note in __init__.
                 layer_tok = step_tokens[layer_idx].to(
                     dtype=crossattn_emb.dtype, device=crossattn_emb.device
                 )
@@ -661,7 +656,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
 
         - file 4D + this net single (inference of a dual checkpoint): slice the
           ψ⁺ branch (index 0) — Appendix H keeps ψ⁻ training-only.
-        - file 3D + this net single: pass through (the Phase-2 path).
+        - file 3D + this net single: pass through.
         - file 4D + this net dual (resume): pass through.
         - file 3D + this net dual: a single-bank checkpoint can't seed both
           branches unambiguously → hard error.
@@ -779,34 +774,19 @@ class SoftTokensNetwork(AdapterNetworkBase):
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """SoftREPA-style InfoNCE over cached-TE negatives (B=1-adapted).
 
-        Each forward shares the same ``(x_t, ε, t)`` and spliced soft tokens;
-        only ``crossattn_emb`` differs (matched vs. mismatched text). The logit
-        for a forward is the negative flow-matching error against the shared
-        velocity target, scaled by τ::
+        Each forward shares ``(x_t, ε, t)`` and spliced soft tokens; only
+        ``crossattn_emb`` differs (matched vs. mismatched text). Logit per
+        forward = negative FM error against the shared velocity target, scaled
+        by τ: ``ℓ = -‖v - v_target‖²/τ``, ``L = -log(exp(ℓ_pos)/Σexp(ℓ))``.
+        Gradient flows to the soft tokens to make the matched text explain the
+        anchor's latent better than mismatched text.
 
-            ℓ_* = -‖v_* − v_target‖² / τ            (mean over C·H·W per sample)
-            L   = -log( exp(ℓ_pos) / Σ_{pos,neg} exp(ℓ_*) )
+        ``neg_penalty`` (jaccard mode's ``α·s``, shape ``(B, k)``) is subtracted
+        from each negative logit — a tag-overlapping negative pulls less
+        gradient. ``None`` ⇒ plain InfoNCE (shuffled/hard).
 
-        Gradient flows to the soft tokens (via every ``v_*``) to make the
-        matched text explain the anchor's latent better than mismatched text —
-        i.e. to sharpen the cross-attention's text discrimination.
-
-        ``neg_penalty`` (the ``jaccard`` mode's ``α·s``, shape ``(B, k)``) is
-        subtracted from each negative logit before the softmax — a negative that
-        shares tags with the anchor becomes a less-surprising mismatch and pulls
-        less gradient. ``None`` ⇒ plain InfoNCE (``shuffled`` / ``hard``).
-
-        Shapes
-        ------
-        v_pos, v_target : ``(B, C, H, W)``
-        v_neg           : ``(B, k, C, H, W)``
-        neg_penalty     : ``(B, k)`` or None
-
-        Returns
-        -------
-        (loss_scalar, diagnostics) where diagnostics carries the contrastive
-        accuracy (pos beats every negative) and the mean pos−neg logit gap for
-        TensorBoard.
+        Shapes: v_pos/v_target ``(B,C,H,W)``, v_neg ``(B,k,C,H,W)``.
+        Returns ``(loss_scalar, diagnostics)`` — accuracy + mean pos-neg logit gap.
         """
         logit_pos, logits_neg = self._velocities_to_logits(
             v_pos, v_neg, v_target, neg_penalty
@@ -824,9 +804,9 @@ class SoftTokensNetwork(AdapterNetworkBase):
         """Per-sample FM-error logits for the InfoNCE softmax.
 
         Differentiable in every velocity arg, so the caller can ``.detach()``
-        whichever branch it drops from the graph — this is how the grad-cache
-        path splits ∂L/∂v_pos and ∂L/∂v_neg without duplicating the τ/penalty
-        math. Returns ``(logit_pos (B,), logits_neg (B, k))``.
+        whichever branch it drops from the graph — how the grad-cache path
+        splits ∂L/∂v_pos and ∂L/∂v_neg without duplicating the τ/penalty math.
+        Returns ``(logit_pos (B,), logits_neg (B, k))``.
         """
         tau = float(self._contrastive_tau)
         vp = v_pos.float()
@@ -852,7 +832,6 @@ class SoftTokensNetwork(AdapterNetworkBase):
     ) -> torch.Tensor:
         # InfoNCE: -log softmax of the positive over {pos, neg_1..k}.
         all_logits = torch.cat([logit_pos.unsqueeze(1), logits_neg], dim=1)  # (B, 1+k)
-        # InfoNCE: -log softmax of the positive over {pos, neg_1..k}.
         return (-logit_pos + torch.logsumexp(all_logits, dim=1)).mean()
 
     @staticmethod
@@ -867,7 +846,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
             "contrastive_logit_gap": float(gap.item()),
         }
 
-    # ── soft-rank listwise objective (docs/proposal/soft_tokens_softrank.md) ──
+    # ── soft-rank listwise objective (_archive/proposals/soft_tokens_softrank.md) ──
 
     def _candidate_rewards(
         self,
@@ -875,14 +854,11 @@ class SoftTokensNetwork(AdapterNetworkBase):
         v_neg: torch.Tensor,
         v_target: torch.Tensor,
     ) -> torch.Tensor:
-        """Per-candidate FM reward ``r_j = −mean((v̂_j − v_target)²)`` over C·H·W.
+        """Per-candidate FM reward ``r_j = -mean((v_j - v_target)²)`` over C·H·W.
 
-        Returns ``(B, m=k+1)`` with index 0 = matched, 1..k = mismatched (higher =
-        better, same reduction as the InfoNCE logit pre-τ). Differentiable in both
-        ``v_pos`` and ``v_neg``, so the caller can ``.detach()`` whichever branch it
-        drops to split the grad-cache (exactly as ``_velocities_to_logits`` does).
-
-        Shapes: ``v_pos, v_target (B, C, H, W)``; ``v_neg (B, k, C, H, W)``.
+        Returns ``(B, m=k+1)``, index 0 = matched, 1..k = mismatched (higher =
+        better). Differentiable in both v_pos/v_neg so the caller can
+        ``.detach()`` whichever branch to split the grad-cache.
         """
         vp = v_pos.float()
         vt = v_target.float()
@@ -901,18 +877,14 @@ class SoftTokensNetwork(AdapterNetworkBase):
     ) -> torch.Tensor:
         """Differentiable SoftSort rank of the matched caption, pushed toward best.
 
-            r_j  = −‖v̂_j − v_target‖²                       (per-candidate reward)
-            L    = softtorch.rank(r, softsort)[matched] − 1   (rank ∈ [1, m]; 1=win)
-
-        Gradient flows through every ``r_j`` — i.e. through the soft ordering (no
-        detach anywhere on the ranking; ``v_target`` is the only constant). Bounded
-        by the SoftSort relaxation and self-annealing (``L → 0`` as the matched
-        caption wins, ``rank → 1``). Subtracting 1 makes the fixed point a clean 0
-        (softtorch ranks are 1-indexed).
+        ``L = softtorch.rank(r, softsort)[matched] - 1`` (rank in [1,m], 1=win).
+        Gradient flows through every ``r_j`` — through the soft ordering, no
+        detach on the ranking (``v_target`` is the only constant). Bounded by
+        the SoftSort relaxation; self-annealing (``L -> 0`` as matched wins).
 
         The grad-cache split rides the same disjoint-partials trick as InfoNCE:
-        detach ``v_neg`` here for the anchor's ∂L/∂v⁺, and detach ``v_pos`` in the
-        deferred pass for ∂L/∂v⁻ (the two partials are exact).
+        detach ``v_neg`` here for the anchor's ∂L/∂v+, and ``v_pos`` in the
+        deferred pass for ∂L/∂v- (the two partials are exact).
         """
         r = self._candidate_rewards(v_pos, v_neg, v_target)  # (B, m)
         ranks = _soft_rank(r, self._softrank_softness, self._softrank_method)
@@ -926,9 +898,8 @@ class SoftTokensNetwork(AdapterNetworkBase):
     ) -> dict[str, float]:
         """Acc / reward-gap (shared with InfoNCE) + the mean matched soft-rank.
 
-        ``softrank_matched_rank`` is the headline health signal (softtorch's
-        1-indexed rank): → 1 as the matched caption wins outright, → m when it
-        loses. Inputs should be detached values (diagnostics only)."""
+        ``softrank_matched_rank`` is the headline signal: -> 1 as the matched
+        caption wins outright, -> m when it loses. Inputs should be detached."""
         with torch.no_grad():
             r = self._candidate_rewards(v_pos, v_neg, v_target)  # (B, m)
             diag = self._contrastive_diagnostics(r[:, 0], r[:, 1:])
@@ -944,17 +915,14 @@ class SoftTokensMethodAdapter(MethodAdapter):
 
     Each negative is one extra DiT forward sharing the anchor's ``(x_t, ε, t)``
     and spliced tokens, swapping only ``crossattn_emb`` — the ``extra_forwards``
-    contract. Two objectives share the plumbing (k forwards each), selected by the
-    network's ``contrastive_objective``:
-
-      - ``infonce`` — SoftREPA InfoNCE over the negatives.
-      - ``softrank`` — differentiable listwise rank of the matched caption.
+    contract. Two objectives share the plumbing (k forwards each), selected by
+    ``network.contrastive_objective``: ``infonce`` (SoftREPA InfoNCE) or
+    ``softrank`` (differentiable listwise rank).
 
     Wiring: ``prime_for_forward`` stashes ``batch["neg_crossattn_emb"]`` (train
-    only); ``extra_forwards`` returns the scalar under ``"soft_tokens_contrastive"``
-    (composer applies warmup-gated weight); ``after_backward`` replays the
-    deferred ∂L/∂v_neg. Negatives absent outside training → forwards skipped, so
-    val FM-MSE stays clean.
+    only); ``extra_forwards`` returns the scalar under
+    ``"soft_tokens_contrastive"``; ``after_backward`` replays the deferred
+    ∂L/∂v_neg. Negatives absent outside training → forwards skipped.
     """
 
     name = "soft_tokens_contrastive"
@@ -963,9 +931,9 @@ class SoftTokensMethodAdapter(MethodAdapter):
         self._neg_crossattn: Optional[torch.Tensor] = None
         self._neg_jaccard: Optional[torch.Tensor] = None
         self._last_metrics: dict[str, float] = {}
-        # Block-swap grad-cache state: when block swapping is active the
-        # negative backward can't share the anchor's forward/backward cycle, so
-        # it's deferred to ``after_backward``. ``None`` when no replay is queued.
+        # GOTCHA: under block swap the negative backward can't share the
+        # anchor's forward/backward cycle, so it's deferred to after_backward.
+        # None when no replay is queued.
         self._pending_gradcache: Optional[dict] = None
 
     def prime_for_forward(
@@ -977,8 +945,7 @@ class SoftTokensMethodAdapter(MethodAdapter):
             self._neg_jaccard = None
             return
         self._neg_crossattn = batch.get("neg_crossattn_emb")
-        # Per-negative tag-overlap Jaccard (B, k), present only in jaccard mode.
-        self._neg_jaccard = batch.get("neg_jaccard")
+        self._neg_jaccard = batch.get("neg_jaccard")  # (B, k), jaccard mode only
 
     def extra_forwards(self, ctx: StepCtx, primary: ForwardArtifacts) -> Optional[dict]:
         if not primary.is_train:
@@ -989,16 +956,12 @@ class SoftTokensMethodAdapter(MethodAdapter):
         net = ctx.accelerator.unwrap_model(ctx.network)
         if float(getattr(net, "_contrastive_target_weight", 0.0) or 0.0) <= 0.0:
             return None
-        # Warmup gate: while ``_contrastive_weight`` is held at 0 (first
-        # ``_contrastive_warmup_ratio`` of training) the loss is multiplied by 0
-        # downstream and ``after_backward`` is already skipped — so the k negative
-        # DiT value forwards below would be pure waste. Skip the whole block.
+        # Warmup gate: while _contrastive_weight is held at 0, the k negative
+        # DiT value forwards below would be pure waste — skip the whole block.
         if float(getattr(net, "_contrastive_weight", 0.0) or 0.0) <= 0.0:
             self._pending_gradcache = None
             return None
-        # Cadence gate: skip the whole contrastive block (no_grad value pass +
-        # after_backward replay) on non-firing steps. The flag is set per step
-        # by ``step_contrastive_warmup`` on the optimizer-step clock.
+        # Cadence gate: flag set per step by step_contrastive_warmup.
         if not getattr(net, "_contrastive_fire_this_step", True):
             self._pending_gradcache = None
             return None
@@ -1007,8 +970,7 @@ class SoftTokensMethodAdapter(MethodAdapter):
         ce_dtype = primary.crossattn_emb.dtype
         neg = neg.to(device)  # (B, k, S, D)
         k = neg.shape[1]
-        # Dual bank: negatives splice ψ⁻ (branch 1); anchor + matched EMA stay on
-        # ψ⁺ (branch 0). Single bank → branch 0 throughout.
+        # Dual bank: negatives splice ψ- (branch 1); anchor stays on ψ+ (branch 0)
         neg_branch = 1 if getattr(net, "n_banks", 1) > 1 else 0
 
         v_pos = primary.model_pred.squeeze(2)  # (B, C, H, W) — live anchor graph
@@ -1017,31 +979,24 @@ class SoftTokensMethodAdapter(MethodAdapter):
         base_kw = dict(primary.forward_kwargs)
         neg_penalty = self._neg_penalty(net, device)
 
-        # Snapshot the anchor's splice state; the negative value passes mutate the
-        # per-step buffers, so restore afterwards. (The anchor's autograd graph
-        # holds tensor references, so these attribute writes don't affect it.)
+        # Snapshot the anchor's splice state; the negative value passes mutate
+        # the per-step buffers, so restore afterwards (the anchor's autograd
+        # graph holds tensor references, unaffected by these attribute writes).
         anchor_tokens = net._step_layer_tokens
         anchor_seqlens = net._step_seqlens
 
         dit = ctx.accelerator.unwrap_model(primary.anima_call)
 
-        # ── Gradient caching, split so the negative DiT forward NEVER overlaps the
-        # anchor backward. Naive checkpoint-and-recompute OOMs (recompute fires
-        # during ``accelerator.backward`` with the anchor graph still live → two
-        # forwards resident) and crashes under block swap (recompute re-enters
-        # ``_run_blocks`` against the offloader's end-of-forward layout). Instead
-        # split ∂L_con/∂θ into two partials, each its own clean forward/backward:
-        #   • ∂L/∂v_pos — rides the anchor's FM backward: the returned loss uses
-        #     ``logit_pos`` (live graph) + *detached* negative logits.
-        #   • ∂L/∂v_neg — deferred to ``after_backward`` (anchor freed, offloader
-        #     head-resident). Negatives forwarded once here under no_grad for their
-        #     values + cached ``g_neg``, then replayed there.
-        # ``prepare_block_swap_before_forward`` is a no-op at blocks_to_swap=0, so
-        # one path serves swap and no-swap (no-swap still peaks at one graph).
-
-        # Negative velocity values under no_grad (no graph retained). Each forward
-        # is bracketed by a block-swap reset (no-op when not swapping) so the
-        # offloader stays in the anchor's end-of-forward state.
+        # GOTCHA: gradient caching, split so the negative DiT forward NEVER
+        # overlaps the anchor backward. Naive checkpoint-and-recompute OOMs
+        # (two forwards resident) and crashes under block swap (recompute
+        # re-enters _run_blocks against the offloader's end-of-forward layout).
+        # Instead split ∂L_con/∂θ into two clean forward/backward partials:
+        # ∂L/∂v_pos rides the anchor's FM backward (live logit_pos + detached
+        # negatives); ∂L/∂v_neg is deferred to after_backward (anchor freed) —
+        # negatives forwarded once here under no_grad for values + cached g_neg,
+        # replayed there. prepare_block_swap_before_forward is a no-op at
+        # blocks_to_swap=0, so one path serves swap and no-swap.
         v_neg_vals = []
         with torch.no_grad():
             for j in range(k):
@@ -1066,9 +1021,8 @@ class SoftTokensMethodAdapter(MethodAdapter):
         live = float(getattr(net, "_contrastive_weight", 0.0) or 0.0)
 
         if getattr(net, "contrastive_objective", "infonce") == "softrank":
-            # Differentiable listwise rank of the matched caption. L⁺ rides the
-            # anchor's FM backward (grad via live v_pos, negatives detached);
-            # ∂L/∂v_neg is grad-cached + replayed exactly like InfoNCE.
+            # Grad via live v_pos, negatives detached; ∂L/∂v_neg grad-cached +
+            # replayed exactly like InfoNCE.
             loss = net.softrank_loss(v_pos, v_neg, v_target)
             diag = net.softrank_diagnostics(v_pos.detach(), v_neg, v_target)
             self._record_softrank_metrics(net, loss, diag)
@@ -1144,10 +1098,9 @@ class SoftTokensMethodAdapter(MethodAdapter):
         neg_branch,
     ) -> dict:
         """Pack the deferred ∂L/∂v_neg replay state. Objective-agnostic — the
-        replay in ``after_backward`` just pushes the cached ``g_neg`` back through
+        replay in ``after_backward`` pushes the cached ``g_neg`` back through
         each negative's (live-bank) forward, so InfoNCE and softrank share it.
-        ``neg_branch`` is the bank the negative spliced on (ψ⁻ under dual bank) so
-        the replay forward routes grad to the same params."""
+        ``neg_branch`` is the bank the negative spliced on (ψ- under dual bank)."""
         return {
             "net": net,
             "dit": dit,
@@ -1168,12 +1121,11 @@ class SoftTokensMethodAdapter(MethodAdapter):
     def after_backward(self, ctx: StepCtx) -> None:
         """Replay the cached contrastive negatives after the FM backward.
 
-        The anchor graph is freed (and under swap the offloader head-resident),
-        so each negative re-forward + backward peaks at a single graph. The cached
-        ``weight·g_neg`` accumulates onto the FM grads on the same params (no
-        ``zero_grad`` between here and the optimizer step). Single-process only —
-        a manual backward inside ``accelerator.accumulate`` would need DDP no-sync
-        handling under multi-GPU.
+        The anchor graph is freed, so each negative re-forward + backward peaks
+        at a single graph. The cached ``weight·g_neg`` accumulates onto the FM
+        grads on the same params (no ``zero_grad`` between here and the
+        optimizer step). Single-process only — multi-GPU would need DDP
+        no-sync handling for a manual backward inside accumulate.
         """
         pend = self._pending_gradcache
         if pend is None:
@@ -1228,14 +1180,12 @@ class SoftTokensMethodAdapter(MethodAdapter):
         """One DiT forward conditioned on ``text_emb`` → velocity (B, C, H, W).
 
         Re-primes the per-block soft-token splice for this text and runs the
-        frozen DiT with the anchor's (x_t, ε, t). ``branch`` picks ψ⁺ (0) / ψ⁻ (1)
-        for dual-bank nets (no-op when single bank). Returns the squeezed 4D
-        velocity.
+        frozen DiT with the anchor's (x_t, ε, t). ``branch`` picks ψ+ (0) / ψ- (1)
+        for dual-bank nets (no-op when single bank).
         """
         text_emb = text_emb.to(dtype=ce_dtype)
-        # front_of_padding needs per-sample seqlens (non-zero rows of the
-        # zero-padded crossattn_emb); end_of_sequence ignores them, so skip the
-        # abs-sum reduction there.
+        # front_of_padding needs per-sample seqlens; end_of_sequence skips the
+        # abs-sum reduction.
         if net.splice_position == "front_of_padding":
             seqlens = (text_emb.abs().sum(dim=-1) > 0).sum(dim=-1).to(torch.int32)
         else:
@@ -1249,8 +1199,8 @@ class SoftTokensMethodAdapter(MethodAdapter):
         ).squeeze(2)
 
     def _neg_penalty(self, net, device) -> Optional[torch.Tensor]:
-        """jaccard mode: α·s subtracted from each negative logit (s = caption
-        tag-overlap surfaced by the dataset). ``None`` for shuffled / hard."""
+        """jaccard mode: α·s subtracted from each negative logit. ``None`` for
+        shuffled/hard."""
         if (
             getattr(net, "contrastive_negative_mode", "shuffled") == "jaccard"
             and self._neg_jaccard is not None
@@ -1271,11 +1221,8 @@ class SoftTokensMethodAdapter(MethodAdapter):
         }
 
     def _record_softrank_metrics(self, net, loss, diag) -> None:
-        """soft-rank diagnostics. ``softrank_matched_rank`` is the headline (1-
-        indexed SoftSort rank): → 1 as the matched caption wins outright among the
-        candidates, → m when it loses; ``contrastive_acc`` / ``contrastive_logit_gap``
-        (here a reward gap) mirror the InfoNCE diagnostics for cross-objective
-        comparability in the A/B."""
+        """soft-rank diagnostics; ``contrastive_acc``/``contrastive_logit_gap``
+        (here a reward gap) mirror InfoNCE's for cross-objective comparability."""
         live = float(getattr(net, "_contrastive_weight", 0.0) or 0.0)
         loss_val = float(loss.detach().item())
         self._last_metrics = {

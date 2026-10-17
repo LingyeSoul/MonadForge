@@ -1,12 +1,15 @@
 # networks/
 
-Pluggable adapter implementations selected at runtime via the `network_module` config key (plus, for the LoRA family, the three-axis routing cfg). Each subdirectory is a self-contained adapter family; `attention_dispatch.py` is the shared backend router used by both training and inference.
+Pluggable adapter implementations selected at runtime via the `network_module` config
+key (plus, for the LoRA family, the three-axis routing cfg). Each subdirectory is a
+self-contained adapter family; `attention_dispatch.py` is the shared backend router used
+by both training and inference.
 
 ## Layout
 
 | Path | Role |
 |------|------|
-| `__init__.py` | `NetworkSpec` registry (`NETWORK_REGISTRY`) + the flat `NETWORK_KWARGS` TOML allowlist (one set, mirrors what `LoRANetworkCfg.from_kwargs` reads) + `resolve_network_spec()` (maps the three-axis cfg → a registry entry). **A new cfg+TOML net kwarg is inert and fails the config test until added to `NETWORK_KWARGS` here.** |
+| `__init__.py` | `NetworkSpec` registry (`NETWORK_REGISTRY`) + the AST-derived `NETWORK_KWARGS` TOML allowlist (`_derive_network_kwargs` scans literal `kwargs.get` reads) + `resolve_network_spec()` (maps the three-axis cfg → a registry entry). **A new net kwarg must use a literal `kwargs.get` read in a scanned consumer or be explicitly included for helper-consumed options.** |
 | `lora_anima/` | LoRA network creation, module targeting, timestep-masking orchestration, global routing. Split into `network.py` (assembly/runtime core), `network_metrics.py` (read-side metrics/diagnostics mixin — balance loss, router stats, ortho reg), `routers.py` (`GlobalRouter` / `FreqRouter` / `ContentRouter`, re-exported from `network.py` for back-compat), `factory.py`, `loading.py`, and `config.py`. |
 | `lora_modules/` | Per-variant module implementations: `lora.py`, `ortho.py`, `hydra.py`, `stacked_experts.py`, `chimera.py`, `step_expert.py` (shared-down + K step-selected up-heads for the turbo DP-DMD student), plus `base.py`, `custom_autograd.py`, and `router_state.py` (shared σ/FEI/routing-weights buffer protocol for Hydra/OrthoHydra/StackedExperts — keeps the global-router grad path identical across all three; the per-module `set_sigma`/`set_fei`/`set_routing_weights`/`clear_*` method surface is the `RouterStateMixin` in that file, buffer-presence-guarded so a module inherits the full surface with absent buffers as safe no-ops). Training forwards compute their rank GEMMs in the **model compute dtype** (`org_forwarded.dtype` — NOT `x.dtype`; AdaLN LayerNorm hands fp32 under autocast(bf16)); **exception**: the opt-in `lora_fp32_compute` flag (V100/fp16 only) forces the rank path to fp32 with autocast disabled via `_rank_compute_dtype` / `_rank_autocast_context` or the equivalent LyCORIS bypass branch. Standard LoRA and linear LoKr may additionally use `use_custom_down_autograd` in eager mode (compatibility name for the complete V100 path): it preserves FP32 adapter arithmetic, saves original input/factor storage, bounds LoRA-up and LoKr bypass temporaries, and lets Anima fuse/rematerialize LoRA- or LoKr-adapted GELU MLPs by row chunks; compile bypasses these Functions and uses Dynamo/AOTAutograd plus `activation_memory_budget`. Non-Volta/bf16 users are unaffected. Each module class owns its own save-pipeline hook (`distill_save_state_dict` / `build_moe_state_dict`) — the Cayley/SVD math and per-pool MoE layout live next to the variant that defined them. |
 | `attn_fuse.py` | `AttnFuseSpec` + `iter_split_groups` + `match_fused_spec` — single source of truth for the runtime-fused `qkv_proj`/`kv_proj` ↔ on-disk split `q/k/v_proj` layout. Sits at the `networks/` top level so save (`lora_save.py`) and load (`lora_anima/loading.py`) both reach it without a cross-package import. |
@@ -19,10 +22,10 @@ Pluggable adapter implementations selected at runtime via the `network_module` c
 | `register_injection.py` | `RegisterInjector` — shared DSR register-token machinery (`_run_blocks` wrap + mid-stack pre-hooks + rope extension + adoption metrics). Two owners: the standalone register method (`methods/register.py`) and the LoRA family (`num_registers > 0` in a lora TOML = full LoRA trained jointly with K learnable registers; param at top-level dot-free key `register_tokens`, own lr group at `unet_lr × register_lr_scale`, kept-live at inference — `is_mergeable()` False, merge refused, `load_dit_model` auto-detects the key and attaches dynamic hooks; REPA capture auto-trims the K trailing tokens). |
 | `grad_basis.py` | Gradient-SVD `lora_down` init (`down_init="grad_svd"` / `"basis_file"`) — the frozen-DiT gradient sketch `S = Ωᵀ G`, the fp16 `in × r` basis artifact (`ss_num_blocks`-stamped; **depth-baked**, `load_basis` refuses a mismatch), and the shared `V_rᵀ/√3` copy so a gradient seed is a direction change and not a step-size change. `train.py` runs the per-run sketch before `_create_and_apply_network` (refused under block swap) and hands the factory a `grad_basis_file`, so both modes share one load path. See `docs/methods/svd-down-lora.md` §Gradient-seeded siblings, `docs/proposal/grad_basis_init.md`. |
 | `attention_dispatch.py` | Unified `dispatch_attention()` — backend router (SDPA / FA2 / FA3 / sageattn / flex). |
-| `spectrum.py` | Spectrum inference acceleration (Chebyshev feature forecasting). See root CLAUDE.md §Spectrum and `docs/inference/spectrum.md`. |
+| `spectrum.py` | Spectrum inference acceleration (Chebyshev feature forecasting). See `docs/inference/spectrum.md`. |
 | `spd.py` | Spectral Progressive Diffusion — training-free inference acceleration (grow spatial resolution along the trajectory, spectral noise-expansion handoff). Sampler-level runner registered like Spectrum. See `docs/inference/spd.md`. |
-| `dcw.py` | DCW post-step correction for SNR-t bias on flow-matching DiTs at the sampler boundary. See `docs/inference/dcw.md`. |
-| `calibration/` | Shipped calibration artifacts: `channel_stats.safetensors` + `cond_channel_stats.safetensors` (per-channel scaling, main + EasyControl cond stream — see `docs/optimizations/channel_scaling.md`; inert on frozen-basis ortho variants) + `cns_gamma.npz` (CNS γ schedule, also auto-downloaded from a release) + `dave_alpha.npz` (DAVE). |
+| `foveated.py` | Deferred-foveated merge — training-free inference acceleration (full grid above σ_c, then fovea tokens 1:1 + periphery 2×2-token groups merged via the `token_merger` forward kwarg; endogenous `combo` mask). Sampler-level runner registered like Spectrum/SPD. See `docs/inference/foveated.md`. |
+| `calibration/` | Shipped artifacts: `channel_stats.safetensors` + `cond_channel_stats.safetensors` (per-channel scaling, main + EasyControl cond stream; `docs/optimizations/channel_scaling.md`), `cns_gamma.npz` (CNS γ), `dave_alpha.npz` (DAVE). |
 
 **V100 FP16 dtype contract:** `lora_fp32_compute=true` covers both the adapter
 rank/factor arithmetic and the additive merge. When a frozen layer returns
@@ -46,7 +49,10 @@ state and checkpoint follow this same storage mark on a protected V100 run.
 
 ## Three-axis routing surface (plan2)
 
-As of commit `1dca212`, the LoRA-family routing flags collapsed into three orthogonal cfg axes consumed by `lora_anima/config.py::LoRANetworkCfg.from_kwargs` and dispatched by `__init__.py::resolve_network_spec`:
+The LoRA-family routing cfg is three orthogonal axes — `use_moe_style` /
+`route_per_layer` / `router_source` — parsed by
+`lora_anima/config.py::LoRANetworkCfg.from_kwargs` and dispatched by
+`__init__.py::resolve_network_spec` to a `NETWORK_REGISTRY` entry.
 
 | Knob | Values | Meaning |
 |---|---|---|
@@ -97,23 +103,49 @@ Training-loop call: `train.py` fires `network.set_fei(noisy_model_input)` at the
 
 ## Attn fuse spec (qkv/kv fuse↔split)
 
-`attn_fuse.py::AttnFuseSpec` + `iter_split_groups` + `match_fused_spec` is the single source of truth for the runtime-fused `qkv_proj` (self-attn) / `kv_proj` (cross-attn) ↔ on-disk split `q/k/v_proj` layout. ComfyUI's cosmos backbone uses the split layout while Anima's training-side DiT uses the fused projections; save always writes split, load always re-fuses. Both `lora_save.py` and `loading.py` walk the same specs, so adding a new fused projection only needs one entry here.
+The training DiT fuses `qkv_proj` (self-attn) / `kv_proj` (cross-attn); ComfyUI's cosmos
+backbone uses split `q/k/v_proj`. Save always writes split, load always re-fuses. Both
+`lora_save.py` and `loading.py` walk `ATTN_FUSE_SPECS`, so a new fused projection needs
+one entry there.
 
 ## Attention dispatch
 
-`attention_dispatch.py::dispatch_attention()` routes to the active backend (torch SDPA, flash-attn v2/v3, sageattn, flex attention). **Tensor layout differs by backend** — BHLD for SDPA/sageattn, BLHD for flash-attn — so callers must hand tensors to the dispatcher in a known layout and the dispatcher transposes as needed. Check the backend branches before adding new attention call sites.
+`attention_dispatch.py::dispatch_attention()` routes to the active backend (torch SDPA,
+flash-attn v2/v3, sageattn, flex attention). **Tensor layout differs by backend** — BHLD
+for SDPA/sageattn, BLHD for flash-attn. `dispatch_attention` takes `[B, L, H, D]` and
+transposes per backend; check the backend branches before adding a call site.
 
-FA4 (flash-attention-sm120) was evaluated and is currently disabled — see `docs/optimizations/fa4.md`. The KV-trim + LSE-correction path that depended on FA4 was removed (the `crossattn_full_len` field and `trim_crossattn_kv` flag are gone as of 2026-05-20); only the `flash4` branch stub remains in the dispatcher. See fa4.md for what re-enabling FA4 would entail.
+FA4 (flash-attention-sm120) is disabled — `attn_mode="flash4"` raises in the dispatcher.
+Re-enable notes: `docs/optimizations/fa4.md`.
 
 ## compile_blocks() and forward hooks
 
-`compile_blocks()` compiles `block._forward`, **not** `block.__call__` (`library/anima/models.py::compile_blocks`). Consequences for hook-based feature capture (REPA, functional loss, probe tooling):
+`compile_blocks()` compiles `block._forward`, **not** `block.__call__`
+(`library/anima/models.py::compile_blocks`). Consequences for hook-based feature capture
+(REPA, functional loss, probe tooling):
 
-- `register_forward_hook` on a **block** survives compilation — `__call__`'s hook machinery runs eagerly around the compiled inner.
-- Hooks on submodules *invoked inside* `_forward` are traced over under compile — don't rely on them firing.
-- Under compile, captured block outputs arrive in **native-flatten layout `(B, 1, seq, 1, D)`**; eager runs keep the 5D `(B, 1, H, W, D)` patch grid. Capture consumers must handle both.
-- A hook that never fires silently turns the feature into a no-op — warn once at first consume if nothing was captured (pattern: `_warned_no_capture` in `library/training/repa.py`).
+- `register_forward_hook` on a **block** survives compilation — `__call__`'s hook
+  machinery runs eagerly around the compiled inner.
+- Hooks on submodules *invoked inside* `_forward` are traced over under compile — don't
+  rely on them firing.
+- Under compile, captured block outputs arrive in **native-flatten layout `(B, 1, seq,
+  1, D)`**; eager runs keep the 5D `(B, 1, H, W, D)` patch grid. Capture consumers must
+  handle both.
+- A hook that never fires silently turns the feature into a no-op — warn once at first
+  consume if nothing was captured (pattern: `_warned_no_capture` in
+  `library/training/repa.py`).
 
-## Timestep masking — when to update what
+## Timestep masking
 
-T-LoRA's mask is a single CPU/GPU buffer shared across all adapted Linears, updated once per denoising step from `lora_anima/network.py`. Anything that calls into LoRA modules during a forward must have the mask set for the current `t` already — `factory.py` and `network.py` are the only places that should be poking `set_timestep_mask` / `clear_timestep_mask`. New adapter variants that want timestep awareness should reuse the same buffer pattern (register as a buffer in `base.py`, read it inside `forward`) rather than threading `t` through every call site.
+T-LoRA's mask is one shared buffer per distinct module rank (a `reg_dims` override
+yields mixed ranks), owned by
+`lora_anima/network.py::LoRANetwork.set_timestep_mask` / `clear_timestep_mask` and fired
+once per step from `library/training/forward/router_conditioning.py`. Anything that calls
+into LoRA modules during a forward must have the mask set for the current `t` already.
+New adapter variants that want timestep awareness should reuse the same buffer pattern
+(register as a buffer in `base.py`, read it inside `forward`) rather than threading `t`
+through every call site.
+
+## Upstream routing scope and retained fork variants
+
+The upstream `.claude/skills/lora-routing/SKILL.md` describes its reduced plain-LoRA/shared-A surface. MonadForge intentionally also retains independent-A, ortho, Chimera, LoKr/LoHa/GLoKr, VeRA and DyLoRA with their existing save/load contracts. Do not remove those paths while applying upstream routing changes.

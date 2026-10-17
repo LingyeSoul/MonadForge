@@ -135,6 +135,12 @@ def add_common_args(
     ``--device`` / ``--dtype`` delegate to
     ``library.runtime.cli.add_device_args`` (the shared compute flag group).
 
+    NOTE (issues.md DX5): the flags below are added *for* you — do NOT also
+    ``parser.add_argument`` them in your bench or argparse raises a
+    "conflicting option string" error. If your bench needs its own ``--label``
+    or ``--seed`` semantics, opt out of ours with ``include_label=False`` /
+    ``include_seed=False`` and add your own.
+
     Flags injected at defaults:
         --label             free-form run label, fed to make_run_dir
         --seed              int, default 0

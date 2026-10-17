@@ -239,7 +239,7 @@ class MemGapTracker:
         self._steps = 0  # train batches seen (measurement cadence)
         self._updates = 0  # total per-item measurements folded in
         # Flag-set snapshots [(updates, [stems…]), …] for churn analysis
-        # (kill criterion 3: churn > ~50% ⇒ estimator too noisy to act on).
+        # (churn > ~50% ⇒ estimator too noisy to act on).
         self._history: list[tuple[int, list[str]]] = []
         self._dirty = False
         atexit.register(self.save)

@@ -18,10 +18,6 @@ _MAX_SAFETENSORS_HEADER_SIZE = 100_000_000
 def mem_eff_save_file(
     tensors: Dict[str, torch.Tensor], filename: str, metadata: Dict[str, Any] = None
 ):
-    """
-    memory efficient save file
-    """
-
     _TYPES = {
         torch.float64: "F64",
         torch.float32: "F32",
@@ -55,7 +51,7 @@ def mem_eff_save_file(
     if metadata:
         header["__metadata__"] = validate_metadata(metadata)
     for k, v in tensors.items():
-        if v.numel() == 0:  # empty tensor
+        if v.numel() == 0:
             header[k] = {
                 "dtype": _TYPES[v.dtype],
                 "shape": list(v.shape),
@@ -84,30 +80,21 @@ def mem_eff_save_file(
                 with torch.cuda.device(v.device):
                     if (
                         v.dim() == 0
-                    ):  # if scalar, need to add a dimension to work with view
+                    ):  # scalar needs a dim to view() as bytes
                         v = v.unsqueeze(0)
                     tensor_bytes = v.contiguous().view(torch.uint8)
                     tensor_bytes.cpu().numpy().tofile(f)
             else:
-                if v.dim() == 0:  # if scalar, need to add a dimension to work with view
+                if v.dim() == 0:  # scalar needs a dim to view() as bytes
                     v = v.unsqueeze(0)
                 v.contiguous().view(torch.uint8).numpy().tofile(f)
 
 
 class MemoryEfficientSafeOpen:
-    """Memory-efficient reader for safetensors files.
-
-    This class provides a memory-efficient way to read tensors from safetensors files
-    by using memory mapping for large tensors and avoiding unnecessary copies.
-    """
+    """Reads tensors from a safetensors file, memmapping large ones to avoid
+    intermediate copies."""
 
     def __init__(self, filename, disable_numpy_memmap=False):
-        """Initialize the SafeTensor reader.
-
-        Args:
-            filename (str): Path to the safetensors file to read.
-            disable_numpy_memmap (bool): If True, disable numpy memory mapping for large tensors, using standard file read instead.
-        """
         self.filename = filename
         self.file = open(filename, "rb")
         try:
@@ -118,27 +105,15 @@ class MemoryEfficientSafeOpen:
         self.disable_numpy_memmap = disable_numpy_memmap
 
     def __enter__(self):
-        """Enter context manager."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Exit context manager and close file."""
         self.file.close()
 
     def keys(self):
-        """Get all tensor keys in the file.
-
-        Returns:
-            list: List of tensor names (excludes metadata).
-        """
         return [k for k in self.header.keys() if k != "__metadata__"]
 
     def metadata(self) -> Dict[str, str]:
-        """Get metadata from the file.
-
-        Returns:
-            Dict[str, str]: Metadata dictionary.
-        """
         return self.header.get("__metadata__", {})
 
     def _read_header(self):
@@ -172,24 +147,11 @@ class MemoryEfficientSafeOpen:
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
     ):
-        """Load a tensor from the file with memory-efficient strategies.
+        """Load a tensor from the file.
 
-        **Note:**
-        If device is 'cuda' , the transfer to GPU is done efficiently using pinned memory and non-blocking transfer.
-        So you must ensure that the transfer is completed before using the tensor (e.g., by `torch.cuda.synchronize()`).
-
-        If the tensor is large (>10MB) and the target device is CUDA, memory mapping with numpy.memmap is used to avoid intermediate copies.
-
-        Args:
-            key (str): Name of the tensor to load.
-            device (Optional[torch.device]): Target device for the tensor.
-            dtype (Optional[torch.dtype]): Target dtype for the tensor.
-
-        Returns:
-            torch.Tensor: The loaded tensor.
-
-        Raises:
-            KeyError: If the tensor key is not found in the file.
+        CUDA transfers are non-blocking — caller must synchronize before use
+        (e.g. ``torch.cuda.synchronize()``). Tensors >10MB going to CUDA are
+        memmapped to avoid an intermediate copy.
         """
         if key not in self.header:
             raise KeyError(f"Tensor '{key}' not found in the file")
@@ -251,15 +213,6 @@ class MemoryEfficientSafeOpen:
         )
 
     def _deserialize_tensor(self, byte_tensor: torch.Tensor, metadata: Dict):
-        """Deserialize byte tensor to the correct shape and dtype.
-
-        Args:
-            byte_tensor (torch.Tensor): Raw byte tensor from file.
-            metadata (Dict): Tensor metadata containing dtype and shape info.
-
-        Returns:
-            torch.Tensor: Deserialized tensor with correct shape and dtype.
-        """
         dtype = self._get_torch_dtype(metadata["dtype"])
         shape = metadata["shape"]
         return byte_tensor.view(dtype).reshape(shape)
@@ -290,9 +243,6 @@ def load_safetensors(
     disable_numpy_memmap: bool = False,
 ) -> dict[str, torch.Tensor]:
     if disable_mmap:
-        # return safetensors.torch.load(open(path, "rb").read())
-        # use experimental loader
-        # logger.info(f"Loading without mmap (experimental)")
         state_dict = {}
         device = torch.device(device) if device is not None else None
         with MemoryEfficientSafeOpen(
@@ -314,10 +264,8 @@ def load_safetensors(
 
 
 def get_split_weight_filenames(file_path: str) -> Optional[list[str]]:
-    """
-    Get the list of split weight filenames (full paths) if the file name ends with 00001-of-00004 etc.
-    Returns None if the file is not split.
-    """
+    """Return split weight filenames if ``file_path`` ends with e.g.
+    ``00001-of-00004``, else None."""
     basename = os.path.basename(file_path)
     match = re.match(r"^(.*?)(\d+)-of-(\d+)\.safetensors$", basename)
     if match:
@@ -342,10 +290,7 @@ def load_split_weights(
     disable_mmap: bool = False,
     dtype: Optional[torch.dtype] = None,
 ) -> Dict[str, torch.Tensor]:
-    """
-    Load split weights from a file. If the file name ends with 00001-of-00004 etc, it will load all files with the same prefix.
-    dtype is as is, no conversion is done.
-    """
+    """Load split weights from a file, or a single file if not split."""
     device = torch.device(device)
 
     split_filenames = get_split_weight_filenames(file_path)
@@ -369,12 +314,7 @@ def find_key(
     starts_with: Optional[str] = None,
     ends_with: Optional[str] = None,
 ) -> Optional[str]:
-    """
-    Find a key in a safetensors file that starts with `starts_with` and ends with `ends_with`.
-    If `starts_with` is None, it will match any key.
-    If `ends_with` is None, it will match any key.
-    Returns the first matching key or None if no key matches.
-    """
+    """Find the first key matching the given prefix/suffix (None = wildcard)."""
     with MemoryEfficientSafeOpen(safetensors_file) as f:
         for key in f.keys():
             if (starts_with is None or key.startswith(starts_with)) and (
@@ -392,21 +332,15 @@ class WeightTransformHooks:
 
 
 class TensorWeightAdapter:
-    """
-    A wrapper for weight conversion hooks (split and concat) to be used with MemoryEfficientSafeOpen.
-    This wrapper adapts the original MemoryEfficientSafeOpen to apply the provided split and concat hooks
-    when loading tensors.
+    """Wraps a :class:`MemoryEfficientSafeOpen` to apply split/concat/rename
+    key-conversion hooks when loading tensors.
 
-    split_hook: A callable that takes (original_key: str, original_tensor: torch.Tensor) and returns (new_keys: list[str], new_tensors: list[torch.Tensor]).
-    concat_hook: A callable that takes (original_key: str, tensors: dict[str, torch.Tensor]) and returns (new_key: str,  concatenated_tensor: torch.Tensor).
-    rename_hook: A callable that takes (original_key: str) and returns (new_key: str).
+    ``split_hook(original_key, tensor) -> (new_keys, new_tensors)``,
+    ``concat_hook(original_key, tensors_dict) -> (new_key, tensor)``,
+    ``rename_hook(original_key) -> new_key``. When called with ``tensors=None``
+    (during key discovery) a hook returns only the key(s), no tensors.
 
-    If tensors is None, the hook should return only the new keys (for split) or new key (for concat), without tensors.
-
-    No need to implement __enter__ and __exit__ methods, as they are handled by the original MemoryEfficientSafeOpen.
-    Do not use this wrapper as a context manager directly, like `with WeightConvertHookWrapper(...) as f:`.
-
-    **concat_hook is not tested yet.**
+    Not a context manager itself — the wrapped ``original_f`` owns the file.
     """
 
     def __init__(
@@ -417,11 +351,11 @@ class TensorWeightAdapter:
         self.original_f = original_f
         self.new_key_to_original_key_map: dict[
             str, Union[str, list[str]]
-        ] = {}  # for split: new_key -> original_key; for concat: new_key -> list of original_keys; for direct mapping: new_key -> original_key
-        self.concat_key_set = set()  # set of concatenated keys
-        self.split_key_set = set()  # set of split keys
+        ] = {}  # split: new_key->original_key; concat: new_key->[original_keys]
+        self.concat_key_set = set()
+        self.split_key_set = set()
         self.new_keys = []
-        self.tensor_cache = {}  # cache for split tensors
+        self.tensor_cache = {}  # split tensors, cached until popped
         self.split_hook = weight_convert_hook.split_hook
         self.concat_hook = weight_convert_hook.concat_hook
         self.rename_hook = weight_convert_hook.rename_hook
@@ -446,9 +380,8 @@ class TensorWeightAdapter:
                         self.new_key_to_original_key_map[converted_key] = []
                         self.new_keys.append(converted_key)
 
-                    # multiple original keys map to the same concatenated key
                     self.new_key_to_original_key_map[converted_key].append(key)
-                    continue  # skip to next key
+                    continue
 
             # direct mapping
             if self.rename_hook is not None:
@@ -474,7 +407,7 @@ class TensorWeightAdapter:
             return self.original_f.get_tensor(new_key, device=device, dtype=dtype)
 
         elif new_key in self.split_key_set:
-            # split hook: split key is requested multiple times, so we cache the result
+            # a split key is requested multiple times, so cache the split result
             original_key = self.new_key_to_original_key_map[new_key]
             if original_key not in self.tensor_cache:  # not yet split
                 original_tensor = self.original_f.get_tensor(
@@ -483,10 +416,10 @@ class TensorWeightAdapter:
                 new_keys, new_tensors = self.split_hook(original_key, original_tensor)
                 for k, t in zip(new_keys, new_tensors):
                     self.tensor_cache[k] = t
-            return self.tensor_cache.pop(new_key)  # return and remove from cache
+            return self.tensor_cache.pop(new_key)
 
         elif new_key in self.concat_key_set:
-            # concat hook: concatenated key is requested only once, so we do not cache the result
+            # a concat key is requested only once, so no need to cache
             tensors = {}
             for original_key in self.new_key_to_original_key_map[new_key]:
                 tensor = self.original_f.get_tensor(

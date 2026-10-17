@@ -62,6 +62,15 @@ def main() -> None:
         help="Path to T5 tokenizer (default: library/anima/configs/t5_old/)",
     )
     parser.add_argument(
+        "--vocab_pack",
+        type=str,
+        default=None,
+        help="CJK vocab pack path prefix (configs/base.toml `vocab_pack`; '' = off). "
+        "Routes CJK caption spans onto the pack rows, hooks the rows onto the "
+        "LLM adapter for crossattn caching, and stamps the pack id into every "
+        "cache written. EN-only captions are bit-exact either way.",
+    )
+    parser.add_argument(
         "--caption_shuffle_variants",
         type=int,
         default=0,
@@ -98,17 +107,6 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--min_pixels",
-        type=int,
-        default=500_000,
-        help=(
-            "Skip images with fewer than this many pixels (default: 500_000 "
-            "= 0.5MP). Mirrors the same filter in scripts/preprocess/resize_images.py "
-            "so TE caches don't accumulate for images that get dropped at "
-            "resize time. Set to 0 to disable."
-        ),
-    )
-    parser.add_argument(
         "--path_pattern",
         "--path-pattern",
         dest="path_pattern",
@@ -141,7 +139,7 @@ def main() -> None:
     args = parser.parse_args()
 
     from library.anima import weights as anima_utils
-    from library.anima.strategy import AnimaTextEncodingStrategy, AnimaTokenizeStrategy
+    from library.anima.strategy import AnimaTextEncodingStrategy
 
     data_dir = Path(args.dir)
     cache_dir = Path(args.cache_dir) if args.cache_dir else None
@@ -173,7 +171,6 @@ def main() -> None:
         recursive=args.recursive,
         path_pattern=args.path_pattern,
         keep_rel_stems=keep_rel_stems,
-        min_pixels=args.min_pixels,
         overwrite=args.overwrite,
     )
     uncond_needed = bool(args.dit) and not default_uncond_path().exists()
@@ -198,15 +195,21 @@ def main() -> None:
     )
     t5_tokenizer = anima_utils.load_t5_tokenizer(args.t5_tokenizer_path)
 
+    from library.anima.vocab_pack import load_vocab_pack, make_tokenize_strategy
+
+    vocab_pack = load_vocab_pack(args.vocab_pack)
+    if vocab_pack is not None:
+        print(f"Vocab pack {vocab_pack.name}: {vocab_pack.rows} ext rows")
+
     llm_adapter = None
     if args.dit:
         print(f"Loading LLM adapter from {args.dit} ...")
         llm_adapter = anima_utils.load_llm_adapter(
-            args.dit, dtype=torch.bfloat16, device=str(device)
+            args.dit, dtype=torch.bfloat16, device=str(device), vocab_pack=vocab_pack
         )
 
-    tokenize_strategy = AnimaTokenizeStrategy(
-        qwen3_tokenizer=qwen3_tokenizer, t5_tokenizer=t5_tokenizer
+    tokenize_strategy = make_tokenize_strategy(
+        vocab_pack, qwen3_tokenizer=qwen3_tokenizer, t5_tokenizer=t5_tokenizer
     )
     encoding_strategy = AnimaTextEncodingStrategy()
 
@@ -268,7 +271,6 @@ def main() -> None:
         caption_shuffle_variants=N,
         caption_tag_dropout_rate=tag_dropout_rate,
         caption_tag_randomize_rate=tag_randomize_rate,
-        min_pixels=args.min_pixels,
         overwrite=args.overwrite,
         progress=tqdm_progress("Caching text embeddings"),
     )

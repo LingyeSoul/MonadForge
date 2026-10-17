@@ -3,6 +3,7 @@
 import argparse
 import gc
 import logging
+import re
 from typing import Optional, Tuple, Any, Dict
 
 import torch
@@ -16,19 +17,34 @@ logger = logging.getLogger(__name__)
 # Anima's DiT expects a fixed-length cross-attention context. The pretrained
 # model treats zero-padded positions as attention sinks in the cross-attention
 # softmax — trimming to actual text length produces black images. All sites
-# that prepare crossattn embeds (training, inference, CFG-uncond, DCW
-# trajectory replay, DirectEdit, distillation) must pad to this exact length.
+# that prepare crossattn embeds (training, inference, CFG-uncond,
+# DirectEdit, distillation) must pad to this exact length.
 MAX_CROSSATTN_TOKENS = 512
 
 
+_ESCAPE_RE = re.compile(r"\\(n|t|r|\\|u[0-9a-fA-F]{4})")
+
+
+def _escape_sub(m: "re.Match[str]") -> str:
+    g = m.group(1)
+    simple = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\"}.get(g)
+    return simple if simple is not None else chr(int(g[1:], 16))
+
+
 def process_escape(text: str) -> str:
-    """Process escape sequences in text."""
-    return text.encode("utf-8").decode("unicode_escape")
+    """Process escape sequences (\\n, \\t, \\r, \\\\, \\uXXXX) in a prompt.
+
+    Only the escape sequences themselves are rewritten — non-ASCII text passes
+    through untouched (an ``encode("utf-8").decode("unicode_escape")``
+    round-trip would mojibake CJK prompts into latin-1 garbage).
+    """
+    return _ESCAPE_RE.sub(_escape_sub, text)
 
 
 def ensure_text_strategies(
     text_encoder_path: Optional[str],
     max_length: int = MAX_CROSSATTN_TOKENS,
+    vocab_pack=None,
 ) -> Tuple["text_strategies.TokenizeStrategy", "text_strategies.TextEncodingStrategy"]:
     """Idempotently install (and return) the tokenize/encode strategy singletons.
 
@@ -45,10 +61,15 @@ def ensure_text_strategies(
     strategy is missing *and* no path is available to build it, it raises a clear
     ``ValueError`` instead of failing later deep in the encode call.
 
-    Returns the two live strategies (whether freshly installed or pre-existing) so
-    a caller can use them directly instead of fishing them back out of the globals
-    with ``get_strategy()``. They remain global — the return value is the same
-    object the downstream encode path reads, not a private copy.
+    Returns the two live strategies (whether freshly installed or pre-existing).
+    They remain global — the return value is the same object the downstream
+    encode path reads, not a private copy.
+
+    ``vocab_pack`` selects the CJK vocab pack the tokenizer routes through: a
+    path prefix or loaded ``VocabPack``; ``None`` = the ``vocab_pack`` key in
+    ``configs/base.toml`` (``ANIMA_VOCAB_PACK`` wins); ``""`` = off. Only read
+    when the tokenize strategy is actually installed here — an already-installed
+    strategy (CLI path) is never swapped.
     """
     from library.anima import strategy as strategy_anima
 
@@ -63,8 +84,18 @@ def ensure_text_strategies(
                 "(text_strategies.TokenizeStrategy.set_strategy(...) + "
                 "TextEncodingStrategy.set_strategy(...)) or pass a text-encoder path."
             )
+        from library.anima.vocab_pack import (
+            default_vocab_pack,
+            load_vocab_pack,
+            make_tokenize_strategy,
+        )
+
+        pack = load_vocab_pack(
+            default_vocab_pack() if vocab_pack is None else vocab_pack
+        )
         text_strategies.TokenizeStrategy.set_strategy(
-            strategy_anima.AnimaTokenizeStrategy(
+            make_tokenize_strategy(
+                pack,
                 qwen3_path=text_encoder_path,
                 t5_tokenizer_path=None,
                 qwen3_max_length=max_length,
@@ -147,7 +178,14 @@ def prepare_text_inputs(
 
     # Install the global tokenize/encode strategies if the caller didn't (the
     # CLI does; a bare generate() embedder may not). No-op when already set.
-    ensure_text_strategies(te_path)
+    # The vocab pack follows the request's selection (--vocab_pack /
+    # --no_vocab_pack), else the config default.
+    from library.anima.vocab_pack import resolve_active_pack
+
+    ensure_text_strategies(
+        te_path,
+        vocab_pack=(resolve_active_pack(args) or "") if args is not None else None,
+    )
 
     # load text encoder: conds_cache holds cached encodings for prompts without padding
     conds_cache = {}

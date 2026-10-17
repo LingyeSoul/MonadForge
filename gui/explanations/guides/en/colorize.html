@@ -1,0 +1,6 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>Colorize</h2>
+<p>An EasyControl control task: colorize a black &amp; white screentoned manga page. Same frozen-DiT EasyControl network as the base variant, but the condition is a synthetic mangafied B&amp;W render (XDoG edges + screentone) and the captions are color-only (hue / saturation words).</p>
+<p>&bull; <b>Empty prompt</b> &rarr; auto-colorize (the model picks plausible colors).<br>
+&bull; <b>Color prompt</b> &rarr; steers the palette (e.g. "blue hair, red dress").</p>
+<p>The color-only text cache is multi-variant (full set + shuffled with ~30% of color tags dropped) so partial color prompts still work; the manga cond is a lossy hint, so training-time cond perturbation is kept small to preserve line structure. Cond latents cache to <code>post_image_dataset/colorize_cond/</code>.</p>
+<p>Train from the EasyControl tab &mdash; it sets <code>EASYADAPTER=colorize</code> &mdash; and preprocess runs the mangafy filter before VAE-encoding the condition. See <code>easycontrol_adapters/colorization/</code> and <code>docs/experimental/easycontrol.md</code>.</p>

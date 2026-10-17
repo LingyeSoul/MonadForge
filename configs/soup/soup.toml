@@ -1,0 +1,29 @@
+network_alpha = 128
+network_dim = 32
+down_init = "weight_svd"
+
+learning_rate = 2e-5
+max_train_epochs = 4
+save_every_n_epochs = 4
+checkpointing_epochs = 4
+
+use_shuffled_caption_variants = true
+cache_llm_adapter_outputs = true
+caption_dropout_rate = 0.1
+path_pattern = "*"
+
+use_repa     = true
+repa_mode    = "relational"
+repa_weight  = 0.05
+repa_layer   = 8
+repa_encoder = "pe_spatial"
+
+[soup]
+pool_path_pattern = "*"
+uncond_ratio = 1.0
+uncond_epochs = 4
+num_soup = 3
+# no_uncond = true skips Phase 1: ingredients init from down_init (weight_svd
+# [+ top-level svd_slice]) instead of the uncond checkpoint. Required whenever
+# svd_slice != 0 — a --network_weights warm-start would overwrite the slice.
+no_uncond = false

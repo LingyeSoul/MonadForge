@@ -47,17 +47,8 @@ Run from the repo root::
         --tag-any "speech bubble,thought bubble,blank speech bubble" \
         --artists ama_mitsuki
 
-    # tagless visual attribute (recommended for bubbles on an untagged tree):
-    python -m easycontrol_adapters.tools.near_twin --region \
-        --artists ama_mitsuki
-
-Features are cached, so the intended loop is: run → inspect the exported pair
-tree → adjust ``--sim-min`` / ``--match-frac-min`` / ``--cell-match-min`` /
-``--max-extra-diff`` → re-run (seconds).
-
-Algorithm core lives in ``near_twin.engine``; rendering/export in
-``near_twin.outputs``. This module holds the ``[staging]`` config layering, the
-argparse surface, and the run orchestration.
+    # tagless visual attribute:
+    python -m easycontrol_adapters.tools.near_twins --region --artists ama_mitsuki
 """
 
 from __future__ import annotations
@@ -80,7 +71,7 @@ except ImportError:  # dotenv is a soft dependency — env vars still work witho
 
 
 # Run from the repo root; `library` is installed editable (`uv sync`).
-from library.vision import load_pe_encoder
+from anime_tools.grouping.embedder import pe_spatial_embedder
 
 from .engine import (
     PairRecord,
@@ -403,11 +394,11 @@ def main(argv: list[str] | None = None) -> int:
 
     device = torch.device(args.device)
     print(f"Loading PE-Spatial-B16-512 on {device}…", file=sys.stderr)
-    bundle = load_pe_encoder(device, name="pe_spatial")
+    embedder = pe_spatial_embedder(device, name="pe_spatial")
 
     all_pairs: list[PairRecord] = []
     for artist, members in pairable.items():
-        feats = embed_members(bundle, members, args.batch_size, args.num_workers)
+        feats = embed_members(embedder, members, args.batch_size, args.num_workers)
         pairs = run_artist(artist, members, feats, args, target_tags)
         if pairs:
             print(f"  {artist}: {len(pairs)} pair(s)", file=sys.stderr)

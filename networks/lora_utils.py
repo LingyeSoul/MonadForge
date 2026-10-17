@@ -18,22 +18,43 @@ import logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# AdaLN LoRA key layouts: the DiT's runtime modules are
-# ``adaln_up_{branch}`` (post ``_dit_rename_hook``), while shipped checkpoints
-# carry the ComfyUI layout ``adaln_modulation_{branch}_2`` (lora_save relays
-# at write time). The pair of regexes + relayout functions map between them.
+# AdaLN LoRA key layouts. The same modulation up-projection has two names: the
+# in-repo runtime module name (``adaln_up_{branch}``, post ``_dit_rename_hook``)
+# and the ComfyUI state-dict path (``adaln_modulation_{branch}.2`` → LoRA key
+# ``adaln_modulation_{branch}_2``). ComfyUI's generic key map only knows the
+# latter; the in-repo loader only knows the former. These two helpers convert a
+# flat LoRA state dict between them so one trained checkpoint round-trips both
+# ecosystems (see adaln.md §Key-naming contract). Non-adaln keys pass through.
 _ADALN_BRANCHES = "self_attn|cross_attn|mlp"
+_ADALN_RUNTIME_KEY_RE = re.compile(
+    rf"^(lora_unet_blocks_\d+_)adaln_up_({_ADALN_BRANCHES})(\..+)$"
+)
 _ADALN_COMFY_KEY_RE = re.compile(
     rf"^(lora_unet_blocks_\d+_)adaln_modulation_({_ADALN_BRANCHES})_2(\..+)$"
 )
 
 
+def relayout_adaln_runtime_to_comfy(
+    weights_sd: Dict[str, torch.Tensor],
+) -> Dict[str, torch.Tensor]:
+    """Rename runtime adaln keys (``adaln_up_{br}``) to the ComfyUI layout
+    (``adaln_modulation_{br}_2``) so the file loads natively in ComfyUI."""
+    return {
+        (
+            f"{m.group(1)}adaln_modulation_{m.group(2)}_2{m.group(3)}"
+            if (m := _ADALN_RUNTIME_KEY_RE.match(k))
+            else k
+        ): v
+        for k, v in weights_sd.items()
+    }
+
+
 def relayout_adaln_comfy_to_runtime(
     weights_sd: Dict[str, torch.Tensor],
 ) -> Dict[str, torch.Tensor]:
-    """ComfyUI adaln keys back to in-repo runtime module names so a
-    comfy-native adaln LoRA also loads through ``create_network_from_weights``
-    (in-repo inference / merge)."""
+    """Inverse of :func:`relayout_adaln_runtime_to_comfy` — ComfyUI adaln keys
+    back to in-repo runtime module names so a comfy-native adaln LoRA also loads
+    through ``create_network_from_weights`` (in-repo inference / merge)."""
     return {
         (
             f"{m.group(1)}adaln_up_{m.group(2)}{m.group(3)}"
@@ -82,8 +103,7 @@ def filter_lora_state_dict(
     return weights_sd
 
 
-# Derived from `ATTN_FUSE_SPECS` so the q/k/v ↔ qkv fusion layout has a single
-# source of truth. Save / adapter-load walk the underscore-fragment form via
+# Derived from `ATTN_FUSE_SPECS`. Save / adapter-load walk the underscore-fragment form via
 # `iter_split_groups`; this base-model merge path needs the dotted module-path
 # form (e.g. `self_attn.qkv_proj` matches against `blocks.0.self_attn.qkv_proj`).
 _FUSED_PROJ_FALLBACK = {

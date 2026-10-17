@@ -7,12 +7,11 @@ STRINGS: dict[str, str] = {
     "window_title": "Anima LoRA",
     "tab_config": "학습 설정",
     "tab_easycontrol": "EasyControl",
-    "tab_spd": "SPD",
     "tab_turbo": "Turbo",
     "tab_experimental": "실험기능",
-    "tab_images": "데이터셋 뷰어",
     "tab_merge": "병합",
     "tab_queue": "큐 현황",
+    "tab_anime_tools": "anime_tools",
     "tab_preprocess": "전처리",
     "tab_tensorboard": "텐서보드",
     # PreprocessingTab
@@ -35,17 +34,6 @@ STRINGS: dict[str, str] = {
         "전처리 루트는 image_dataset/data_group1이 됩니다. 이 필터는 그 루트 기준 상대 경로에 "
         "적용됩니다. '*'(또는 빈 값)은 전체, '1/*'는 data_group1/1 하위만, "
         "'1/*|2/*'는 두 하위 폴더를 처리합니다."
-    ),
-    "preprocess_drop_lowres": "저해상도 이미지 제외",
-    "preprocess_drop_lowres_tip": (
-        "아래 픽셀 임계값보다 작은 소스 이미지를 건너뛰어 리사이즈 / VAE / "
-        "텍스트 캐시에 포함되지 않도록 합니다. "
-        "체크 해제 시 크기에 상관없이 모든 이미지를 유지합니다."
-    ),
-    "preprocess_min_pixels": "최소 픽셀 수 (필터 임계값):",
-    "preprocess_min_pixels_tip": (
-        "저해상도 필터의 픽셀 수 임계값. 500000 = 0.5MP. "
-        "'저해상도 이미지 제외'가 해제되면 무시됩니다."
     ),
     "preprocess_target_res": "해상도 티어 (target_res):",
     "preprocess_freefit_max_ratio": "최대 종횡비:",
@@ -99,7 +87,6 @@ STRINGS: dict[str, str] = {
         "그대로 씁니다. 값을 올리면 태그 수는 줄고 더 안전해집니다. "
         "레이팅은 이 값과 무관하게 항상 출력됩니다."
     ),
-    "preprocess_caption_editing": "캡션 편집",
     "preprocess_caption_position_clauses": "위치 절 생성 (다중 인물)",
     "preprocess_caption_position_clauses_tip": (
         "다중 인물 이미지에서 SAM3로 인물을 검출하고 각각을 태깅해 "
@@ -115,6 +102,7 @@ STRINGS: dict[str, str] = {
         '뽑으세요. `make caption-position ARGS="--flatten --apply"`로 되돌릴 수 '
         "있습니다."
     ),
+    "preprocess_caption_editing": "캡션 편집",
     "preprocess_caption_correct_order": "캡션 순서 교정",
     "preprocess_caption_correct_order_tip": (
         "교정된 .txt 캡션을 리사이즈 이미지 옆에 저장하고 텍스트 인코더 "
@@ -143,80 +131,32 @@ STRINGS: dict[str, str] = {
     "preprocess_run_pe": "PE 캐싱 실행",
     "preprocess_add_to_queue": "큐에 추가",
     "preprocess_queued": "{label} 큐에 추가됨 (작업 {job_id}) — 큐 탭에서 확인하세요.",
-    "preprocess_masking_sam": "SAM3 마스킹 (말풍선)",
-    "preprocess_masking_mit": "MIT 마스킹 (만화 텍스트)",
-    "preprocess_sam_prompts": "SAM 프롬프트 (한 줄에 하나):",
-    "preprocess_sam_prompts_tip": (
-        "SAM3이 찾을 텍스트 프롬프트. 한 줄에 하나씩. "
-        "기본값: 'speech bubble', 'text bubble'."
-    ),
-    "preprocess_sam_focus_prompts": "SAM 포커스 프롬프트 (한 줄에 하나):",
-    "preprocess_sam_focus_prompts_tip": (
-        "반전 극성: 유지할 피사체를 지정합니다. 설정하면 마스크는 해당 피사체에만 "
-        "학습이 적용되고 나머지는 모두 무시됩니다 (예: 'girl'을 지정하면 배경 전체가 "
-        "무시 영역이 됩니다). 위의 프롬프트와 합성되어, 최종 학습 영역은 포커스 "
-        "피사체에서 무시 영역을 뺀 부분이 됩니다. 비워두면 기본 무시 전용 동작이 "
-        "적용됩니다."
-    ),
-    "preprocess_sam_rule": "마스크 규칙",
-    "preprocess_sam_add_rule": "+ 규칙 추가",
-    "preprocess_sam_add_rule_tip": (
-        "마스크 규칙을 하나 더 추가합니다. 각 규칙은 경로 패턴으로 이미지 "
-        "서브셋을 대상으로 하며, 패턴이 일치하는 규칙들은 서로 합성됩니다."
-    ),
-    "preprocess_sam_remove_rule": "규칙 삭제",
-    "preprocess_sam_rule_path_pattern": "경로 패턴 (이 규칙):",
-    "preprocess_sam_rule_path_pattern_tip": (
-        "이 규칙이 적용될 이미지를 지정합니다 — 데이터셋 루트 기준 각 이미지 "
-        "경로에 대한 fnmatch 글로브 ('|'로 OR 조합). 예: 'character_a/*'. "
-        "빈 값 또는 '*'는 모든 이미지에 매칭되는 기본 규칙입니다."
-    ),
-    "preprocess_sam_threshold": "SAM 임계값 (0.0–1.0):",
-    "preprocess_sam_threshold_tip": (
-        "SAM3 탐지를 유지할 최소 신뢰도. 낮을수록 더 많은 마스크 "
-        "(오탐 포함 가능), 높을수록 엄격. 기본값 0.5."
-    ),
-    "preprocess_dilate": "팽창 (px):",
-    "preprocess_dilate_tip": (
-        "이진 마스크에 적용할 팽창 픽셀 수. 값이 클수록 마스크 가장자리가 "
-        "바깥으로 번집니다. 기본값 5. 0으로 비활성화."
-    ),
-    "preprocess_mit_threshold": "MIT 텍스트 임계값 (0.0–1.0):",
-    "preprocess_mit_threshold_tip": (
-        "MIT/ComicTextDetector 텍스트 세그멘터의 신뢰도 임계값. 기본값 0.8."
-    ),
-    "preprocess_mask_path_pattern": "마스크 경로 필터:",
-    "preprocess_mask_path_pattern_tip": (
-        "마스킹할 리사이즈 이미지를 제한하는 fnmatch glob 패턴. "
-        "post_image_dataset/resized 기준 각 경로에 대해 매칭됩니다. "
-        "SAM과 MIT 모두에 적용됩니다. 학습용 path_pattern과 동일한 문법: "
-        "'*'(또는 빈 값)이면 전체 마스킹; 'char_a/*'이면 한 하위 폴더; "
-        "'char_a/*|char_b/*'으로 OR 조합."
-    ),
-    "preprocess_run_mask": "마스킹 실행",
-    "preprocess_run_sam_mask": "SAM 마스킹 실행",
-    "preprocess_run_sam_mask_tip": (
-        "마스크 생성 단계에서 SAM3 말풍선 분할을 실행합니다. "
-        "체크 해제하면 SAM을 건너뛰고 MIT(또는 활성화된 다른 백엔드)만 사용합니다."
-    ),
-    "preprocess_run_mit_mask": "MIT 마스킹 실행",
-    "preprocess_run_mit_mask_tip": (
-        "마스크 생성 단계에서 MIT/ComicTextDetector 텍스트 분할을 "
-        "실행합니다. 체크 해제하면 MIT를 건너뛰고 SAM만 사용합니다."
-    ),
-    "preprocess_mask_nothing_enabled": (
-        "SAM 또는 MIT 마스킹 중 최소 하나는 활성화되어야 합니다."
-    ),
+    "preprocess_invalid_stage": "{stage}: {err}",
     "preprocess_status_resized": "리사이즈된 이미지: {n}장",
     "preprocess_status_caches": "캐시 — latents: {lat}, text: {te}, PE: {pe}",
     "preprocess_status_masks": "마스크: {masks}장",
     "preprocess_status_no_resized": "리사이즈된 이미지가 없습니다.",
-    "preprocess_no_resized_to_process": (
-        "post_image_dataset/resized/에 리사이즈된 이미지가 없습니다. 먼저 전처리"
-        "(리사이즈)를 실행하세요 — 마스킹과 그룹화는 리사이즈된 이미지를 대상으로 동작합니다."
-    ),
     "preprocess_open_dataset_dir": "캐시 폴더 열기",
     "preprocess_open_dataset_dir_tooltip": "post_image_dataset/ 폴더(리사이즈된 이미지 + 캐시)를 파일 탐색기에서 엽니다.",
+    "preprocess_status_export_stale": "anime_tools에 마지막 Export 이후의 편집이 있습니다",
+    "preprocess_resize_preview": "리사이즈 미리보기",
+    "preprocess_resize_preview_tooltip": "원본 이미지별로 아래 설정에서 리사이즈가 고르는 bucket과 tier, 그리고 크롭 영역을 보여줍니다. 원본 파일은 변경하지 않습니다.",
+    "preprocess_resize_preview_title": "리사이즈 미리보기",
+    "preprocess_resize_preview_refresh": "새로고침",
+    "preprocess_resize_preview_col_image": "이미지",
+    "preprocess_resize_preview_col_source": "원본",
+    "preprocess_resize_preview_col_bucket": "Bucket",
+    "preprocess_resize_preview_col_tier": "Tier",
+    "preprocess_resize_preview_col_kept": "유지",
+    "preprocess_resize_preview_summary": "이미지 {n}개, bucket {buckets}개",
+    "preprocess_resize_preview_skipped": "{n}개 제외됨",
+    "preprocess_resize_preview_unreadable": "{n}개 읽기 실패",
+    "preprocess_resize_preview_empty": "{path} 아래에 이미지가 없습니다",
+    "anime_tools_failed": "anime_tools를 시작할 수 없습니다: {err}",
+    "anime_tools_root_warning": "패널에 저장된 루트가 post_image_dataset/ 안을 가리킵니다({roots}). 패널의 스테이지가 트레이너의 트리를 덮어쓰게 됩니다. 패널의 ⚙ 설정(또는 {path})에서 비워 주세요.",
+    "anime_tools_starting": "anime_tools 시작 중… (로그: {log})",
+    "anime_tools_timeout": "anime_tools가 시작되지 않았습니다. 로그를 확인하세요: {log}",
+    "anime_tools_no_webengine": "Qt WebEngine이 설치되어 있지 않아 패널을 여기에 표시할 수 없습니다. 브라우저에서 {url} 을(를) 여세요.",
     "preprocess_clear_scope_cache": "현재 scope 캐시 삭제",
     "preprocess_clear_scope_cache_tooltip": "현재 path_scope가 적용된 리사이즈 이미지와 LoRA 캐시 폴더를 삭제합니다.",
     "preprocess_clear_scope_cache_all_scope": "전체 scope 없음",
@@ -409,6 +349,7 @@ STRINGS: dict[str, str] = {
     "locked_by_preset": "프리셋에 의해 잠김 (이 VRAM 프로필의 성능 설정은 고정되어 있습니다)",
     "lora_variants": "LoRA 변형",
     "variant": "변형:",
+    "hardware_preset": "하드웨어:",
     "apply_variant": "적용",
     "apply_variant_tooltip": "아래 폼을 이 variant의 프리셋 값으로 채웁니다. Save를 누르기 전까지는 디스크에 저장되지 않습니다.",
     "show_guide": "가이드",
@@ -425,7 +366,7 @@ STRINGS: dict[str, str] = {
     "new_variant_exists": "Variant '{name}'이(가) 이미 존재합니다.",
     "basic_section": "기본 설정",
     "advanced_section": "고급 설정 (클릭하여 펼치기)",
-    # SPD / Turbo 증류 설정 탭 (gui/tabs/distill_tab.py)
+    # Turbo 증류 설정 탭 (gui/tabs/distill_tab.py)
     "distill_general_section": "일반",
     "distill_job_running": "이 탭에서 이미 작업이 실행 중입니다.",
     "distill_config_missing": "설정 파일을 읽을 수 없습니다: {err}",
@@ -436,154 +377,29 @@ STRINGS: dict[str, str] = {
     "adapter_open_dir": "디렉토리 열기",
     "n_images": "이미지 {n}개",
     # ImageViewerTab
+    # Soup 파이프라인 탭 (gui/tabs/soup_tab.py) — 실행 전용 필드; 풀 /
+    # 도즈 / 시드 / 랭크 값은 아래 [soup] 섹션 폼에서 수정합니다.
+    "soup_run_section": "실행",
+    "soup_path_pattern": "경로 패턴",
+    "soup_path_pattern_tip": "파인튜닝 이미지를 선택하는 fnmatch 글롭. 각 이미지의 경로(서브셋 image_dir 기준 상대 경로)와 비교합니다. '|'로 여러 패턴을 구분합니다(예: 'sincos/*' 또는 'art_a/*|art_b/*'). 필수 항목입니다.",
+    "soup_name": "출력 이름",
+    "soup_name_tip": "출력 슬러그 → output/ckpt/anima_soup_<name>.safetensors. 비워두면 경로 패턴에서 유도합니다(단순한 '<dir>/*' 패턴은 '<dir>'가 됩니다).",
+    "soup_ft_args": "파인튜닝 인자",
+    "soup_ft_args_tip": "각 파인튜닝 실행에 전달할 추가 CLI 인자. 예: --network_dim 32 --max_train_epochs 8.",
+    "soup_path_pattern_required": "Soup에는 경로 패턴이 필요합니다(예: 'sincos/*' 또는 'art_a/*|art_b/*').",
+    # Shared labels
     "directory": "디렉토리:",
-    "dataset_reload": "새로고침",
-    "dataset_reload_tooltip": "현재 디렉토리를 다시 스캔해서 이미지 목록과 선택을 갱신합니다.",
-    "dataset_open_dir": "열기",
-    "dataset_open_dir_tooltip": "현재 디렉토리를 시스템 파일 관리자에서 엽니다.",
-    "dataset_add_dir": "디렉토리 추가…",
-    "dataset_add_dir_tooltip": "다른 디렉토리를 골라 이번 세션 동안 드롭다운에 추가합니다.",
-    "dataset_add_dir_picker": "추가할 디렉토리 선택",
-    "dataset_add_dir_already": "'{name}' 디렉토리는 이미 목록에 있습니다.",
-    "dataset_search_placeholder": "파일 이름 검색…",
-    "dataset_sort_asc_tooltip": "오름차순 정렬 (A→Z, 클릭하여 반전)",
-    "dataset_sort_desc_tooltip": "내림차순 정렬 (Z→A, 클릭하여 반전)",
-    "dataset_group_first_tooltip": "그룹 우선 정렬: 묶인 이미지를 폴더 구분 없이 맨 위로 모아서 보여줍니다 (그룹 외 이미지는 아래에 폴더 트리로).",
-    "dataset_view_group": "그룹",
-    "dataset_view_tree": "트리",
-    "dataset_group_sort_tooltip": "그룹 내부 이미지 정렬 기준입니다. 방향키 이동은 왼쪽 트리에 보이는 순서를 따릅니다.",
-    "dataset_group_sort_name": "이름순",
-    "dataset_group_sort_name_desc": "이름 역순",
-    "dataset_group_sort_size": "용량순",
-    "dataset_group_sort_size_desc": "용량 역순",
-    "dataset_group_sort_resolution": "해상도순",
-    "dataset_group_sort_resolution_desc": "해상도 역순",
-    "dataset_mask_overlay": "마스크 오버레이 표시",
-    "dataset_resize_preview": "리사이즈 미리보기 표시",
-    "dataset_resize_preview_tooltip": "전처리 target_res가 선택할 중앙 크롭 영역과 최종 bucket을 표시합니다. 원본 파일은 변경하지 않습니다.",
-    "dataset_resize_preview_label": "{width}x{height} @ {edge}",
-    "dataset_preprocess_skip_short": "생략 (S)",
-    "dataset_preprocess_skip_tooltip": "현재 이미지를 전처리 resize 단계에서 생략하도록 표시합니다. 원본 파일은 변경하지 않습니다.",
-    "dataset_preprocess_clear_short": "해제 (F)",
-    "dataset_preprocess_clear_tooltip": "현재 이미지의 사용/생략/이동 표시를 해제합니다. 우측 메뉴에서 전체 표시를 해제할 수 있습니다.",
-    "dataset_preprocess_clear_all": "전체 표시 해제",
-    "dataset_preprocess_save": "전처리 결정 저장",
-    "dataset_preprocess_save_tooltip": "전처리에서 사용할 이미지별 사용/생략/이동 결정을 JSON으로 저장합니다. 이동 표시는 실제 이동 전에도 전처리에서 제외됩니다.",
-    "dataset_preprocess_saved": "전처리 결정이 저장되었습니다:\n{path}",
-    "dataset_preprocess_decision_use": "전처리 결정: 사용",
-    "dataset_preprocess_decision_skip": "전처리 결정: 생략",
-    "dataset_preprocess_decision_move": "현재 상태: 이동 예정",
-    "dataset_image_meta_empty": "이미지 없음",
-    "dataset_image_meta": "{width}x{height} · {size} · {fmt}",
-    "dataset_image_meta_resize": "리사이즈 {width}x{height} @ {edge}",
-    "dataset_delete": "이동 (D)",
-    "dataset_delete_tooltip": "Delete 또는 D 키로 표시한 이미지를 사이드카와 함께 post_image_dataset/moved/로 이동합니다.",
-    "dataset_delete_confirm_title": "이미지 이동",
-    "dataset_delete_confirm_body": "이미지 {n}개와 사이드카를 post_image_dataset/moved/로 이동할까요?",
-    "dataset_delete_failed": "일부 이미지를 이동하지 못했습니다:\n{err}",
-    "dataset_group_label": "그룹 {n} — {size}장",
-    "dataset_group_rebuild": "그룹화",
-    "dataset_group_rebuild_tooltip": "PE-Spatial 시각적 유사도로 이미지 그룹화 (작가별). 작업 큐에서 실행됩니다.",
-    "dataset_group_queued": "그룹화 작업이 큐에 추가됨 (작업 {job_id}). 완료되면 이 디렉터리를 새로고침하면 그룹이 보입니다.",
-    "n_images_filtered": "{shown} / {total} 이미지",
-    "caption": "캡션:",
-    "no_caption": "(캡션 없음)",
-    "caption_save": "저장",
-    "caption_revert": "되돌리기",
-    "caption_autotag": "자동 태깅",
-    "caption_autotag_tooltip": (
-        "Anima Tagger를 이 이미지에 실행해 예측된 태그를 캡션에 추가합니다. "
-        "모델은 최초 사용 시 자동으로 내려받습니다. 결과를 확인한 뒤 저장하면 "
-        ".txt 파일에 기록됩니다."
-    ),
-    "caption_autotag_running": "자동 태깅 중…",
-    "caption_autotag_loading": "태거 로딩 중…",
-    "caption_autotag_ready": "태거 로드됨 · 대기 중",
-    "caption_autotag_busy": (
-        "다른 작업(학습 / 전처리 / 그룹화)이 GPU를 사용 중입니다. "
-        "완료된 뒤 다시 자동 태깅하세요."
-    ),
-    "caption_autotag_error": "자동 태깅 실패: {err}",
-    "caption_autotag_empty": "태거가 이 이미지에서 태그를 찾지 못했습니다.",
-    "caption_correct": "순서 교정",
-    "caption_correct_tooltip": (
-        "danbooru_tags_classified.csv를 사용해 캡션을 ANIMA 권장 순서로 "
-        "재배치하고, 설정에 따라 @no-artist를 삽입합니다."
-    ),
-    "caption_correct_visible": "현재 목록 전체 교정",
-    "caption_correct_visible_confirm": "현재 목록의 캡션 {n}개를 교정할까요?",
-    "caption_correct_visible_done": "캡션 {n}개를 교정했습니다.",
-    "caption_correct_visible_failed": "캡션 {n}개를 교정했습니다.\n\n실패:\n{err}",
-    "caption_correct_no_change": "교정할 변경사항이 없습니다.",
-    "tag_kb_posts": "게시물 {n}개",
-    "tag_kb_unknown": "{tag} — 태그 지식베이스에 없음",
-    "caption_correct_db_missing": (
-        "danbooru_tags_classified.csv를 찾을 수 없습니다.\n\n"
-        "모델 창에서 Danbooru 태그 DB를 다운로드하거나 다음 위치에 배치하세요:\n{paths}"
-    ),
-    "caption_correct_db_failed": "태그 DB 로드 실패: {err}",
-    "caption_versions": "이력…",
-    "caption_variant_training": "학습 캡션",
-    "caption_variants_tooltip": (
-        "전처리가 생성한 학습용 캡션 변형(셔플 / 태그 드롭아웃 / 정체성 무작위화)을 "
-        "미리 봅니다. 읽기 전용이며 편집 가능한 학습 캡션에는 영향을 주지 않습니다."
-    ),
-    "caption_dirty_marker": " *",
-    "caption_diff_stats": "(+{add} / −{rem})",
-    "caption_diff_clean": "(변경 없음)",
-    "caption_save_failed": "캡션 저장 실패: {err}",
-    "caption_unsaved_title": "저장되지 않은 캡션",
-    "caption_unsaved_body": "캡션 편집 사항이 저장되지 않았습니다. 전환하기 전에 저장할까요?",
-    "caption_versions_title": "캡션 이력 — {name}",
-    "caption_versions_empty": "(이전 버전 없음)",
-    "caption_versions_restore": "선택 버전으로 되돌리기",
-    "caption_versions_close": "닫기",
-    "caption_no_history": "이 캡션에는 아직 이력이 없습니다.",
-    "caption_guideline_html": (
-        "<b>순서:</b> 등급 → 인원수 → 캐릭터 (작품) → 작품 → "
-        "<span style='color:#c9a227;'>@작가</span> → 내용 태그. "
-        "영역별 하위 섹션: 직전 태그를 <code>.</code> 으로 끝낸 뒤 "
-        "<span style='color:#5e8eb0;'>On the&nbsp;…,</span> 또는 "
-        "<span style='color:#5e8eb0;'>In the&nbsp;…,</span> 로 시작. "
-        "첫 <code>@작가</code> 태그까지는 순서가 고정되고, 그 이후는 "
-        "섹션 내에서 셔플됩니다. "
-        "<b>작가 정보가 없을 때:</b> "
-        "<span style='color:#c9a227;'>@no-artist</span> 를 자리표시자로 "
-        "넣어주세요 — 셔플 경계 역할만 하고 토큰화 직전에 제거되어 "
-        "모델까지 전달되지 않습니다."
-    ),
     # Language
     "language": "언어:",
     # Settings dialog
     "settings_btn": "⚙ 설정",
     "settings_btn_tooltip": "앱 설정 — 언어, 환경설정, MCP 서버 등록",
+    "mode_label": "모델",
+    "mode_tooltip": "창에서 학습·테스트할 모델입니다. Anima와 MOSS-Image는 캐시, 설정, LoRA를 따로 씁니다. 전환은 화면만 바꾸며 실행 중인 작업은 계속됩니다.",
+    "mode_anima": "Anima",
+    "mode_moss": "MOSS-Image",
     "settings_title": "설정",
     "settings_prefs_header": "환경설정",
-    "settings_autotag_confidence": "자동 태그 신뢰도:",
-    "settings_autotag_confidence_tooltip": (
-        "태거의 태그별 임계값 위에 추가로 적용되는 확률 하한(0–1)입니다. "
-        "높을수록 더 확실한 태그만 적게 남습니다. 기본값 0.50."
-    ),
-    "settings_caption_insert_no_artist": "캡션 교정 시 @no-artist 삽입",
-    "settings_caption_insert_no_artist_tooltip": (
-        "교정 결과에 작가 태그가 없으면 작가 위치에 @no-artist를 넣습니다. "
-        "캡션 셔플 경계로만 쓰이며 토큰화 직전에 제거됩니다."
-    ),
-    "settings_caption_validate_artist_tags": "작가 태그를 DB로 검증",
-    "settings_caption_validate_artist_tags_tooltip": (
-        "켜면 danbooru_tags_classified.csv에서 작가로 분류된 @태그만 작가 위치로 "
-        "옮깁니다. 끄면 @로 시작하는 태그를 작가 태그로 취급합니다."
-    ),
-    "settings_group_match_frac": "그룹화 엄격도:",
-    "settings_group_match_frac_tooltip": (
-        "데이터셋 탭에서 그룹화를 누를 때 두 이미지를 묶는 데 필요한 일치 "
-        "비율(0–1)입니다. 높을수록 더 엄격하고 깔끔한 그룹이 됩니다. 기본값 0.25."
-    ),
-    "settings_group_cell_match": "그룹화 셀 일치도:",
-    "settings_group_cell_match_tooltip": (
-        "데이터셋 그룹화 시 셀 단위 일치로 인정하는 코사인 하한(0–1)입니다. "
-        "높을수록 셀 일치 기준이 엄격해집니다. 기본값 0.93."
-    ),
     "settings_theme": "테마:",
     "settings_theme_tooltip": (
         "인터페이스 전체 색상 테마입니다. 즉시 적용되며, 설정 창을 닫으면 "
@@ -635,7 +451,7 @@ STRINGS: dict[str, str] = {
     "ec_desc_group_top": "디스크립터",
     # Top-bar buttons (models / update / report issue)
     "models_btn": "모델",
-    "models_btn_tooltip": "모델 체크포인트 다운로드 / 재다운로드 (Anima 베이스, SAM3, MIT, PE 비전 인코더)",
+    "models_btn_tooltip": "모델 체크포인트 다운로드 / 재다운로드 — Anima 가중치(CJK 어휘 팩 포함)와 anime_tools 큐레이션 팩을 한곳에서",
     "update_btn": "업데이트",
     "update_btn_tooltip": "GitHub에서 최신 anima_lora 릴리스를 가져오고 uv sync를 실행합니다",
     "update_btn_available": "업데이트 ●",
@@ -643,28 +459,61 @@ STRINGS: dict[str, str] = {
     "report_issue": "이슈 신고",
     "report_issue_tooltip": "브라우저에서 GitHub 이슈 트래커 열기",
     "visit_github": "GitHub 페이지 방문",
-    "open_in_system_viewer": "시스템 뷰어로 열기",
     # Models dialog
     "models_title": "모델 다운로드",
-    "models_intro": "아래에서 모델 그룹을 선택하거나 '전체 다운로드'로 표준 세트 "
-    "(Anima + SAM3 + MIT + PE + 태그 DB)를 받으세요. 파일은 models/ 아래에 저장됩니다.",
-    "models_download_all": "전체 다운로드 (Anima + SAM3 + MIT + PE + 태그 DB)",
+    "models_intro": "학습 / 추론 실행에 필요한 가중치를 팩 단위로 묶어 보여줍니다. '첫 실행 세트 다운로드'는 Anima 가중치 3종, PE-Spatial(REPA), CJK 어휘 팩(v2부터 기본 활성), 태거 체크포인트, 태그 DB를 받습니다. SAM3(마스킹)와 OCR은 '큐레이션' 탭의 선택 팩입니다. 파일은 models/ 아래에 저장됩니다.",
+    "models_download_all": "첫 실행 세트 다운로드",
     "models_download": "다운로드",
     "models_redownload": "재다운로드",
     "models_installed": "✓ 설치됨",
     "models_missing": "✗ 없음",
     "model_anima": "Anima — DiT + 텍스트 인코더 + VAE",
     "model_sam3": "SAM3 — 말풍선 마스킹",
-    "model_mit": "MIT — 만화 텍스트 마스킹",
-    "model_pe": "PE-Core-L14-336 — 비전 인코더 (CMMD 검증 / DCW)",
+    "model_pe": "PE-Core-L14-336 — 비전 인코더 (CMMD 검증)",
+    "model_anima_dit": "Anima 베이스 DiT — 학습 대상 모델",
+    "model_anima_te": "Qwen3-0.6B 텍스트 인코더 — 프롬프트 임베딩",
+    "model_anima_vae": "Qwen-Image VAE — 잠재 인코딩 / 디코딩",
+    "model_vocab_pack": "CJK 어휘 팩 — 일본어 / 한국어 / 중국어 캡션 행 (기본 활성)",
+    "model_pe_spatial": "PE-Spatial-B16-512 — REPA + 유사 이미지 그룹화",
+    "models_used_by": "사용처: {what}",
+    "models_tab_anima": "Anima",
+    "models_tab_curation": "큐레이션 (anime_tools)",
+    "curation_models_intro": "큐레이션 단계용 가중치를 팩 단위로 보여줍니다 — 태거, 태그 DB, 마스킹(SAM3, 선택), OCR(선택), 그룹화. anime_tools 카탈로그를 그대로 읽습니다. 각 단계는 첫 실행 시 직접 받기도 하므로, 여기서는 대기 시간을 옮길 뿐입니다.",
+    "models_download_missing": "누락된 항목 전체 다운로드 ({n}개)",
+    "models_all_installed": "✓ 모두 설치됨",
+    "models_download_pack": "팩 다운로드",
+    "models_redownload_pack": "팩 재다운로드",
+    "models_pack_anima": "Anima 베이스",
+    "models_pack_anima_desc": "DiT, Qwen3-0.6B 텍스트 인코더, Qwen-Image VAE — 모든 학습 / 추론 실행에 세 가지가 모두 필요합니다.",
+    "models_pack_pe": "PE-Core",
+    "models_pack_pe_desc": "PE-Core-L14-336: CMMD 검증 지표 전용 (use_cmmd, 기본 OFF). REPA 특징 캐시는 PE-Spatial을 씁니다 — '큐레이션' 탭의 '그룹화' 팩.",
+    "models_pack_cjk": "CJK 어휘 팩",
+    "models_pack_cjk_desc": "일본어 / 한국어 / 중국어 캡션·프롬프트 구간용 추가 텍스트 인코더 행. v2부터 기본 활성이며, 영어 텍스트는 어느 쪽이든 비트 단위로 동일합니다.",
+    "models_pack_moss_base": "MOSS-Image Base",
+    "models_pack_moss_base_desc": "MOSS-Image-Base (Anima 아님): 5B DiT, Qwen3.5-9B 텍스트 인코더, FLUX.2 VAE와 토크나이저 — 약 27 GB. MOSS 라인의 LoRA 학습 기반 모델입니다.",
+    "models_pack_moss_sft": "MOSS-Image SFT",
+    "models_pack_moss_sft_desc": "MOSS-Image-SFT의 DiT만 포함 (약 10 GB). 텍스트 인코더·VAE·토크나이저는 Base 팩의 것을 사용합니다.",
+    "models_pack_tagger": "태거",
+    "models_pack_tagger_desc": "Anima Tagger: 체크포인트, 접근 승인이 필요한 dbv4 백본, 그리고 그로부터 추출한 ONNX 그래프.",
+    "models_pack_tags": "Danbooru 태그 DB",
+    "models_pack_tags_desc": "캡션 교정이 참조하는 약 114k행 태그 테이블과 그 영어 설명.",
+    "models_pack_masking": "마스킹",
+    "models_pack_masking_desc": "SAM3 피사체 마스크(접근 승인 필요; v2부터 마스킹은 선택)와 위치 단계가 감지에 쓰는 피사체 소프트 프롬프트.",
+    "models_pack_ocr": "OCR",
+    "models_pack_ocr_desc": "AnimeText 텍스트 블록 검출기와 만화 VL 리더(PaddleOCR-VL-1.6 베이스 + SFX 파인튠). 선택 사항.",
+    "models_pack_grouping": "그룹화",
+    "models_pack_grouping_desc": "PE-Spatial-B16-512: REPA 특징 캐시 (preprocess-pe)와 유사 이미지 그룹화 타워.",
     "model_danbooru_tags": "Danbooru 태그 DB — 캡션 순서 교정",
+    "model_tagger": "Anima Tagger — caformer_b36 백본 (접근 승인 필요)",
     # HuggingFace 인증 (모델 다이얼로그)
     "models_hf_token_placeholder": "HuggingFace 토큰을 붙여넣으세요 (hf_…)",
     "models_hf_authenticate": "인증",
     "models_hf_token_hint": "게이트/속도 제한 다운로드(예: SAM3)에 필요합니다. "
     '<a href="https://huggingface.co/settings/tokens">'
     "huggingface.co/settings/tokens</a> 에서 토큰을 생성하고 "
-    '<a href="https://huggingface.co/facebook/sam3">huggingface.co/facebook/sam3</a> 에서 SAM3 접근을 요청하세요.',
+    '<a href="https://huggingface.co/facebook/sam3">huggingface.co/facebook/sam3</a> 에서 SAM3 접근을 요청하세요. '
+    "Anima Tagger 백본도 게이트되어 있으므로 "
+    '<a href="https://huggingface.co/animetimm/caformer_b36.dbv4-full">animetimm/caformer_b36.dbv4-full</a> 에서 약관에 동의해야 합니다.',
     "models_hf_token_present": "✓ HuggingFace 토큰이 이미 저장되어 있습니다.",
     "models_hf_not_authenticated": "인증되지 않음 — 토큰을 붙여넣어 게이트 다운로드를 활성화하세요.",
     "models_hf_token_empty": "먼저 토큰을 붙여넣으세요.",
@@ -720,6 +569,47 @@ STRINGS: dict[str, str] = {
     "merge_pick_file": "어댑터 .safetensors 선택",
     "merge_pick_dit": "베이스 DiT .safetensors 선택",
     "merge_pick_out": "병합된 DiT 저장 위치...",
+    # LoRA ⊕ LoRA → LoRA 병합 (merge_loras.py)
+    "merge_mode": "모드:",
+    "merge_mode_dit": "DiT에 병합",
+    "merge_mode_loras": "LoRA 병합",
+    "merge_lora_options": "LoRA 병합 옵션",
+    "merge_lora_select_hint": "2개 이상의 어댑터를 선택(Ctrl/Shift-클릭)하여 하나의 LoRA로 합칩니다. 일반 --lora_weight 경로로 사용할 수 있습니다.",
+    "merge_lora_selected": "선택됨:",
+    "merge_lora_need_two": "최소 2개의 LoRA를 선택하세요.",
+    "merge_weights": "가중치:",
+    "merge_weights_placeholder": "(선택: 예 1.0,0.7,0.7 — 목록 순서)",
+    "merge_weights_tip": "쉼표로 구분된 LoRA별 강도이며, 목록 순서대로 선택한 어댑터 하나당 하나씩 지정합니다. 비워두면 모두 1.0입니다.",
+    "merge_weights_mismatch": "가중치 {n}개가 주어졌지만 LoRA {m}개가 선택되었습니다.",
+    "merge_normalize": "정규화:",
+    "merge_normalize_tip": "병합된 델타를 단일 LoRA 크기로 재조정합니다. 'global'(기본값)은 전역 RMS를 평균 단일 LoRA 노름에 맞추고, 'per_module'은 모듈별로 맞추지만 레이어 가중치가 바뀌며, 'off'는 원시 정확 연결 합계(DiT를 과도하게 구동할 수 있음)입니다.",
+    "merge_lora_button": "LoRA 병합",
+    "merge_analyze_button": "간섭 분석",
+    "merge_analyze_tip": "드라이런: 선택한 LoRA들이 가중치 공간에서 어떻게 간섭하는지(쌍별·레이어별로 보강 대 상쇄) 병합 파일을 쓰지 않고 보고합니다.",
+    "merge_analysis_safe": "✓ 병합 안전 — LoRA들이 거의 직교함 · 최강 쌍 |cos| {cos} · 에너지 비율 {ratio} · 공유 모듈 {shared}/{modules}",
+    "merge_analysis_reinforce": "⚠ {strength} 보강 간섭 — {a} ↔ {b} cos {cos} · 에너지 비율 {ratio} (normalize=global이 합산 크기를 재조정함) · 공유 모듈 {shared}/{modules}",
+    "merge_analysis_cancel": "⚠ {strength} 상쇄 간섭 — {a} ↔ {b} cos {cos} · 이 LoRA들이 서로 부분적으로 지움 · 에너지 비율 {ratio} · 공유 모듈 {shared}/{modules}",
+    "merge_analysis_overlap": "⚠ 부분공간 충돌 — {a} ↔ {b}가 방향은 거의 직교하지만 같은 가중치 부분공간에 기록함 (겹침 {overlap}, 무작위 대비 {x}배) · 추론 시 스타일이 충돌할 수 있음 · 에너지 비율 {ratio} · 공유 모듈 {shared}/{modules}",
+    "merge_analysis_moderate": "중간",
+    "merge_analysis_strong": "강한",
+    "merge_lora_out_placeholder": "(자동: <첫 LoRA>_merged<N>.safetensors)",
+    "merge_mode_extract": "LoRA 추출",
+    "merge_extract_options": "LoRA 추출 옵션",
+    "merge_extract_hint": "두 개의 전체 DiT 체크포인트 간 가중치 델타(ΔW = 튜닝 − 베이스)에서 일반 LoRA를 추출하고, 선택한 랭크로 SVD 절단합니다. 결과는 모든 일반 LoRA 소비 경로(--lora_weight, DiT 병합, ComfyUI, 터보 웜스타트)에서 로드됩니다. 두 체크포인트 모두 net. 접두사의 Anima 레이아웃이어야 합니다.",
+    "merge_extract_base": "베이스 DiT:",
+    "merge_extract_tuned": "튜닝된 체크포인트:",
+    "merge_extract_tuned_placeholder": "(필수: 왼쪽 목록에서 체크포인트를 클릭하거나 찾아보기)",
+    "merge_extract_rank": "랭크:",
+    "merge_extract_rank_tip": "ΔW를 SVD 절단할 랭크(출력 LoRA의 network_dim). 96이면 일반적인 전체 모델 델타의 대부분을 포착합니다.",
+    "merge_extract_include_adaln": "adaln 업프로젝션 포함",
+    "merge_extract_include_adaln_tip": "adaln_up_{branch} 델타도 추출합니다(공식 터보 델타에서 가장 크게 움직이는 부분). 기본값은 꺼짐: 일반 학생 모델은 adaln을 대상으로 하지 않으며 표준 로더는 이 키를 건너뜁니다.",
+    "merge_extract_adaln_layout": "adaln 레이아웃:",
+    "merge_extract_adaln_layout_tip": "adaln LoRA의 키 명명 방식: 'runtime' = 저장소 내부 모듈 이름(터보 웜스타트 경로용), 'comfy' = ComfyUI state-dict 경로(코어에서 네이티브 로드). adaln 포함 시에만 사용됩니다.",
+    "merge_extract_out_placeholder": "(필수: 출력 LoRA .safetensors)",
+    "merge_extract_pick_ckpt": "전체 DiT .safetensors 선택",
+    "merge_extract_no_tuned": "베이스와 비교할 튜닝된 체크포인트를 선택하세요.",
+    "merge_extract_no_out": "추출된 LoRA의 출력 경로를 지정하세요.",
+    "merge_extract_button": "LoRA 추출",
     "browse": "찾아보기…",
     # Multi-scale target_res tiers
     "target_res_bucket_tooltip": "{edge}px tier에서 이 bucket 해상도만 전처리에 사용합니다. 모두 해제하면 선택한 tier의 모든 bucket을 사용합니다.",
@@ -756,4 +646,16 @@ STRINGS: dict[str, str] = {
     "tb_open_current_tip": "진행 중인 학습 실행만 TensorBoard로 엽니다.",
     "tb_open_current_idle_tip": "학습이 진행 중일 때 사용할 수 있습니다.",
     "tb_appear_hint": "실행이 목록에 보이지 않으면 TensorBoard의 새로고침(업데이트) 버튼을 눌러보세요.",
+    "daemon_submitting": "학습 daemon에 job을 제출하는 중…",
+    "daemon_submit_failed": "학습 daemon에 연결할 수 없습니다: {err}",
+    "daemon_queued": "학습 daemon에 job {job_id}을(를) 큐에 추가했습니다.\n",
+    "daemon_reattached": "실행 중인 job {job_id}에 다시 연결했습니다 (이전 세션에서 시작됨).\n",
+    "daemon_next_queued": "학습 daemon의 다음 대기 job {job_id}을(를) 따라갑니다.\n",
+    "daemon_job_finished": "--- Job {job_id} {state} ---",
+    "train_queued": "학습 (큐 등록됨)",
+    "train_running_daemon": "학습 (실행 중…)",
+    "models_done_title": "다운로드 완료",
+    "models_done_message": "모델을 성공적으로 다운로드했습니다. 파일은 models/ 아래에 저장됩니다.",
+    "models_failed_title": "다운로드 실패",
+    "models_failed_message": "다운로드가 종료 코드 {code}(으)로 끝났습니다. 자세한 내용은 로그를 확인하세요.",
 }

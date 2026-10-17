@@ -84,26 +84,32 @@ def load_dotenv(path: Optional[Path] = None) -> dict[str, str]:
     return added
 
 
-# Default checkpoint paths — single source of truth for the DiT / VAE / text
-# encoder a bench script or example needs. Resolution order, highest first:
+# Default checkpoint paths for the DiT / VAE / text encoder a bench script or
+# example needs. Resolution order, highest first:
 #   1. env vars ANIMA_DIT / ANIMA_VAE / ANIMA_TEXT_ENCODER (incl. anything
 #      promoted from .env by load_dotenv)
-#   2. configs/model.toml + configs/custom/model.toml (shared with training)
-#   3. the literals below (only if model config is missing/unreadable)
+#   2. configs/base.toml (shared with training)
+#   3. the literals below (only if base.toml is missing/unreadable)
 _CKPT_ENV = {
     "dit": "ANIMA_DIT",
     "vae": "ANIMA_VAE",
     "text_encoder": "ANIMA_TEXT_ENCODER",
+    "vocab_pack": "ANIMA_VOCAB_PACK",
 }
 _CKPT_CONFIG_KEY = {
     "dit": "pretrained_model_name_or_path",
     "vae": "vae",
     "text_encoder": "qwen3",
+    "vocab_pack": "vocab_pack",
 }
 _CKPT_FALLBACK = {
     "dit": "models/diffusion_models/anima-base-v1.0.safetensors",
     "vae": "models/vae/qwen_image_vae.safetensors",
     "text_encoder": "models/text_encoders/qwen_3_06b_base.safetensors",
+    # base.toml ships the CJK pack on; with no base.toml to read there is
+    # nothing to auto-fetch against, so the literal stays "" = off (stock T5
+    # tokenizer, bit-exact).
+    "vocab_pack": "",
 }
 
 
@@ -118,6 +124,8 @@ class DefaultCheckpoints:
     dit: str
     vae: str
     text_encoder: str
+    # CJK vocab pack path prefix (``library.anima.vocab_pack``); ``""`` = off.
+    vocab_pack: str = ""
 
 
 def default_checkpoints() -> DefaultCheckpoints:
@@ -126,9 +134,8 @@ def default_checkpoints() -> DefaultCheckpoints:
     Env (``ANIMA_DIT`` / ``ANIMA_VAE`` / ``ANIMA_TEXT_ENCODER``) wins over
     the model config, which wins over hardcoded fallbacks. ``.env`` is
     consulted (via :func:`load_dotenv`, which never clobbers real env vars), so
-    callers need not load it themselves. This is the one place bench scripts and
-    examples should reach for these paths instead of re-deriving the
-    ``os.environ.get("ANIMA_DIT", "models/…")`` pattern.
+    callers need not load it themselves. Bench scripts and examples should
+    get these paths here.
     """
     load_dotenv()
 
@@ -153,5 +160,8 @@ def default_checkpoints() -> DefaultCheckpoints:
         )
 
     return DefaultCheckpoints(
-        dit=pick("dit"), vae=pick("vae"), text_encoder=pick("text_encoder")
+        dit=pick("dit"),
+        vae=pick("vae"),
+        text_encoder=pick("text_encoder"),
+        vocab_pack=pick("vocab_pack"),
     )

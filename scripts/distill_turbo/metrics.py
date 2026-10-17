@@ -3,7 +3,7 @@
 All accumulators live on-device; they're flushed in one stacked ``.tolist()``
 at every ``log_interval`` so per-step CUDA syncs go to zero.
 
-Health-scalar semantics (see proposal log for context):
+Health-scalar semantics:
 
 * ``grad``      — overall DMD gradient magnitude into x_pred
 * ``dm``        — DM regularizer strength (v_real − v_fake)
@@ -20,11 +20,6 @@ sign-random gradient vehicle, not a real loss):
 * ``mag_ratio`` — rms(v_fake_dm) / rms(v_real_dm): ≈1 healthy; collapse/blow-up bad.
 * ``cos``       — cosine(v_fake_dm, v_real_dm): ↓ = fake pointing the wrong way.
 
-Mean-variance reg (lever B / paper Eq. 7; 0 when disabled):
-
-* ``mv`` — the per-step Eq.7 KL value (pre-weight). Higher = the student's
-  per-image stats are further from the real-latent target.
-
 DP-DMD diversity loss:
 
 * ``div`` — the first-step diversity MSE ‖v_first − v_target‖² (pre-weight).
@@ -37,8 +32,13 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 
 import torch
+from tqdm import tqdm
 
 from library.training.accumulator import ScalarAccumulator
+
+# τ-binned critic-loss profile: bin count for the
+# per-τ fake-loss telemetry. 8 uniform bins over τ ∈ [0, 1].
+TAU_PROFILE_BINS = 8
 
 
 @dataclass
@@ -51,12 +51,17 @@ class FlushedMetrics:
     rel_gap: float
     mag_ratio: float
     cos: float
-    mv: float
     div: float
     gan_gen: float
     gan_disc: float
+    mv: float
     repa: float
     repa_active: float
+    gan_margin: float
+    gan_spread: float
+    softrank: float
+    softrank_active: float
+    cdm: float
 
 
 # Single source of truth for the accumulator key set — adding a logged scalar is
@@ -86,21 +91,26 @@ class TurboMetrics:
         *,
         fake_loss_mean_t: torch.Tensor,
         grad_signal: torch.Tensor,
-        delta_dm: torch.Tensor,
+        delta_dm: torch.Tensor | None,
         x_pred: torch.Tensor,
         v_student: torch.Tensor,
         tau_dm_e: torch.Tensor,
-        v_real_cond_dm: torch.Tensor,
-        v_fake_cond_dm: torch.Tensor,
-        mv_loss: torch.Tensor,
+        v_real_cond_dm: torch.Tensor | None,
+        v_fake_cond_dm: torch.Tensor | None,
+        mv_loss: torch.Tensor | None = None,
     ) -> None:
+        """``delta_dm`` / ``v_*_cond_dm`` are None under DMAD (no score
+        difference): the DM-tracking scalars then stay at 0."""
         eps_r = 1e-8
         self._acc.add("fake", fake_loss_mean_t.float())
-        self._acc.add("mv", mv_loss.detach().float())
+        if mv_loss is not None:
+            self._acc.add("mv", mv_loss.detach().float())
         self._acc.add("grad", grad_signal.float().pow(2).mean().sqrt())
-        self._acc.add("dm", delta_dm.float().pow(2).mean().sqrt())
         self._acc.add("xpred", x_pred.detach().float().std())
         self._acc.add("v_student", v_student.detach().float().pow(2).mean().sqrt())
+        if delta_dm is None:
+            return
+        self._acc.add("dm", delta_dm.float().pow(2).mean().sqrt())
         vr = v_real_cond_dm.float()
         vf = v_fake_cond_dm.float()
         dm_w = (tau_dm_e * delta_dm.float()).pow(2).mean().sqrt()
@@ -117,11 +127,44 @@ class TurboMetrics:
 
     @torch.no_grad()
     def add_gan(
-        self, gan_gen_loss: torch.Tensor, gan_disc_mean_t: torch.Tensor
+        self,
+        gan_gen_loss: torch.Tensor,
+        gan_disc_mean_t: torch.Tensor,
+        gan_margin_t: torch.Tensor,
+        gan_spread_t: torch.Tensor,
     ) -> None:
-        """Accumulate the GAN generator/discriminator losses (pre-weight)."""
+        """Accumulate the GAN generator/discriminator losses (pre-weight) plus
+        the disc-update observables: margin = mean(real) − mean(fake) logit
+        (disc discrimination strength — the hinge means sit at equilibrium even
+        while per-logit structure collapses diversity, so read THIS, not the
+        losses) and spread = std over the fake branch's logits (spatial
+        structure of disc pressure under the token head; 0 for a single-logit
+        pooled head)."""
         self._acc.add("gan_gen", gan_gen_loss.detach().float())
         self._acc.add("gan_disc", gan_disc_mean_t.detach().float())
+        self._acc.add("gan_margin", gan_margin_t.detach().float())
+        self._acc.add("gan_spread", gan_spread_t.detach().float())
+
+    @torch.no_grad()
+    def add_softrank(self, softrank_loss: torch.Tensor, *, active: bool) -> None:
+        """Accumulate the soft-rank caption loss (pre-weight) + its run indicator.
+
+        Amortized (``softrank.every_n``), so the flushed ``softrank`` mean is
+        diluted by skipped steps; consumers normalize by ``softrank_active`` to
+        recover the per-firing soft rank (0 = matched caption wins every pair).
+        """
+        self._acc.add("softrank", softrank_loss.detach().float())
+        self._acc.add("softrank_active", 1.0 if active else 0.0)
+
+    @torch.no_grad()
+    def add_cdm(self, grad_cdm: torch.Tensor) -> None:
+        """Accumulate the L_CDM gradient-signal rms (pre-weight).
+
+        The surrogate loss value itself is a sign-random gradient vehicle (like
+        ``loss_student``), so the health scalar is the rms of the detached
+        off-trajectory delta — directly comparable to ``train/grad_signal_rms``.
+        """
+        self._acc.add("cdm", grad_cdm.detach().float().pow(2).mean().sqrt())
 
     @torch.no_grad()
     def add_repa(self, repa_loss: torch.Tensor, *, active: bool) -> None:
@@ -143,6 +186,120 @@ class TurboMetrics:
         self._acc.reset()
 
 
+class DmadMetrics:
+    """DMAD scalars (``dmad.py``): GPU-side sums + host-side per-key counts.
+
+    A key is only touched when its head / branch exists (``*_r`` needs head R,
+    ``gap_r`` and ``cos_tr`` need both heads), so each is meaned over the steps
+    that produced it and a missing key is simply not written.
+
+    * ``bce_{t,r}`` / ``margin_{t,r}`` / ``rank_acc_{t,r}`` — the newest pair,
+      scored before the disc trains on it (rank acc = h_target > h_student).
+    * ``gap_r`` — h_R(real) − h_R(teacher sample), the gap-reweighting signal.
+    * ``gap_ready`` / ``gap_w`` — gap-routing bands with >= 10 updates, and
+      head T's routed weight ``w_b / E_w`` at the student query (routing on).
+    * ``loss`` / ``grad_norm`` — window-mean disc loss, pre-clip grad norm.
+    * ``g_{t,r}_rms`` / ``cos_tr`` — each head's raw student-signal gradient
+      before the RMS normalization, and their cosine.
+    """
+
+    def __init__(self, device: torch.device):
+        self._acc = ScalarAccumulator(device)
+        self._n: dict[str, int] = {}
+
+    @torch.no_grad()
+    def add(self, stats: dict[str, torch.Tensor]) -> None:
+        for k, v in stats.items():
+            self._acc.add(k, v.detach().float())
+            self._n[k] = self._n.get(k, 0) + 1
+
+    def flush(self) -> dict[str, float]:
+        """One CUDA sync; per-key means, then reset."""
+        sums = self._acc.flush() if self._n else {}
+        out = {k: sums[k] / n for k, n in self._n.items()}
+        self._acc.reset()
+        self._n.clear()
+        return out
+
+    @staticmethod
+    def write(writer, m: dict[str, float], step: int, *, prefix: str = "dmad/") -> None:
+        if writer is None:
+            return
+        for k, v in m.items():
+            writer.add_scalar(f"{prefix}{k}", v, step)
+
+    @staticmethod
+    def line(m: dict[str, float]) -> str:
+        """Short ``key=value`` summary for console / tqdm."""
+        keys = ("rank_acc_t", "rank_acc_r", "margin_t", "margin_r", "loss", "grad_norm")
+        return " ".join(f"{k}={m[k]:.3f}" for k in keys if k in m)
+
+
+class TauBinCriticLoss:
+    """Per-τ-bin fake/critic loss profile.
+
+    Buckets each fake-update loss by its drawn ``tau_fake`` into
+    ``TAU_PROFILE_BINS`` uniform bins and logs the per-bin interval mean as
+    ``{prefix}{i}``. GPU-resident like :class:`TurboMetrics` (``index_add_`` is
+    async; one extra small sync per log boundary).
+
+    NOT a gate signal: the raw per-τ profile is structurally nonuniform (the FM
+    target ``ε − x0`` is intrinsically harder at some τ regardless of critic
+    capacity) — it is a baseline for checking whether a τ-split flattens the
+    *excess*.
+
+    The loop's fake loss is a batch-mean scalar, so at B>1 it is attributed to
+    every sample's τ bin (exact at the shipped ``batch_size=1``).
+    """
+
+    def __init__(
+        self,
+        device: torch.device,
+        *,
+        nbins: int = TAU_PROFILE_BINS,
+        prefix: str = "train/fake_loss_tau",
+        aggregate_key: str | None = None,
+    ):
+        self.nbins = nbins
+        self.prefix = prefix
+        # Optional extra scalar: the count-weighted mean over ALL bins under
+        # this key (per-bank overall fake loss when banks are split).
+        self.aggregate_key = aggregate_key
+        self._sum = torch.zeros(nbins, device=device)
+        self._cnt = torch.zeros(nbins, device=device)
+
+    @torch.no_grad()
+    def add(self, fake_loss: torch.Tensor, tau: torch.Tensor) -> None:
+        """Accumulate one fake update's loss under its ``(B,)`` τ draw."""
+        idx = (tau.detach().float().clamp(0.0, 1.0) * self.nbins).long()
+        idx = idx.clamp_(max=self.nbins - 1)  # τ = 1.0 → last bin
+        val = fake_loss.detach().float().expand(idx.shape)
+        self._sum.index_add_(0, idx, val)
+        self._cnt.index_add_(0, idx, torch.ones_like(val))
+
+    def flush(self) -> tuple[list[float], list[float]]:
+        """One sync: return ``(per-bin loss sums, per-bin counts)`` and reset."""
+        sums, cnts = torch.stack([self._sum, self._cnt]).tolist()
+        self._sum.zero_()
+        self._cnt.zero_()
+        return sums, cnts
+
+    def write(self, writer, step: int) -> None:
+        """Flush and push per-bin means to TensorBoard; empty bins are skipped.
+
+        Always flushes (accumulators reset) even when ``writer`` is None, so
+        call it unconditionally at every log boundary.
+        """
+        sums, cnts = self.flush()
+        if writer is None:
+            return
+        for i, (s, n) in enumerate(zip(sums, cnts)):
+            if n > 0:
+                writer.add_scalar(f"{self.prefix}{i}", s / n, step)
+        if self.aggregate_key is not None and sum(cnts) > 0:
+            writer.add_scalar(self.aggregate_key, sum(sums) / sum(cnts), step)
+
+
 def write_scalars(writer, m: FlushedMetrics, step: int) -> None:
     """Push every available scalar to TensorBoard at the canonical key names."""
     writer.add_scalar("train/fake_loss", m.fake, step)
@@ -154,14 +311,55 @@ def write_scalars(writer, m: FlushedMetrics, step: int) -> None:
     writer.add_scalar("train/dm_mag_ratio", m.mag_ratio, step)
     writer.add_scalar("train/dm_cos", m.cos, step)
     writer.add_scalar("train/mean_var_kl", m.mv, step)
+    writer.add_scalar("train/repa_active", m.repa_active, step)
+    if m.repa_active > 0:
+        writer.add_scalar("train/repa_align_loss", m.repa / m.repa_active, step)
     writer.add_scalar("train/div_loss", m.div, step)
     writer.add_scalar("train/gan_gen_loss", m.gan_gen, step)
     writer.add_scalar("train/gan_disc_loss", m.gan_disc, step)
-    writer.add_scalar("train/repa_active", m.repa_active, step)
-    if m.repa_active > 0:
+    writer.add_scalar("train/gan_disc_margin", m.gan_margin, step)
+    writer.add_scalar("train/gan_logit_spread", m.gan_spread, step)
+    writer.add_scalar("train/softrank_active", m.softrank_active, step)
+    writer.add_scalar("train/cdm_grad_rms", m.cdm, step)
+    if m.softrank_active > 0:
         # Normalize the interval mean to active steps so the curve reads as the
-        # per-run align loss regardless of the every_n amortization.
-        writer.add_scalar("train/repa_align_loss", m.repa / m.repa_active, step)
+        # per-firing matched-caption soft rank (→ 0 as discrimination recovers),
+        # regardless of the every_n amortization.
+        writer.add_scalar("train/softrank_loss", m.softrank / m.softrank_active, step)
+
+
+def tqdm_rate(bar: tqdm) -> float | None:
+    """Steps/sec off a tqdm bar: its EMA rate, or the run average as a fallback.
+
+    ``format_dict['rate']`` is ``None`` until the bar has recorded an EMA
+    interval, so fall back to (steps done / elapsed) rather than reporting no
+    rate at all — the caller wants an ETA on the very first log line too.
+    """
+    fd = bar.format_dict
+    rate = fd.get("rate")
+    if rate:
+        return rate
+    elapsed = fd.get("elapsed") or 0.0
+    done = (fd.get("n") or 0) - (fd.get("initial") or 0)
+    return done / elapsed if elapsed > 0 and done > 0 else None
+
+
+def console_step_line(
+    m: FlushedMetrics, *, step: int, total: int, rate: float | None
+) -> str:
+    """Greppable one-line step summary for redirected / headless logs.
+
+    Same numbers as :func:`tqdm_postfix`, but as a plain line: tqdm repaints a
+    single ``\\r`` line on stderr, which leaves a redirected log with no
+    periodic step record between the (500/1000-step) ckpt and val lines.
+    """
+    pct = f" ({100.0 * step / total:.1f}%)" if total else ""
+    stats = " ".join(f"{k}={v}" for k, v in tqdm_postfix(m).items())
+    if rate:
+        speed = f"{rate:.2f} it/s | ETA {tqdm.format_interval((total - step) / rate)}"
+    else:
+        speed = "? it/s | ETA ?"
+    return f"step {step}/{total}{pct} | {stats} | {speed}"
 
 
 def tqdm_postfix(m: FlushedMetrics) -> dict:
@@ -175,11 +373,16 @@ def tqdm_postfix(m: FlushedMetrics) -> dict:
     }
     if m.mv > 0:
         postfix["mv"] = f"{m.mv:.3f}"
+    if m.repa_active > 0:
+        postfix["repa"] = f"{m.repa / m.repa_active:.4f}"
     if m.div > 0:
         postfix["div"] = f"{m.div:.3f}"
     if m.gan_gen != 0 or m.gan_disc != 0:
         postfix["gen"] = f"{m.gan_gen:.3f}"
         postfix["dsc"] = f"{m.gan_disc:.3f}"
-    if m.repa_active > 0:
-        postfix["repa"] = f"{m.repa / m.repa_active:.4f}"
+        postfix["mgn"] = f"{m.gan_margin:.3f}"
+    if m.softrank_active > 0:
+        postfix["srank"] = f"{m.softrank / m.softrank_active:.3f}"
+    if m.cdm != 0:
+        postfix["cdm"] = f"{m.cdm:.2e}"
     return postfix

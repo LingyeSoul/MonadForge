@@ -1,73 +1,53 @@
 """REPA v2 — patchwise / relational alignment against a vision encoder.
 
-Revives the archived v1 REPA (Yu et al., arXiv:2410.06940; ``_archive/repa/``)
-at the granularity its own docstring pre-planned, with two loss forms selectable
-per run for the Phase-0 three-arm A/B (see
-``docs/experimental/repa.md``):
+Two loss forms selectable per run (see ``docs/methods/repa.md``):
 
-- **Arm A — absolute patchwise**: project DiT block tokens → encoder dim with a
-  small MLP head, cosine per token in fp32, mean. Paper-faithful REPA at the
-  right grid (no global pooling).
-- **Arm B — relational (Gram)**: L2-normalize tokens on each side independently,
-  ``G = F̂F̂ᵀ``, ``loss = MSE(G_dit, G_pe)``. No head — similarities live within
-  each space so dimensions never need to match, and any global domain direction
-  cancels out of the pairwise structure (relational KD, Park et al. 2019).
+- **Arm A — absolute patchwise**: project DiT block tokens → encoder dim with
+  a small MLP head, cosine per token in fp32, mean.
+- **Arm B — relational (Gram)**: L2-normalize tokens on each side, ``G =
+  F̂F̂ᵀ``, ``loss = MSE(G_dit, G_pe)``. No head needed — similarities live
+  within each space, so dims never need to match (relational KD).
 
 Both arms align a noisy-input mid-block feature to the *clean*-image encoder
-target at every sampled σ, captured from the **primary** forward (no second DiT
-forward → no block-swap offloader desync).
+target, captured from the **primary** forward (no second DiT forward → no
+block-swap offloader desync).
 
-Granularity / capture, the two non-obvious mechanics:
+Two non-obvious mechanics:
 
-1. **Grid match.** The encoder tokens live on a ``(gh, gw)`` patch grid that
-   varies per aspect bucket (PE-Spatial: 32×32 at square, ~46×23 at 2:1). The
-   DiT patch grid is ``(H_lat//patch, W_lat//patch)``. We adaptive-avg-pool the
-   DiT side down to the encoder grid so both sides are ``N = gh*gw`` tokens in
-   the same row-major order. ``(gh, gw)`` is recovered from the *encoder feature's
-   own token count* (ground truth, no metadata threading) disambiguated by the
-   latent's orientation (portrait vs landscape) — token count alone is ambiguous
-   because the bucket table is aspect-symmetric.
+1. **Grid match.** The encoder token grid ``(gh, gw)`` varies per aspect
+   bucket and is ambiguous from token count alone (the bucket table is
+   aspect-symmetric), so it's disambiguated by the latent's orientation
+   (portrait vs landscape). The DiT side is adaptive-avg-pooled down to that
+   grid so both sides are ``N = gh*gw`` tokens in the same row-major order.
 
 2. **native_flatten layout.** Under ``compile_blocks()`` the captured block
-   output is the fake-5D ``(B, 1, seq, 1, D)`` shape, not the eager
-   ``(B, 1, H, W, D)``. The hook fires regardless (it sits on ``block.__call__``,
-   outside the compiled ``block._forward``), and we reshape ``(B, …, D) →
-   (B, N_dit, D)`` from the latent's patch grid, which is layout-agnostic: both
-   layouts flatten to the same row-major ``(B, N_dit, D)``.
+   output is fake-5D ``(B, 1, seq, 1, D)``, not eager ``(B, 1, H, W, D)`` — the
+   hook still fires (it sits on ``block.__call__``, outside the compiled
+   ``block._forward``) and both layouts reshape to the same row-major
+   ``(B, N_dit, D)`` from the latent's patch grid.
 
 Config rides the LoRA network kwargs (``use_repa`` / ``repa_mode`` /
-``repa_weight`` / ``repa_layer`` / ``repa_encoder``), parsed by the factory and
-stashed on the network; the adapter reads them off ``ctx.network`` so no new
-``args`` plumbing is needed. The scalar alignment loss is returned under
-``aux["repa"]`` and weighted by ``LossComposer`` stage 2 (``losses._repa_loss``).
+``repa_weight`` / ``repa_layer`` / ``repa_encoder``), stashed on the network by
+the factory. The scalar loss returns under ``aux["repa"]``, weighted by
+``LossComposer`` stage 2 (``losses._repa_loss``).
 
-Phase-1 operating-point levers (``docs/experimental/repa.md`` §"Annealing
-plan"; archived proposal
-``_archive/proposals/repa_phase1_operating_point.md``; both default-off):
+Operating-point levers (``docs/methods/repa.md`` §"Annealing plan";
+both default-off):
 
-- ``repa_anneal_steps`` — hard cutoff (HASTE, arXiv:2505.16792: alignment helps
-  early, degrades late). Value in (0, 1] = fraction of ``max_train_steps``;
-  value > 1 = absolute optimizer steps. The adapter keeps its own train
-  micro-batch counter and converts via ``gradient_accumulation_steps`` (the
-  ``step_contrastive_warmup`` pattern) — past the cutoff the term is skipped
-  entirely (no PE transfer, no Gram).
-- ``repa_spatial_norm`` — iREPA-style (arXiv:2512.10794) spatial
-  standardization of the *target* tokens, ``(pe − mean_tok) / (std_tok + ε)``
-  before per-token L2-norm + Gram. Cancels the shared global component that
-  compresses pairwise cosines. Relational mode only.
+- ``repa_anneal_steps`` — hard cutoff (HASTE, arXiv:2505.16792: alignment
+  helps early, degrades late). (0, 1] = fraction of ``max_train_steps``; > 1 =
+  absolute optimizer steps.
+- ``repa_spatial_norm`` — iREPA-style (arXiv:2512.10794) standardization of
+  target tokens before per-token L2-norm + Gram, cancelling the shared global
+  component that compresses pairwise cosines. Relational mode only.
 
-Diagnostic (lever-3 gate, ``repa_grad_heatmap = N`` = probe every N train
-micro-steps, 0 = off): MaskAlign (arXiv:2606.08788, Fig. 2a) shows full-token
-alignment concentrates gradient norm at *stable spatial positions* (~21×
-uniform recurrence) — the shortcut their token-subset loss breaks. The probe
-takes ``autograd.grad`` of the alignment scalar w.r.t. the pooled DiT tokens
-(the subgraph is just normalize → Gram → MSE, near-free), bilinearly resizes
-the per-token grad-norm map to a canonical 32×32 grid (aspect buckets give
-varying ``(gh, gw)``), and accumulates top-10% membership counts across steps.
-``on_epoch_end`` dumps ``<output_name>_repa_grad_heatmap.npz`` (counts / freq /
-concentration) and ``repa/heatmap_conc`` (max-position recurrence vs uniform)
-rides the step metrics. Decision rule per the Phase-1 proposal: ~uniform
-(concentration ≲ 3×) ⇒ close lever 3 without a training run.
+Diagnostic (``repa_grad_heatmap = N`` = probe every N train micro-steps, 0 =
+off): MaskAlign (arXiv:2606.08788) shows full-token alignment concentrates
+gradient norm at stable spatial positions — the probe takes
+``autograd.grad`` of the alignment scalar w.r.t. pooled DiT tokens, resizes
+the per-token grad-norm map to a 32×32 grid, and accumulates top-10%
+membership counts across steps into
+``<output_name>_repa_grad_heatmap.npz`` / ``repa/heatmap_conc``.
 """
 
 from __future__ import annotations
@@ -97,16 +77,14 @@ _HEATMAP_GRID = 32
 _HEATMAP_TOPK_FRAC = 0.10
 
 
-# Grid-match / pooling / Gram math factored out of the adapter so no-training
-# probes (bench/turbo/) measure the identical quantity the training term
-# optimizes instead of carrying a drifting copy.
+# Grid-match / pooling / Gram math factored out so no-training probes
+# (bench/turbo/) measure the identical quantity the training term optimizes.
 
 
 def resolve_pe_grid(spec, n_pe: int, h_lat: int, w_lat: int) -> tuple[int, int]:
     """Resolve the encoder ``(gh, gw)`` patch grid for ``n_pe`` patch tokens.
-
     Token count alone is ambiguous (the bucket table is aspect-symmetric:
-    46×23 and 23×46 both have 1058 patches), so disambiguate by the latent's
+    46×23 and 23×46 both have 1058 patches), so disambiguate by latent
     orientation. Returns the unique bucket whose patch product == ``n_pe``.
     """
     cands = [(h, w) for (h, w) in spec.buckets if h * w == n_pe]
@@ -127,17 +105,24 @@ def pool_dit_tokens_to_grid(
     patch: int,
     gh: int,
     gw: int,
+    trim_tail: int = 0,
 ) -> torch.Tensor:
     """Captured block output → ``(B, gh*gw, D)`` fp32 tokens on the encoder grid.
 
     Layout-agnostic over the two block-output shapes (eager ``(B,1,H,W,D)`` /
-    native-flatten ``(B,1,seq,1,D)``): both flatten to the same row-major
-    ``(B, N_dit, D)``, which is verified against the latent patch grid and
-    adaptive-avg-pooled down to the encoder ``(gh, gw)`` grid.
+    native-flatten ``(B,1,seq,1,D)``) — both flatten to row-major
+    ``(B, N_dit, D)``, verified against the latent patch grid and
+    adaptive-avg-pooled to ``(gh, gw)``.
+
+    ``trim_tail`` drops that many trailing register tokens before the grid
+    check — they're non-decoded scratchpad appended at the END of the
+    self-attn sequence and must not enter the alignment loss.
     """
     b = captured.shape[0]
     d_dit = captured.shape[-1]
     tokens = captured.reshape(b, -1, d_dit)
+    if trim_tail > 0:
+        tokens = tokens[:, :-trim_tail]
 
     h_lat, w_lat = latent_hw
     h_dit, w_dit = h_lat // patch, w_lat // patch
@@ -163,14 +148,13 @@ def relational_gram_loss(
     """Arm-B relational loss: ``MSE(Gram(dit_tok), Gram(pe))`` in fp32.
 
     Per-token L2-norm within each space, then match the N×N affinity
-    structure — dimensions never need to align. ``spatial_norm`` applies the
-    iREPA target standardization (lever 2): standardize ``pe`` across the
-    token axis before per-token L2-norm, removing the shared global component
-    that compresses pairwise cosines.
+    structure. ``spatial_norm`` applies iREPA target standardization:
+    standardize ``pe`` across the token axis before per-token L2-norm,
+    removing the shared global component that compresses pairwise cosines.
 
-    ``sample_weights`` (``[B]`` or None): per-sample multipliers applied to the
-    per-sample Gram MSE before the batch mean (timestep reweighting). None is
-    bit-exact to the unweighted ``F.mse_loss`` reduction.
+    ``sample_weights`` (``[B]`` or None): per-sample multipliers applied
+    before the batch mean (timestep reweighting); None is bit-exact to the
+    unweighted ``F.mse_loss`` reduction.
     """
     if spatial_norm:
         pe = (pe - pe.mean(dim=1, keepdim=True)) / (pe.std(dim=1, keepdim=True) + 1e-6)
@@ -187,11 +171,9 @@ def relational_gram_loss(
 def _safe_blur(grid: torch.Tensor, sigma: float, gh: int, gw: int) -> torch.Tensor:
     """``gaussian_blur_2d`` guarded against a kernel wider than the grid.
 
-    ``gaussian_blur_2d`` reflect-pads by ``ceil(3σ)``; reflect padding needs
-    ``pad ≤ min_dim − 1``. On the coarse PE grid (~28–46 patches/side) the
-    REPA-DoG divisors (≥16) never trigger this, but clamp σ defensively so an
-    aggressive small divisor degrades to the widest valid blur instead of
-    crashing — same guard as the Phase-0 probe (``bench/repa/probe_dog_target.py``).
+    ``gaussian_blur_2d`` reflect-pads by ``ceil(3σ)``, which needs
+    ``pad ≤ min_dim − 1``. Clamp σ defensively so an aggressive small divisor
+    degrades to the widest valid blur instead of crashing.
     """
     from library.runtime.fei import gaussian_blur_2d
 
@@ -215,29 +197,24 @@ def dog_standardize(
     """Difference-of-Gaussians band-pass of the target tokens (REPA-DoG).
 
     Generalizes ``spatial_norm``'s DC removal to a broader low-band strip
-    (arXiv:2603.14645v1 §3.5, ``_archive/proposals/repa_dog_target.md``). Phase 0
-    (``bench/repa/probe_dog_target.py``) found this lifts target
-    discriminability on all 3 content axes (best ``σ₁ = min/16``). ``pe`` is
-    ``(B, N, d)`` with ``N == gh*gw`` (CLS already dropped); reshaped to the
-    ``(gh, gw)`` grid in row-major order, band-passed, standardized, and
-    flattened back for the per-token L2-norm + Gram match — so it slots in
-    **instead of** ``relational_gram_loss``'s ``spatial_norm`` block.
+    (arXiv:2603.14645v1 §3.5; best ``σ₁ = min/16`` in bench). ``pe``
+    is ``(B, N, d)`` with ``N == gh*gw`` (CLS dropped); reshaped to
+    ``(gh, gw)`` row-major, band-passed, standardized, flattened back — slots
+    in **instead of** ``relational_gram_loss``'s ``spatial_norm`` block.
 
-    Filter ``H(Z)`` on the per-channel feature map ``Z`` ``(B, d, gh, gw)``:
+    Filter ``H(Z)`` on ``Z (B, d, gh, gw)``:
 
-    * ``sigma2_div <= 0``  → ``Z − LP(Z, σ₁)``            high-pass (the +1a corner)
-    * ``sigma2_div > 0``   → ``LP(Z, σ₂) − LP(Z, σ₁)``    band-pass (+1b)
+    * ``sigma2_div <= 0`` → ``Z − LP(Z, σ₁)``          high-pass
+    * ``sigma2_div > 0``  → ``LP(Z, σ₂) − LP(Z, σ₁)``  band-pass
 
-    with ``σ₁ = min(gh,gw)/sigma1_div`` (outer, the broad low band removed) and
-    ``σ₂ = min(gh,gw)/sigma2_div`` (inner, tighter ⇒ ``sigma2_div > sigma1_div`` ⇒
-    ``σ₂ < σ₁``, rolling off the very-high tail). At ``σ₁→0`` this reduces to the
-    shipped DC removal, so ``spatial_norm`` is its degenerate special case.
+    with ``σ₁ = min(gh,gw)/sigma1_div``, ``σ₂ = min(gh,gw)/sigma2_div``. At
+    ``σ₁→0`` this reduces to the shipped DC removal (``spatial_norm`` is its
+    degenerate special case).
 
-    ``norm_std`` is the paper's std-normalization confound (Table 6): ``0``
-    (default) divides by the empirical per-channel spatial std — *identical to
-    the shipped ``spatial_norm`` std*, so an A/B attributes the delta to the
-    band-pass alone. ``> 0`` divides by that fixed constant instead (the paper's
-    ``normalization_std`` regime), for an optional follow-up ablation.
+    ``norm_std``: ``0`` (default) divides by the empirical per-channel
+    spatial std (identical to ``spatial_norm``'s, so an A/B isolates the
+    band-pass); ``> 0`` divides by that fixed constant instead (paper's
+    ``normalization_std`` regime).
     """
     b, n, d = pe.shape
     grid = pe.transpose(1, 2).reshape(b, d, gh, gw)  # row-major (B, d, gh, gw)
@@ -272,12 +249,11 @@ def relational_align_loss(
     ``captured`` is a raw block output (either layout), ``pe`` the cached
     encoder features ``(B, T, d_enc)`` with CLS still at index 0 when the spec
     carries one. This is the probe entry point (``bench/turbo/``); the
-    training adapter composes the same pieces itself because it also needs the
-    pooled tokens (absolute arm head, grad-heatmap probe).
+    training adapter composes the same pieces itself (it also needs the
+    pooled tokens for the absolute-arm head / grad-heatmap probe).
 
-    ``dog`` applies the REPA-DoG band-pass (:func:`dog_standardize`) to the
-    target **instead of** ``spatial_norm`` (the two are the same family — DoG at
-    ``σ₁→0`` is DC removal — so they're mutually exclusive; ``dog`` wins).
+    ``dog`` applies the REPA-DoG band-pass instead of ``spatial_norm``
+    (mutually exclusive; ``dog`` wins).
     """
     n_pe = pe.shape[1] - (1 if spec.use_cls else 0)
     gh, gw = resolve_pe_grid(spec, n_pe, latent_hw[0], latent_hw[1])
@@ -291,11 +267,9 @@ def relational_align_loss(
 
 
 class REPAHead(nn.Module):
-    """3-layer MLP projecting DiT hidden dim → vision-encoder feature dim.
-
-    Matches ``h_phi`` from the REPA paper (3 linear + SiLU). Last layer init
-    near-zero so step-0 cosine is unbiased and the head learns the projection
-    from a small-norm output. Only used by Arm A (absolute); Arm B has no head.
+    """3-layer MLP projecting DiT hidden dim → vision-encoder feature dim
+    (``h_phi`` from the REPA paper). Last layer init near-zero so step-0
+    cosine is unbiased. Only used by Arm A (absolute); Arm B has no head.
     """
 
     def __init__(self, dit_dim: int, hidden_dim: int, encoder_dim: int) -> None:
@@ -315,14 +289,16 @@ class REPAHead(nn.Module):
 class REPAMethodAdapter(MethodAdapter):
     """Bridges REPA into AnimaTrainer's adapter dispatch.
 
-    Setup: install a forward post-hook on ``unet.blocks[repa_layer]`` and read
-    the run's REPA config off the network.
-    Prime: stash this step's cached PE-Spatial features from the batch.
-    Extra forward: pool DiT tokens to the encoder grid, compute the absolute /
-    relational alignment scalar, return it under ``aux["repa"]``.
+    Setup: install a forward post-hook on ``unet.blocks[repa_layer]``, read
+    REPA config off the network. Prime: stash this step's cached PE-Spatial
+    features. Extra forward: pool DiT tokens to the encoder grid, compute the
+    alignment scalar, return it under ``aux["repa"]``.
     """
 
     name = "repa"
+    # Grid-agnostic: adaptive pooling means a σ-demoted latent grid pools the
+    # same way (aspect/orientation preserved), so sigma_lowres is safe here.
+    sigma_demote_safe = True
 
     def __init__(self) -> None:
         self._captured: Optional[torch.Tensor] = None
@@ -342,8 +318,10 @@ class REPAMethodAdapter(MethodAdapter):
         self._dog_sigma1_div = 16.0
         self._dog_sigma2_div = 0.0
         self._dog_norm_std = 0.0
-        # Timestep reweighting of the alignment term (0 = uniform = legacy path).
+        # Timestep reweighting of the alignment term (0 = uniform).
         self._timestep_weighting = 0.0
+        # Trailing register tokens to drop from the capture (0 = none).
+        self._trim_tokens = 0
         # Optimizer-step clock: train micro-batches, converted with
         # gradient_accumulation_steps at the anneal gate.
         self._train_micro_steps = 0
@@ -393,6 +371,23 @@ class REPAMethodAdapter(MethodAdapter):
             getattr(net, "_repa_timestep_weighting", 0.0) or 0.0
         )
 
+        # At/past the register insert block, the capture carries K extra
+        # trailing scratchpad tokens that must be trimmed before grid pooling
+        # or pool_dit_tokens_to_grid's patch-grid check fails.
+        reg_k = int(getattr(net, "extra_seq_tokens", 0) or 0)
+        reg_insert = int(
+            getattr(getattr(net, "cfg", None), "register_insert_block", 0) or 0
+        )
+        self._trim_tokens = reg_k if (reg_k > 0 and self._layer >= reg_insert) else 0
+        if self._trim_tokens:
+            logger.info(
+                "REPA: trimming %d register tokens off the block-%d capture "
+                "(registers enter at block %d).",
+                self._trim_tokens,
+                self._layer,
+                reg_insert,
+            )
+
         if self._mode == "absolute" and getattr(net, "repa_head", None) is None:
             raise ValueError(
                 "repa_mode='absolute' requires the network to expose a "
@@ -441,22 +436,15 @@ class REPAMethodAdapter(MethodAdapter):
         )
 
     def _timestep_weights(self, sigma: torch.Tensor) -> Optional[torch.Tensor]:
-        """Per-sample alignment weight as a function of the noise level σ∈[0,1]
-        (σ→1 high noise, σ→0 low noise — ``primary.timesteps`` *is* σ here).
+        """Per-sample alignment weight vs noise level σ∈[0,1] (``primary.timesteps``
+        *is* σ). ``repa_timestep_weighting`` g (signed; 0 ⇒ uniform):
 
-        ``repa_timestep_weighting`` g (signed; 0 ⇒ uniform = legacy path):
+          g > 0 ⇒ w(σ) = (g+1)·σ**g          — emphasize HIGH noise
+          g < 0 ⇒ w(σ) = (|g|+1)·(1−σ)**|g|  — emphasize LOW noise
 
-          g > 0 ⇒ w(σ) = (g+1)·σ**g          — emphasize HIGH noise, where (with
-                  the DiT frozen) the alignment target is only reachable through
-                  the clean cond, so REPA acts as pure cond-utilization pressure.
-          g < 0 ⇒ w(σ) = (|g|+1)·(1−σ)**|g|  — emphasize LOW noise, where REPA is
-                  otherwise satisfiable from the target latent and decouples from
-                  the cond.
-
-        Both branches integrate to 1 under uniform σ (∫₀¹(p+1)σ^p dσ = 1), so the
-        knob reshapes *where* REPA acts across t without changing its expected
-        magnitude — a shape-not-scale A/B. Batch-size independent. Returns None at
-        g == 0 (bit-exact to the unweighted loss)."""
+        Both integrate to 1 under uniform σ, so this reshapes *where* REPA acts
+        without changing its expected magnitude. Returns None at g == 0
+        (bit-exact to the unweighted loss)."""
         g = self._timestep_weighting
         if g == 0.0:
             return None
@@ -494,7 +482,7 @@ class REPAMethodAdapter(MethodAdapter):
         self._latent_hw = (int(latents.shape[-2]), int(latents.shape[-1]))
 
     def _past_anneal_cutoff(self, args, micro_step: int) -> bool:
-        """Hard anneal cutoff (lever 1): True once the optimizer-step clock
+        """Hard anneal cutoff: True once the optimizer-step clock
         passes ``repa_anneal_steps`` — (0, 1] is a fraction of
         ``max_train_steps``, > 1 is absolute optimizer steps. 0 = off."""
         if self._anneal_steps <= 0:
@@ -534,8 +522,8 @@ class REPAMethodAdapter(MethodAdapter):
             return None
         if self._captured is None:
             # PE features loaded + train step, but the block hook never fired —
-            # REPA would be silently inert. Warn once so a mis-wired hook (e.g.
-            # a future compile change that swallows it) is visible, not silent.
+            # REPA would be silently inert. Warn once so a mis-wired hook is
+            # visible.
             if not getattr(self, "_warned_no_capture", False):
                 logger.warning(
                     "REPA: block %d hook did not fire on a train step — alignment "
@@ -553,7 +541,12 @@ class REPAMethodAdapter(MethodAdapter):
             pe = pe[:, 1:, :]  # drop CLS → (B, gh*gw, d_enc)
 
         dit_tok = pool_dit_tokens_to_grid(
-            self._captured, (h_lat, w_lat), self._patch, gh, gw
+            self._captured,
+            (h_lat, w_lat),
+            self._patch,
+            gh,
+            gw,
+            trim_tail=self._trim_tokens,
         )  # (B, gh*gw, D) fp32
 
         w = None
@@ -603,12 +596,10 @@ class REPAMethodAdapter(MethodAdapter):
         self, loss: torch.Tensor, dit_tok: torch.Tensor, gh: int, gw: int
     ) -> None:
         """MaskAlign Fig. 2a statistic: top-10% alignment-gradient positions.
-
-        ``autograd.grad`` of the scalar w.r.t. the pooled tokens only traverses
-        normalize → Gram → MSE (near-free); ``retain_graph`` keeps the main
-        backward intact. Per-token grad-norm maps are resized to the canonical
-        ``_HEATMAP_GRID``² so counts accumulate across aspect buckets with a
-        fixed top-k per sample.
+        ``autograd.grad`` w.r.t. the pooled tokens only traverses normalize →
+        Gram → MSE (near-free); per-token grad-norm maps are resized to the
+        canonical ``_HEATMAP_GRID``² so counts accumulate across aspect
+        buckets with a fixed top-k per sample.
         """
         if not (loss.requires_grad and dit_tok.requires_grad):
             # No grad path (e.g. captured feature detached) — diagnostic only,
@@ -678,13 +669,9 @@ class REPAMethodAdapter(MethodAdapter):
     def metrics(self, ctx) -> dict[str, float]:
         """Surface the last train-step alignment scalar to the loggers.
 
-        ``repa/align_loss`` is the *unweighted* loss (Gram MSE in relational
-        mode, mean ``1 − cos`` in absolute) — its weighted contribution is
-        ``align_loss * repa_weight``. Snapshot of the last step that ran the
-        term (mirrors BYG / soft-tokens); not updated on steps where REPA was
-        inactive, so read it alongside ``repa/active``. With the grad-heatmap
-        probe on, ``repa/heatmap_conc`` carries the running max-position
-        recurrence vs uniform.
+        ``repa/align_loss`` is *unweighted* (weighted contribution is
+        ``align_loss * repa_weight``); not updated on inactive steps, so read
+        alongside ``repa/active``.
         """
         del ctx
         return dict(self._metrics)

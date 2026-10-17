@@ -1,0 +1,10 @@
+# retrain_kana — retrain_experiments § 5: every kana single re-seeded cold from the
+# pack rows on lone + in-word (windows, routed) data. The seed's 80 hiragana,
+# 82 katakana (with ・ ー) and 8 punctuation singles, plus the 4 frequent kana
+# with a pack row and no seed row (ヴ 47, ヶ 13, ゔ 10, ヵ 5 lines in the
+# dialogue pool). The read strings are held out of the windows by trigram:
+# C2's eight held-in words (floor / p1_mix routed reads cached), なにしてる,
+# and four katakana words (katakana at 135 / row is unread).
+
+vocabs = ["chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをん", "chars:ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロワヲン・ー", "chars:、。「」〜！？～", "chars:ヴヶゔヵ"]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]

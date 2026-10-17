@@ -1,61 +1,45 @@
 """Anima — programmatic front door.
 
-A thin façade that re-exports the handful of real entry points an embedder
-needs, so driving the pipeline is "read these exports" instead of
-"reverse-engineer ``inference.py`` / ``train.py`` ``main()``"::
+Lazy re-exports of the entry points an embedder needs::
 
     import anima_lora
 
-    settings = anima_lora.get_generation_settings(args)
-    latent = anima_lora.generate(args, settings)
-    image = anima_lora.decode_to_pil(vae, latent, device)
+    settings = anima_lora.inference.get_generation_settings(args)
+    latent = anima_lora.inference.generate(args, settings)
+    image = anima_lora.inference.decode_to_pil(vae, latent, device)
 
-Each name resolves lazily (PEP 562) the first time it's accessed, so
-``import anima_lora`` itself stays cheap and avoids the circular-import chains
-the underlying packages guard against.
+Exports live on the namespaced submodules ``anima_lora.{models, inference,
+config, training, captioning}``; each submodule's docstring lists its exports
+and their canonical homes. The pre-namespace flat names (``anima_lora.generate``,
+``anima_lora.load_vae``, …) remain as aliases; ``training`` is namespaced-only.
+Names resolve lazily (PEP 562), so ``import anima_lora`` stays cheap and avoids
+the circular-import chains of the underlying packages.
 
-The canonical homes are unchanged — this module only re-exports them:
+``ROOT`` is the repo root (the directory holding ``configs/``, ``output/`` …)
+as a ``pathlib.Path``.
 
-| export | canonical home |
-|--------|----------------|
-| ``generate`` / ``get_generation_settings`` / ``save_output`` / ``decode_to_pil`` / ``GenerationRequest`` / ``prepare_text_inputs`` / ``ensure_text_strategies`` | ``library.inference`` |
-| ``load_method_preset`` / ``read_config_from_file`` | ``library.config.io`` |
-| ``load_anima_model`` | ``library.anima.weights`` |
-| ``load_dit_model`` | ``library.inference.models`` |
-| ``load_vae`` | ``library.models.qwen_vae`` |
-| ``str_to_dtype`` | ``library.runtime.device`` |
-| ``default_checkpoints`` / ``DefaultCheckpoints`` | ``library.env`` |
+This package is the **stable API**. ``library.*`` / ``networks.*`` /
+``scripts.*`` are importable for advanced use but may change without a
+deprecation cycle; pin a tag if you depend on them directly.
 
-``ROOT`` is the repo root (the directory holding ``configs/``, ``output/`` …) as
-a ``pathlib.Path`` — the single source of truth for building repo-relative paths
-in tooling, instead of each script re-deriving it with its own
-``Path(__file__).parents[N]`` arithmetic.
-
-This module is the **stable API** — the names exported here are what we keep
-stable across releases. ``library.*`` / ``networks.*`` / ``scripts.*`` are
-installed and importable for advanced use, but may change without a deprecation
-cycle; pin a tag if you depend on them directly.
-
-Note: repo-relative model/config paths resolve against the repo home, not the
-current working directory, so ``import anima_lora`` works from anywhere (see
-``library.env.resolve_under_home`` / ``anima_home``; set ``ANIMA_HOME`` to point
-at a relocated checkout). Internal tooling under ``bench/`` / ``scripts/`` /
-``preprocess/`` still needs its ``sys.path`` bootstrap to import *sibling*
-modules (those trees are not installed packages — only ``anima_lora`` /
-``library`` / ``networks`` are).
+Repo-relative model/config paths resolve against the repo home, not the CWD
+(``library.env.resolve_under_home`` / ``anima_home``; set ``ANIMA_HOME`` for a
+relocated checkout).
 """
 
 from __future__ import annotations
 
-import importlib as _importlib
 from pathlib import Path as _Path
+
+from anima_lora._lazy import attach as _attach
 
 #: Repo root (``anima_lora/``), resolved from this file's location.
 ROOT = _Path(__file__).resolve().parent.parent
 
-# export name -> dotted module that defines it
+# Pre-namespace flat aliases: export name -> dotted module that defines it.
+# New exports go on the namespaced submodules, not here.
 _ATTR_TO_MODULE: dict[str, str] = {
-    # generation + output (library.inference)
+    # generation + output (anima_lora.inference)
     "generate": "library.inference",
     "get_generation_settings": "library.inference",
     "save_output": "library.inference",
@@ -63,30 +47,35 @@ _ATTR_TO_MODULE: dict[str, str] = {
     "GenerationRequest": "library.inference",
     "prepare_text_inputs": "library.inference",
     "ensure_text_strategies": "library.inference",
-    # config merge chain (library.config.io)
+    # config merge chain (anima_lora.config)
     "load_method_preset": "library.config.io",
     "read_config_from_file": "library.config.io",
-    # model loaders
+    # model loaders (anima_lora.models)
     "load_anima_model": "library.anima.weights",
     "load_dit_model": "library.inference.models",
     "load_vae": "library.models.qwen_vae",
-    # device / dtype helpers (library.runtime.device)
+    # captioning (anima_lora.captioning)
+    "AnimaTagger": "anime_tools.tagger",
+    # device / dtype helpers (anima_lora.models)
     "str_to_dtype": "library.runtime.device",
-    # default checkpoint paths (library.env)
+    # default checkpoint paths (anima_lora.models)
     "default_checkpoints": "library.env",
     "DefaultCheckpoints": "library.env",
+    "VocabPack": "library.anima.vocab_pack",
+    "load_vocab_pack": "library.anima.vocab_pack",
+    "attach_vocab_pack": "library.anima.vocab_pack",
 }
 
+_SUBMODULES = ["captioning", "config", "inference", "models", "training"]
 
-def __getattr__(name: str):
-    module = _ATTR_TO_MODULE.get(name)
-    if module is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return getattr(_importlib.import_module(module), name)
+__all__ = sorted([*_ATTR_TO_MODULE, *_SUBMODULES, "ROOT"])
 
+_attach(globals(), _ATTR_TO_MODULE)
 
-def __dir__() -> list[str]:
-    return sorted(__all__)
-
-
-__all__ = [*_ATTR_TO_MODULE.keys(), "ROOT"]
+# Eager: each submodule is only a lazy re-export table (no heavy imports), so
+# `anima_lora.models.load_vae` works right after `import anima_lora`.
+from anima_lora import captioning as captioning  # noqa: E402
+from anima_lora import config as config  # noqa: E402
+from anima_lora import inference as inference  # noqa: E402
+from anima_lora import models as models  # noqa: E402
+from anima_lora import training as training  # noqa: E402

@@ -1,0 +1,82 @@
+# ResShift ×4 (15-step) finetune config for the art SR sidecar.
+#
+# This is the released x4 v2 teacher's config (resshift/configs/realsr_swinunet_
+# realesrgan256.yaml) with the trainer/degradation/data sections dropped — train_sr/
+# train.py runs its OWN loop with ArtSRDataset (live bicubic + light-JPEG degradation
+# over our HR pool), not the basicsr RealESRGAN pipeline. Model / noise schedule
+# (steps=15, min_noise_level=0.04, kappa=2.0) / predict_type=xstart / VQ-f4 are byte
+# identical to the released config, so:
+#   - `resshift_realsrx4_s15_v2.pth` warm-starts as a STRICT load;
+#   - the finetuned checkpoint drops straight into the RSD distiller as
+#     `--version x4ft` (which reuses the released x4 config → same sf, same schedule).
+#
+# The 4-step v3 teacher (which scores HIGHER on our art eval: MUSIQ 68.4) has a
+# DIFFERENT schedule — steps=4, min_noise_level=0.2 — and must be finetuned under
+# realsr_x4_s4_art.yaml instead. Warm-starting v3 weights under this 15-step schedule
+# would load cleanly and train badly (the timestep conditioning means something else).
+
+model:
+  target: models.unet.UNetModelSwin
+  ckpt_path: ~
+  params:
+    image_size: 64
+    in_channels: 3
+    model_channels: 160
+    out_channels: 3
+    attention_resolutions: [64,32,16,8]
+    dropout: 0
+    channel_mult: [1, 2, 2, 4]
+    num_res_blocks: [2, 2, 2, 2]
+    conv_resample: True
+    dims: 2
+    use_fp16: False
+    num_head_channels: 32
+    use_scale_shift_norm: True
+    resblock_updown: False
+    swin_depth: 2
+    swin_embed_dim: 192
+    window_size: 8
+    mlp_ratio: 4
+    cond_lq: True
+    lq_size: 64
+
+diffusion:
+  target: models.script_util.create_gaussian_diffusion
+  params:
+    sf: 4
+    schedule_name: exponential
+    schedule_kwargs:
+      power: 0.3
+    etas_end: 0.99
+    steps: 15
+    min_noise_level: 0.04
+    kappa: 2.0
+    weighted_mse: False
+    predict_type: xstart
+    timestep_respacing: ~
+    scale_factor: 1.0
+    normalize_input: True
+    latent_flag: True
+
+autoencoder:
+  target: ldm.models.autoencoder.VQModelTorch
+  ckpt_path: weights/autoencoder_vq_f4.pth
+  use_fp16: True
+  params:
+    embed_dim: 3
+    n_embed: 8192
+    ddconfig:
+      double_z: False
+      z_channels: 3
+      resolution: 256
+      in_channels: 3
+      out_ch: 3
+      ch: 128
+      ch_mult:
+      - 1
+      - 2
+      - 4
+      num_res_blocks: 2
+      attn_resolutions: []
+      dropout: 0.0
+      padding_mode: zeros

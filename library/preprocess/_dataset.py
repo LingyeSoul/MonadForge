@@ -1,9 +1,7 @@
 """Shared walk / group / skip loop for the preprocess cache scripts.
 
-Extracted from the near-identical ``main()`` bodies of
-``preprocess/cache_latents.py`` / ``cache_text_embeddings.py`` /
-``cache_pe_encoder.py`` (see ``docs/proposal/tooling_architecture.md`` §A).
-Holds only the pipeline-agnostic orchestration:
+Used by ``preprocess/cache_latents.py`` / ``cache_text_embeddings.py`` /
+``cache_pe_encoder.py``. Holds only the pipeline-agnostic orchestration:
 
 1. enumerate the dataset images under a directory (optionally recursive, with
    the per-subfolder stem-collision check the stem-keyed cache layout requires),
@@ -11,9 +9,8 @@ Holds only the pipeline-agnostic orchestration:
 3. group the remainder by pixel shape so one batched encoder forward serves a
    whole group (same ``(W, H)`` → same bucket → same output shape).
 
-The encoder, suffix, and save format stay in each caller — only the loop moves
-down here. Reuses ``library.datasets.image_utils`` for the scan + stem check
-rather than introducing a second image-walker.
+The encoder, suffix, and save format stay in each caller. The scan + stem check
+reuse ``library.datasets.image_utils``.
 """
 
 from __future__ import annotations
@@ -84,19 +81,30 @@ def group_by_shape(paths: Iterable[Path]) -> dict[tuple[int, int], list[Path]]:
     return groups
 
 
+def cache_is_current(cache: Path, image: Path) -> bool:
+    """``cache`` exists and is no older than ``image``. A resize pass that
+    rewrites the image (a fix, a tier change landing on the same bucket) leaves
+    the cache older, so it re-encodes instead of serving the old pixels."""
+    try:
+        return cache.stat().st_mtime >= image.stat().st_mtime
+    except OSError:
+        return False
+
+
 def partition_cached(
     paths: Iterable[Path], cache_path_for: Callable[[Path], Path]
 ) -> tuple[list[Path], int]:
-    """Split ``paths`` into ``(pending, skipped_count)`` by sidecar existence.
+    """Split ``paths`` into ``(pending, skipped_count)`` by sidecar currency.
 
     ``cache_path_for(p)`` returns the sidecar path for image ``p``; entries
-    whose sidecar already exists are counted as skipped (so workers never
-    decode them) and the rest are returned as ``pending`` for encoding.
+    whose sidecar exists and is no older than the image
+    (:func:`cache_is_current`) are counted as skipped (so workers never decode
+    them) and the rest are returned as ``pending`` for encoding.
     """
     pending: list[Path] = []
     skipped = 0
     for p in paths:
-        if cache_path_for(p).exists():
+        if cache_is_current(cache_path_for(p), p):
             skipped += 1
         else:
             pending.append(p)

@@ -1,11 +1,3 @@
-# gui-methods/tlora.toml — T-LoRA + OrthoLoRA (default mergeable combo).
-#
-# Stacks timestep-dependent rank masking (T-LoRA) on top of orthogonal
-# parameterization (OrthoLoRA). Both save as plain LoRA at checkpoint time
-# (OrthoLoRA via thin SVD, T-LoRA mask is training-only), so the result is
-# fully bakeable into the base DiT via the Merge tab. Good general-purpose
-# choice when you want rank-by-σ scheduling with orthogonal regularization.
-
 network_dim = 32
 network_alpha = 32
 
@@ -24,12 +16,18 @@ use_timestep_mask = true
 min_rank = 1
 alpha_rank_scale = 1.0
 
-output_name = "anima_tlora_ortho"
+output_name = "anima_tlora"
 
 use_cmmd = false
 
+use_repa = true
+repa_mode = "relational"
+repa_weight = 0.05
+repa_layer = 8
+repa_encoder = "pe_spatial"
+
 [variant]
 family = "tlora"
-label = "T-LoRA + OrthoLoRA"
-description = "T-LoRA stacked with OrthoLoRA — default mergeable combo."
+label = "T-LoRA"
+description = "T-LoRA rank mask on SVD-Down LoRA — default mergeable combo."
 order = 10

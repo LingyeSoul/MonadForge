@@ -119,14 +119,14 @@ def test_store_true_flags():
 
 
 def test_extra_argv_reaches_unmodelled_knobs():
-    """The long tail (spectrum/dcw/…) rides through extra_argv verbatim."""
+    """The long tail (spectrum/smc_cfg/…) rides through extra_argv verbatim."""
     args = GenerationRequest(
         prompt="p",
-        extra_argv=["--spectrum", "--dcw", "--dcw_lambda", "0.01"],
+        extra_argv=["--spectrum", "--smc_cfg", "--smc_cfg_lambda", "6.0"],
     ).to_args()
     assert args.spectrum is True
-    assert args.dcw is True
-    assert args.dcw_lambda == 0.01
+    assert args.smc_cfg is True
+    assert args.smc_cfg_lambda == 6.0
 
 
 def test_extra_argv_overrides_structured_field():

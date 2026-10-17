@@ -237,6 +237,7 @@ def load_anima_model(
     v100_flash_stability: str = "off",
     debug_finite_checks: bool = False,
     checkpoint_layout: Optional[AnimaCheckpointLayout] = None,
+    vocab_pack=None,
 ) -> anima_models.Anima:
     """
     Load Anima model from the specified checkpoint.
@@ -255,6 +256,10 @@ def load_anima_model(
             If None, weights are loaded as-is from the state_dict; otherwise they are cast to this dtype.
         lora_weights_list (Optional[List[Dict[str, torch.Tensor]]]): LoRA weights to apply, if any.
         lora_multipliers (Optional[List[float]]): LoRA multipliers for the weights, if any.
+        vocab_pack: CJK vocab pack to hook onto ``llm_adapter.embed`` — a path
+            prefix, a loaded ``VocabPack``, or ``None``/``""`` for off. The
+            hook pair leaves the state dict at the stock 32128 rows
+            (``library.anima.vocab_pack.attach_vocab_pack``).
     """
     if dit_weight_dtype is None:
         dit_weight_dtype = torch.bfloat16
@@ -311,6 +316,18 @@ def load_anima_model(
         weight_transform_hooks=rename_hooks,
     )
 
+    # A merged checkpoint (vocab_pack.merge_pack_into_dit) carries pack rows for
+    # the ComfyUI loader; here the pack comes from `vocab_pack`, so drop them.
+    ext_keys = [k for k in sd if k.endswith("llm_adapter.ext_embed.weight")]
+    for k in ext_keys:
+        del sd[k]
+    if ext_keys:
+        logger.warning(
+            "%s carries vocab pack rows (a merged checkpoint); they are ignored "
+            "here — set `vocab_pack` to the pack itself to use them",
+            dit_path,
+        )
+
     missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
     if missing:
         # Filter out expected missing buffers (initialized in __init__, not saved in checkpoint)
@@ -366,7 +383,20 @@ def load_anima_model(
         torch.nn.init.zeros_(model.pooled_text_sigma_film.weight)
         torch.nn.init.zeros_(model.pooled_text_sigma_film.bias)
 
+    _attach_vocab_pack_if_set(model, vocab_pack)
     return model
+
+
+def _attach_vocab_pack_if_set(model_or_adapter, vocab_pack) -> None:
+    """Hook a vocab pack's rows onto the adapter's embed when one is selected."""
+    if vocab_pack is None or vocab_pack == "":
+        return
+    # Lazy: vocab_pack imports the strategy module, which imports this one.
+    from library.anima.vocab_pack import attach_vocab_pack, load_vocab_pack
+
+    pack = load_vocab_pack(vocab_pack)
+    if pack is not None:
+        attach_vocab_pack(model_or_adapter, pack)
 
 
 def load_pooled_text_proj(
@@ -401,6 +431,7 @@ def load_llm_adapter(
     llm_adapter_path: Optional[str] = None,
     dtype: torch.dtype = torch.bfloat16,
     device: Union[str, torch.device] = "cpu",
+    vocab_pack=None,
 ) -> anima_models.LLMAdapter:
     """Load only the LLM adapter weights.
 
@@ -411,6 +442,8 @@ def load_llm_adapter(
         llm_adapter_path: Optional path to a separate adapter safetensors file.
         dtype: Target dtype.
         device: Target device.
+        vocab_pack: CJK vocab pack to hook onto ``embed`` (see ``load_anima_model``)
+            so cached ``crossattn_emb`` sees the same rows the DiT will.
     """
     weight_path = llm_adapter_path or dit_path
     if weight_path is None:
@@ -462,6 +495,7 @@ def load_llm_adapter(
 
     adapter.to(device=device, dtype=dtype)
     adapter.eval()
+    _attach_vocab_pack_if_set(adapter, vocab_pack)
     return adapter
 
 
@@ -488,6 +522,24 @@ def _get_qwen_config_dir(qwen3_path: str) -> str:
             f"You can download these from the {model_name} HuggingFace repository."
         )
     return config_dir
+
+
+def qwen3_tokenizer_dir(qwen3_path: str) -> str:
+    """Directory holding the tokenizer for ``qwen3_path`` (the path itself when
+    it is a model directory, else the bundled Qwen3/Qwen3.5 config dir).
+
+    Trainer-side resolver handed to curation stages (``--qwen3 <dir>``), which
+    load tokenizers from directories only (``anime_tools.captions.tokenizers``).
+    """
+    qwen3_path = str(resolve_under_home(qwen3_path))
+    if os.path.isdir(qwen3_path):
+        return qwen3_path
+    return _get_qwen_config_dir(qwen3_path)
+
+
+def t5_tokenizer_dir() -> str:
+    """The bundled ``t5_old`` tokenizer config directory."""
+    return os.path.join(os.path.dirname(__file__), "configs", "t5_old")
 
 
 def load_qwen3_tokenizer(qwen3_path: str):

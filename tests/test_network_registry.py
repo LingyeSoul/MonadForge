@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from safetensors import safe_open
 from safetensors.torch import load_file
 
 from networks import (
@@ -23,6 +24,7 @@ from networks import (
     all_network_kwargs,
     resolve_network_spec,
 )
+import networks as _networks_pkg
 from networks import lora_save
 
 
@@ -103,6 +105,8 @@ def test_repa_kwargs_registered():
     "kwargs, expected",
     [
         ({}, "lora"),
+        ({"step_expert_K": "4"}, "step_expert"),
+        ({"step_expert_K": "1"}, "lora"),
         ({"use_ortho": "true"}, "ortho"),
         ({"use_ortho_init": "true"}, "ortho_init"),
         ({"use_moe_style": "shared_A"}, "hydra"),
@@ -478,6 +482,7 @@ def test_ortho_init_module_zero_delta_and_distill_fidelity():
     assert torch.allclose(up @ down, expected_dW, atol=1e-5)
 
 
+@pytest.mark.training_step
 def test_ortho_init_training_grads_flow():
     """OrthoInit's training forward (activation-dtype GEMMs) must deliver
     gradient to the trainable SVD bases, λ, and the input."""
@@ -663,3 +668,74 @@ def test_metadata_stamps_ss_network_spec(tmp_path: Path):
     )
     meta = _load_metadata(out)
     assert meta.get("ss_network_spec") == "lora"
+
+
+# Upstream allowlist derivation and AdaLN layout regression checks.
+
+def test_derivation_is_sane_and_independent_of_import_order():
+    """Re-deriving yields the same non-trivial set the module exposes."""
+    rederived = _networks_pkg._derive_network_kwargs()
+    assert rederived == NETWORK_KWARGS
+    # A broken scan (wrong path, pattern miss) would collapse the set; the live
+    # allowlist is ~75 keys, so anything tiny means the derivation regressed.
+    assert len(NETWORK_KWARGS) > 50
+
+
+def test_alias_fallbacks_excluded():
+    """The back-compat alias default (router_hidden) must NOT forward — only
+    its canonical name does."""
+    assert "router_hidden" not in NETWORK_KWARGS
+    assert "router_hidden_dim" in NETWORK_KWARGS
+
+
+def test_factory_only_keys_are_derived():
+    """Keys read in factory.py (not config.from_kwargs) must still be picked up —
+    this is the case the audit's 'introspect from_kwargs' fix would have dropped.
+    """
+    for k in ("use_repa", "channel_scaling_alpha", "use_custom_down_autograd"):
+        assert k in NETWORK_KWARGS, f"factory-read key {k!r} not derived"
+
+
+def _make_adaln_lora_sd(prefix: str, r: int, in_dim: int, out_dim: int) -> dict:
+    """Fake adaln_up_{branch} LoRA entry in the runtime layout."""
+    return {
+        f"{prefix}.lora_down.weight": torch.randn(r, in_dim),
+        f"{prefix}.lora_up.weight": torch.randn(out_dim, r),
+        f"{prefix}.alpha": _alpha(r),
+    }
+
+
+def test_save_relays_adaln_to_comfy_layout(tmp_path: Path):
+    """Trained adaln keys must ship in the ComfyUI layout — ComfyUI's generic
+    key map only knows ``adaln_modulation_{br}_2`` and silently drops the
+    runtime ``adaln_up_{br}`` names (adaln.md §Key-naming contract)."""
+    r, in_dim, out_dim = 4, 8, 12
+    sd = _make_std_lora_sd("lora_unet_blocks_0_self_attn_qkv_proj", r, 8, out_dim)
+    for branch in ("self_attn", "cross_attn", "mlp"):
+        sd |= _make_adaln_lora_sd(
+            f"lora_unet_blocks_0_adaln_up_{branch}", r, in_dim, 3 * out_dim
+        )
+
+    loaded = _save_and_reload(sd, tmp_path, save_variant="standard")
+
+    for branch in ("self_attn", "cross_attn", "mlp"):
+        comfy = f"lora_unet_blocks_0_adaln_modulation_{branch}_2"
+        assert f"{comfy}.lora_down.weight" in loaded
+        assert f"{comfy}.lora_up.weight" in loaded
+        assert f"{comfy}.alpha" in loaded
+    assert not any("adaln_up_" in k for k in loaded)
+    # the non-adaln keys still take the normal defuse path
+    assert "lora_unet_blocks_0_self_attn_q_proj.lora_down.weight" in loaded
+
+    with safe_open(str(tmp_path / "out.safetensors"), framework="pt") as f:
+        assert f.metadata()["ss_adaln_layout"] == "comfy"
+
+
+def test_save_adaln_relayout_inert_without_adaln(tmp_path: Path):
+    """An adaln-less checkpoint is untouched — no stamp, no renames."""
+    sd = _make_std_lora_sd("lora_unet_blocks_0_self_attn_qkv_proj", 4, 8, 12)
+
+    _save_and_reload(sd, tmp_path, save_variant="standard")
+
+    with safe_open(str(tmp_path / "out.safetensors"), framework="pt") as f:
+        assert "ss_adaln_layout" not in f.metadata()

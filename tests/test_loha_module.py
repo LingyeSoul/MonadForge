@@ -136,6 +136,7 @@ def test_forward_applies_scale_exactly_once():
     assert torch.allclose(base(x), expected, atol=1e-5, rtol=1e-5)
 
 
+@pytest.mark.training_step
 def test_wrapper_forward_and_gradients_equal_direct_lycoris():
     torch.manual_seed(123)
     wrapped_base = torch.nn.Linear(512, 512, bias=False)
@@ -185,6 +186,7 @@ def test_wrapper_forward_and_gradients_equal_direct_lycoris():
         )
 
 
+@pytest.mark.training_step
 def test_zero_init_trains_the_official_w2_chain_end_first():
     base, module = _make_module(rank=4, alpha=4)
     module.apply_to()

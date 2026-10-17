@@ -1,0 +1,178 @@
+# Which tags may enter a position clause — the tag-GROUP policy behind
+# `make caption-position`. Group names must exist in the tagger checkpoint's own
+# `groups.yaml`; unknown ones are warned about at load, since a typo here would
+# silently disable a gate rather than fail.
+#
+# Per-rule evidence and the knob table live in
+# docs/experimental/position_captions.md.
+
+# Groups that bind to a position; everything else (lighting, background, medium,
+# interaction, …) stays in the flat tag bag. Almost all describe *one subject*;
+# `framing` is the exception and describes one *view* — see its entry.
+subject_groups:
+  # identity / face
+  - eye_color
+  - eye_shape
+  - face_features
+  - expression
+  - emotion
+  - age
+  - gender
+  - skin
+  - body_shape
+  - body_parts
+  - species_nonhuman
+  - animal_parts
+  # hair
+  - hair_color
+  - hair_length
+  - hairstyle
+  - hair_accessory
+  # clothing
+  - top_garment
+  - top_clothing
+  - bottom_clothing
+  - dress_onepiece
+  - underwear
+  - swimwear
+  - school_uniform
+  - traditional_clothing
+  - costume
+  - clothing_details
+  - fashion_style
+  - footwear
+  - socks_stockings
+  - gloves_acc
+  - earrings_necklace
+  - hat
+  - eyewear
+  - bag
+  # what the subject is doing
+  - pose
+  - gesture
+  - daily_action
+  # how *this view* is cropped: an attribute of the panel, not the girl, and the
+  # only group that answers "this view is a headless close-up". Measured on
+  # `ama_mitsuki`: `ass focus` 0.54-0.77 on body-part panels vs 0.000 on
+  # full-body ones, `full body` 0.87-1.0 the other way.
+  - framing
+
+# TAG names (not groups): filed under `framing` but describing the *page*, not
+# one view. `solo focus` is about the other characters, `size difference` about
+# a pair, `white border` about the canvas. Binding one to a view would then MOVE
+# it out of the flat bag.
+page_level_framing:
+  - solo focus
+  - size difference
+  - white border
+
+# Emitted first, in THIS ORDER when present — the attributes that actually
+# disambiguate a subject. Everything else follows, ranked.
+#
+# `framing` rides here, last, for the novel budget rather than the emission
+# order: only `max_novel_tags` (1) novel tags are admitted, in candidate order,
+# so without a slot a framing tag the caption never named loses to whatever the
+# crop scored higher (measured: a hallucinated `torn clothes` beat `ass focus`
+# at 0.774 on a backside panel). It sits after the identity groups because hair
+# and eyes disambiguate harder on a multi-character image; on a view layout
+# those are gated out and framing leads alone.
+priority_groups:
+  - hair_color
+  - eye_color
+  - hair_length
+  - hairstyle
+  - framing
+
+# The groups you read off a **face**. A crop without a head in it has no
+# evidence for any of them, so they are suppressed on a body-part crop
+# (`allow_identity=False`).
+identity_groups:
+  - hair_color
+  - eye_color
+  - hair_length
+  - hairstyle
+
+# Groups where the flat bag outranks the crop tagger: once the caption names a
+# hair color, a clause may only pick from the colors it named (measured:
+# 520/1600 identity clause tags contradicted the bag in the first full-corpus
+# dry run). These three, plus every EXCLUSIVE subject group the checkpoint
+# declares, derived at load — an exclusive group holds one value, so a second is
+# a contradiction (103 `body_shape` + 39 `fashion_style` caught 2026-08-17).
+# `hair_length` is not itself exclusive in groups.yaml, hence listed here.
+# Multi-value groups (`hairstyle`) stay ungated: a second value there is detail.
+bag_gated_groups:
+  - hair_color
+  - eye_color
+  - hair_length
+
+# Exclusive groups the bag gate must NOT claim. The gate's premise — one value
+# per group, so a second contradicts — holds for a subject attribute and fails
+# for `framing`, a property of the view: a sheet's bag legitimately says
+# `full body` for the standing panel and `ass focus` for the backside one.
+# Without the exemption the gate pins every clause to whatever framing the
+# caption named first.
+ungated_exclusive_groups:
+  - framing
+
+# Groups whose value belongs to a **character**, not to a view of one — on a
+# `1girl, multiple views` sheet, binding `aqua hair` to one view and removing it
+# from the bag would claim the other views aren't aqua-haired. Outfit / pose /
+# expression / framing carry no such implication and move freely.
+#
+# Corroboration rule: a tag in one of these groups may leave the bag only when
+# the bag names >=2 distinct values of that group (evidence-based rather than
+# count-based, since most proposals carry no reliable girls-count tag).
+character_invariant_groups:
+  - hair_color
+  - hair_length
+  - hairstyle
+  - eye_color
+  - eye_shape
+  - face_features
+  - age
+  - gender
+  - skin
+  - body_shape
+  - species_nonhuman
+  - animal_parts
+
+# On a repeated-subject layout (`multiple views` / comic pages) the subjects are
+# one character drawn several times, so no clause may carry a trait the
+# character owns. Stricter than the corroboration gate above: that one governs
+# whether a tag may LEAVE the bag, this blocks it from ENTERING a clause.
+# Measured 45% of `multiple views` clause tags were view-invariant pre-gate
+# (33% for comic panels).
+#
+# Omit the key to reuse `character_invariant_groups` verbatim, which is the
+# shipped behaviour — list groups here only to make the two sets differ.
+# view_invariant_groups: []
+
+# `body_parts` is held out of the set above (`--gate_view_anatomy` restores it).
+# Anatomy is owned by the character the way hair color is, but its *visibility*
+# is a fact about the view: on a sheet of one girl from the front and from
+# behind, `ass` is true of exactly one panel, and gating it cost the clause the
+# one thing that separated those views.
+view_anatomy_groups:
+  - body_parts
+
+# Exception to the corroboration rule, by TAG name: booru tags a single
+# two-toned-hair character with two hair-color tags, so ">=2 values" doesn't
+# imply two subjects. Ungrouped in groups.yaml, hence plain names. When one is
+# in the bag, that group is pinned flat.
+multi_value_markers:
+  hair_color:
+    - multicolored hair
+    - two-tone hair
+    - gradient hair
+    - streaked hair
+    - colored inner hair
+    - split-color hair
+    - rainbow hair
+    - colored tips
+    - multicolored bangs
+    - alternate hair color
+  eye_color:
+    - heterochromia
+    - multicolored eyes
+    - gradient eyes
+    - two-tone eyes

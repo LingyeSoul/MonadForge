@@ -64,7 +64,7 @@ Most layers are already close to this shape: `attention_dispatch.py` is fully ge
 
 ## The main blocker
 
-**`train.py::get_noise_pred_and_target` and the wider trainer forward path** — not the DiT class itself.
+`train.py::get_noise_pred_and_target` and the wider trainer forward path — not the DiT class itself.
 
 The DiT can be solved with a factory in an afternoon. The real pain is that `train.py` reaches *into* the Anima DiT for adapter-specific knobs:
 
@@ -72,7 +72,7 @@ The DiT can be solved with a factory in an afternoon. The real pain is that `tra
 - `unet._mod_guidance_*` distillation hooks
 - Fused-projection assumptions (`qkv_proj`, `kv_proj`)
 - The postfix / IP-Adapter / EasyControl monkey-patches that target Anima's exact module names
-- The constant-token bucketing (4032/4200 token-count families) built into `library/datasets/`
+- The free-fit token bands (`EDGE_TOKEN_BANDS`) built into `library/datasets/`
 
 Plus every `configs/methods/*.toml` LoRA target list was hand-tuned against Anima block names.
 
@@ -84,7 +84,7 @@ Not all adapter families port equally. Rough triage:
 
 | Adapter | Portability to a new DiT | Why |
 |---------|--------------------------|-----|
-| LoRA / OrthoLoRA | High | Operates on any `nn.Linear`; only target list needs to change |
+| LoRA | High | Operates on any `nn.Linear`; only target list needs to change |
 | HydraLoRA | High-medium | Same target story as LoRA + a router on the Linear's input |
 | T-LoRA | High | Timestep mask is model-agnostic |
 | Modulation guidance | Medium-low | Assumes AdaLN coefficients of a specific shape; needs `pooled_text_proj` slot |
@@ -92,14 +92,14 @@ Not all adapter families port equally. Rough triage:
 | IP-Adapter | Low | Per-block `to_k_ip` / `to_v_ip` parallel projections + Anima cross-attn patch |
 | EasyControl | Low | Two-stream block forward + per-block cond LoRA + scalar gate, all bound to Anima block internals |
 
-Day-one Z-Image with **LoRA + HydraLoRA** is realistic. Porting IP-Adapter / EasyControl / postfix is a per-adapter project against the new model's attention layout.
+Day-one Z-Image with LoRA + HydraLoRA is realistic. Porting IP-Adapter / EasyControl / postfix is a per-adapter project against the new model's attention layout.
 
 ## Effort estimate
 
 Realistic scope:
 
-- **3–5 days** for LoRA-only Z-Image (factory + config + cache suffixes + LoRA target spec + Z-Image DiT class + strategy subclass).
-- **~2 weeks** if all adapter families need to port across.
+- 3–5 days for LoRA-only Z-Image (factory + config + cache suffixes + LoRA target spec + Z-Image DiT class + strategy subclass).
+- ~2 weeks if all adapter families need to port across.
 
 The factory itself is half a day; the rest is the long tail of "where else did Anima leak."
 

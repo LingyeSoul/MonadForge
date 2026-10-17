@@ -91,6 +91,19 @@ def submit(manager, job, plan):
     )
 
 
+def test_continuation_submit_rechecks_runtime_before_copying_state(source, monkeypatch):
+    manager, job, _, _ = source
+    plan = prepare(manager, job)
+
+    def invalid_runtime(current):
+        raise ValueError("runtime registration was removed")
+
+    monkeypatch.setattr(manager, "_validate_job_runtime", invalid_runtime)
+    with pytest.raises(ValueError, match="registration was removed"):
+        submit(manager, job, plan)
+    assert len(manager.list_jobs()) == 1
+
+
 def test_extension_pins_input_and_only_changes_budget(source):
     manager, job, cfg, state = source
     original = Path(job.config_file).read_bytes()
@@ -230,6 +243,7 @@ def test_proportional_warmup_does_not_expand_with_training_budget():
     ) == (50, 10)
 
 
+@pytest.mark.training_step
 @pytest.mark.parametrize("cut", [2, 6, 10])
 def test_restored_optimizer_scheduler_matches_uninterrupted(cut):
     from bench.continuation.run_bench import trajectory
@@ -632,7 +646,9 @@ def test_setup_continuation_pins_scheduler_identity(source, monkeypatch):
     monkeypatch.setenv("ANIMA_DAEMON_JOB_ID", child.id)
     monkeypatch.setenv("ANIMA_DAEMON_ROOT_JOB_ID", child.root_job_id)
     args = SimpleNamespace(
-        **dict(cfg, lr_scheduler="cosine", lr_warmup_steps=0.9, resume=child.recovery_state)
+        **dict(
+            cfg, lr_scheduler="cosine", lr_warmup_steps=0.9, resume=child.recovery_state
+        )
     )
     setup_continuation(args)
     assert args.lr_scheduler == "constant_with_warmup"

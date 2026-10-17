@@ -23,18 +23,8 @@ multires_per_image = false
 # CAPTION_SHUFFLE_VARIANTS=N make preprocess-te
 caption_shuffle_variants = 4
 
-# Per-tag dropout probability applied to v1..v{N-1} only (presence axis; tags up
-# to and including the first @artist marker are protected). Env: CAPTION_TAG_DROPOUT_RATE
 caption_tag_dropout_rate = 0.1
 
-# Lexinvariant tag regularization (arXiv:2305.16349): per-tag probability of
-# *erasing a tag's identity* — replacing the tag string with a meaningless token
-# while keeping its slot, @artist prefix included (the IDENTITY axis, vs dropout's
-# presence axis). Writes a parallel `r`-family alongside the `v`-family in the same
-# cache; pick the arm at train time with `use_randomized_caption_variants` (no
-# re-preprocess to A/B). 0.0 = off (no r-family). Needs caption_shuffle_variants >= 2.
-# Re-running with this > 0 upgrades existing caches in place. Paper's prior ~0.2.
-# Override: make preprocess ARGS="--caption_tag_randomize_rate 0.2"
 caption_tag_randomize_rate = 0.0
 
 # Position clauses ("On the left, …") for multi-subject images. true = `make
@@ -61,9 +51,10 @@ caption_position_clauses = false
 drop_lowres_images = true
 min_pixels = 250000
 
-# Free-aspect token-band resize ("free-fit") is the only resize mode: images keep
-# their native aspect ratio and land anywhere inside the tier's token band, driving
-# crop loss to ~zero (the old discrete constant-token bucket pool was removed).
-# Max aspect-ratio clamp for free-fit (1:R / R:1); beyond-clamp images cover-crop to
-# the limit. Preprocess-only. Override: make preprocess ARGS="--freefit_max_ratio 3.0"
 freefit_max_ratio = 4.0
+
+# Shared mask root; masking remains opt-in through masked_loss.
+mask_dir = "post_image_dataset/masks"
+# Optional upstream tag-group filtering and sigma-driven demotion.
+# caption_drop_groups = "artist,lighting"
+sigma_demote = "1024:896,1024:768"

@@ -1,14 +1,8 @@
 # scripts/calibration
 
-Live calibration scripts — the ones you re-run to regenerate the **shipped**
-artifacts under `networks/calibration/`. Promoted here from their original
-benches (`bench/{pid,cns,channel_stats}`, archived under `_archive/bench/`)
-once the gains were observed and the methods shipped. Self-contained: no
-`bench/` dependency (no `bench._common` / `bench._anima`); they import the
-public `anima_lora` façade + `library` / `networks` directly.
-
-The frozen probe/analysis history (gamma_probe sweeps, sigma/turbo probes,
-result envelopes) stays in `_archive/bench/`.
+Scripts that regenerate the shipped artifacts under `networks/calibration/`.
+They import the `anima_lora` façade + `library` / `networks` directly (no `bench/`
+dependency). Probe/analysis history stays in `_archive/bench/`.
 
 ## CNS — colored-noise sampling γ matrix
 
@@ -55,21 +49,3 @@ Consumer: `networks/lora_anima/factory.py` (`_CHANNEL_STATS_PATH`) and
 `networks/methods/easycontrol.py`. Regime analysis: memory
 `project_per_channel_scaling_audit`. User doc:
 `docs/optimizations/channel_scaling.md`.
-
-## PiD — pixel-decoder color calibration
-
-Fits a static PiD→native-VAE color transform on Anima's own latents (the cheap
-decode-time equivalent of NVIDIA's retrained `_2606` checkpoint).
-
-```bash
-uv run python scripts/calibration/fit_color_calib.py --num_images 24 --steps 4
-```
-
-- `fit_color_calib.py` — writes `pid_color_calib.safetensors` to `--out_dir`
-  (default `output/calibration/pid_color_calib/`); fit summary prints to stdout.
-  Fit at the **exact** decode step count. The reference RGB is produced by the
-  production decoder (`load_vae` + `decode_to_pixels`, `--vae` defaults to the
-  configured Qwen-Image VAE).
-
-The PiD node ships from the standalone `ComfyUI-Anima-PiD` repo. Findings:
-memory `project_pid_color_drift_calib`.

@@ -1,0 +1,21 @@
+# jamo_j256_ko_cf_pe — jamo_j256_ko_cf with the factors started at a glyph prediction
+# (user 10-15, after hangul_init): probes/hangul_init.py's ridge from PE-Spatial-B16 4×4
+# features, fitted on seed_1008's katakana + kanji rows, predicts every syllable's row,
+# least-squares onto b + C + V + F; C / V / F start there, scaled so the composed ball
+# has seed_1008's kanji ball radius (211), b at 0. Offline the prediction ranks the
+# trained row 20 / 256 (same layout 9 / 29) and its factors sit at cos 0.11 – 0.17 to
+# the trained ones (j256 · j1024: 0.36 – 0.53; the lone curriculum's ≈ 0). Data, mix,
+# steps and σ / ε draws are jamo_j256_ko_cf's (data_from), so the pair differs in the start.
+rows = ["chars:이는력활로용함됐의것붙쉽맺벧챦최퓨권싶폐넣꽃짧묶흙퀭쟬닮뚫돐싻템봤숍뺏녘뤽값규죄뭐앉꽤좋쏟띄쫓깥훑읊캬톺떫눼출크뿐퇴쭤씌퓌뾔밖잖례찾삶닭몫끓핥곬를수트드면터보된과원주화능째까품평씀키축없큼때쪽빠씨뜻취봐좌쉬뢰뭔뇌뛰쁜뀌쾌튀얘얹엌쫙쏴퐈다하을에가기지한스자서사상미여동재오게치개러나회간부름료되당들환경전대작비만식생색공버명분와위적든신른니져글메산진태목구결디야션거조운임턴내복류튼데업행교학님관계국건며겠렇였금무단실청런영통타었험려민히심선유약마직르연했던설차께근처련담본술럼더희았느견년안물법속각방점종양역중현"]
+lang = { korean = "이는력활로용함됐의것붙쉽맺벧챦최퓨권싶폐넣꽃짧묶흙퀭쟬닮뚫돐싻템봤숍뺏녘뤽값규죄뭐앉꽤좋쏟띄쫓깥훑읊캬톺떫눼출크뿐퇴쭤씌퓌뾔밖잖례찾삶닭몫끓핥곬를수트드면터보된과원주화능째까품평씀키축없큼때쪽빠씨뜻취봐좌쉬뢰뭔뇌뛰쁜뀌쾌튀얘얹엌쫙쏴퐈다하을에가기지한스자서사상미여동재오게치개러나회간부름료되당들환경전대작비만식생색공버명분와위적든신른니져글메산진태목구결디야션거조운임턴내복류튼데업행교학님관계국건며겠렇였금무단실청런영통타었험려민히심선유약마직르연했던설차께근처련담본술럼더희았느견년안물법속각방점종양역중현" }
+factor = "jamo"
+seed = "1008"
+steps_per_row = 56
+steps = 14336
+shares = { grid_44 = 8.5227, grid_29 = 17.0455, grid_16 = 17.0455, lone_44 = 5.6818, lone_28 = 5.6818, lone_16 = 5.6818, bubble1_52 = 8.5227, bubble1_32 = 6.8182, counterfactual = 25.0, bubbleN_34 = 0, bubbleN_18 = 0 }
+pack = "punct"
+faces = { out = ["NanumPenScript-Regular.ttf"], dirs = ["ko_extra"], px_min = { "BlackHanSans-Regular.ttf" = 32, "DoHyeon-Regular.ttf" = 24, "GangwonEduTeunteun.ttf" = 28, "Pretendard-Black.ttf" = 22, "GangwonEduHyeonokSaem.ttf" = 24, "GangwonEduSaeeum.ttf" = 24, "KyoboHandwriting2025lyb.ttf" = 18 } }
+pose = true
+counterfactual = true
+data_from = "jamo_j256_ko_cf"
+factor_init = { glyph = "pe_spatial", radius = 211.0 }

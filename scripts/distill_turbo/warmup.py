@@ -30,7 +30,8 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from .primitives import renoise, sample_t
+from .metrics import TauBinCriticLoss
+from .primitives import renoise, sample_t, sample_t_routed
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ def run_fake_warmup(
     dtype: torch.dtype,
     log_interval: int,
     writer,
+    fake_tau_banks: int = 1,
+    fake_tau_boundary: float = 0.5,
 ) -> Iterator:
     """Run the critic head-start; returns the (possibly advanced) data_iter.
 
@@ -60,6 +63,8 @@ def run_fake_warmup(
         return data_iter
 
     logger.info(f"fake (critic) head-start: {warmup_steps} fake-only updates")
+    # Per-τ-bin critic-loss profile, warmup phase.
+    tau_profile = TauBinCriticLoss(device, prefix="warmup/fake_loss_tau")
     for cw in tqdm(range(warmup_steps), desc="fake-warmup"):
         try:
             batch = next(data_iter)
@@ -91,8 +96,14 @@ def run_fake_warmup(
 
         # One fake update per iteration (decoupled from the main-loop cadence —
         # see module docstring). Resampled (τ_fake, ε_fake) on a fresh batch.
-        tau_fake = sample_t(
+        # τ-split critic: the draw routes to the owner bank so both banks enter
+        # the main loop calibrated on their own band (banks=1 → identical
+        # sample_t call).
+        tau_fake = sample_t_routed(
             B,
+            turbo=turbo,
+            fake_tau_banks=fake_tau_banks,
+            fake_tau_boundary=fake_tau_boundary,
             distribution=t_distribution,
             sigmoid_scale=sigmoid_scale,
             device=device,
@@ -111,7 +122,10 @@ def run_fake_warmup(
         fake_opt.step()
         fake_opt.zero_grad(set_to_none=True)
         fake_sched.step()
-        if writer is not None and (cw + 1) % log_interval == 0:
-            writer.add_scalar("warmup/fake_loss", fake_loss.item(), cw + 1)
+        tau_profile.add(fake_loss, tau_fake)
+        if (cw + 1) % log_interval == 0:
+            if writer is not None:
+                writer.add_scalar("warmup/fake_loss", fake_loss.item(), cw + 1)
+            tau_profile.write(writer, cw + 1)
 
     return data_iter

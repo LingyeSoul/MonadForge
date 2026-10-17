@@ -46,7 +46,7 @@ export default {
   cfgTrainingState_error: "失敗",
   cfgTrainingState_running: "実行中",
   cfgTrainingState_queued: "待機中",
-  workspaceStudio: 'Anima 学習スタジオ',
+  workspaceStudio: 'MonadForge 学習スタジオ',
   workspaceNavigation: 'メインナビゲーション',
   workspaceTraining: '学習',
   workspaceData: 'データ準備',

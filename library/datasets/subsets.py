@@ -36,6 +36,26 @@ def _resolve_default_mask_dir() -> Optional[str]:
     return None
 
 
+def resolve_configured_mask_dir(mask_dir: Optional[str]) -> Optional[str]:
+    """Gate a *config-level* ``mask_dir`` (``configs/preprocess.toml`` →
+    preset → method → ``--mask_dir``) on the directory existing.
+
+    The config default names where ``make mask`` *would* write, which is not
+    the same as masks being present. Handing a nonexistent root to every
+    subset would flip ``alpha_mask`` on for maskless checkouts and suppress
+    the legacy ``masks/{merged,sam}`` auto-resolution, so drop it here and
+    let ``_resolve_default_mask_dir`` run. A subset that names its own
+    ``mask_dir`` in the dataset blueprint bypasses this and keeps the loud
+    "resolved 0 masks" warning from the dataset build.
+    """
+    if not mask_dir:
+        return None
+    if os.path.isdir(mask_dir):
+        return mask_dir
+    logger.debug("Configured mask_dir %s does not exist; ignoring.", mask_dir)
+    return None
+
+
 _FOLDER_REPEAT_RE = re.compile(r"^(\d+)_")
 
 
@@ -320,6 +340,7 @@ class DreamBoothSubset(BaseSubset):
         cache_dir: Optional[str] = None,
         cond_cache_dir: Optional[str] = None,
         text_cache_dir: Optional[str] = None,
+        latent_cache_dir: Optional[str] = None,
         recursive: bool = False,
         path_pattern: Optional[str] = None,
         repeat_by_folder_name: bool = False,
@@ -385,6 +406,12 @@ class DreamBoothSubset(BaseSubset):
         # cache_dir). Read-only at train time; the prep step populates it with
         # re-encoded captions. None → TE caches come from cache_dir.
         self.text_cache_dir = text_cache_dir
+        # Optional redirect for the *target VAE latent* cache only (TE/PE stay
+        # in text_cache_dir/cache_dir). A prep step populates it with re-encoded
+        # targets (e.g. white-balanced colorize targets); any latent still
+        # missing at train time is encoded from the ORIGINAL image into this dir
+        # (with a warning — see new_cache_latents). None → latents from cache_dir.
+        self.latent_cache_dir = latent_cache_dir
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, DreamBoothSubset):

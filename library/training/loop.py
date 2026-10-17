@@ -1,16 +1,15 @@
 """Training-loop orchestration.
 
-Owns the per-epoch / per-step body that used to live inline in
-``AnimaTrainer.train()``. The entrypoint is :func:`run_training_loop`, which
-takes a built :class:`LoopState` plus the trainer instance so override hooks
-(``process_batch``, ``on_step_start``, ``sample_images``,
-``generate_step_logs``, ``step_logging``, ``epoch_logging``) keep working
-unchanged. The validation pass lives in :mod:`library.training.validation`.
+Owns the per-epoch / per-step body of ``AnimaTrainer.train()``. The entrypoint
+is :func:`run_training_loop`, which takes a built :class:`LoopState` plus the
+trainer instance so override hooks (``process_batch``, ``on_step_start``,
+``sample_images``, ``generate_step_logs``, ``step_logging``,
+``epoch_logging``) stay overridable. The validation pass lives in
+:mod:`library.training.validation`.
 
-State that used to be on ``self`` for cross-call signaling —
-``_last_router_H_postfix``, ``_cudagraph_mark_step``, ``_hydra_warmup_step``,
-``_adapters`` — stays on the trainer; this module reads them through the
-``trainer`` handle.
+Cross-call signaling state — ``_last_router_H_postfix``,
+``_cudagraph_mark_step``, ``_hydra_warmup_step``, ``_adapters`` — lives on the
+trainer; this module reads it through the ``trainer`` handle.
 """
 
 from __future__ import annotations
@@ -44,6 +43,7 @@ from library.training.stage_schedule import (
 )
 from library.training.state import capture_rng_state
 from library.training.stop import StopController
+from library.training.pause import PauseWatcher, TrainingPaused
 from library.training.validation import run_validation
 from library.training.wandb_metrics import (
     GradientHistogramCollector,
@@ -53,7 +53,7 @@ from library.training.wandb_metrics import (
 
 logger = logging.getLogger(__name__)
 
-# Liveness early check (issues.md P1.1): late enough that warmups / partial
+# Liveness early check: late enough that warmups / partial
 # sidecar coverage have had a chance to fire at least once, early enough that
 # a silently-dead feature aborts a strict run in minutes instead of hours.
 LIVENESS_EARLY_CHECK_STEP = 25
@@ -73,7 +73,7 @@ def release_text_encoder_handles(text_encoder, text_encoders):
 
 @dataclass
 class LoopState:
-    """Bundles every local that used to live in ``train()``'s for-epoch scope.
+    """Bundles the locals of ``train()``'s for-epoch scope.
 
     Most fields are constants for the run; ``global_step``, ``profile_started``,
     ``profile_range``, ``initial_step``, and ``text_encoder(s)`` are mutated
@@ -137,6 +137,8 @@ class LoopState:
 
     global_step: int = 0
     profile_started: bool = False
+    # Release-pause request poller (daemon jobs only; None outside the daemon).
+    pause_watcher: Optional[PauseWatcher] = None
 
     def checkpoint_runtime_state(self) -> dict[str, Any]:
         # Keep the provider tolerant of lightweight test/embedding owners that
@@ -213,10 +215,10 @@ def build_loop_state(
     stage_batch_cursor=0,
     stage_loader_generator_state=None,
     stop_controller: Optional[StopController] = None,
+    resume_step: int = 0,
 ) -> LoopState:
-    """Build :class:`LoopState`. Mirrors the pre-loop setup that used to sit
-    between ``_prepare_with_accelerator()`` and the for-epoch loop in
-    ``train()``: noise scheduler, trackers, loss recorders, optional text
+    """Build :class:`LoopState`: the pre-loop setup between
+    ``_prepare_with_accelerator()`` and the for-epoch loop — noise scheduler, trackers, loss recorders, optional text
     encoder eviction, ``--sample_at_first``, train/val ctx construction,
     progress bar, profiler parsing.
     """
@@ -293,7 +295,7 @@ def build_loop_state(
     # Resume skip prelude: fast-forward global_step before tqdm so the bar
     # total is sized right, and consume per-epoch skip credit so
     # skip_first_batches has the right first-epoch offset.
-    global_step = int(initial_global_step) if initial_global_step is not None else 0
+    global_step = int(initial_global_step) if initial_global_step is not None else resume_step
     if initial_global_step is None and initial_step > 0:
         global_step = initial_step // args.gradient_accumulation_steps
         for skip_epoch in range(epoch_to_start):
@@ -416,6 +418,7 @@ def build_loop_state(
         stage_loader_generator_state=stage_loader_generator_state,
         stop_controller=stop_controller,
         global_step=global_step,
+        pause_watcher=PauseWatcher.from_env(),
     )
 
 
@@ -674,6 +677,7 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                 max_mean_logs=max_mean_logs,
             )
 
+            _maybe_release_pause(state, epoch)
             _maybe_run_step_validation(trainer, state, epoch)
 
             if state.global_step >= args.max_train_steps:
@@ -743,6 +747,24 @@ def _check_trainable_grads_finite(network) -> None:
         raise FloatingPointError(
             "non-finite trainable gradients after backward: " + "; ".join(bad)
         )
+
+
+def _maybe_release_pause(state: LoopState, epoch: int) -> None:
+    """Daemon release-pause: on a pending request, write the resumable state
+    at this optimizer-step boundary and leave the loop via
+    :class:`TrainingPaused` (``run_scope`` turns it into ``run_end paused``)."""
+    watcher = state.pause_watcher
+    if watcher is None or not watcher.poll(state.accelerator):
+        return
+    logger.info(
+        f"release-pause requested: saving resumable state at step "
+        f"{state.global_step} (epoch {epoch + 1})"
+    )
+    state.optimizer_eval_fn()
+    state_dir = state.saver.save_release_pause(state.network, state.global_step, epoch)
+    if state.accelerator.is_main_process:
+        watcher.acknowledge(state_dir, global_step=state.global_step, epoch=epoch)
+    raise TrainingPaused(state_dir, state.global_step, epoch)
 
 
 def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
@@ -1113,7 +1135,7 @@ def _log_epoch_average(trainer, state: LoopState, epoch: int) -> None:
 
 
 def _audit_liveness(trainer, state: LoopState, *, where: str) -> None:
-    """Liveness audit (issues.md P1.1): a configured-ON aux loss that never
+    """Liveness audit: a configured-ON aux loss that never
     consumed its aux input is a silent baseline — flag it loudly.
 
     Reads the trainer-owned ``LivenessLedger`` that the per-step composer

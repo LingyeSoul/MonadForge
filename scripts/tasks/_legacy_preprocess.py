@@ -1,0 +1,1802 @@
+"""Default-dataset preprocessing: resize → VAE latents → text-embedding caches."""
+
+from __future__ import annotations
+
+import os
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
+from ._common import PY, ROOT, _path, explicit_option_value, run
+
+
+try:
+    from library.preprocess.runs import (
+        PreprocessRun,
+        PreprocessRunError,
+        resolve_preprocess_run,
+        run_from_manifest,
+        source_path_hash,
+    )
+except ImportError:  # pragma: no cover - keeps lightweight task discovery usable
+    PreprocessRun = object  # type: ignore[assignment,misc]
+    PreprocessRunError = RuntimeError  # type: ignore[assignment,misc]
+    resolve_preprocess_run = None  # type: ignore[assignment]
+    run_from_manifest = None  # type: ignore[assignment]
+    source_path_hash = None  # type: ignore[assignment]
+
+
+# A full preprocess command owns one run for every stage.  The context is
+# intentionally process-local: daemon jobs are separate processes and each
+# single-stage CLI invocation can still use the historical fixed directories.
+_ACTIVE_PREPROCESS_RUN: PreprocessRun | None = None
+
+_FINGERPRINT_CONTROL_FLAGS = {
+    "--dry-run",
+    "--dry_run",
+    "--force",
+    "--overwrite",
+    "--quiet",
+    "--verbose",
+}
+_FINGERPRINT_CONTROL_OPTIONS = {
+    "--batch-size",
+    "--batch_size",
+    "--chunk-size",
+    "--chunk_size",
+    "--device",
+    "--num-workers",
+    "--num_workers",
+    "--prefetch-factor",
+    "--prefetch_factor",
+    "--workers",
+}
+
+
+def _fingerprint_preprocess_options(extra: list[str]) -> list[str]:
+    """Drop execution controls that cannot change preprocess artifacts."""
+    semantic: list[str] = []
+    index = 0
+    while index < len(extra):
+        token = str(extra[index])
+        option = token.split("=", 1)[0]
+        if option in _FINGERPRINT_CONTROL_FLAGS:
+            index += 1
+            continue
+        if option in _FINGERPRINT_CONTROL_OPTIONS:
+            index += 1 if "=" in token else 2
+            continue
+        semantic.append(token)
+        index += 1
+    return semantic
+
+
+def _consume_preprocess_run(extra: list[str]) -> tuple[str | None, list[str]]:
+    """Extract the run manifest flag without leaking it to worker scripts."""
+
+    selected = os.environ.get("PREPROCESS_RUN") or os.environ.get(
+        "ANIMA_PREPROCESS_RUN"
+    )
+    explicit: str | None = None
+    cleaned: list[str] = []
+    i = 0
+    while i < len(extra):
+        token = str(extra[i])
+        if token in {"--preprocess_run", "--preprocess-run"}:
+            if i + 1 >= len(extra) or str(extra[i + 1]).startswith("--"):
+                raise SystemExit(f"{token} requires a manifest path")
+            explicit = str(extra[i + 1])
+            i += 2
+            continue
+        if token.startswith(("--preprocess_run=", "--preprocess-run=")):
+            explicit = token.split("=", 1)[1]
+            value = explicit
+            if not value:
+                raise SystemExit("--preprocess_run requires a manifest path")
+            i += 1
+            continue
+        cleaned.append(extra[i])
+        i += 1
+    return explicit or selected, cleaned
+
+
+def _preprocess_config(extra: list[str]) -> dict[str, object]:
+    """Build the stable identity inputs used by ``manifest.json``.
+
+    The resolver itself projects this mapping to resize/filter/caption/cache
+    knobs, so path and model entries remain useful metadata without fragmenting
+    the cache namespace.
+    """
+
+    from ._common import _path_overrides
+
+    config: dict[str, object] = dict(_path_overrides())
+    config["target_res"] = _target_res_values(extra)
+    config["multires_per_image"] = _multires_per_image_enabled(extra)
+    config["cache_schema_version"] = 1
+    for env_key, config_key in (
+        ("DROP_LOWRES_IMAGES", "drop_lowres_images"),
+        ("MIN_PIXELS", "min_pixels"),
+        ("PREPROCESS_PATH_PATTERN", "path_pattern"),
+        ("CAPTION_SHUFFLE_VARIANTS", "caption_shuffle_variants"),
+        ("CAPTION_TAG_DROPOUT_RATE", "caption_tag_dropout_rate"),
+        ("CAPTION_TAG_RANDOMIZE_RATE", "caption_tag_randomize_rate"),
+    ):
+        if env_key in os.environ:
+            config[config_key] = os.environ[env_key]
+    caption, _ = _caption_correction_config(extra)
+    config["caption"] = caption
+    # Include explicit preprocessing switches in a named field.  The canonical
+    # fingerprint keeps this field while ignoring unrelated training flags.
+    config["preprocess_options"] = _fingerprint_preprocess_options(extra)
+    return config
+
+
+def _resolve_stage_run(
+    extra: list[str], *, create: bool = False
+) -> tuple[PreprocessRun | None, list[str]]:
+    selected, cleaned = _consume_preprocess_run(list(extra))
+    if _ACTIVE_PREPROCESS_RUN is not None:
+        return _ACTIVE_PREPROCESS_RUN, cleaned
+    if not selected and not create:
+        return None, cleaned
+    source = _path("source_image_dir", "image_dataset")
+    post_root = _path("post_image_dataset", "post_image_dataset")
+    if resolve_preprocess_run is None:
+        raise SystemExit("preprocess run support is unavailable")
+    manifest: Path | None = None
+    if selected:
+        manifest = Path(selected).expanduser()
+        if manifest.is_dir() or manifest.suffix.lower() != ".json":
+            manifest = manifest / "manifest.json"
+    # A single-stage command with an explicit run selection adopts that
+    # manifest as-is (mirrors masking._selected_run): the manifest records the
+    # config that actually produced the on-disk artifacts, so re-deriving the
+    # fingerprint from the ambient env/config would reject a valid selection
+    # whenever the caller's environment drifts between invocations — e.g. the
+    # WebUI forwards CAPTION_*/TARGET_RES for `preprocess` but not for
+    # `preprocess-pe`, which made every standalone cache stage fail with a
+    # spurious identity mismatch. Only the source dataset has to agree; the
+    # full preprocess (create=True) still resolves a fresh identity so changed
+    # settings create a new run instead of silently mixing into a stale one.
+    if manifest is not None and not create:
+        if not manifest.exists():
+            raise SystemExit(
+                f"selected preprocess run manifest not found: {manifest} "
+                "(refresh the run list and pick an existing run)"
+            )
+        try:
+            adopted = run_from_manifest(manifest, require_complete=False)
+        except PreprocessRunError as exc:
+            raise SystemExit(f"cannot use selected preprocess run: {exc}") from exc
+        if adopted.source_hash != source_path_hash(source):
+            raise SystemExit(
+                "selected preprocess run belongs to a different source dataset: "
+                f"run source {adopted.source_dir}, current source {source}"
+            )
+        return adopted, cleaned
+    try:
+        expected = resolve_preprocess_run(
+            source,
+            _preprocess_config(cleaned),
+            post_image_dataset=post_root,
+            create=False,
+        )
+        if selected:
+            if manifest.resolve(strict=False) != expected.manifest_path.resolve(
+                strict=False
+            ):
+                raise PreprocessRunError(
+                    "preprocess run does not match the current source/config: "
+                    f"expected {expected.manifest_path}, got {manifest}"
+                )
+        resolved = resolve_preprocess_run(
+            source,
+            _preprocess_config(cleaned),
+            post_image_dataset=post_root,
+            create=True,
+        )
+    except PreprocessRunError as exc:
+        raise SystemExit(str(exc)) from exc
+    return resolved, cleaned
+
+
+@contextmanager
+def _use_preprocess_run(run_obj: PreprocessRun | None):
+    global _ACTIVE_PREPROCESS_RUN
+    previous = _ACTIVE_PREPROCESS_RUN
+    _ACTIVE_PREPROCESS_RUN = run_obj
+    try:
+        yield run_obj
+    finally:
+        _ACTIVE_PREPROCESS_RUN = previous
+
+
+def _preprocess_path(
+    key: str, default: str, run_obj: PreprocessRun | None = None
+) -> str:
+    active = run_obj or _ACTIVE_PREPROCESS_RUN
+    if active is not None:
+        paths = active.path_overrides()
+        if key in paths:
+            return str(paths[key])
+        if key == "mask_dir":
+            return str(active.masks_dir)
+        if key == "multires_image_dir":
+            return str(active.multires_dir)
+    return _path(key, default)
+
+
+def _run_file_counts(run_obj: PreprocessRun) -> dict[str, int]:
+    suffixes = {
+        "resized": {".png", ".jpg", ".jpeg", ".webp", ".bmp"},
+        "lora": {".npz", ".safetensors"},
+        "masks": {".png"},
+        "multires": {".png", ".npz"},
+        "conditioning": {".png", ".npz", ".safetensors"},
+        "captions": {".json"},
+    }
+    result: dict[str, int] = {}
+    for kind, root in run_obj.directories.items():
+        if kind not in suffixes or not root.exists():
+            continue
+        result[kind] = sum(
+            1
+            for path in root.rglob("*")
+            if path.is_file() and path.suffix.lower() in suffixes[kind]
+        )
+    lora_root = run_obj.lora_cache_dir
+    if lora_root.is_dir():
+        result["latents"] = 0
+        result["te"] = 0
+        result["pe"] = 0
+        for path in lora_root.rglob("*"):
+            if not path.is_file():
+                continue
+            name = path.name
+            if name.endswith("_anima_te.safetensors"):
+                result["te"] += 1
+            elif name.endswith(("_anima_pe.safetensors", "_anima_pe_spatial.safetensors")):
+                result["pe"] += 1
+            elif name.endswith("_anima.npz"):
+                result["latents"] += 1
+    return result
+
+
+def _publish_run_status(run_obj: PreprocessRun, status: str, **extra: object) -> None:
+    """Best-effort manifest update; do not hide the worker's original error."""
+
+    payload = {
+        "updated_at": time.time(),
+        "artifacts": _run_file_counts(run_obj),
+        **extra,
+    }
+    run_obj.write_manifest(status=status, **payload)
+
+
+# Subfolders are walked by default (matches base.toml's `recursive = true`).
+# Stems must stay unique across the tree — cache filenames are stem-keyed and flat.
+def _min_pixels_args() -> list[str]:
+    """``--min_pixels <N>`` derived from the variant TOML's
+    ``drop_lowres_images`` + ``min_pixels`` keys (resolved through the same
+    base → preset → method merge chain training uses, via ``_path_overrides``
+    in scripts/tasks/_common.py).
+
+    Returns ``[]`` when both keys are absent so plain CLI use keeps each
+    script's own argparse default (500_000 = 0.5MP). ``drop_lowres_images
+    = false`` forces ``--min_pixels 0`` even when ``min_pixels`` is set, so
+    the user can flip a single boolean to disable the filter.
+
+    The GUI Train auto-chain forwards the filter via the ``DROP_LOWRES_IMAGES`` /
+    ``MIN_PIXELS`` env vars (mirrors ``PREPROCESS_PATH_PATTERN``): its CONFIG_FILE
+    snapshot has the preprocess-only keys stripped, so the merged-config read
+    below would miss them. Env wins over the merged config; absent env falls back
+    to the merged chain (``preprocess.toml`` → base → preset → method)."""
+    from ._common import _path_overrides  # local import: avoids unused circular
+
+    env_drop = os.environ.get("DROP_LOWRES_IMAGES")
+    env_min = os.environ.get("MIN_PIXELS")
+    if env_drop is not None or env_min is not None:
+        if env_drop is not None and not _boolish(env_drop, True):
+            return ["--min_pixels", "0"]
+        if env_min is None:
+            return []
+        try:
+            return ["--min_pixels", str(max(0, int(env_min)))]
+        except (TypeError, ValueError):
+            return []
+
+    overrides = _path_overrides()
+    if "drop_lowres_images" not in overrides and "min_pixels" not in overrides:
+        return []
+    if overrides.get("drop_lowres_images") is False:
+        return ["--min_pixels", "0"]
+    raw = overrides.get("min_pixels", 500_000)
+    try:
+        n = max(0, int(raw))
+    except (TypeError, ValueError):
+        return []
+    return ["--min_pixels", str(n)]
+
+
+def _config_min_pixels() -> int:
+    """The configured ``min_pixels`` threshold (merged chain), default 0.5MP."""
+    from ._common import _path_overrides
+
+    raw = _path_overrides().get("min_pixels", 500_000)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 500_000
+
+
+def _target_res_values(extra) -> list[int]:
+    from library.datasets.buckets import ALLOWED_TARGET_RES
+
+    raw = None
+    if "--target_res" in extra:
+        start = extra.index("--target_res") + 1
+        values = []
+        for token in extra[start:]:
+            if token.startswith("--"):
+                break
+            values.append(token)
+        raw = values
+    if raw is None:
+        env_tr = os.environ.get("TARGET_RES")
+        if env_tr is not None:
+            raw = env_tr.replace(",", " ").split()
+        else:
+            from ._common import _path_overrides
+
+            raw = _path_overrides().get("target_res")
+    edges = raw if isinstance(raw, (list, tuple)) else [raw] if raw else []
+    try:
+        normalized = []
+        for edge in edges:
+            value = int(edge)
+            if value in ALLOWED_TARGET_RES and value not in normalized:
+                normalized.append(value)
+    except (TypeError, ValueError):
+        normalized = []
+    return normalized or [1024]
+
+
+def _target_res_args(extra) -> list[str]:
+    """``--target_res E1 E2 …`` derived from the merged TOML's ``target_res`` key.
+
+    Returns ``[]`` when an explicit ``--target_res`` is already in ``extra`` (CLI
+    ARGS wins, no duplicate) or when the config value is absent / a bare
+    ``[1024]`` (the legacy single-tier default — leave it off so the resize
+    script's own default path runs). Invalid / unknown edges are dropped here so
+    a typo in the TOML doesn't abort preprocessing.
+    """
+    if "--target_res" in extra:
+        return []
+
+    edges = _target_res_values(extra)
+    if edges == [1024]:
+        return []
+    return ["--target_res", *(str(e) for e in edges)]
+
+
+def _multires_per_image_enabled(extra) -> bool:
+    if "--multires_per_image" in extra:
+        return True
+    if "--no-multires_per_image" in extra:
+        return False
+    raw = os.environ.get("MULTIRES_PER_IMAGE")
+    if raw is None:
+        from ._common import _path_overrides
+
+        raw = _path_overrides().get("multires_per_image", False)
+    return _boolish(raw, False)
+
+
+def _multires_root(extra, *, conditioning: bool = False) -> str:
+    explicit = explicit_option_value(extra, "--multires_dir")
+    if explicit is not None:
+        return explicit
+    active = _ACTIVE_PREPROCESS_RUN
+    if active is not None:
+        return str(active.conditioning_dir / "multires" if conditioning else active.multires_dir)
+    key = "conditioning_multires_dir" if conditioning else "multires_image_dir"
+    default = (
+        "post_image_dataset/cond_multires"
+        if conditioning
+        else "post_image_dataset/multires"
+    )
+    return _path(key, default)
+
+
+def _multires_resize_args(extra, *, conditioning: bool = False) -> list[str]:
+    if not _multires_per_image_enabled(extra):
+        return []
+    args = [] if "--multires_per_image" in extra else ["--multires_per_image"]
+    if explicit_option_value(extra, "--multires_dir") is None:
+        args.extend(
+            ["--multires_dir", _multires_root(extra, conditioning=conditioning)]
+        )
+    return args
+
+
+def _multires_target_res_values(extra) -> list[int]:
+    edges = _target_res_values(extra)
+    if _multires_per_image_enabled(extra) and len(edges) < 2:
+        raise ValueError(
+            f"multires_per_image requires at least two target_res tiers; got {edges}"
+        )
+    return edges
+
+
+def _preprocess_path_pattern_args(extra) -> list[str]:
+    """``--path_pattern <glob>`` for GUI preprocess subset filtering.
+
+    CLI ARGS wins when it already carries a path-pattern flag. GUI submits pass
+    ``PREPROCESS_PATH_PATTERN`` so training can keep using the method's regular
+    ``path_pattern`` independently.
+    """
+    if "--path_pattern" in extra or "--path-pattern" in extra:
+        return []
+
+    from ._common import _path_overrides
+
+    raw = os.environ.get("PREPROCESS_PATH_PATTERN")
+    if raw is None:
+        raw = _path_overrides().get("preprocess_path_pattern")
+    pattern = str(raw or "").strip()
+    if not pattern or pattern == "*":
+        return []
+    return ["--path_pattern", pattern]
+
+
+def _resolved_path_pattern_args(extra) -> list[str]:
+    for i, tok in enumerate(extra):
+        if tok in {"--path_pattern", "--path-pattern"}:
+            if i + 1 >= len(extra):
+                raise SystemExit(f"{tok} requires a value")
+            return ["--path_pattern", str(extra[i + 1])]
+    return _preprocess_path_pattern_args(extra)
+
+
+def _boolish(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _ensure_danbooru_tags() -> None:
+    """Fetch the Danbooru tag KB on demand so caption correction never aborts.
+
+    ``correct_captions.py`` loads ``danbooru_tags_classified.csv`` (the bucket
+    taxonomy) and ``SystemExit``s if it's missing — GUI users reach preprocess
+    without `make download-danbooru-tags`. Mirror the tagger-vocab auto-fetch
+    (best-effort): catch ``SystemExit``/``OSError`` so a failed download skips
+    rather than aborts; ``correct_captions.py`` still surfaces its own clear
+    error if the file is genuinely unavailable.
+    """
+    from library.captioning.correction import find_tag_csv
+
+    if find_tag_csv(ROOT) is not None:
+        return
+    print("  [preprocess] danbooru tag KB missing; fetching it for caption correction")
+    try:
+        # Base CSV only — that's the file `find_tag_csv` / `correct_captions.py`
+        # need. The English sibling (`download-danbooru-tags`) is a heavier
+        # wiki-join step only the GUI tooltip uses; skip it on the preprocess path.
+        from .downloads import _download_danbooru_base
+
+        _download_danbooru_base([])
+    except (SystemExit, OSError) as e:
+        print(f"  [preprocess] danbooru tag KB auto-download failed: {e}")
+
+
+def _floatish(*values, default: float = 0.0) -> float:
+    """First value that parses as a float, else ``default``.
+
+    Mirrors ``_boolish``'s env-then-config-then-default layering for the numeric
+    knobs; a blank env var (the GUI writes ``""`` for an empty field) falls
+    through rather than raising.
+    """
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        try:
+            return float(text)
+        except ValueError:
+            continue
+    return float(default)
+
+
+# Mirrors ``library.preprocess.autotag.MODES``; duplicated rather than imported
+# so this module stays free of the PIL/torch import chain.
+_AUTOTAG_MODES = ("missing", "merge", "overwrite")
+
+
+def _caption_correction_config(extra) -> tuple[dict[str, object], list[str]]:
+    """Caption correction flags/config for preprocess-time TE caching.
+
+    CLI ARGS wins over env/config. Returned ``extra`` has these flags removed so
+    resize/cache scripts that do not know them never see unknown arguments.
+    """
+
+    from ._common import _path_overrides
+
+    overrides = _path_overrides()
+    env_trigger = os.environ.get("CAPTION_TRIGGER_WORD")
+    config: dict[str, object] = {
+        "correct_order": _boolish(
+            os.environ.get("CAPTION_CORRECT_ORDER"),
+            _boolish(overrides.get("caption_correct_order"), False),
+        ),
+        "insert_no_artist": _boolish(
+            os.environ.get("CAPTION_INSERT_NO_ARTIST"),
+            _boolish(overrides.get("caption_insert_no_artist"), False),
+        ),
+        "trigger_word": str(
+            env_trigger
+            if env_trigger is not None
+            else overrides.get("caption_trigger_word", "")
+        ).strip(),
+        "trigger_at_front": _boolish(
+            os.environ.get("CAPTION_TRIGGER_AT_FRONT"),
+            _boolish(overrides.get("caption_trigger_at_front"), False),
+        ),
+        # Not a `correct_captions.py` flag — it gates a separate stage that runs
+        # BEFORE the caption/TE steps (see `cmd_preprocess`). It rides in this
+        # dict because it is the same family of caption rewrites and the GUI
+        # groups them together; `_caption_correction_enabled` /
+        # `_caption_correction_args` deliberately ignore it. Unlike `autotag`
+        # this one writes the DERIVED caption (`resized/`), not the master.
+        "position_clauses": _boolish(
+            os.environ.get("CAPTION_POSITION_CLAUSES"),
+            _boolish(overrides.get("caption_position_clauses"), False),
+        ),
+        # Same deal as `position_clauses`: a separate caption-master stage, not
+        # a `correct_captions.py` flag. This one runs even earlier (it *creates*
+        # the captions the rest of the chain reads) — see `cmd_preprocess`.
+        "autotag": _boolish(
+            os.environ.get("CAPTION_AUTOTAG"),
+            _boolish(overrides.get("caption_autotag"), False),
+        ),
+        "autotag_mode": str(
+            os.environ.get("CAPTION_AUTOTAG_MODE")
+            or overrides.get("caption_autotag_mode")
+            or "missing"
+        ).strip(),
+        "autotag_min_confidence": _floatish(
+            os.environ.get("CAPTION_AUTOTAG_MIN_CONFIDENCE"),
+            overrides.get("caption_autotag_min_confidence"),
+            default=0.0,
+        ),
+        # The caption-MASTER stages are driven from this dict alone — the
+        # caller's ``extra`` never reaches them — so the subset scope has to
+        # ride along. Without it a ``--path_pattern``-scoped preprocess would
+        # cache latents for the requested slice while rewriting captions across
+        # the WHOLE master, which autotag ``merge``/``overwrite`` makes
+        # destructive.
+        "path_pattern_args": _resolved_path_pattern_args(extra),
+    }
+
+    cleaned: list[str] = []
+    i = 0
+    while i < len(extra):
+        tok = extra[i]
+        if tok in {"--caption_correct_order", "--caption-correct-order"}:
+            config["correct_order"] = True
+            i += 1
+        elif tok in {"--no_caption_correct_order", "--no-caption-correct-order"}:
+            config["correct_order"] = False
+            i += 1
+        elif tok in {"--caption_insert_no_artist", "--caption-insert-no-artist"}:
+            config["insert_no_artist"] = True
+            i += 1
+        elif tok in {
+            "--no_caption_insert_no_artist",
+            "--no-caption-insert-no-artist",
+        }:
+            config["insert_no_artist"] = False
+            i += 1
+        elif tok in {"--caption_trigger_at_front", "--caption-trigger-at-front"}:
+            config["trigger_at_front"] = True
+            i += 1
+        elif tok in {
+            "--no_caption_trigger_at_front",
+            "--no-caption-trigger-at-front",
+        }:
+            config["trigger_at_front"] = False
+            i += 1
+        elif tok in {"--caption_position_clauses", "--caption-position-clauses"}:
+            config["position_clauses"] = True
+            i += 1
+        elif tok in {
+            "--no_caption_position_clauses",
+            "--no-caption-position-clauses",
+        }:
+            config["position_clauses"] = False
+            i += 1
+        elif tok in {"--caption_autotag", "--caption-autotag"}:
+            config["autotag"] = True
+            i += 1
+        elif tok in {"--no_caption_autotag", "--no-caption-autotag"}:
+            config["autotag"] = False
+            i += 1
+        elif tok in {"--caption_autotag_mode", "--caption-autotag-mode"}:
+            if i + 1 >= len(extra):
+                raise SystemExit(f"{tok} requires a value ({'|'.join(_AUTOTAG_MODES)})")
+            config["autotag_mode"] = str(extra[i + 1]).strip()
+            i += 2
+        elif tok in {
+            "--caption_autotag_min_confidence",
+            "--caption-autotag-min-confidence",
+        }:
+            if i + 1 >= len(extra):
+                raise SystemExit(f"{tok} requires a value")
+            config["autotag_min_confidence"] = _floatish(extra[i + 1], default=0.0)
+            i += 2
+        elif tok in {"--caption_trigger_word", "--caption-trigger-word"}:
+            if i + 1 >= len(extra):
+                raise SystemExit(f"{tok} requires a value")
+            config["trigger_word"] = str(extra[i + 1]).strip()
+            i += 2
+        else:
+            cleaned.append(tok)
+            i += 1
+
+    # Fail fast on a bad mode: the stage runs after resize, so a typo would
+    # otherwise surface as an argparse error minutes into a GPU job.
+    mode = str(config.get("autotag_mode") or "missing")
+    if mode not in _AUTOTAG_MODES:
+        raise SystemExit(
+            f"caption autotag mode {mode!r} is not one of {'|'.join(_AUTOTAG_MODES)}"
+        )
+    config["autotag_mode"] = mode
+    return config, cleaned
+
+
+def _caption_autotag_args(config: dict[str, object]) -> list[str]:
+    """Child flags for the in-pipeline autotag stage.
+
+    Always ``--apply``: inside ``make preprocess`` the user already opted in via
+    the checkbox / env, and a dry run there would produce a report nobody reads
+    while the TE step encodes the un-tagged captions.
+    """
+    args = ["--mode", str(config.get("autotag_mode") or "missing")]
+    confidence = float(config.get("autotag_min_confidence") or 0.0)
+    if confidence > 0.0:
+        args += ["--min_confidence", f"{confidence:g}"]
+    return [*args, "--apply"]
+
+
+def _caption_correction_enabled(config: dict[str, object]) -> bool:
+    """Run the caption-rewrite pass when ANY caption-rewriting knob is set.
+
+    ``correct_captions.py`` (→ ``correct_caption``) is the only path that
+    injects the trigger word / ``@no-artist``, and it slots them by reordering
+    into category buckets. So a trigger word or insert-no-artist with order
+    correction *off* still has to run it — otherwise the GUI's trigger-word
+    field is silently ignored at TE-cache time. Reordering is inherent to
+    placing the trigger at the artist slot, so it rides along.
+    """
+    return bool(
+        config.get("correct_order")
+        or str(config.get("trigger_word") or "").strip()
+        or config.get("insert_no_artist")
+    )
+
+
+def _caption_correction_args(config: dict[str, object]) -> list[str]:
+    args: list[str] = []
+    if config.get("insert_no_artist"):
+        args.append("--caption_insert_no_artist")
+    trigger = str(config.get("trigger_word") or "").strip()
+    if trigger:
+        args += ["--caption_trigger_word", trigger]
+    if config.get("trigger_at_front"):
+        args.append("--caption_trigger_at_front")
+    return args
+
+
+def _resize_crop_args(extra) -> list[str]:
+    """Preprocess-only resize crop controls from the merged config chain."""
+    if "--resize_crop_anchor" in extra or "--resize-crop-anchor" in extra:
+        anchor_args: list[str] = []
+    else:
+        from library.preprocess.resize_preview import (
+            DEFAULT_RESIZE_CROP_ANCHOR,
+            RESIZE_CROP_ANCHORS,
+        )
+        from ._common import _path_overrides
+
+        anchor = str(
+            _path_overrides().get("resize_crop_anchor") or DEFAULT_RESIZE_CROP_ANCHOR
+        ).strip()
+        anchor_args = (
+            ["--resize_crop_anchor", anchor]
+            if anchor in RESIZE_CROP_ANCHORS and anchor != DEFAULT_RESIZE_CROP_ANCHOR
+            else []
+        )
+
+    if "--resize_bucket_resos" in extra or "--resize-bucket-resos" in extra:
+        bucket_args: list[str] = []
+    else:
+        from ._common import _path_overrides
+
+        raw = _path_overrides().get("resize_bucket_resos")
+        if isinstance(raw, str):
+            buckets = [part.strip() for part in raw.split(",") if part.strip()]
+        elif isinstance(raw, (list, tuple)):
+            buckets = [str(item).strip() for item in raw if str(item).strip()]
+        else:
+            buckets = []
+        bucket_args = ["--resize_bucket_resos", *buckets] if buckets else []
+
+    if "--resize_crop_margins" in extra or "--resize-crop-margins" in extra:
+        margin_args: list[str] = []
+    else:
+        from library.preprocess.resize_preview import normalize_crop_margins
+
+        from ._common import _path_overrides
+
+        margins = normalize_crop_margins(_path_overrides().get("resize_crop_margins"))
+        values = [margins[key] for key in ("top", "right", "bottom", "left")]
+        margin_args = (
+            ["--resize_crop_margins", *(f"{value:g}" for value in values)]
+            if any(value > 0 for value in values)
+            else []
+        )
+    return [*anchor_args, *bucket_args, *margin_args]
+
+
+def _freefit_args(extra) -> list[str]:
+    """``--freefit_max_ratio R`` from the merged config chain.
+
+    Free-fit is the only resize mode now (the ``--freefit`` toggle was removed),
+    so we only forward the preprocess-only ``freefit_max_ratio`` knob
+    (preprocess.toml → base → preset → method). CLI ``ARGS`` wins: if the flag is
+    already in ``extra`` we emit nothing for it (no duplicate). A stale
+    ``--freefit`` in ``ARGS`` is silently dropped by ``_strip_resize_only_args``.
+    """
+    from ._common import _path_overrides
+
+    out: list[str] = []
+    if "--freefit_max_ratio" not in extra and "--freefit-max-ratio" not in extra:
+        # Env (GUI auto-chain) wins over the merged config, which the snapshot strips.
+        raw = os.environ.get("FREEFIT_MAX_RATIO")
+        if raw is None:
+            raw = _path_overrides().get("freefit_max_ratio")
+        if raw is not None:
+            try:
+                out += ["--freefit_max_ratio", f"{float(raw):g}"]
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def _curation_decisions_args() -> list[str]:
+    """Optional GUI curation decisions consumed by resize only."""
+
+    path = Path(
+        _path("curation_decisions", "post_image_dataset/curation_decisions.json")
+    )
+    if not path.is_absolute():
+        path = ROOT / path
+    if not path.is_file():
+        return []
+    return ["--curation_decisions", str(path)]
+
+
+def _repa_pe_encoder() -> str | None:
+    """The REPA vision encoder to cache, or ``None`` when REPA is off.
+
+    Reads ``use_repa`` / ``repa_encoder`` from the merged config chain (the same
+    ``_path_overrides`` the path knobs use — populated from ``METHOD`` /
+    ``METHODS_SUBDIR`` or a GUI ``CONFIG_FILE`` snapshot). This lets the ConfigTab
+    Train auto-chain — and any ``make preprocess METHOD=<repa-variant>`` — cache
+    the ``{stem}_anima_pe_spatial.safetensors`` (or ``_anima_pe``) sidecars in the
+    same pass, so a ``use_repa=true`` run doesn't bounce off train.py's
+    "PE features absent" error. Plain ``make preprocess`` (no variant config in
+    scope) sees no ``use_repa`` and returns ``None`` — the default stays fast.
+    """
+    from ._common import _path_overrides
+
+    overrides = _path_overrides()
+    raw = overrides.get("use_repa")
+    # TOML/snapshot bools arrive as real bools; tolerate a stringified value too.
+    enabled = raw is True or str(raw).strip().lower() in ("1", "true", "yes")
+    if not enabled:
+        return None
+    encoder = str(overrides.get("repa_encoder") or "pe_spatial").strip()
+    return encoder or "pe_spatial"
+
+
+# REPA encoder name → the `make` target that fetches its vision checkpoint, for
+# the fail-fast hint below.
+_REPA_ENCODER_DOWNLOAD_TARGET = {
+    "pe": "download-pe",
+    "pe_spatial": "download-pe-spatial",
+}
+
+
+def _require_repa_encoder_model(encoder: str) -> None:
+    """Fail fast (clear error, nonzero exit) if the REPA vision checkpoint is
+    absent — never silently auto-download it from inside the daemon.
+
+    The PE caching step the auto-chain calls would otherwise fall into
+    ``hf_hub_download`` with no timeout (``library/vision/encoders.py``). In the
+    daemon's detached, console-less child that fetch surfaces no progress, and a
+    stalled/gated download hangs indefinitely; because the daemon queue is
+    *serial*, that one hung preprocess wedges every job queued behind it
+    (training included). So when a ``use_repa=true`` Train auto-chain reaches
+    this step we require the checkpoint up front and bail with an actionable
+    message instead. Users who want the one-time download just run the named
+    target manually first (it shows real progress in a foreground terminal)."""
+    import sys
+    from pathlib import Path
+
+    try:
+        from library.vision.encoders import get_encoder_info
+
+        model_path = Path(get_encoder_info(encoder).default_model_id())
+    except (KeyError, ImportError):
+        return  # unknown encoder / import issue — let the downstream step report it
+    if model_path.is_file():
+        return
+    target = _REPA_ENCODER_DOWNLOAD_TARGET.get(encoder, "download-models")
+    sys.exit(
+        f"  [preprocess] use_repa=true needs the REPA vision checkpoint, but "
+        f"it's missing:\n      {model_path}\n"
+        f"  Fetch it once with `make {target}` (or `make download-models`), "
+        f"then start training again.\n"
+        f"  (Not auto-downloading here on purpose: in the background daemon the "
+        f"fetch shows no progress and a stalled download would hang the queue.)"
+    )
+
+
+def _pop_resize_only_args(extra) -> list[str]:
+    """Strip resize-only flags from ``extra`` before cache stages run.
+
+    The VAE/TE/PE stages read whatever latent shapes are already on disk, so they
+    must never see resize-only argparse flags.
+    """
+    variable_value_options = {
+        "--target_res",
+        "--resize_bucket_resos",
+        "--resize-bucket-resos",
+        "--resize_crop_margins",
+        "--resize-crop-margins",
+    }
+    single_value_options = {
+        "--resize_crop_anchor",
+        "--resize-crop-anchor",
+        "--freefit_max_ratio",
+        "--freefit-max-ratio",
+        "--multires_dir",
+    }
+    flag_options = {
+        "--freefit",
+        "--multires_per_image",
+        "--no-multires_per_image",
+    }
+    cleaned: list[str] = []
+    i = 0
+    while i < len(extra):
+        tok = extra[i]
+        if tok in variable_value_options:
+            i += 1
+            while i < len(extra) and not extra[i].startswith("--"):
+                i += 1
+            continue
+        if tok.startswith("--multires_dir="):
+            i += 1
+            continue
+        if tok in single_value_options:
+            i += 2
+            continue
+        if tok in flag_options:
+            i += 1
+            continue
+        cleaned.append(tok)
+        i += 1
+    return cleaned
+
+
+def _resolve_lowres_filter(extra) -> tuple[list[str], list[str]]:
+    """Reconcile the low-res input filter against CLI ``ARGS``.
+
+    Returns ``(min_pixels_args, cleaned_extra)`` where ``cleaned_extra`` has
+    our two convenience flags popped so the underlying scripts never see an
+    arg their argparse doesn't define. Precedence (highest first):
+
+      1. An explicit ``--min_pixels N`` in ``ARGS`` — left in ``extra`` and
+         wins outright; we inject nothing (no duplicate ``--min_pixels``).
+      2. ``--no_drop_lowres`` in ``ARGS`` → ``--min_pixels 0`` (keep every
+         image), overriding ``drop_lowres_images = true`` in the TOML.
+      3. ``--drop_lowres`` in ``ARGS`` → force the configured ``min_pixels``
+         threshold, overriding ``drop_lowres_images = false`` in the TOML.
+      4. Neither flag → fall back to the merged-config behavior
+         (``_min_pixels_args``)."""
+    cleaned = list(extra)
+    no_drop = "--no_drop_lowres" in cleaned
+    drop = "--drop_lowres" in cleaned
+    cleaned = [a for a in cleaned if a not in ("--no_drop_lowres", "--drop_lowres")]
+
+    if "--min_pixels" in cleaned:
+        return [], cleaned
+    if no_drop:  # disable wins over enable when both are passed
+        return ["--min_pixels", "0"], cleaned
+    if drop:
+        return ["--min_pixels", str(_config_min_pixels())], cleaned
+    return _min_pixels_args(), cleaned
+
+
+def _drop_option_with_value(extra, names: set[str]) -> list[str]:
+    cleaned: list[str] = []
+    i = 0
+    while i < len(extra):
+        if extra[i] in names:
+            i += 2
+            continue
+        cleaned.append(extra[i])
+        i += 1
+    return cleaned
+
+
+def cmd_preprocess_resize(extra):
+    run_obj, extra = _resolve_stage_run(extra)
+    mp_args, extra = _resolve_lowres_filter(extra)
+    tr_args = _target_res_args(extra)
+    pp_args = _preprocess_path_pattern_args(extra)
+    cd_args = _curation_decisions_args()
+    rc_args = _resize_crop_args(extra)
+    ff_args = _freefit_args(extra)
+    mr_args = _multires_resize_args(extra)
+    run(
+        [
+            PY,
+            "scripts/preprocess/resize_images.py",
+            "--src",
+            _preprocess_path("source_image_dir", "image_dataset", run_obj),
+            "--dst",
+            _preprocess_path("resized_image_dir", "post_image_dataset/resized", run_obj),
+            "--no_copy_captions",
+            "--recursive",
+            *mp_args,
+            *tr_args,
+            *rc_args,
+            *ff_args,
+            *mr_args,
+            *pp_args,
+            *cd_args,
+            *extra,
+        ]
+    )
+
+
+def cmd_preprocess_reconcile(extra):
+    """Remove caches stale for the configured ``target_res`` (dry-run by default).
+
+    Pass ``ARGS="--delete"`` to actually remove. ``target_res`` comes from the
+    merged config (same as resize); an explicit ``--target_res`` in ``ARGS``
+    wins. Useful after adding/dropping a tier so re-running preprocess + mask
+    regenerates only the images whose bucket moved.
+    """
+    run_obj, extra = _resolve_stage_run(extra)
+    # _target_res_args returns [] for a bare [1024]/absent config AND when ARGS
+    # already carries --target_res. Inject the 1024 default only in the former case.
+    tr_args = _target_res_args(extra)
+    if not tr_args and "--target_res" not in extra:
+        tr_args = ["--target_res", "1024"]
+    run(
+        [
+            PY,
+            "scripts/preprocess/reconcile_caches.py",
+            "--image-dir",
+            _preprocess_path("source_image_dir", "image_dataset", run_obj),
+            "--resized-dir",
+            _preprocess_path("resized_image_dir", "post_image_dataset/resized", run_obj),
+            "--cache-dir",
+            _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
+            "--mask-dir",
+            _preprocess_path("mask_dir", "post_image_dataset/masks", run_obj),
+            *tr_args,
+            *extra,
+        ]
+    )
+
+
+def cmd_preprocess_vae(extra):
+    run_obj, extra = _resolve_stage_run(extra)
+    multires = _multires_per_image_enabled(extra)
+    cleaned = _pop_resize_only_args(extra)
+    _, cleaned = _resolve_lowres_filter(cleaned)
+    cleaned = _drop_option_with_value(cleaned, {"--min_pixels"})
+    pp_args = _preprocess_path_pattern_args(cleaned)
+    data_dirs = [
+        _preprocess_path("resized_image_dir", "post_image_dataset/resized", run_obj)
+    ]
+    if multires:
+        root = _multires_root(extra)
+        data_dirs = [
+            os.path.join(root, str(edge)) for edge in _multires_target_res_values(extra)
+        ]
+    for data_dir in data_dirs:
+        run(
+            [
+                PY,
+                "scripts/preprocess/cache_latents.py",
+                "--dir",
+                data_dir,
+                "--cache_dir",
+                _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
+                "--vae",
+                _path("vae", "models/vae/qwen_image_vae.safetensors"),
+                "--batch_size",
+                "4",
+                "--chunk_size",
+                "64",
+                "--recursive",
+                *pp_args,
+                *cleaned,
+            ]
+        )
+
+
+def cmd_preprocess_cond_resize(extra):
+    """Resize conditioning images to match target bucket resolutions."""
+    run_obj, extra = _resolve_stage_run(extra)
+    tr_args = _target_res_args(extra)
+    mr_args = _multires_resize_args(extra, conditioning=True)
+    run(
+        [
+            PY,
+            "scripts/preprocess/resize_images.py",
+            "--src",
+            _path(
+                "conditioning_data_dir",
+                os.environ.get("CONDITIONING_DATA_DIR", "conditioning_data"),
+            ),
+            "--dst",
+            _preprocess_path(
+                "conditioning_resized_dir",
+                os.environ.get(
+                    "CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized"
+                ),
+                run_obj,
+            ),
+            "--no_copy_captions",
+            "--recursive",
+            *tr_args,
+            *mr_args,
+            *extra,
+        ]
+    )
+
+
+def cmd_preprocess_cond_vae(extra):
+    """Cache VAE latents for conditioning images."""
+    run_obj, extra = _resolve_stage_run(extra)
+    multires = _multires_per_image_enabled(extra)
+    cleaned = _pop_resize_only_args(extra)
+    _, cleaned = _resolve_lowres_filter(cleaned)
+    cleaned = _drop_option_with_value(cleaned, {"--min_pixels"})
+    pp_args = _preprocess_path_pattern_args(cleaned)
+    data_dirs = [
+        _preprocess_path(
+            "conditioning_resized_dir",
+            os.environ.get(
+                "CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized"
+            ),
+            run_obj,
+        )
+    ]
+    if multires:
+        root = _multires_root(extra, conditioning=True)
+        data_dirs = [
+            os.path.join(root, str(edge)) for edge in _multires_target_res_values(extra)
+        ]
+    for data_dir in data_dirs:
+        run(
+            [
+                PY,
+                "scripts/preprocess/cache_latents.py",
+                "--dir",
+                data_dir,
+                "--cache_dir",
+                _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
+                "--vae",
+                _path("vae", "models/vae/qwen_image_vae.safetensors"),
+                "--batch_size",
+                "4",
+                "--chunk_size",
+                "64",
+                "--recursive",
+                "--no_half_vae",
+                *pp_args,
+                *cleaned,
+            ]
+        )
+
+
+def _variant_settings() -> tuple[str, str, str]:
+    """Caption-variant knobs: env override → preprocess.toml → historical default.
+
+    Returns ``(shuffle_variants, tag_dropout_rate, tag_randomize_rate)`` as raw
+    strings (forwarded straight to the script). CAPTION_SHUFFLE_VARIANTS /
+    CAPTION_TAG_DROPOUT_RATE / CAPTION_TAG_RANDOMIZE_RATE let the GUI tune these
+    without editing config.
+    """
+    shuffle = os.environ.get("CAPTION_SHUFFLE_VARIANTS") or _path(
+        "caption_shuffle_variants", "4"
+    )
+    dropout = os.environ.get("CAPTION_TAG_DROPOUT_RATE") or _path(
+        "caption_tag_dropout_rate", "0.1"
+    )
+    # Lexinvariant tag regularization: identity-randomized r-family. 0.0 = off
+    # (no r-family written, fully backward compatible).
+    randomize = os.environ.get("CAPTION_TAG_RANDOMIZE_RATE") or _path(
+        "caption_tag_randomize_rate", "0.0"
+    )
+    return str(shuffle), str(dropout), str(randomize)
+
+
+def caption_variant_args(
+    settings: tuple[str, str, str] | None = None,
+) -> list[str]:
+    """Canonical caption-augmentation CLI arguments for TE preprocessing."""
+    shuffle, dropout, randomize = settings or _variant_settings()
+    return [
+        "--caption_shuffle_variants",
+        shuffle,
+        "--caption_tag_dropout_rate",
+        dropout,
+        "--caption_tag_randomize_rate",
+        randomize,
+    ]
+
+
+def _float_or_zero(value: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def cmd_preprocess_captions(extra, caption_config: dict[str, object] | None = None):
+    """Write corrected/variant caption sidecars into ``resized/``.
+
+    Runs whenever caption order-correction is enabled **or** variants are
+    requested (the default ``caption_shuffle_variants=4``). Order-correction off
+    + variants on runs in passthrough (``--no_correct``): v0 mirrors the raw
+    caption and the shuffle/dropout/randomize sidecars ride alongside, so the
+    user can see the train-time variants directly in ``resized/``.
+
+    The caption-rewrite stages (autotag, position clauses) run first when their
+    config knob is on. Autotag writes the master, which this step mirrors, so a
+    tag that landed after it would be invisible to the sidecars — and to the TE
+    caches encoded from them. Position clauses write ``resized/`` directly and
+    must land *before* the mirror for the same reason: the mirror is what
+    re-corrects the flat bag and regenerates the sidecars around them (it
+    re-attaches clauses it finds, so they survive). In the full ``preprocess``
+    chain both already ran (earlier, in their GPU-ordered slots) and the guard
+    makes these calls no-ops.
+    """
+    run_obj, extra = _resolve_stage_run(extra)
+    if caption_config is None:
+        caption_config, extra = _caption_correction_config(extra)
+    _run_caption_autotag_stage(caption_config)
+    _run_caption_position_stage(caption_config)
+    correct = _caption_correction_enabled(caption_config)
+    shuffle, dropout, randomize = _variant_settings()
+    n_variants = int(_float_or_zero(shuffle))
+    # Position clauses keep the mirror alive even with correction and variants
+    # both off: they only rewrite the multi-subject captions in ``resized/``, and
+    # the TE step then reads that tree — so every *other* image needs its master
+    # caption mirrored there or it would encode as empty.
+    if not correct and n_variants <= 0 and not caption_config.get("position_clauses"):
+        print("  [preprocess] caption correction disabled")
+        return
+    # correct_captions.py loads the Danbooru tag KB unconditionally (bucket
+    # taxonomy for both correct + variant-only paths) — fetch it on demand so a
+    # GUI preprocess that skipped `make download-danbooru-tags` doesn't abort.
+    _ensure_danbooru_tags()
+    pp_args = _resolved_path_pattern_args(extra)
+    cmd = [
+        PY,
+        "scripts/preprocess/correct_captions.py",
+        "--src",
+        _preprocess_path("source_image_dir", "image_dataset", run_obj),
+        "--dst",
+        _preprocess_path("resized_image_dir", "post_image_dataset/resized", run_obj),
+        "--recursive",
+        *pp_args,
+    ]
+    if correct:
+        cmd += _caption_correction_args(caption_config)
+    else:
+        cmd.append("--no_correct")
+    if n_variants > 0:
+        cmd += caption_variant_args((shuffle, dropout, randomize))
+        # Identity-randomize needs the two tokenizers to build the erasure pool.
+        if _float_or_zero(randomize) > 0.0 and n_variants >= 2:
+            cmd += [
+                "--qwen3",
+                _path("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),
+            ]
+    run(cmd)
+
+
+def cmd_preprocess_te(extra, caption_config: dict[str, object] | None = None):
+    run_obj, extra = _resolve_stage_run(extra)
+    if caption_config is None:
+        caption_config, extra = _caption_correction_config(extra)
+    # Caption rewrites before anything reads the captions. `cmd_preprocess_captions`
+    # runs them too, but the no-correction + no-variants path below skips that
+    # step entirely and encodes the source captions directly.
+    _run_caption_autotag_stage(caption_config)
+    _run_caption_position_stage(caption_config)
+    shuffle, dropout, randomize = _variant_settings()
+    n_variants = int(_float_or_zero(shuffle))
+    # The caption step writes the variant sidecars (the encode source of truth);
+    # it runs whenever correction is on OR variants are requested. In that case
+    # the TE step reads ``resized/`` (already the curated set, so min_pixels=0)
+    # and encodes the sidecars verbatim. Only the pure no-correction +
+    # no-variants case still reads the source captions with a match filter.
+    #
+    # Position clauses force it too: they are written into ``resized/`` and never
+    # into the master, so encoding the master directly would silently train the
+    # pre-clause caption. The mirror also runs *after* the stage above, which is
+    # what re-attaches the clauses onto the corrected bag.
+    needs_caption_step = (
+        _caption_correction_enabled(caption_config)
+        or n_variants > 0
+        or bool(caption_config.get("position_clauses"))
+    )
+    if needs_caption_step:
+        _, extra = _resolve_lowres_filter(extra)
+        extra = _drop_option_with_value(extra, {"--min_pixels"})
+        pp_args = _preprocess_path_pattern_args(extra)
+        with _use_preprocess_run(run_obj):
+            cmd_preprocess_captions(extra, caption_config=caption_config)
+        text_dir = _preprocess_path(
+            "resized_image_dir", "post_image_dataset/resized", run_obj
+        )
+        match_args: list[str] = []
+        mp_args: list[str] = ["--min_pixels", "0"]
+    else:
+        pp_args = _preprocess_path_pattern_args(extra)
+        text_dir = _preprocess_path("source_image_dir", "image_dataset", run_obj)
+        match_args = [
+            "--match_images_from",
+            _preprocess_path(
+                "resized_image_dir", "post_image_dataset/resized", run_obj
+            ),
+        ]
+        mp_args, extra = _resolve_lowres_filter(extra)
+    run(
+        [
+            PY,
+            "scripts/preprocess/cache_text_embeddings.py",
+            "--dir",
+            text_dir,
+            "--cache_dir",
+            _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
+            *match_args,
+            "--qwen3",
+            _path("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),
+            "--dit",
+            _path(
+                "pretrained_model_name_or_path",
+                "models/diffusion_models/anima-base-v1.0.safetensors",
+            ),
+            # Fallback only — when a {stem}.variants.txt sidecar is present (the
+            # caption step wrote it) the encoder uses it verbatim and these are
+            # ignored; they still drive in-process generation for any image that
+            # reaches TE without a sidecar.
+            *caption_variant_args((shuffle, dropout, randomize)),
+            "--recursive",
+            *mp_args,
+            *pp_args,
+            *extra,
+        ]
+    )
+
+
+def cmd_preprocess_pe(extra):
+    """Cache PE-Core-L14-336 vision-encoder features.
+
+    Reads pre-resized images from ``post_image_dataset/resized/`` (the
+    standard LoRA pipeline source) and writes
+    ``{stem}_anima_pe.safetensors`` sidecars into the LoRA cache dir so the
+    dataset's existing ``cache_dir`` lookup finds them.
+
+    Consumed by IP-Adapter when reading PE features off disk and by the
+    DCW v4 fusion head's pooled-image-feature input channel.
+
+    Also emits the dataset-mean PE centroid sidecar
+    (``anima_pe_centroid_pe.safetensors``) via ``--centroid`` so IP-Adapter
+    mean-centering works without a separate pass. Under a preprocess run the
+    centroid lands in that run's ``lora/`` dir next to the caches it pools;
+    a legacy no-run invocation keeps the historical
+    ``post_image_dataset/ip_adapter/`` location. An explicit ``--centroid_out``
+    in ARGS always wins.
+    """
+    run_obj, extra = _resolve_stage_run(extra)
+    cmd = [
+        PY,
+        "scripts/preprocess/cache_pe_encoder.py",
+        "--dir",
+        _preprocess_path(
+            "resized_image_dir", "post_image_dataset/resized", run_obj
+        ),
+        "--cache_dir",
+        _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
+        "--encoder",
+        "pe",
+        "--recursive",
+        "--centroid",
+        *extra,
+    ]
+    if (
+        run_obj is not None
+        and explicit_option_value(extra, "--centroid_out") is None
+    ):
+        cmd += [
+            "--centroid_out",
+            str(run_obj.lora_cache_dir / "anima_pe_centroid_pe.safetensors"),
+        ]
+    run(cmd)
+
+
+def cmd_preprocess_pe_spatial(extra):
+    """Cache PE-Spatial-B16-512 dense patch-token features for REPA v2.
+
+    Reads pre-resized images from ``post_image_dataset/resized/`` and writes
+    ``{stem}_anima_pe_spatial.safetensors`` sidecars into the LoRA cache dir
+    (disjoint from the PE-Core ``_anima_pe`` caches CMMD reads). No centroid —
+    REPA aligns per-patch, not against a dataset mean. Run before a
+    ``use_repa=true`` training arm.
+    """
+    run_obj, extra = _resolve_stage_run(extra)
+    run(
+        [
+            PY,
+            "scripts/preprocess/cache_pe_encoder.py",
+            "--dir",
+            _preprocess_path(
+                "resized_image_dir", "post_image_dataset/resized", run_obj
+            ),
+            "--cache_dir",
+            _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
+            "--encoder",
+            "pe_spatial",
+            "--recursive",
+            *extra,
+        ]
+    )
+
+
+def cmd_caption_index(extra):
+    """Build the method-agnostic typed-tag caption index.
+
+    Walks caption sidecars under the source dir, classifies tags into
+    character / copyright / artist / count via the Anima Tagger vocab, and
+    writes the selected run's ``captions/caption_index.json`` (or the legacy
+    ``post_image_dataset/captions/caption_index.json`` when no run is selected).
+    Pure data, no GPU. Consumed by the IP-Adapter distinct-pair sampler, artist
+    balancing, and dataset analytics. Regenerate when the dataset, run filter,
+    or vocab changes.
+    """
+    run_obj, extra = _resolve_stage_run(extra)
+    pp_args = _preprocess_path_pattern_args(extra)
+    out_args = (
+        ["--out", str(run_obj.caption_index_path)] if run_obj is not None else []
+    )
+    run(
+        [
+            PY,
+            "scripts/preprocess/build_caption_index.py",
+            "--src",
+            _preprocess_path("source_image_dir", "image_dataset", run_obj),
+            *pp_args,
+            *out_args,
+            *extra,
+        ]
+    )
+    if run_obj is not None and _ACTIVE_PREPROCESS_RUN is None:
+        _publish_run_status(run_obj, "ready")
+
+
+def _caption_master_argv(script: str, extra) -> list[str]:
+    """Child argv (no interpreter) for a caption-rewrite pass.
+
+    Both passes take the same ``--src`` (caption master) / ``--dst`` (resized)
+    pair; they differ in which side they *write* — autotag the master, position
+    clauses the derived caption under ``--dst``.
+
+    Resolves the subset scope once (explicit flag in ``extra`` > env > config)
+    and drops it from the tail so an explicitly-passed ``--path_pattern`` is
+    emitted exactly once rather than twice.
+    """
+    return [
+        script,
+        "--src",
+        _path("source_image_dir", "image_dataset"),
+        "--dst",
+        _path("resized_image_dir", "post_image_dataset/resized"),
+        *_resolved_path_pattern_args(extra),
+        *_drop_option_with_value(extra, {"--path_pattern", "--path-pattern"}),
+    ]
+
+
+def _caption_position_argv(extra) -> list[str]:
+    """Child argv (no interpreter) for the position-clause pass.
+
+    Shared by the standalone ``caption-position`` target and the in-pipeline
+    stage ``cmd_preprocess`` chains, so the two can't drift on paths/scoping.
+    """
+    return _caption_master_argv("scripts/preprocess/position_captions.py", extra)
+
+
+def _caption_autotag_argv(extra) -> list[str]:
+    """Child argv (no interpreter) for the batch autotag pass.
+
+    Shared by the standalone ``caption-autotag`` target and the in-pipeline
+    stage ``cmd_preprocess`` chains, so the two can't drift on paths/scoping.
+    """
+    return _caption_master_argv("scripts/preprocess/autotag_captions.py", extra)
+
+
+# Caption-rewrite stages (autotag → ``image_dataset/*.txt``, position clauses →
+# ``resized/*.txt``), and every entry point that reads or mirrors a caption needs
+# them to have happened first — `preprocess` (in its own early, GPU-ordered
+# slots), `preprocess-te`, and `preprocess-captions` run on its own. So each of those
+# calls the stage, and this key on the shared caption-config dict records that it
+# already ran in this chain: `cmd_preprocess` threads ONE dict through
+# `cmd_preprocess_te` → `cmd_preprocess_captions`, so the later calls no-op while
+# a standalone target still gets its own dict and runs the stage. Both passes are
+# idempotent on an already-rewritten caption (autotag `missing` sees a sidecar,
+# position skips `already-has-clauses`) but neither is free — each pays a tagger /
+# SAM3 load over the whole tree.
+_STAGE_RAN_KEY = "_master_stages_ran"
+
+
+def _stage_already_ran(config: dict[str, object], stage: str) -> bool:
+    """Has ``stage`` run for this caption-config dict? Marks it if not."""
+    ran = config.setdefault(_STAGE_RAN_KEY, set())
+    if not isinstance(ran, set):  # a caller hand-rolled the dict — treat as fresh
+        ran = set()
+        config[_STAGE_RAN_KEY] = ran
+    if stage in ran:
+        return True
+    ran.add(stage)
+    return False
+
+
+def _stage_path_pattern_args(config: dict[str, object]) -> list[str]:
+    """Subset scope stashed by :func:`_caption_correction_config`.
+
+    Empty for a hand-rolled dict — the argv builder then falls back to the
+    env/config pattern exactly as the standalone targets do.
+    """
+    args = config.get("path_pattern_args")
+    return list(args) if isinstance(args, (list, tuple)) else []
+
+
+def _run_caption_autotag_stage(config: dict[str, object]) -> None:
+    """Run the in-pipeline autotag pass if enabled and not yet run."""
+    if not config.get("autotag") or _stage_already_ran(config, "autotag"):
+        return
+    mode = str(config.get("autotag_mode") or "missing")
+    print(f"  [preprocess] autotag ({mode}): Anima Tagger → caption master")
+    argv = [*_stage_path_pattern_args(config), *_caption_autotag_args(config)]
+    run([PY, *_caption_autotag_argv(argv)])
+
+
+def _run_caption_position_stage(config: dict[str, object]) -> None:
+    """Run the in-pipeline position-clause pass if enabled and not yet run.
+
+    Inline rather than through ``cmd_caption_position``: the caller is itself a
+    daemon job on a serial queue, so submitting a nested job would wait on a
+    queue that can't advance.
+    """
+    if not config.get("position_clauses") or _stage_already_ran(config, "position"):
+        return
+    print("  [preprocess] position clauses: SAM3 + tagger → resized captions")
+    run([PY, *_caption_position_argv([*_stage_path_pattern_args(config), "--apply"])])
+
+
+def cmd_caption_autotag(extra):
+    """Auto-tag the dataset with the Anima Tagger (GPU, daemon-routed).
+
+    Writes ``.txt`` sidecars into the caption master. ``--mode missing``
+    (default) only fills in uncaptioned images; ``merge`` appends novel tags to
+    every caption while keeping its position clauses; ``overwrite`` replaces the
+    caption outright. Dry-run by default; ``ARGS="--apply"`` writes, and must be
+    followed by ``make preprocess-te`` (caption edits do NOT invalidate the TE
+    caches, and the ``.variants.txt`` sidecars override the CLI dropout rate).
+
+    Routed through the daemon like every other agent-launched GPU job — it holds
+    the tagger resident for the whole sweep and would otherwise OOM-collide with
+    a live train run.
+    """
+    from ._common import _resolve_run_mode, run_command
+
+    mode, extra = _resolve_run_mode(extra)
+    run_command("caption-autotag", _caption_autotag_argv(extra), mode=mode)
+
+
+def cmd_caption_position(extra):
+    """Append position-aware clauses to multi-subject captions (GPU, daemon-routed).
+
+    SAM3 ``girl`` instances → reading order → mask-blanked crops → Anima Tagger →
+    ``… On the left, <tags>. On the right, <tags>.`` written into the **derived**
+    caption (``post_image_dataset/resized/<rel>.txt``); the hand-written master
+    under ``image_dataset/`` is never touched. Dry-run by default;
+    ``ARGS="--apply"`` writes, and must be followed by ``make preprocess-te`` to
+    re-encode (the caption pass re-attaches the clauses onto the corrected bag
+    and regenerates the ``.variants.txt`` sidecars the TE step encodes).
+
+    Routed through the daemon like every other agent-launched GPU job — it holds
+    SAM3 + the tagger resident for the whole sweep and would otherwise
+    OOM-collide with a live train run.
+    """
+    from ._common import _resolve_run_mode, run_command
+
+    mode, extra = _resolve_run_mode(extra)
+    run_command("caption-position", _caption_position_argv(extra), mode=mode)
+
+
+# `cmd_preprocess` auto-fetches this (~0.7 MB) vocab on demand: the caption index
+# it gates is a hard requirement for soft-tokens contrastive training (train.py
+# raises FileNotFoundError without it). Fetch is best-effort.
+_CAPTION_INDEX_VOCAB = "models/captioners/anima-tagger-v2/vocab.json"
+
+
+def cmd_preprocess(extra):
+    run_obj, extra = _resolve_stage_run(extra, create=True)
+    assert run_obj is not None
+    caption_config, extra = _caption_correction_config(extra)
+    # PE features are NOT cached here by default (CMMD/DCW v4 chain `preprocess-pe`
+    # explicitly) — keeps the default LoRA preprocess fast. Exception: a
+    # `use_repa=true` variant aligns against PE every step, so they're chained at
+    # the end (see the `_repa_pe_encoder()` block below).
+    #
+    # Fail fast BEFORE any GPU work: a use_repa=true auto-chain with a missing REPA
+    # checkpoint would stall the PE step on a silent daemon download and wedge the
+    # serial queue. Surface an actionable error instead of after the full pass.
+    encoder = _repa_pe_encoder()
+    if encoder is not None:
+        _require_repa_encoder_model(encoder)
+
+    print(f"  [preprocess] run manifest: {run_obj.manifest_path}")
+    with _use_preprocess_run(run_obj):
+        _publish_run_status(run_obj, "running", started_at=time.time())
+        try:
+            cmd_preprocess_resize(extra)
+            # Auto-tagging *creates* the caption master every later caption
+            # stage reads (position clauses, correction, TE), so it has to land
+            # first — right after resize, because it tags the resized pixels
+            # training actually sees. The caption/TE steps would run it
+            # themselves, but only after the VAE pass; the early call here
+            # fixes the order and the stage guard makes theirs a no-op.
+            _run_caption_autotag_stage(caption_config)
+            # VAE/TE steps read on-disk shapes — strip the low-res convenience
+            # flags and resize-only options before their own argparse layers.
+            downstream = _pop_resize_only_args(extra)
+            cmd_preprocess_vae(extra)
+            # Position clauses rewrite the caption MASTER, so the stage has to
+            # land before the caption/TE steps read it (they write the variant
+            # sidecars and encode). Pinned here rather than left to
+            # `cmd_preprocess_te` so the GPU order stays VAE → SAM3/tagger;
+            # the guard keeps it from running twice.
+            _run_caption_position_stage(caption_config)
+            cmd_preprocess_te(downstream, caption_config=caption_config)
+
+            # Caption index as a free by-product — consumed by the IP-Adapter pair
+            # sampler, analytics and soft-tokens contrastive training.
+            vocab = _path("caption_index_vocab", _CAPTION_INDEX_VOCAB)
+            if not os.path.exists(vocab):
+                print(
+                    "  [preprocess] tagger vocab missing; fetching it for caption-index"
+                )
+                try:
+                    from .downloads import cmd_download_tagger
+
+                    cmd_download_tagger([])
+                except (SystemExit, OSError) as e:
+                    print(f"  [preprocess] tagger vocab auto-download failed: {e}")
+            if os.path.exists(vocab):
+                cmd_caption_index([])
+            else:
+                print(
+                    f"  [preprocess] skipping caption-index: tagger vocab not found at "
+                    f"{_CAPTION_INDEX_VOCAB} and auto-download failed. Run "
+                    f"`make download-tagger`, then `make caption-index` "
+                    f"(soft-tokens contrastive training needs it)."
+                )
+
+            if encoder is not None:
+                print(
+                    f"  [preprocess] use_repa=true -> caching REPA PE features ({encoder})"
+                )
+                if encoder == "pe_spatial":
+                    cmd_preprocess_pe_spatial([])
+                else:
+                    cmd_preprocess_pe([])
+        except BaseException as exc:
+            try:
+                _publish_run_status(
+                    run_obj,
+                    "failed",
+                    error=f"{type(exc).__name__}: {exc}",
+                    failed_at=time.time(),
+                )
+            except Exception:
+                pass
+            raise
+        else:
+            _publish_run_status(run_obj, "ready", completed_at=time.time())
+            print(f"  [preprocess] ready: {run_obj.manifest_path}")
+
+
+def cmd_preprocess_config(extra):
+    """Preprocess the exact directories named in a ``--dataset_config`` TOML.
+
+    Unlike ``cmd_preprocess`` (which resolves the repo's standard
+    ``image_dataset/`` → ``post_image_dataset/`` layout from the merged
+    config), this drives off the same dataset config the *training* job will
+    consume, so one file fully describes an ad-hoc job — no reliance on the
+    default layout. For each ``[[datasets.subsets]]`` it:
+
+      1. bucket-resizes ``--src`` (the originals, with caption sidecars) into
+         that subset's ``image_dir`` — the source dir is never modified;
+      2. caches VAE latents from ``image_dir`` into the subset's ``cache_dir``;
+      3. caches text embeddings (captions read from ``--src``) into ``cache_dir``.
+
+    A config can't encode where the *un-resized* originals live (its
+    ``image_dir`` is the post-resize dir training reads), so the source is the
+    one explicit flag: ``--src <dir>``. The ComfyUI trainer node uses this to
+    cache a single-image temp dir before its chained training job runs.
+
+    The VAE / text-encoder / DiT used for caching default to the config-resolved
+    ``models/`` paths (base → preset → method merge), but can be overridden with
+    ``--vae`` / ``--qwen3`` / ``--dit`` so a caller can point the cache at models
+    living elsewhere — e.g. the ComfyUI trainer node passes the paths ComfyUI's
+    own ``folder_paths`` registers, so it never assumes a copy under
+    ``anima_lora/models/``.
+
+    Usage: ``preprocess-config --dataset_config <path> --src <dir>
+    [--vae <path>] [--qwen3 <path>] [--dit <path>] [extra…]``
+    (any remaining args are forwarded to the resize step).
+    """
+    import toml
+
+    args = list(extra)
+    cfg_path: str | None = None
+    src_dir: str | None = None
+    vae_path = _path("vae", "models/vae/qwen_image_vae.safetensors")
+    qwen3_path = _path("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors")
+    dit_path = _path(
+        "pretrained_model_name_or_path",
+        "models/diffusion_models/anima-base-v1.0.safetensors",
+    )
+    rest: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--dataset_config" and i + 1 < len(args):
+            cfg_path = args[i + 1]
+            i += 2
+        elif args[i] == "--src" and i + 1 < len(args):
+            src_dir = args[i + 1]
+            i += 2
+        elif args[i] == "--vae" and i + 1 < len(args):
+            vae_path = args[i + 1]
+            i += 2
+        elif args[i] == "--qwen3" and i + 1 < len(args):
+            qwen3_path = args[i + 1]
+            i += 2
+        elif args[i] == "--dit" and i + 1 < len(args):
+            dit_path = args[i + 1]
+            i += 2
+        else:
+            rest.append(args[i])
+            i += 1
+    if not cfg_path or not src_dir:
+        raise SystemExit(
+            "preprocess-config requires --dataset_config <path> and --src <dir>"
+        )
+
+    # Retry through a transient PermissionError: a real-time scanner (Windows
+    # Defender) briefly locks the just-created config the ComfyUI trainer node
+    # writes milliseconds before the daemon's preprocess job opens it.
+    import time
+
+    last_err: OSError | None = None
+    for attempt in range(10):
+        try:
+            cfg = toml.load(cfg_path)
+            break
+        except PermissionError as e:
+            last_err = e
+            time.sleep(0.2 * (attempt + 1))
+    else:
+        raise SystemExit(
+            f"could not read {cfg_path} after retrying (last error: {last_err}). "
+            "If this persists, exclude the dataset/temp dir from your antivirus."
+        )
+    subsets = [
+        sub
+        for ds in (cfg.get("datasets") or [])
+        for sub in (ds.get("subsets") or [])
+        if sub.get("image_dir")
+    ]
+    if not subsets:
+        raise SystemExit(f"no [[datasets.subsets]] with image_dir in {cfg_path}")
+
+    for sub in subsets:
+        image_dir = sub["image_dir"]
+        cache_dir = sub.get("cache_dir") or image_dir
+        # 1) bucket-resize originals → image_dir. cache_latents.py keys caches by
+        #    the on-disk size, so the resized size must already be the constant-token
+        #    bucket the trainer selects. Captions stay in --src (TE reads them there).
+        run(
+            [
+                PY,
+                "scripts/preprocess/resize_images.py",
+                "--src",
+                src_dir,
+                "--dst",
+                image_dir,
+                "--no_copy_captions",
+                "--min_pixels",
+                "0",
+                "--bucket_reso_steps",
+                "64",
+                "--recursive",
+                *rest,
+            ]
+        )
+        run(
+            [
+                PY,
+                "scripts/preprocess/cache_latents.py",
+                "--dir",
+                image_dir,
+                "--cache_dir",
+                cache_dir,
+                "--vae",
+                vae_path,
+                "--batch_size",
+                "4",
+                "--chunk_size",
+                "64",
+                "--recursive",
+            ]
+        )
+        # 3) text embeddings — captions read from --src
+        run(
+            [
+                PY,
+                "scripts/preprocess/cache_text_embeddings.py",
+                "--dir",
+                src_dir,
+                "--cache_dir",
+                cache_dir,
+                "--qwen3",
+                qwen3_path,
+                "--dit",
+                dit_path,
+                "--recursive",
+            ]
+        )

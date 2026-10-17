@@ -1,0 +1,16 @@
+# sent_ball_lr2 — sent_ball at lr 2e-4 (user, 10-05): sent_ball's spikes turned to
+# cos 0.77 at lr 1e-3, the turn done by step ~3 300 while in_box kept falling after
+# it (reports/sent_ball_2026_10_05.md). Everything else sent_ball's, its data dir.
+rows = [
+    "chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをんゔ",
+    "chars:ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロワヲンヴー",
+]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0930"  # unused: a ball run sits on ball_on's rows
+steps_per_row = 40
+shares = { grid_44 = 0, grid_29 = 0, grid_16 = 0, lone_44 = 0, lone_28 = 0, lone_16 = 0, bubble1_52 = 2, bubble1_32 = 3, bubbleN_34 = 15, bubbleN_18 = 10, grid_64 = 0, sent_34 = 40, sent_22 = 30 }
+ball_on = "seed_fixed_1005_stick080"
+warm = true
+data_from = "sent_ball"
+pack = "punct"
+lr = 2e-4

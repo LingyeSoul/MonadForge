@@ -3,6 +3,7 @@
 from typing import Optional, Tuple, Union
 
 import torch
+from library.inference.corrections.fsg_core import cfgpp_guidance_weight  # noqa: F401
 from torchvision import transforms
 from diffusers import EulerAncestralDiscreteScheduler
 import diffusers.schedulers.scheduling_euler_ancestral_discrete
@@ -25,7 +26,7 @@ def get_timesteps_sigmas(
             flow-shift map. ``1.0`` (default) is the canonical schedule, bit-for-bit.
             ``>1`` warps the grid toward σ=0, packing more knots into the low-σ
             resolve tail (σ<0.45) where local discretization error concentrates
-            (``bench/dynamic_spectrum`` Q1: ~60% of fattening-error mass, only 19%
+            (``_archive/bench/dynamic_spectrum`` Q1: ~60% of fattening-error mass, only 19%
             of steps); ``<1`` does the opposite. The endpoints σ∈{0,1} are fixed,
             so this redistributes steps without changing the integration range.
 

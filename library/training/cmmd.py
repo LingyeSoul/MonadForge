@@ -43,7 +43,7 @@ _SCALE = 1000.0
 def _pool_pe(feats: torch.Tensor, *, drop_cls: bool = True) -> torch.Tensor:
     """Mean over patch tokens. ``feats`` is ``[T, D]``; returns ``[D]``.
 
-    Matches ``scripts/preprocess/cache_pe_encoder.py:_pool_pe`` so the CMMD reference
+    Matches ``library/preprocess/pe.py:_pool_pe`` so the CMMD reference
     pool is comparable to the IP-Adapter centroid.
     """
     if drop_cls and feats.shape[0] > 1:
@@ -60,13 +60,53 @@ def pool_and_normalize(feats: torch.Tensor) -> torch.Tensor:
     return _l2_normalize(_pool_pe(feats.to(torch.float32)))
 
 
+def gram_of(feats: torch.Tensor, *, drop_cls: bool = True) -> torch.Tensor:
+    """Centered, Frobenius-normalized token second-moment ("style Gram").
+
+    ``feats`` is a single ``[T, D]`` PE feature map (CLS included). Drops CLS,
+    centers over tokens, forms the ``[D, D]`` second moment ``GᵀG / T`` and
+    Frobenius-normalizes it, returning a flat ``[D*D]`` unit vector.
+
+    The Gram is token-count-free by construction (``[D, D]`` regardless of T),
+    so gen/ref buckets with different patch grids are directly comparable — the
+    property CMMD's pooled feature lacked. Invariances: token permutation ⇒
+    identical Gram; global feature scale ⇒ identical Gram (Frobenius
+    normalization divides it out).
+
+    NB: the paired-Gram eval failed its known-difference gate (content-dominated,
+    style-weak) and was archived; kept only because ``_archive/bench/paired_eval/``
+    imports these helpers. Do not build a val metric on the token-Gram — see
+    ``_archive/proposals/paired_gram_eval.md``.
+    """
+    feats = feats.to(torch.float32)
+    if drop_cls and feats.shape[0] > 1:
+        feats = feats[1:]
+    feats = feats - feats.mean(dim=0, keepdim=True)
+    t = feats.shape[0]
+    gram = (feats.t() @ feats) / max(t, 1)
+    gram = gram / gram.norm().clamp_min(1e-12)
+    return gram.reshape(-1)
+
+
+def paired_gram_score(gen_feats: torch.Tensor, real_feats: torch.Tensor) -> float:
+    """PGS — cosine between the two style Grams of a gen/real *pair*.
+
+    Both args are ``[T, D]`` PE maps (CLS included); each may carry its own T.
+    The Grams are unit-Frobenius, so their dot product is already the cosine.
+    Higher = the render's style statistics sit closer to this real image's.
+    """
+    g = gram_of(gen_feats)
+    r = gram_of(real_feats)
+    return float(torch.dot(g, r).clamp(-1.0, 1.0).item())
+
+
 def resolve_pe_sidecar(
     image_path: Path | str,
     *,
     encoder: str = "pe",
     cache_dir: Path | str | None = None,
 ) -> Path:
-    """Match ``preprocess/cache_pe_encoder.cache_path_for`` so the val pass
+    """Match ``library.preprocess.pe.cache_path_for`` so the val pass
     looks for sidecars in the same place the cache step wrote them."""
     image_path = Path(image_path)
     name = f"{image_path.stem}_anima_{encoder}.safetensors"

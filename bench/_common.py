@@ -29,15 +29,26 @@ Usage::
 
     from bench._common import make_run_dir, write_result
 
-    run_dir = make_run_dir("dcw", label="lambda-sweep")
+    run_dir = make_run_dir("spectrum", label="delta-sweep")
     # ... write artifacts into run_dir ...
     write_result(run_dir, script=__file__, args=args,
-                 metrics={...}, artifacts=["per_step.csv", "gap_curves.png"])
+                 metrics={...}, artifacts=["per_step.csv", "curves.png"])
+
+Cache-level data access (issues.md DX4)::
+
+    For raw cache reads without the CachedDataset/blueprint layer, use
+    ``library/io/cache.py`` directly:
+        load_cached_latents(npz_path)      -> (latents, resolution, orig_h, orig_w)
+        load_cached_text_features(te_path) -> (crossattn_emb, pooled)  # None,None if absent
+        discover_latents_by_stem(root)     -> {stem: [LatentCacheFile, ...]}  # buckets/stem
+    Don't hand-roll the ``next(k for k if k.startswith("latents_"))`` NPZ read —
+    ``load_cached_latents`` already does it (and recovers original pixel size).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import platform
 import subprocess
 from dataclasses import asdict, is_dataclass
@@ -113,6 +124,37 @@ def _serializable(v: Any) -> Any:
     return repr(v)
 
 
+def start_heartbeat(interval: float = 45.0, *, label: str = "hb") -> None:
+    """Print a keep-alive line every ``interval`` seconds (daemon-friendly).
+
+    The daemon's stall watchdog kills a *command* job whose stdout and
+    progress.jsonl both freeze for 120 s (``anima_daemon/config.py``), which is
+    the normal shape of an embed/eval loop between prints — so every long-quiet
+    bench script needs *something*. Two supported ways, in preference order:
+
+    1. submit with a raised/disabled budget — ``make daemon-run
+       ARGS="… --stall-timeout 0"`` / ``submit_command(stall_timeout=…)``. The
+       daemon also cross-checks process-tree CPU before firing, so a genuinely
+       computing job survives its budget.
+    2. call this at the top of ``main()`` — one line, no submit-side knowledge
+       needed, and the ticks double as a "still alive, N seconds in" log.
+
+    Daemon thread, so it never keeps the process alive; unbuffered so the line
+    actually reaches the job's stdout.log (which is what the watchdog stats).
+    """
+    import threading
+    import time
+
+    t0 = time.time()
+
+    def beat() -> None:
+        while True:
+            time.sleep(interval)
+            print(f"[{label}] {time.time() - t0:.0f}s", flush=True)
+
+    threading.Thread(target=beat, daemon=True, name="bench-heartbeat").start()
+
+
 def make_run_dir(
     method: str,
     label: str | None = None,
@@ -123,7 +165,7 @@ def make_run_dir(
     """Create and return ``<root>/<YYYYMMDD-HHMM>[-<label>]/``.
 
     Default ``root`` is ``<repo>/bench/<method>/results/``. Pass an explicit
-    ``root`` (e.g. ``post_image_dataset/dcw``) to redirect — useful for
+    ``root`` (e.g. a dir under ``post_image_dataset/``) to redirect — useful for
     calibration data that's logically a cache, not a published-bench artifact.
     """
     ts = (when or datetime.now()).strftime("%Y%m%d-%H%M")
@@ -150,7 +192,14 @@ def write_result(
     device: Any = None,
     extra: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Write the standard ``result.json`` envelope into ``run_dir``."""
+    """Write the standard ``result.json`` envelope into ``run_dir``.
+
+    Only ``run_dir`` is positional; everything else is keyword-only (issues.md
+    DX5). Call as
+    ``write_result(run_dir, script=__file__, args=args, metrics={...})`` — a
+    positional ``write_result(run_dir, metrics)`` fails with an opaque
+    "takes 1 positional argument" error.
+    """
     args_dict = vars(args) if hasattr(args, "__dict__") else dict(args)
     script_path = Path(script)
     if script_path.is_absolute():
@@ -187,4 +236,19 @@ def write_result(
         record["extra"] = _serializable(extra)
     out = run_dir / "result.json"
     out.write_text(json.dumps(record, indent=2))
+
+    # Daemon result-envelope lift (proposal Phase 1a): when this script runs as a
+    # daemon job, the daemon exported ANIMA_DAEMON_JOB_DIR into our env. Drop a
+    # pointer to the just-written envelope there so the monitor can lift its
+    # abs path + {label, metrics} digest into the job record on the terminal
+    # transition. Absent (a plain inline `python bench/.../run_bench.py`) → a
+    # no-op, so bench scripts stay standalone with zero daemon coupling.
+    job_dir = os.environ.get("ANIMA_DAEMON_JOB_DIR")
+    if job_dir:
+        try:
+            pointer = Path(job_dir) / "result_path.json"
+            pointer.write_text(json.dumps({"path": str(out.resolve())}))
+        except OSError:
+            pass  # best-effort; a missing job dir must never fail the bench run
+
     return out

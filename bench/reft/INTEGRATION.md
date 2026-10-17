@@ -1,5 +1,10 @@
 # ReFT — re-integration map
 
+> **Bench verdict landed 2026-07-05: `REFT IS REDUNDANT` — see `report.md`.**
+> Per the terms below, this directory is now the kept record; do not re-apply
+> this map unless the headroom Phase-2 adoption gate someday reopens the
+> register-synergy route.
+
 ReFT was **removed from the live codebase on 2026-06-08** and downgraded to this
 bench probe (see `plan.md`). It was unproven on Anima (off-by-default, never
 benched, not foldable). This file is the obituary-and-restore map: if the bench
@@ -60,7 +65,7 @@ not a rewrite. Restoring is mechanical.
 ### 7. Training hook (`library/training/forward/router_conditioning.py`)
 - Re-add the `if hasattr(network, "set_reft_timestep_mask"): network.set_reft_timestep_mask(timesteps, max_timestep=1.0)` call (sequence: timestep_mask → reft_timestep_mask → sigma → fei → balance).
 
-### 8. Merge refusal (`scripts/merge_to_dit.py`, `gui/tabs/merge_tab.py`)
+### 8. Merge refusal (`scripts/toolkits/merge_to_dit.py`, `gui/tabs/merge_tab.py`)
 - `merge_to_dit.py`: re-add `"reft_": "ReFT (block-level hook)"` to the unsupported-key dict + the doc/help mentions.
 - `merge_tab.py`: re-add the `"reft"` counter, the `k.startswith("reft_")` count, and the verdict branches (`merge_verdict_reft_only` when reft-only, partial when reft+lora).
 

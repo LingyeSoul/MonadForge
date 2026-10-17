@@ -1,11 +1,10 @@
 """Anima inference argument parser — the single source of truth for every
 generation knob ``generate()`` reads off an ``argparse.Namespace``.
 
-Extracted from the top-level ``inference.py`` CLI script so programmatic callers
-(``GenerationRequest.to_args()``, ``bench/`` probes, embedders) can build a
-fully-defaulted namespace without importing the entry-point module. ``inference``
-now delegates its own ``parse_args`` here, so the CLI and every library caller
-share one parser definition.
+The CLI (``inference.parse_args``) and programmatic callers
+(``GenerationRequest.to_args()``, ``bench/`` probes, embedders) share this
+parser, so a fully-defaulted namespace needs no import of the entry-point
+module.
 
     from library.inference.args import build_default_args
     args = build_default_args(["--prompt", "a fox", "--text_encoder", te, "--save_path", out])
@@ -23,10 +22,8 @@ import argparse
 def build_parser() -> argparse.ArgumentParser:
     """Build the Anima inference ``ArgumentParser`` (no parsing).
 
-    Every default here is authoritative — ``generate()`` reads ~40 fields via
-    ``getattr``, so this parser is what populates them. Exposed separately from
-    :func:`build_default_args` so a caller can append its own flags before
-    parsing.
+    Exposed separately from :func:`build_default_args` so a caller can append
+    its own flags before parsing.
     """
     parser = argparse.ArgumentParser(description="HunyuanImage inference script")
 
@@ -109,6 +106,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Override EasyControl scale (default: ss_cond_scale from the checkpoint, typically 1.0).",
+    )
+    parser.add_argument(
+        "--easycontrol_b_offset",
+        type=float,
+        default=None,
+        help="Additive offset on every block's b_cond gate — the continuous "
+        "cond-attention dial (each +1 gives ~e× more cond softmax mass). Applied "
+        "live after load_weights, NOT baked into the KV cache. Needed when a "
+        "checkpoint's b_cond_init leaves the cond stream disengaged at its "
+        "trained point (the subject descriptor engages around +7). Mirrors "
+        "scripts/edit.py's flag of the same name.",
     )
     parser.add_argument(
         "--easycontrol_image_match_size",
@@ -233,6 +241,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Path to trained pooled_text_proj weights (.safetensors) for modulation guidance",
+    )
+    parser.add_argument(
+        "--vocab_pack",
+        type=str,
+        default=None,
+        help="CJK vocab pack path prefix (the .safetensors/.json pair, no suffix). "
+        "Routes JA / KO / ZH prompt spans onto the pack's T5-side rows and hooks "
+        "them onto llm_adapter.embed (EN prompts stay bit-exact). Default: the "
+        "`vocab_pack` key in configs/base.toml (or ANIMA_VOCAB_PACK); '' = off.",
+    )
+    parser.add_argument(
+        "--no_vocab_pack",
+        action="store_true",
+        help="Ignore the configured vocab pack for this run (stock T5 tokenizer).",
     )
     parser.add_argument(
         "--mod_w",
@@ -379,7 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # SPD (arXiv:2605.18736): forces Euler, mutually exclusive with --spectrum.
-    # See networks/spd.py + bench/spd/.
+    # See networks/spd.py + docs/inference/spd.md (bench: _archive/spd/bench/).
     parser.add_argument(
         "--spd",
         action="store_true",
@@ -403,69 +425,83 @@ def build_parser() -> argparse.ArgumentParser:
         "len = len(stages)-1. Default: 0.7 per handoff (single-late knee).",
     )
 
-    # DCW (arXiv:2604.16044): opposite-sign on Anima -- see bench/dcw/findings.md.
+    # Deferred-foveated merge (archived line — _archive/bench/foveated/):
+    # training-free, forces Euler, mutually exclusive with --spectrum / --spd.
+    # See networks/foveated.py + docs/inference/foveated.md.
     parser.add_argument(
-        "--dcw",
-        action="store_true",
-        help="Enable post-step DCW correction (pixel mode). Composes with --spectrum, "
-        "--sampler, --tiled_diffusion. Negligible overhead.",
-    )
-    parser.add_argument(
-        "--dcw_lambda",
+        "--fovea_sigma_c",
         type=float,
-        default=-0.015,
-        help="DCW scaler λ. Default -0.015 (negative -- see docs/inference/dcw.md). "
-        "Paper-positive values widen |gap| on Anima. Use λ ≈ -0.010 if you "
-        "switch --dcw_band_mask to 'all'.",
+        default=0.0,
+        help="Enable deferred-foveated merge below this σ: full-grid sampling "
+        "above, reduced token sequence (fovea 1:1, periphery 2×2-token groups "
+        "merged) below. 0 (default) disables. 0.75 is the benched knee — "
+        "foveating inside the authority window makes a different image.",
     )
     parser.add_argument(
-        "--dcw_schedule",
-        type=str,
-        default="one_minus_sigma",
-        choices=["one_minus_sigma", "sigma_i", "const", "none"],
-        help="Per-step schedule: scaler(i) = λ · sched(σ_i). Default "
-        "one_minus_sigma -- matches Anima's late-σ bias envelope.",
+        "--fovea_frac",
+        type=float,
+        default=0.35,
+        help="Target fovea fraction of the image (default 0.35). Knob floor "
+        "0.25; ≤0.15 falsified on multi-subject prompts. Speed ceiling ~×1.6.",
     )
     parser.add_argument(
-        "--dcw_band_mask",
-        type=str,
-        default="LL",
-        help="Restrict DCW correction to a subset of Haar subbands. Default 'LL' "
-        "(LL-only is strictly better than broadband on Anima -- see "
-        "docs/inference/dcw.md §LL-only correction). Format: 'LL', 'HH', "
-        "'LH+HL+HH', or 'all'.",
+        "--fovea_mask_source",
+        choices=["combo", "cfgdelta", "x0var", "rect"],
+        default="combo",
+        help="Fovea mask source, derived at the σ_c crossing from signals the "
+        "pre-crossing steps already compute. 'combo' (default) = cfgdelta + "
+        "x0var, never loses to the static rect. cfgdelta needs CFG "
+        "(guidance_scale != 1) — CFG=1 auto-falls-back to x0var. 'rect' = "
+        "static center rect.",
     )
 
-    # DCW learnable calibrator (online observation + prompt fusion).
-    # See docs/proposal/dcw-learnable-calibrator-v4.md.
+    # Front-loaded cross-attn boost: scale the cross-attn residual of every
+    # block by λ on the CONDITIONAL forward only, gated to σ ≥ band — the
+    # window where cross-attn text drive exists at all
+    # (docs/findings/crossattn_self_attn_dominance.md). Amplifies ALL caption
+    # tags (framing priors ride along). Composes with --spectrum (real forwards
+    # boosted, forecast steps extrapolate from boosted features) and with
+    # --smc_cfg / --cfgpp / --mod_guidance (they touch the combine or the
+    # modulation pathway, not the cond forward). Under CFG 1.0 (turbo) the
+    # single forward is boosted. See docs/inference/xattn_boost.md.
     parser.add_argument(
-        "--dcw_calibrator",
-        "--dcw_v4",  # legacy alias -- drop after one release
-        type=str,
-        default=None,
-        dest="dcw_calibrator",
-        help="Path to a fusion_head.safetensors artifact (or a directory "
-        "containing one). When set, overrides --dcw_lambda with a per-step λ "
-        "from the calibrator. LL-only by default.",
-    )
-    parser.add_argument(
-        "--dcw_calibrator_gain",
-        "--dcw_v4_alpha_gain",  # legacy alias -- drop after one release
+        "--xattn_boost",
         type=float,
         default=1.0,
-        dest="dcw_calibrator_gain",
-        help="Multiplier on top of the head's α̂. α̂ is in λ-units "
-        "(median |α̂| ≈ lambda_anchor from training, default 0.015) so 1.0 is "
-        "identity -- use 2.0 to double the per-prompt magnitude, or a negative "
-        "value to flip sign. The per-step λ is clamped to ±0.05.",
+        help="Cross-attn residual gain λ for σ ≥ --xattn_boost_band, cond "
+        "forward only. 1.0 = off (exact identity). Phase-0 winner: 2.0 "
+        "(1.5 milder; 2.0 costs ~-8%% saturation on complex prompts).",
+    )
+    parser.add_argument(
+        "--xattn_boost_band",
+        type=float,
+        default=0.85,
+        help="σ cutoff for --xattn_boost (boost at σ ≥ band). Default 0.85 = "
+        "the drive-floor σ; ~10 of 28 shifted-schedule steps.",
+    )
+    parser.add_argument(
+        "--xattn_boost_renorm",
+        choices=["off", "tok", "img"],
+        default="img",
+        help="Norm matching for --xattn_boost (inert while boost is off). "
+        "'img' (default — Phase-1'' winner) rescales each block's post-"
+        "cross-attn state so the per-image MEAN token norm stays on the "
+        "gain-1 shell: keeps the boost's content wins, kills the saturation "
+        "burn, preserves relative token-norm peaks (neon/highlights). 'tok' "
+        "matches every token's norm (flattens peaks → grey tone; bench "
+        "reference only). 'off' = raw residual gain (pre-renorm behavior).",
+    )
+    parser.add_argument(
+        "--xattn_boost_renorm_frac",
+        type=float,
+        default=0.5,
+        help="Partial renorm exponent ρ (scale**ρ): 1.0 = full norm match, "
+        "0.0 = raw boost. Default 0.5 (Phase-1'' sweet spot at λ=2).",
     )
 
-    # SMC-CFG: Sliding-Mode Control CFG (α-adaptive variant; arXiv:2603.03281).
-    # Drop-in CFG modification: replaces w·e with w·(e + Δe) where
-    # Δe = -k_t·sign(s), s = (e - e_prev) + λ·e_prev, k_t = α·mean(|e_t|).
-    # No extra DiT forwards; one prev-step velocity-residual buffer. Composes
-    # with --dcw / --spectrum / --mod_guidance (operates strictly on the
-    # velocity-space CFG combine). See docs/inference/smc_cfg.md.
+    # SMC-CFG (library/inference/corrections/smc_cfg.py). Composes with
+    # --spectrum / --mod_guidance (operates strictly on the velocity-space CFG
+    # combine). See docs/inference/smc_cfg.md.
     parser.add_argument(
         "--smc_cfg",
         action="store_true",
@@ -484,7 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.2,
         help="SMC-CFG adaptive gain α ∈ (0, 1]. k_t := α·|e_t|.mean() per "
         "step — self-scales across model / CFG / σ / sample. Paper's fixed "
-        "k=0.1 was off by ~14× on Anima (bench/smc_cfg/analysis_and_proposal.md), "
+        "k=0.1 was off by ~14× on Anima (_archive/bench/smc_cfg/analysis_and_proposal.md), "
         "so the α path is the only mode now. α=0.2 is the production default.",
     )
 
@@ -509,11 +545,8 @@ def build_parser() -> argparse.ArgumentParser:
         "CNS, 0.0 = pass-through. Safety knob for over-injection off-manifold.",
     )
 
-    # DAVE: DC Attenuation for diVersity Enhancement (training-free, ICML'26).
-    # Per-block representation edit ĥ = α·μ + (h−μ) that attenuates the cross-seed-
-    # shared DC component to recover same-prompt diversity. Hook-based; standard
-    # denoise loop only (no Spectrum/SPD compose). Mask from
-    # bench/dave/derive_alpha_mask.py. See library/inference/corrections/dave.py.
+    # DAVE (library/inference/corrections/dave.py): standard denoise loop only
+    # (no Spectrum/SPD compose).
     parser.add_argument(
         "--dave",
         type=str,
@@ -611,6 +644,118 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inductor preset for --compile_blocks (e.g. 'default', "
         "'reduce-overhead'). None = inductor default.",
     )
+    parser.add_argument(
+        "--compile_dynamic_seq",
+        action="store_true",
+        help="--compile_blocks with the token-count axis marked dynamic, so one "
+        "graph covers every image size instead of one recompile per size. The "
+        "range is the min..max token count over the run's sizes (every "
+        "--from_file line), else the 1024 tier band. Implies --compile_blocks.",
+    )
+
+    # Upstream flags retained across the fork configuration merge.
+    parser.add_argument(
+            "--spectrum_schedule",
+            choices=["window", "sea"],
+            default="window",
+            help="Spectrum when-to-skip rule: 'window' (default, content-blind growing "
+            "window) or 'sea' (SeaCache SEA-filtered input-distance trigger). 'sea' "
+            "changes only the decision; the forecast+head reuse path is untouched.",
+        )
+    parser.add_argument(
+            "--spectrum_delta",
+            type=str,
+            default="auto",
+            help="SEA threshold for --spectrum_schedule sea. 'auto' (default) "
+            "self-calibrates to --spectrum_refresh_ratio on the first generate; a "
+            "float pins delta explicitly (for sweeps).",
+        )
+    parser.add_argument(
+            "--spectrum_refresh_ratio",
+            type=float,
+            default=-1.0,
+            help="Target post-warmup refresh fraction for SEA auto-delta calibration. "
+            "<=0 (default) matches the growing-window's own refresh fraction at this "
+            "step count (like-for-like at matched compute); a positive float pins it.",
+        )
+    parser.add_argument(
+            "--traj_stats",
+            action="store_true",
+            help="Record per-step/per-token/per-channel x̂₀ trajectory statistics "
+            "to an .npz sidecar (passive; does not change the generation).",
+        )
+    parser.add_argument(
+            "--traj_stats_dir",
+            type=str,
+            default="output/traj_stats",
+            help="Output directory for --traj_stats sidecars.",
+        )
+    parser.add_argument(
+            "--traj_stats_k",
+            type=int,
+            default=4,
+            help="Bits per channel for the --traj_stats quantization codes (1-8).",
+        )
+    parser.add_argument(
+            "--fsg",
+            action="store_true",
+            help="Enable Foresight Guidance pre-step latent calibration (CFG only). "
+            "Defaults band=[0.59,0.75], K=3, Δσ=0.1, γ=guidance_scale.",
+        )
+    parser.add_argument(
+            "--fsg_band",
+            type=float,
+            nargs=2,
+            default=[0.59, 0.75],
+            metavar=("SIGMA_LO", "SIGMA_HI"),
+            help="σ-band [lo, hi] where FSG calibrates. Default [0.59, 0.75] -- the "
+            "production band from the er_sde/28-step Plan-B calibration "
+            "(_archive/bench/fsg). "
+            "The contracting band moves DOWN with step count: it was [0.75, 0.85] at "
+            "20-step Euler, but at 28 steps σ≈0.84 stops contracting and the sweet "
+            "spot is σ≈0.75 (the operator contracts in mid-σ; σ≈0.94 always diverges, "
+            "ρ>1 -- the paper's noisy-stage prescription is wrong here). Re-probe with "
+            "_archive/bench/fsg if you change infer_steps.",
+        )
+    parser.add_argument(
+            "--fsg_k",
+            type=int,
+            default=3,
+            help="FSG fixed-point iterations per scheduled step. error ~ρ^K, ρ≈0.93 "
+            "⇒ K=3-4 captures ~all the gain. 0 disables (bit-exact baseline).",
+        )
+    parser.add_argument(
+            "--fsg_d_sigma",
+            type=float,
+            default=0.1,
+            help="FSG forward-backward interval Δσ (the calibration stride, not the "
+            "sampler step). Too large is what makes the noisy end diverge.",
+        )
+    parser.add_argument(
+            "--fsg_gamma",
+            type=float,
+            default=None,
+            help="FSG calibration guidance γ. Default None -- reuse --guidance_scale "
+            "(the paper's plain γ-combine).",
+        )
+    parser.add_argument(
+            "--cfgpp",
+            action="store_true",
+            help="Use the CFG++ substrate (App A.2): replace the constant-w cond/uncond "
+            "combine with the σ-scheduled CFG++ weight. The substrate FSG is defined "
+            "on; composes with er_sde and --spectrum. Needs its own λ sweep on Anima.",
+        )
+    parser.add_argument(
+            "--cfgpp_lambda",
+            type=float,
+            default=1.5,
+            help="CFG++ calibration strength λ. NB this is a FLOW-space coefficient "
+            "(guidance enters as λ·(1−σ')·σ·Δv), NOT the paper's DDIM ξ̃-space λ=0.6 — "
+            "the schedules differ. Default 1.5 = λ* from the er_sde/28-step sweep "
+            "(_archive/bench/fsg Plan A): best tracks CFG=4 saturation/contrast/composition "
+            "(λ<1.5 under-guides → composition wanders; λ≥2 over-saturates). Only used "
+            "with --cfgpp.",
+        )
     return parser
 
 

@@ -1,8 +1,8 @@
-"""Structured training-progress sink (Phase 0 of the daemon plan).
+"""Structured training-progress sink.
 
 Writes a JSONL event stream next to the checkpoint so any consumer (the GUI
-progress bar, the future training daemon, an MCP client) can follow a run by
-tailing one file instead of regex-parsing tqdm stdout. Append-only,
+progress bar, the daemon, an MCP client) can follow a run by tailing one
+file. Append-only,
 line-buffered, main-process only. One event per line:
 
     {"ev": "run_start", "ts": 0.0, "run": ..., "method": ..., "preset": ...,
@@ -19,12 +19,14 @@ line-buffered, main-process only. One event per line:
      "error": ...}
 
 ``log`` events mirror WARNING+ records from the root logger (see
-:meth:`ProgressSink.attach_log_mirror`) so a debugging reader gets the run's
-warnings/errors from this one structured file instead of grepping the
-tqdm-noisy stdout capture.
+:meth:`ProgressSink.attach_log_mirror`), so the run's warnings/errors are in
+this one structured file.
 
 A reader tails the file: missing file = not started; last line ``run_end`` =
 done. Every write is wrapped so a logging failure can never crash training.
+:func:`read_status` is the read side — it digests a whole stream into one
+status dict (step / rate / ETA / last ckpt / terminal status); ``make
+run-status`` (``scripts/run_status.py``) is its CLI.
 """
 
 from __future__ import annotations
@@ -195,8 +197,10 @@ class ProgressSink:
         anima_model_channels: Optional[int] = None,
         anima_base_sha256: Optional[str] = None,
     ) -> None:
-        """Open the file fresh (truncating any stale stream) and write the
-        opening event.
+        """Write the opening event, appending to a daemon-owned job stream.
+
+        Standalone CLI streams are opened fresh. Daemon relaunches keep earlier
+        steps/samples; the daemon records the byte offset of each new process.
 
         ``sampling_enabled`` mirrors the trainer's own gating decision
         (``sample_prompts`` set AND one of the ``--sample_every_*`` /
@@ -211,8 +215,21 @@ class ProgressSink:
             parent = os.path.dirname(self._path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
+            job_dir = os.environ.get("ANIMA_DAEMON_JOB_DIR")
+            append = bool(job_dir) and os.path.abspath(self._path) == os.path.abspath(
+                os.path.join(job_dir, "progress.jsonl")
+            )
+            needs_newline = False
+            if append and os.path.isfile(self._path) and os.path.getsize(self._path):
+                with open(self._path, "rb") as existing:
+                    existing.seek(-1, os.SEEK_END)
+                    needs_newline = existing.read(1) != b"\n"
             # line-buffered so tailing readers see each event immediately
-            self._fh = open(self._path, "w", buffering=1, encoding="utf-8")
+            self._fh = open(
+                self._path, "a" if append else "w", buffering=1, encoding="utf-8"
+            )
+            if needs_newline:
+                self._fh.write("\n")
         except Exception as exc:
             logger.debug("progress sink open failed: %s", exc)
             self._fh = None
@@ -343,6 +360,127 @@ class ProgressSink:
         self._closed = True
 
 
+def _pid_alive(pid: Optional[int]) -> Optional[bool]:
+    """``True``/``False`` if the pid is/isn't running, ``None`` if unknowable."""
+    if not pid:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # exists, owned by someone else
+        return True
+    except Exception:
+        return None
+    return True
+
+
+def read_status(path: str, *, rate_window: int = 20) -> dict:
+    """Digest a ``progress.jsonl`` stream into one run-status dict.
+
+    Answers "what step is this run at, and is it still alive?" with a
+    whole-file read of an append-only stream (a few thousand short lines even
+    for a long run). Truncated / partially-written lines are skipped, so it is safe to
+    call against a live run mid-write.
+
+    Keys: ``run``/``method``/``preset``/``pid``/``log_dir`` (from ``run_start``),
+    ``global_step``/``total_steps``/``pct``, ``elapsed``/``rate``/``eta``
+    (seconds; ``rate`` is steps/sec over the last ``rate_window`` step events,
+    ``None`` before two land), ``metrics`` (last ``step`` event's scalars),
+    ``val`` (last ``val`` event), ``ckpt`` (last ``ckpt`` event), ``warnings``
+    (``log`` event count) and ``status``:
+
+    ``running`` · ``ok`` · ``error`` · ``stopped`` (the ``run_end`` statuses) ·
+    ``dead`` (no ``run_end`` and the pid is gone — it was killed / OOMed) ·
+    ``unknown`` (no ``run_end``, liveness unknowable).
+    """
+    events: list[dict] = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except Exception:
+                continue  # torn last line on a live stream
+    if not events:
+        raise ValueError(f"no progress events in {path}")
+
+    def _last(ev: str) -> Optional[dict]:
+        for rec in reversed(events):
+            if rec.get("ev") == ev:
+                return rec
+        return None
+
+    start = _last("run_start") or {}
+    end = _last("run_end")
+    steps = [r for r in events if r.get("ev") == "step"]
+    last_step = steps[-1] if steps else None
+    last_val = _last("val")
+    last_ckpt = _last("ckpt")
+
+    global_step = None
+    if end is not None:
+        global_step = end.get("final_step")
+    if global_step is None and last_step is not None:
+        global_step = last_step.get("global_step")
+    total_steps = start.get("total_steps")
+    elapsed = events[-1].get("ts")
+
+    # Rate over a trailing window of step events — the run-average would be
+    # skewed by startup (model load, compile) on an otherwise steady run.
+    rate = None
+    window = steps[-rate_window:]
+    if len(window) >= 2:
+        d_step = window[-1].get("global_step", 0) - window[0].get("global_step", 0)
+        d_ts = window[-1].get("ts", 0) - window[0].get("ts", 0)
+        if d_step > 0 and d_ts > 0:
+            rate = d_step / d_ts
+
+    if end is not None:
+        status = end.get("status") or "unknown"
+    else:
+        alive = _pid_alive(start.get("pid"))
+        status = "running" if alive else ("dead" if alive is False else "unknown")
+
+    remaining = (
+        total_steps - global_step
+        if (total_steps and global_step is not None and status == "running")
+        else None
+    )
+    metrics = {
+        k: v
+        for k, v in (last_step or {}).items()
+        if k not in ("ev", "ts", "global_step", "epoch")
+    }
+    return {
+        "path": path,
+        "run": start.get("run"),
+        "method": start.get("method"),
+        "preset": start.get("preset"),
+        "pid": start.get("pid"),
+        "log_dir": start.get("log_dir"),
+        "status": status,
+        "error": (end or {}).get("error"),
+        "global_step": global_step,
+        "epoch": (last_step or {}).get("epoch"),
+        "total_steps": total_steps,
+        "pct": (
+            100.0 * global_step / total_steps
+            if (total_steps and global_step is not None)
+            else None
+        ),
+        "elapsed": elapsed,
+        "rate": rate,
+        "eta": (remaining / rate) if (rate and remaining and remaining > 0) else None,
+        "metrics": metrics,
+        "val": last_val,
+        "ckpt": last_ckpt,
+        "warnings": sum(1 for r in events if r.get("ev") == "log"),
+    }
+
+
 @contextmanager
 def run_scope(
     sink: Optional[ProgressSink],
@@ -356,7 +494,9 @@ def run_scope(
     ``run_start`` must already have fired (the sink is constructed earlier so it
     can be handed to the checkpoint saver). On block exit this maps the outcome
     to a status: normal return → ``ok``; ``KeyboardInterrupt`` → ``stopped``;
-    any other exception → ``error`` (re-raised either way). ``final_step`` is
+    :class:`~library.training.pause.TrainingPaused` → ``paused`` (with the
+    ``state_dir`` to resume from); any other exception → ``error`` (re-raised
+    either way). ``final_step`` is
     read lazily at exit so the event records where training actually stopped;
     ``extra_fields`` likewise — its dict (e.g. the liveness summary) is merged
     into the ``run_end`` event, and a failure inside it is swallowed so it can
@@ -379,10 +519,20 @@ def run_scope(
     if sink is None:
         yield
         return
+    from library.training.pause import TrainingPaused
+
     try:
         yield
     except KeyboardInterrupt:
         sink.run_end(status="stopped", final_step=final_step(), **_extra())
+        raise
+    except TrainingPaused as paused:
+        sink.run_end(
+            status="paused",
+            final_step=final_step(),
+            state_dir=paused.state_dir,
+            **_extra(),
+        )
         raise
     except BaseException as exc:
         sink.run_end(

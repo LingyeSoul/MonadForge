@@ -1,92 +1,39 @@
-# Inpaint — EasyControl control task (masked-region regeneration).
-#
-# Self-contained adapter descriptor (same shape as colorize.toml): top-level
-# `name` slug + [staging] / [preprocess] / [training] knob tables + the
-# [general]/[[datasets]] blueprint tail. The shared machinery in
-# scripts/tasks/training.py consumes it — inpaint trains the base `easycontrol`
-# method with the [training] table folded in as CLI overrides. Run the pipeline:
-#   make easycontrol-staging    EASYADAPTER=inpaint   # [staging] → masked cond tree
-#   make easycontrol-preprocess EASYADAPTER=inpaint   # [preprocess] → cond latents
-#   make easycontrol            EASYADAPTER=inpaint   # [training]  → train
-# CLI flags (ARGS="…") override any table value.
-#
-# Unlike colorize the text stage applies NO caption filter — inpaint reuses the
-# FULL caption (the hole content is described by it), but re-caches it with shuffle
-# + tag-dropout variants (text_shuffle_variants / text_tag_dropout_rate below) so
-# the model learns to fill from a partial caption too. The @artist prefix is
-# auto-protected from dropout.
-
-# Output slug — single source of truth for the derived trees. The staging / cond /
-# text caches live under post_image_dataset/easycontrol/<name>/ and the blueprint's
-# cond_cache_dir / text_cache_dir reference {name} (interpolated at train time).
-# Targets stay the shared corpus (post_image_dataset/resized + lora latent cache),
-# so only the synthetic masked tree + the variant text cache ride this slug.
 name = "inpaint"
 
-# Mask-synthesis knobs (read by easycontrol_adapters/inpainting/prep.py; any
-# --flag dest works as a key here). The staging step runs prep.py's mask stage
-# only (--skip_encode) over the resized corpus into {base}/staging.
 [staging]
-# Hole coverage band (LaMa-style free-form brush + rect generator). ~10-40% of
-# the frame keeps most of the image as context while leaving a substantial fill.
 min_frac = 0.10
 max_frac = 0.40
 
-# Cond-latent + caption-text caching knobs (read by the same prep.py; the
-# preprocess step runs its encode + text stages, --skip_mask). The inpaint *target*
-# latents are reused from the shared LoRA cache (no re-encode); the text stage
-# re-caches the full captions into {name}/text with shuffle + tag-dropout variants.
 [preprocess]
 batch_size = 4
 chunk_size = 64
-# Caption variants per image: v0 = verbatim full caption, v1+ = shuffled with
-# text_tag_dropout_rate of the tags dropped (@artist prefix protected). High dropout
-# → the model leans on context for the fill, with a partial caption as a light steer.
 text_shuffle_variants = 4
 text_tag_dropout_rate = 0.8
 
-# Training overrides folded onto configs/easycontrol/easycontrol.toml (CLI wins
-# the merge chain). Only the inpaint-specific deltas live here; infra knobs
-# (network_module, use_easycontrol, gradient/offload checkpointing) are inherited
-# from the base easycontrol method.
 [training]
-network_dim = 32              # default EasyControl rank — most of the image is
-network_alpha = 32            # given; bump to 48 if fills lack detail.
-network_args = [              # Do not use whitespace in each arg
-    "b_cond_init=-6.0",       # cond is essential (the masked image) — open the gate
+network_dim = 32
+network_alpha = 32
+network_args = [
+    "b_cond_init=-6.0",
     "cond_scale=1.0",
     "apply_ffn_lora=1",
 ]
 output_name = "anima_inpaint"
 sigmoid_bias = 0
-masked_loss = false           # whole-frame loss in v1 (see deferred upgrade #2)
+masked_loss = false
 
 learning_rate = 2e-5
-max_train_epochs = 4          # broader task than colorize's 3
+max_train_epochs = 4
 save_every_n_epochs = 4
 checkpointing_epochs = 4
 
-# The masked image is essential context — never drop the cond, and never blur it.
 easycontrol_drop_p = 0.0
 easycontrol_cond_noise_max = 0.0
 
-# Mostly text-guided fills, some context-only fills. Draw from the shuffled +
-# tag-dropped caption variants cached by the text stage (v0 verbatim included), and
-# fully drop the caption caption_dropout_rate of the time for pure context fills.
 caption_dropout_rate = 0.2
 use_shuffled_caption_variants = true
 
 blocks_to_swap = 0
-
-# === dataset blueprint =======================================================
-# target = the original full illustrations — latents + TE already cached under
-#          post_image_dataset/lora/ by `make preprocess`.
-# cond   = the same image with a free-form gray hole, latents cached under
-#          post_image_dataset/easycontrol/{name}/cond/ by the preprocess step.
-# text   = full-caption TE cache with shuffle + tag-dropout variants, redirected to
-#          .../{name}/text/ (latents still come from cache_dir, only the TE moves).
-# flip_aug is OFF: latents can't be flipped post-hoc, and the cond cache has no
-# flipped variant. {name} interpolates from the top-level slug at train time.
 
 [general]
 caption_extension = '.txt'
@@ -105,11 +52,6 @@ validation_seed = 42
   flip_aug = false
   num_repeats = 1
 
-# GUI dropdown metadata (ignored by the CLI descriptor machinery — train.py only
-# ever sees the extracted blueprint sidecar). The EasyControl tab lists this as a
-# descriptor variant: a file-edited launcher (edit this file directly, like
-# colorize.toml — no in-GUI form), with Preprocess + Train buttons driving the
-# staging → preprocess → descriptor-folded train flow.
 [variant]
 family = "easycontrol"
 label = "Inpaint (masked-region regeneration)"

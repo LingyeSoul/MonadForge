@@ -36,6 +36,7 @@ from library.inference import (
     generate_body,
     save_latent,
     save_output,
+    write_gen_manifest,
 )
 from library.inference.text import MAX_CROSSATTN_TOKENS
 
@@ -45,6 +46,9 @@ import networks.spectrum  # noqa: F401, E402
 
 # Same pattern for SPD (Spectral Progressive Diffusion) — registers spd_denoise.
 import networks.spd  # noqa: F401, E402
+
+# Same pattern for the deferred-foveated merge — registers foveated_denoise.
+import networks.foveated  # noqa: F401, E402
 
 from library.log import setup_logging  # noqa: E402
 
@@ -58,15 +62,10 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse command line arguments.
+    """Parse command line arguments (``argv=None`` reads ``sys.argv``).
 
-    ``argv=None`` reads ``sys.argv`` (the CLI path). Pass an explicit list to
-    build an args namespace programmatically -- see ``examples/01_generate.py``.
-
-    Thin delegate to :func:`library.inference.args.build_default_args`: the
-    parser definition lives in ``library`` so programmatic callers
-    (``GenerationRequest``, ``bench/`` probes) don't have to import this
-    entry-point script. ``from inference import parse_args`` still works.
+    Delegates to :func:`library.inference.args.build_default_args`, which owns
+    the parser definition. See ``examples/01_generate.py`` for programmatic use.
     """
     return build_default_args(argv)
 
@@ -180,6 +179,17 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
     # 2. Load DiT Model once
     logger.info("Loading DiT model for batch generation...")
     first_prompt_args = all_prompt_args_list[0]
+    if getattr(args, "compile_dynamic_seq", False):
+        from library.datasets.buckets import cluster_token_bands
+
+        counts = [
+            (h // 16) * (w // 16)
+            for h, w in (a.image_size for a in all_prompt_args_list)
+        ]
+        # One mark range per tier cluster: a union range across the gap between
+        # tiers raises ConstraintViolationError and dynamo falls back to eager.
+        first_prompt_args.compile_seq_range = (min(counts), max(counts))
+        first_prompt_args.compile_token_bands = cluster_token_bands(counts)
     anima = load_dit_model(first_prompt_args, device, dit_weight_dtype)
 
     # 3. Precompute Text Data (Text Encoder)
@@ -378,8 +388,8 @@ def process_interactive(args: argparse.Namespace) -> None:
                 prompt_data = parse_prompt_line(line)
                 prompt_args = apply_overrides(args, prompt_data)
 
-                # Pin the resolved seed for save_output (generate() no longer
-                # writes it back to the namespace).
+                # generate() doesn't write the resolved seed back; pin it for
+                # save_output.
                 prompt_args.seed = resolve_seed(prompt_args)
                 latent = generate(prompt_args, gen_settings, shared_models)
 
@@ -424,6 +434,13 @@ def _validate_model_path(path: str | None, label: str) -> None:
             f"{label} not found: {path}\n"
             f"Make sure the file exists or provide an absolute path via the CLI flag."
         )
+def _list_pngs(path) -> set:
+    """The set of ``*.png`` under ``path`` (empty if it doesn't exist yet). Diffed
+    before/after a run so the daemon manifest lists exactly this run's images."""
+    try:
+        return {os.path.join(path, n) for n in os.listdir(path) if n.endswith(".png")}
+    except OSError:
+        return set()
 
 
 def main():
@@ -453,6 +470,9 @@ def main():
     if args.lora_weight:
         for p in args.lora_weight:
             _validate_model_path(p, "LoRA weight")
+    # Snapshot the output dir to attribute new images to this run in the daemon
+    # result manifest.
+    _pngs_before = _list_pngs(getattr(args, "save_path", None))
 
     # Check if latents are provided
     latents_mode = args.latent_path is not None and len(args.latent_path) > 0
@@ -522,7 +542,12 @@ def main():
             save_output(args, vae, latent, device, original_base_names[i])
 
     else:
-        tokenize_strategy = strategy_anima.AnimaTokenizeStrategy(
+        from library.anima.vocab_pack import make_tokenize_strategy, resolve_active_pack
+
+        # --no_vocab_pack > --vocab_pack > base.toml `vocab_pack` ("" = off).
+        # load_dit_model hooks the same (memoised) pack onto llm_adapter.embed.
+        tokenize_strategy = make_tokenize_strategy(
+            resolve_active_pack(args),
             qwen3_path=args.text_encoder,
             t5_tokenizer_path=None,
             qwen3_max_length=MAX_CROSSATTN_TOKENS,
@@ -547,8 +572,8 @@ def main():
         else:
             # Single prompt mode
             gen_settings = get_generation_settings(args)
-            # generate() no longer writes the resolved seed back to args, so
-            # pin it here for save_output()'s filename + metadata.
+            # generate() doesn't write the resolved seed back to args; pin it
+            # for save_output()'s filename + metadata.
             args.seed = resolve_seed(args)
             latent = generate(args, gen_settings)
 
@@ -565,6 +590,11 @@ def main():
             vae.to(torch.bfloat16)
             vae.eval()
             save_output(args, vae, latent, device)
+
+    # Record a generation manifest + result pointer when running as a daemon job
+    # (no-op inline). Sorted so the manifest is stable.
+    new_images = sorted(_list_pngs(getattr(args, "save_path", None)) - _pngs_before)
+    write_gen_manifest(args, new_images)
 
     logger.info("Done!")
 

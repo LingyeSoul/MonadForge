@@ -9,10 +9,18 @@ cache_llm_adapter_outputs = true
 caption_dropout_rate = 0.1
 output_name = "anima"
 use_cmmd = false
+use_repa = true
+repa_mode = "relational"
+repa_weight = 0.05
+repa_layer = 8
+repa_encoder = "pe_spatial"
 
 [variant]
 family = "lora"
 label = "LoRA"
 description = "Plain classic LoRA — simplest baseline."
 order = 10
+target_res = [ 896, 1024,]
+
+[variant.stages.resize]
 target_res = [ 896, 1024,]

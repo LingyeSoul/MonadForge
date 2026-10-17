@@ -13,9 +13,10 @@ adding a delta.)
 Not supported (refuse by default; ``allow_partial=True`` to drop and proceed):
   - HydraLoRA moe     (layer-local router can't be baked under static weights)
   - postfix / prefix  (cross-attn KV splice, not a weight delta)
+  - register tokens   (ride the self-attn sequence; kept-live inference only)
 
 Same merge path as train.py's --base_weights warm-start. The CLI shell over
-this lives in ``scripts/merge_to_dit.py``.
+this lives in ``scripts/toolkits/merge_to_dit.py``.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ _NON_BAKEABLE_MARKERS: dict[str, str] = {
     ".lora_ups.": "HydraLoRA split (per-layer router) / step-expert turbo (per-step heads)",
     "postfix_": "postfix (cross-attn KV splice)",
     "prefix_": "prefix (cross-attn KV splice)",
+    "register_tokens": "register tokens (ride the self-attn sequence, not a weight delta)",
 }
 
 DTYPE_MAP: dict[str, torch.dtype] = {
@@ -180,7 +182,8 @@ def merge_adapter_into_dit(
                 "or retrain without these components. These cannot be folded into DiT Linear weights."
             )
         logger.warning(
-            msg + " allow_partial set; these components will be absent from the merged DiT."
+            msg
+            + " allow_partial set; these components will be absent from the merged DiT."
         )
 
     logger.info(f"loading base DiT: {dit}")

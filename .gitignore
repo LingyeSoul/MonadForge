@@ -1,4 +1,5 @@
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 .venv
@@ -7,6 +8,7 @@ dist/
 build/
 output/
 *.safetensors
+.vscode/
 # Ship the SmoothQuant-style per-channel calibration as a vendored asset —
 # small (~3.5MB), strictly an input-magnitude prior on the base DiT, not a
 # checkpoint. Regenerate via `bench/channel_stats/analyze_lora_input_channels.py`.
@@ -37,7 +39,15 @@ output_temp/
 results
 logs
 .claude
+_logs/
+.claude/*
+!.claude/skills/
+!.claude/agents/
+.claude/agents/session-explorer.md
+.claude/agents/archive-explorer.md
 .env
+.anima_backend
+.anima_torch
 .anima-update-backups
 node.zip
 tools/
@@ -62,3 +72,42 @@ bench/x0_contradiction/prompts/
 .pytest_tmp/
 .pytest_tmp_base/
 /.impeccable
+gui/gui_settings.json
+near_twins_temp.toml
+sincos_decensored/
+# ResShift SR sidecar (finished — lives under project/finished/sr/, whose own
+# .gitignore drops its venv / weights / data); the external clone is gone.
+/ResShift/
+/post_image_dataset
+# LaTeX build artifacts (paper dirs; main.pdf stays tracked)
+project/*/paper/*.log
+project/*/paper/*.blg
+# paper_bench = pure run artifacts (~15 GB, no scripts/docs; nothing ever tracked)
+project/sigma_lowres/paper_bench/
+
+project/sigma_lowres/bench/probe1024_closure
+project/sigma_lowres/bench/probe1280_cache
+
+# anime_tools stage reports (report_dir defaults anchor on ANIMA_HOME = this checkout)
+workspace/
+# anime_tools panel settings (seeded by the GUI's anime_tools tab)
+.anime_tools_gui.json
+
+# Path rules for a subdirectory go in a .gitignore inside it, not here: ripgrep
+# (Grep / Glob / Explore) applies this root file's path-anchored rules only when
+# a search starts at the repo root, so ignored files there leak into any search
+# started below it. Nested: configs/gui-methods, bench/cjk_{adapter,distill},
+# project/finished/{sr,cjk_aware_anima,cjk_aware_anima_dit,…/datasets}.
+
+# Font binaries (CJK lines fetch their own; on main their per-dir ignores are absent).
+# The GUI ships Pretendard.
+*.ttf
+*.otf
+*.ttc
+!gui/fonts/*.ttf
+
+# ocr_reader gate images (labels stay tracked in project/finished/ocr_reader/assets/)
+project/finished/ocr_reader/eval_data/
+
+# Cross-process curation settings lock (runtime only).
+.anime_tools_webui.lock

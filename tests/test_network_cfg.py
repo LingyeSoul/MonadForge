@@ -187,110 +187,23 @@ def test_crossattn_emb_router_source_rejects_per_layer():
         )
 
 
-def test_freq_router_mode_defaults_to_learned():
-    """Absent ``freq_router_mode`` ⇒ "learned" (the paper-faithful MLP path)."""
+def test_retained_independent_a_validates_routing():
+    """MonadForge retains independent-A experts with their FEI routing contract."""
+    from networks import NETWORK_REGISTRY
+
+    module_class = NETWORK_REGISTRY["stacked_experts_global_fei"].module_class
     cfg = LoRANetworkCfg.from_kwargs(
-        {
-            "use_chimera_hydra": "true",
-            "num_experts_content": "3",
-            "num_experts_freq": "3",
-        },
-        network_dim=8,
-        network_alpha=4.0,
-        neuron_dropout=None,
-        module_class=HydraLoRAModule,
+        {"use_moe_style": "independent_A", "route_per_layer": False, "router_source": "fei"},
+        network_dim=8, network_alpha=4.0, neuron_dropout=None, module_class=module_class,
     )
-    assert cfg.freq_router_mode == "learned"
-    assert cfg.freq_router_tau == 1.0
-
-
-def test_freq_router_mode_fei_parses():
-    """``freq_router_mode="fei"`` parses (case-insensitive) with K_f == fei bands."""
-    cfg = LoRANetworkCfg.from_kwargs(
-        {
-            "use_chimera_hydra": "true",
-            "num_experts_content": "4",
-            "num_experts_freq": "2",
-            "fei_feature_dim": "2",
-            "freq_router_mode": "FEI",
-            "freq_router_tau": "0.5",
-        },
-        network_dim=8,
-        network_alpha=4.0,
-        neuron_dropout=None,
-        module_class=HydraLoRAModule,
-    )
-    assert cfg.freq_router_mode == "fei"
-    assert cfg.freq_router_tau == 0.5
-
-
-def test_freq_router_mode_fei_requires_kf_eq_fei_dim():
-    """Hardwired FEI gate maps each band to one expert, so K_f must equal
-    ``fei_feature_dim`` — a mismatch is a config error, not a silent reshape."""
-    with pytest.raises(ValueError, match="num_experts_freq must equal fei_feature_dim"):
+    assert cfg.use_moe_style == "independent_A"
+    assert cfg.router_source == "fei" and cfg.route_per_layer is False
+    # A network-level router cannot silently use a per-Linear input signal.
+    with pytest.raises(ValueError, match="router_source='input' requires route_per_layer=True"):
         LoRANetworkCfg.from_kwargs(
-            {
-                "use_chimera_hydra": "true",
-                "num_experts_content": "3",
-                "num_experts_freq": "3",  # != fei_feature_dim=2
-                "fei_feature_dim": "2",
-                "freq_router_mode": "fei",
-            },
-            network_dim=8,
-            network_alpha=4.0,
-            neuron_dropout=None,
-            module_class=HydraLoRAModule,
+            {"use_moe_style": "independent_A", "route_per_layer": False},
+            network_dim=8, network_alpha=4.0, neuron_dropout=None, module_class=module_class,
         )
-
-
-def test_freq_router_mode_invalid_raises():
-    with pytest.raises(ValueError, match="expected 'learned' or 'fei'"):
-        LoRANetworkCfg.from_kwargs(
-            {
-                "use_chimera_hydra": "true",
-                "num_experts_content": "3",
-                "num_experts_freq": "2",
-                "fei_feature_dim": "2",
-                "freq_router_mode": "hardwired",
-            },
-            network_dim=8,
-            network_alpha=4.0,
-            neuron_dropout=None,
-            module_class=HydraLoRAModule,
-        )
-
-
-def test_from_weights_freq_router_mode_round_trip():
-    """The ``ss_chimera_freq_router_mode`` / ``_tau`` stamps survive the
-    metadata → ``from_weights`` rebuild; absent stamp ⇒ "learned"."""
-    common = dict(
-        modules_dim={"m": 4},
-        modules_alpha={"m": 4.0},
-        module_class=HydraLoRAModule,
-        train_llm_adapter=False,
-        is_hydra_or_ortho_hydra=False,
-        hydra_num_experts=6,
-        sigma_feature_dim_detected=None,
-        sigma_router_names=None,
-        hydra_router_names=None,
-        channel_scales_dict=None,
-        new_use_moe_style="shared_A",
-        new_route_per_layer=True,
-        new_router_source="fei",
-        is_chimera_hydra=True,
-        num_experts_content=4,
-        num_experts_freq=2,
-        fei_feature_dim=2,
-    )
-    cfg_fei = LoRANetworkCfg.from_weights(
-        **common, freq_router_mode="fei", freq_router_tau=0.5
-    )
-    assert cfg_fei.freq_router_mode == "fei"
-    assert cfg_fei.freq_router_tau == 0.5
-
-    cfg_default = LoRANetworkCfg.from_weights(**common)
-    assert cfg_default.freq_router_mode == "learned"
-    assert cfg_default.freq_router_tau == 1.0
 
 
 def test_legacy_router_kwargs_raise():
@@ -373,6 +286,90 @@ def test_reg_dims_and_reg_lrs_kv_pairs():
     assert cfg.reg_lrs == {"blocks\\.0.*": 1e-4, "blocks\\.1.*": 2e-4}
 
 
+def test_train_adaln_desugars_to_include_pattern():
+    """``train_adaln`` is an exclude-override, not a whitelist: it appends the
+    adaln include and leaves the default attn+MLP target set alone."""
+    cfg = LoRANetworkCfg.from_kwargs(
+        {"train_adaln": "true"},
+        network_dim=4,
+        network_alpha=1.0,
+        neuron_dropout=None,
+        module_class=LoRAModule,
+    )
+    assert ".*adaln_up_.*" in cfg.include_patterns
+    # the default exclude still lists adaln_up_ — the include is what beats it
+    assert any("adaln_up_" in p for p in cfg.exclude_patterns)
+    # rank inherits the network's unless overridden; alpha is always pinned via
+    # reg_alphas, but at adaln_rank=0 the √r factor is 1 → the network alpha
+    assert not cfg.reg_dims
+    assert cfg.reg_alphas == {".*adaln_up_.*": 1.0}
+
+
+def test_adaln_alpha_derives_from_network_rank_alpha():
+    """Unset ``adaln_alpha`` follows the network's rank/alpha by the √r law
+    rather than inheriting network_alpha at the smaller adaln rank (which would
+    run the adaln modules network_dim/adaln_rank hotter in alpha/rank)."""
+    cfg = LoRANetworkCfg.from_kwargs(
+        {"train_adaln": "true", "adaln_rank": "16"},
+        network_dim=32,
+        network_alpha=128.0,
+        neuron_dropout=None,
+        module_class=LoRAModule,
+    )
+    assert cfg.reg_alphas[".*adaln_up_.*"] == pytest.approx(128.0 * (0.5**0.5))
+    # and it tracks network_alpha rather than a hard-coded constant
+    cfg = LoRANetworkCfg.from_kwargs(
+        {"train_adaln": "true", "adaln_rank": "16"},
+        network_dim=32,
+        network_alpha=32.0,
+        neuron_dropout=None,
+        module_class=LoRAModule,
+    )
+    assert cfg.reg_alphas[".*adaln_up_.*"] == pytest.approx(32.0 * (0.5**0.5))
+
+
+def test_train_adaln_off_leaves_include_patterns_untouched():
+    cfg = LoRANetworkCfg.from_kwargs(
+        {"include_patterns": "['baz.*']"},
+        network_dim=4,
+        network_alpha=1.0,
+        neuron_dropout=None,
+        module_class=LoRAModule,
+    )
+    assert cfg.include_patterns == ["baz.*"]
+
+
+def test_adaln_rank_and_alpha_ride_the_reg_overrides():
+    """``adaln_rank`` / ``adaln_alpha`` desugar onto the same pattern via
+    reg_dims / reg_alphas, merging with any user-supplied entries."""
+    cfg = LoRANetworkCfg.from_kwargs(
+        {
+            "train_adaln": "true",
+            "adaln_rank": "32",
+            "adaln_alpha": "128",
+            "network_reg_dims": "blocks\\.0.*=8",
+        },
+        network_dim=4,
+        network_alpha=1.0,
+        neuron_dropout=None,
+        module_class=LoRAModule,
+    )
+    assert cfg.reg_dims == {"blocks\\.0.*": 8, ".*adaln_up_.*": 32}
+    assert cfg.reg_alphas == {".*adaln_up_.*": 128.0}
+
+
+@pytest.mark.parametrize("key, value", [("adaln_rank", "32"), ("adaln_alpha", "128")])
+def test_adaln_rank_alpha_require_train_adaln(key, value):
+    with pytest.raises(ValueError, match="train_adaln"):
+        LoRANetworkCfg.from_kwargs(
+            {key: value},
+            network_dim=4,
+            network_alpha=1.0,
+            neuron_dropout=None,
+            module_class=LoRAModule,
+        )
+
+
 def _moe_stamps(router_source: str = "sigma") -> dict:
     """Three-axis stamps mimicking ``LoRANetwork.save_weights`` for a Hydra
     checkpoint. plan2 task #6 retired the legacy ``ss_use_hydra`` /
@@ -391,7 +388,7 @@ def test_from_weights_warm_start_shape():
         modules_alpha={"foo": 1.0, "bar": 2.0},
         module_class=HydraLoRAModule,
         train_llm_adapter=True,
-        is_hydra_or_ortho_hydra=True,
+        is_hydra=True,
         hydra_num_experts=8,
         sigma_feature_dim_detected=16,
         sigma_router_names=["foo"],
@@ -417,7 +414,7 @@ def test_from_weights_no_sigma():
         modules_alpha={"foo": 1.0},
         module_class=LoRAModule,
         train_llm_adapter=False,
-        is_hydra_or_ortho_hydra=False,
+        is_hydra=False,
         hydra_num_experts=0,
         sigma_feature_dim_detected=None,
         sigma_router_names=None,
@@ -438,7 +435,7 @@ def test_from_weights_moe_without_stamps_raises():
             modules_alpha={"foo": 1.0},
             module_class=HydraLoRAModule,
             train_llm_adapter=False,
-            is_hydra_or_ortho_hydra=True,
+            is_hydra=True,
             hydra_num_experts=4,
             sigma_feature_dim_detected=16,
             sigma_router_names=["foo"],
@@ -453,7 +450,7 @@ def test_from_weights_sigma_band_partition_off_by_default():
         modules_alpha={"foo": 1.0},
         module_class=HydraLoRAModule,
         train_llm_adapter=False,
-        is_hydra_or_ortho_hydra=True,
+        is_hydra=True,
         hydra_num_experts=12,
         sigma_feature_dim_detected=16,
         sigma_router_names=["foo"],
@@ -470,7 +467,7 @@ def test_from_weights_sigma_band_partition_round_trip():
         modules_alpha={"foo": 1.0},
         module_class=HydraLoRAModule,
         train_llm_adapter=False,
-        is_hydra_or_ortho_hydra=True,
+        is_hydra=True,
         hydra_num_experts=12,
         sigma_feature_dim_detected=16,
         sigma_router_names=["foo"],
@@ -491,7 +488,7 @@ def test_from_weights_sigma_band_partition_with_custom_boundaries():
         modules_alpha={"foo": 1.0},
         module_class=HydraLoRAModule,
         train_llm_adapter=False,
-        is_hydra_or_ortho_hydra=True,
+        is_hydra=True,
         hydra_num_experts=6,
         sigma_feature_dim_detected=16,
         sigma_router_names=["foo"],

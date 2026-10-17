@@ -73,7 +73,7 @@
           <v-card-title class="text-body-2 d-flex align-center">
             <v-icon :icon="stateIcon(task.state)" size="small" class="mr-2" />
             <span class="text-truncate">{{ task.command }}</span>
-            <v-chip v-if="task.command.startsWith('qwen21-') || task.category === 'training'" size="x-small" variant="tonal" class="ml-2">{{ task.command.startsWith('qwen21-') ? 'Qwen-Image 2.1' : 'Anima' }}</v-chip>
+            <v-chip v-if="task.command.startsWith('moss-') || task.command.startsWith('qwen21-') || task.category === 'training'" size="x-small" variant="tonal" class="ml-2">{{ task.command.startsWith('moss-') ? 'MOSS' : task.command.startsWith('qwen21-') ? 'Qwen-Image 2.1' : 'Anima' }}</v-chip>
             <v-spacer />
             <v-chip
               v-if="task.state === 'pending' && task.queue_position != null"
@@ -131,7 +131,7 @@
             </v-btn>
             <v-spacer class="task-action-spacer" />
             <v-btn
-              v-if="task.state === 'running' || task.output_lines > 0 || task.command === 'qwen21-generate'"
+              v-if="task.state === 'running' || task.output_lines > 0 || ['qwen21-generate', 'moss-generate'].includes(task.command)"
               size="x-small"
               variant="text"
               @click="selectedTask = task.task_id"
@@ -153,7 +153,7 @@
           <v-card-title class="text-body-2 d-flex align-center flex-shrink-0 py-2">
             <v-icon :icon="stateIcon(task.state)" size="small" class="mr-2" />
             <span class="text-truncate">{{ task.command }}</span>
-            <v-chip v-if="task.command.startsWith('qwen21-') || task.category === 'training'" size="x-small" variant="tonal" class="ml-2">{{ task.command.startsWith('qwen21-') ? 'Qwen-Image 2.1' : 'Anima' }}</v-chip>
+            <v-chip v-if="task.command.startsWith('moss-') || task.command.startsWith('qwen21-') || task.category === 'training'" size="x-small" variant="tonal" class="ml-2">{{ task.command.startsWith('moss-') ? 'MOSS' : task.command.startsWith('qwen21-') ? 'Qwen-Image 2.1' : 'Anima' }}</v-chip>
             <v-spacer />
             <v-chip
               v-if="task.state === 'pending' && task.queue_position != null"
@@ -184,7 +184,7 @@
           <v-progress-linear v-if="task.state === 'running' || task.state === 'stopping'" indeterminate color="primary" height="2" class="flex-shrink-0" />
           <v-card-text class="d-flex flex-column pa-2" style="flex: 1 1 0; min-height: 0;">
             <LogStream :task-id="task.task_id" @done="onTaskDone" />
-            <QwenTaskResults v-if="task.command === 'qwen21-generate'" :task-id="task.task_id" :state="task.state" />
+            <QwenTaskResults :family="task.command.startsWith('moss-') ? 'moss' : 'qwen21'" v-if="['qwen21-generate', 'moss-generate'].includes(task.command)" :task-id="task.task_id" :state="task.state" />
           </v-card-text>
           <v-card-actions class="task-card-actions flex-shrink-0 py-1">
             <v-btn

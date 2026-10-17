@@ -1,8 +1,8 @@
 """Inference entry-points for shipped methods (test / test-* commands).
 
 All variants share ``INFERENCE_BASE`` from ``_common`` and add method-specific
-flags. Experimental inference commands (exp-test-postfix*, exp-test-prefix,
-exp-test-ref) live in ``scripts/experimental_tasks/inference.py``.
+flags. Experimental inference commands (exp-test-soft, exp-test-directedit*)
+live in ``scripts/experimental_tasks/inference.py``.
 """
 
 from __future__ import annotations
@@ -16,11 +16,13 @@ from ._common import (
     INFERENCE_BASE,
     ROOT,
     _random_ref_image,
+    _resolve_run_mode,
     latest_hydra,
     latest_lora,
     latest_output,
     override_arg,
     run,
+    run_command,
 )
 
 
@@ -36,18 +38,26 @@ def _mod_flags() -> list[str]:
 def _base_test_args(*, lora_default: bool = True) -> list[str]:
     """Build the shared ``inference.py`` argv prefix used by every ``test*`` command.
 
-    Honors three env levers so they compose uniformly across ``test``,
-    ``test-smc-cfg``, ``test-dcw``, ``test-dcw-v4``:
+    Honors these env levers so they compose uniformly across ``test`` and
+    ``test-smc-cfg``:
 
     - ``NOLORA=1`` skips ``--lora_weight`` (bare DiT). When unset, ``lora_default``
-      decides whether the caller wants a LoRA by default — ``test-dcw-v4`` opts
-      out (DCW v4 is meant to ride on the bare DiT unless the user adds one).
-    - ``SPECTRUM=1`` appends Spectrum flags.
+      decides whether the caller wants a LoRA by default.
+    - ``SPECTRUM=1`` appends Spectrum flags. ``SEA=1`` (with SPECTRUM=1) swaps the
+      growing-window skip rule for the SeaCache SEA-distance trigger; tune via
+      ``SPECTRUM_DELTA=`` (default ``auto``) and ``SPECTRUM_REFRESH_RATIO=``.
     - ``SPD=1`` appends SPD (Spectral Progressive Diffusion) flags. Mutually
       exclusive with ``SPECTRUM=1`` (both replace the denoise loop).
     - ``MOD=1`` appends ``--pooled_text_proj <latest>``.
     - ``DAVE=1`` appends the DAVE DC-attenuation flags (``--dave auto``); tune via
       ``DAVE_STRENGTH=``, ``DAVE_SIGMA='lo,hi'`` and ``DAVE_TAU=`` (early-step cutoff).
+    - ``FSG=1`` appends Foresight Guidance pre-step latent calibration (CFG-only);
+      tune via ``FSG_BAND='lo,hi'``, ``FSG_K=``, ``FSG_D_SIGMA=``, ``FSG_GAMMA=``.
+      Composes with ``SPECTRUM=1`` (incl. ``SEA=1``) — calibrated steps are forced
+      to actual forwards. No-op under ``SPD=1`` (it replaces the loop).
+    - ``XATTN_BOOST=<λ>`` appends ``--xattn_boost λ`` (front-loaded cross-attn
+      gain, cond forward only, σ ≥ band; band via ``XATTN_BOOST_BAND=``,
+      default 0.85). Composes with every other lever here.
     """
     args = list(INFERENCE_BASE)
     nolora_env = os.environ.get("NOLORA")
@@ -69,6 +79,12 @@ def _base_test_args(*, lora_default: bool = True) -> list[str]:
         args += _mod_flags()
     if _env_truthy("DAVE"):
         args += _dave_flags()
+    if _env_truthy("FSG"):
+        args += _fsg_flags()
+    if boost := os.environ.get("XATTN_BOOST", "").strip():
+        args += ["--xattn_boost", boost]
+        if band := os.environ.get("XATTN_BOOST_BAND", "").strip():
+            args += ["--xattn_boost_band", band]
     return args
 
 
@@ -91,7 +107,7 @@ def _dave_flags() -> list[str]:
 
 
 def _spectrum_flags(stop_caching_step: int = 27) -> list[str]:
-    return [
+    flags = [
         "--spectrum",
         "--spectrum_window_size",
         "2.0",
@@ -110,6 +126,18 @@ def _spectrum_flags(stop_caching_step: int = 27) -> list[str]:
         "--spectrum_calibration",
         "0.0",
     ]
+    # SEA=1 opts into the SeaCache SEA-distance trigger (off by default).
+    # SPECTRUM_DELTA (default 'auto') / SPECTRUM_REFRESH_RATIO tune it.
+    if _env_truthy("SEA"):
+        flags += [
+            "--spectrum_schedule",
+            "sea",
+            "--spectrum_delta",
+            os.environ.get("SPECTRUM_DELTA", "auto").strip() or "auto",
+        ]
+        if rr := os.environ.get("SPECTRUM_REFRESH_RATIO", "").strip():
+            flags += ["--spectrum_refresh_ratio", rr]
+    return flags
 
 
 def _spd_flags() -> list[str]:
@@ -130,9 +158,29 @@ def cmd_test(extra):
     run([*_base_test_args(), *extra])
 
 
+def cmd_gen(extra):
+    """Batch generation routed through the daemon (attach-by-default).
+
+    Same argv as ``make test`` (shares ``_base_test_args`` — NOLORA / SPECTRUM /
+    MOD / DAVE / FSG env levers all compose), but submitted as a GPU command job
+    so it **queues behind** a live training run instead of OOM-colliding with it,
+    survives the terminal closing, and lands a generation manifest in the job
+    record. ``--queue`` detaches (overnight seed/ckpt
+    sweeps), ``--inline`` bypasses the daemon (identical to ``make test``).
+
+    Point at a specific adapter / prompt file / seed grid via ARGS, e.g.
+    ``make gen ARGS="--lora_weight output/ckpt/foo.safetensors --from_file prompts.txt"``.
+    """
+    mode, extra = _resolve_run_mode(extra)
+    # _base_test_args() leads with the python exe (INFERENCE_BASE[0]); run_command
+    # prepends the interpreter itself (venv python for the daemon), so drop it.
+    argv = [*_base_test_args()[1:], *extra]
+    run_command("gen", argv, mode=mode)
+
+
 def cmd_test_hydra(extra):
     # Uses the moe sibling (router-live); static-merge is auto-skipped in
-    # library/inference_pipeline.py:_is_hydra_moe detection.
+    # library/inference/models.py:_is_hydra_moe detection.
     run([*INFERENCE_BASE, "--lora_weight", str(latest_hydra()), *extra])
 
 
@@ -166,101 +214,14 @@ def cmd_test_merge(extra):
     run([*INFERENCE_BASE, "--dit", str(chosen), *extra])
 
 
-def cmd_test_dcw(extra):
-    """Inference with latest LoRA + DCW post-step correction.
-
-    Defaults bake in λ=0.01 + one_minus_sigma schedule (see
-    bench/dcw/findings.md). Override via --dcw_lambda / --dcw_schedule in extra.
-    Honors SPECTRUM / MOD / NOLORA env levers (see ``_base_test_args``).
-    """
-    run([*_base_test_args(), "--dcw", "--dcw_lambda", "0.01", *extra])
-
-
 def cmd_test_smc_cfg(extra):
     """Inference with latest LoRA + SMC-CFG (arXiv:2603.03281).
 
     Production defaults (λ=5, α=0.2). Override via --smc_cfg_lambda /
     --smc_cfg_alpha in extra. Honors SPECTRUM / MOD / NOLORA env levers
-    (see ``_base_test_args``); composes with --dcw via extra.
+    (see ``_base_test_args``).
     """
     run([*_base_test_args(), "--smc_cfg", *extra])
-
-
-def _latest_fusion_head() -> str:
-    """Resolve the most recent fusion_head.safetensors under any DCW root.
-
-    Scans output/dcw/ (new `make dcw` output), post_image_dataset/dcw/
-    (legacy), and bench/dcw/results/ (legacy). Newest mtime wins.
-    """
-    from pathlib import Path
-
-    roots = [
-        Path("output/dcw"),
-        Path("post_image_dataset/dcw"),
-        Path("bench/dcw/results"),
-    ]
-    candidates: list[Path] = []
-    for root in roots:
-        if root.exists():
-            candidates.extend(root.glob("*/fusion_head.safetensors"))
-    if not candidates:
-        raise SystemExit(
-            "no fusion_head.safetensors found under output/dcw/, "
-            "post_image_dataset/dcw/, or bench/dcw/results/ — "
-            "run `make dcw-train` first"
-        )
-    return str(max(candidates, key=lambda p: p.stat().st_mtime))
-
-
-def cmd_test_dcw_v4(extra):
-    """Inference with DCW learnable calibrator (no LoRA by default).
-
-    Auto-resolves the most recent fusion_head.safetensors. Pass
-    --dcw_calibrator <path> (or legacy --dcw_v4 <path>) in extra to override.
-    Honors SPECTRUM / MOD / NOLORA env levers (see ``_base_test_args``).
-    Defaults to NOLORA semantics; set ``NOLORA=0`` to attach the latest LoRA,
-    or pass ``--lora_weight <path>`` in extra to attach a specific one.
-    """
-    extra_has_calib = any(a == "--dcw_calibrator" or a == "--dcw_v4" for a in extra)
-    calib_args = [] if extra_has_calib else ["--dcw_calibrator", _latest_fusion_head()]
-    run([*_base_test_args(lora_default=False), *calib_args, *extra])
-
-
-def cmd_test_spectrum_dcw(extra):
-    """Spectrum + DCW composed. Equivalent to ``make test SPECTRUM=1 --dcw``."""
-    run(
-        [
-            *INFERENCE_BASE,
-            "--lora_weight",
-            str(latest_lora()),
-            *_spectrum_flags(stop_caching_step=27),
-            "--dcw",
-            *extra,
-        ]
-    )
-
-
-def cmd_test_dcw_v4_spectrum(extra):
-    """Spectrum + DCW learnable calibrator composed.
-
-    Spectrum knobs match ``cmd_test`` with stop_caching_step=27 to match
-    DCW's 28-step contract, plus DCW calibrator (auto-resolves the most recent
-    fusion_head.safetensors). Pass --dcw_calibrator <path> in extra to override.
-    """
-    extra_has_calib = any(a == "--dcw_calibrator" or a == "--dcw_v4" for a in extra)
-    calib_args = [] if extra_has_calib else ["--dcw_calibrator", _latest_fusion_head()]
-    run(
-        [
-            *INFERENCE_BASE,
-            "--lora_weight",
-            str(latest_lora()),
-            *_spectrum_flags(stop_caching_step=27),
-            *calib_args,
-            "--infer_steps",
-            "28",
-            *extra,
-        ]
-    )
 
 
 def cmd_test_easycontrol(extra):
@@ -295,18 +256,49 @@ def cmd_test_easycontrol(extra):
         "empty_prompt": False,
     }
     _ADAPTERS = {
-        # colorize: feed a real B&W manga page; empty prompt → caption-free colorize.
+        # colorize: feed a real B&W manga page; empty prompt = caption-free colorize.
         "colorize": {
             "weight": "anima_colorize",
             "out": "colorize",
             "ref_dir": ROOT / "post_image_dataset" / "resized",
             "empty_prompt": True,
         },
-        # inpaint: the ref is the already-masked (gray-holed) PNG; a caption steers
-        # the fill, so don't force an empty prompt.
+        # inpaint: ref is the already-masked (gray-holed) PNG; a caption steers the fill.
         "inpaint": {
             "weight": "anima_inpaint",
             "out": "inpaint",
+            "ref_dir": ROOT / "post_image_dataset" / "resized",
+            "empty_prompt": False,
+        },
+        # phash_edit: ref is the source image and the prompt is an EDIT
+        # INSTRUCTION in the delta grammar ("glasses, -hat"), not a description
+        # -- shared tags cancel out of a delta, so identity rides the cond
+        # stream. Never force an empty prompt: empty is the identity/no-op arm's
+        # caption and returns a copy of the ref.
+        "phash_edit": {
+            "weight": "anima_easycontrol_phash_edit",
+            "out": "phash_edit",
+            "ref_dir": ROOT / "post_image_dataset" / "resized",
+            "empty_prompt": False,
+        },
+        # region: ref is a white canvas + paint blob marking where the character
+        # goes; the prompt owns identity/scene. Staged conds under
+        # post_image_dataset/easycontrol/region/cond_images/ make ready refs.
+        "region": {
+            "weight": "anima_easycontrol_region",
+            "out": "region",
+            "ref_dir": ROOT
+            / "post_image_dataset"
+            / "easycontrol"
+            / "region"
+            / "cond_images",
+            "empty_prompt": False,
+        },
+        # subject: ref is a DIFFERENT image of the character to retrieve; the
+        # prompt owns layout/pose, so never force an empty prompt.
+        "subject": {
+            "weight": "anima_easycontrol_subject",
+            "out": "subject",
             "ref_dir": ROOT / "post_image_dataset" / "resized",
             "empty_prompt": False,
         },
@@ -404,6 +396,108 @@ def cmd_test_turbo(extra):
             *base,
             "--lora_weight",
             str(weight),
+            *extra,
+        ]
+    )
+
+
+def _fsg_flags() -> list[str]:
+    """FSG pre-step latent calibration (Foresight Guidance). ``FSG_BAND='lo,hi'``,
+    ``FSG_K``, ``FSG_D_SIGMA``, ``FSG_GAMMA`` tune the live knobs; all optional.
+    Composes with SPECTRUM (incl. SEA); no-op under SPD (it replaces the loop)."""
+    flags = ["--fsg"]
+    if band := os.environ.get("FSG_BAND", "").strip():
+        lo, hi = (x.strip() for x in band.split(","))
+        flags += ["--fsg_band", lo, hi]
+    if k := os.environ.get("FSG_K", "").strip():
+        flags += ["--fsg_k", k]
+    if ds := os.environ.get("FSG_D_SIGMA", "").strip():
+        flags += ["--fsg_d_sigma", ds]
+    if g := os.environ.get("FSG_GAMMA", "").strip():
+        flags += ["--fsg_gamma", g]
+    return flags
+
+
+def cmd_test_dcw(extra):
+    """Inference with latest LoRA + DCW post-step correction.
+
+    Defaults bake in λ=0.01 + one_minus_sigma schedule (see
+    bench/dcw/findings.md). Override via --dcw_lambda / --dcw_schedule in extra.
+    Honors SPECTRUM / MOD / NOLORA env levers (see ``_base_test_args``).
+    """
+    run([*_base_test_args(), "--dcw", "--dcw_lambda", "0.01", *extra])
+
+
+def _latest_fusion_head() -> str:
+    """Resolve the most recent fusion_head.safetensors under any DCW root.
+
+    Scans output/dcw/ (new `make dcw` output), post_image_dataset/dcw/
+    (legacy), and bench/dcw/results/ (legacy). Newest mtime wins.
+    """
+    roots = [
+        ROOT / "output/dcw",
+        ROOT / "post_image_dataset/dcw",
+        ROOT / "bench/dcw/results",
+    ]
+    candidates: list[Path] = []
+    for root in roots:
+        if root.exists():
+            candidates.extend(root.glob("*/fusion_head.safetensors"))
+    if not candidates:
+        raise SystemExit(
+            "no fusion_head.safetensors found under output/dcw/, "
+            "post_image_dataset/dcw/, or bench/dcw/results/ — "
+            "run `make dcw-train` first"
+        )
+    return str(max(candidates, key=lambda p: p.stat().st_mtime))
+
+
+def cmd_test_dcw_v4(extra):
+    """Inference with DCW learnable calibrator (no LoRA by default).
+
+    Auto-resolves the most recent fusion_head.safetensors. Pass
+    --dcw_calibrator <path> (or legacy --dcw_v4 <path>) in extra to override.
+    Honors SPECTRUM / MOD / NOLORA env levers (see ``_base_test_args``).
+    Defaults to NOLORA semantics; set ``NOLORA=0`` to attach the latest LoRA,
+    or pass ``--lora_weight <path>`` in extra to attach a specific one.
+    """
+    extra_has_calib = any(a.split("=", 1)[0] in {"--dcw_calibrator", "--dcw_v4"} for a in extra)
+    calib_args = [] if extra_has_calib else ["--dcw_calibrator", _latest_fusion_head()]
+    run([*_base_test_args(lora_default=False), *calib_args, *extra])
+
+
+def cmd_test_spectrum_dcw(extra):
+    """Spectrum + DCW composed. Equivalent to ``make test SPECTRUM=1 --dcw``."""
+    run(
+        [
+            *INFERENCE_BASE,
+            "--lora_weight",
+            str(latest_lora()),
+            *_spectrum_flags(stop_caching_step=27),
+            "--dcw",
+            *extra,
+        ]
+    )
+
+
+def cmd_test_dcw_v4_spectrum(extra):
+    """Spectrum + DCW learnable calibrator composed.
+
+    Spectrum knobs match ``cmd_test`` with stop_caching_step=27 to match
+    DCW's 28-step contract, plus DCW calibrator (auto-resolves the most recent
+    fusion_head.safetensors). Pass --dcw_calibrator <path> in extra to override.
+    """
+    extra_has_calib = any(a.split("=", 1)[0] in {"--dcw_calibrator", "--dcw_v4"} for a in extra)
+    calib_args = [] if extra_has_calib else ["--dcw_calibrator", _latest_fusion_head()]
+    run(
+        [
+            *INFERENCE_BASE,
+            "--lora_weight",
+            str(latest_lora()),
+            *_spectrum_flags(stop_caching_step=27),
+            *calib_args,
+            "--infer_steps",
+            "28",
             *extra,
         ]
     )

@@ -20,6 +20,7 @@ def _reference(x, weight, inv_scale):
     return F.linear(x_work, weight.float())
 
 
+@pytest.mark.training_step
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize("scaled", [False, True])
 def test_eager_down_forward_and_grads_match_plain_autograd(dtype, scaled):
@@ -72,6 +73,7 @@ def test_eager_down_handles_frozen_inputs(x_grad, weight_grad):
         assert torch.equal(actual_grad, expected_grad)
 
 
+@pytest.mark.training_step
 @pytest.mark.parametrize("scaled", [False, True])
 def test_eager_down_fp32_weight_grad_uses_reference_reduction(scaled):
     torch.manual_seed(94)
@@ -160,6 +162,7 @@ def test_eager_down_saves_original_fp16_input_not_fp32_copy(scaled):
     assert ((4, 16), torch.float16) in saved
 
 
+@pytest.mark.training_step
 @pytest.mark.parametrize("channel_scaling", [False, True])
 def test_lora_module_custom_eager_path_matches_plain_path(channel_scaling):
     channel_scale = None
@@ -235,6 +238,7 @@ def test_compile_trace_bypasses_custom_eager_function(monkeypatch):
     assert called is False
 
 
+@pytest.mark.training_step
 @pytest.mark.parametrize("org_dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize("scale", [0.375, 1.0])
 def test_eager_up_residual_chunks_forward_and_backward(org_dtype, scale):
@@ -331,6 +335,7 @@ def test_eager_up_handles_frozen_input_combinations(
         assert torch.allclose(actual_grad, expected_grad, rtol=1e-6, atol=3e-7)
 
 
+@pytest.mark.training_step
 def test_eager_up_backward_handles_frozen_weight():
     torch.manual_seed(96)
     rank0 = torch.randn(9, 3, dtype=torch.float32)
@@ -357,6 +362,7 @@ def test_eager_up_backward_handles_frozen_weight():
     assert torch.allclose(rank_got.grad, rank_ref.grad, rtol=1e-6, atol=3e-7)
 
 
+@pytest.mark.training_step
 def test_eager_up_residual_keeps_large_finite_merge_in_fp32():
     base = torch.full((1, 1), 40_000.0, dtype=torch.float16, requires_grad=True)
     rank_input = torch.ones((1, 1), dtype=torch.float32, requires_grad=True)
@@ -373,6 +379,7 @@ def test_eager_up_residual_keeps_large_finite_merge_in_fp32():
     assert torch.isfinite(weight.grad).all()
 
 
+@pytest.mark.training_step
 def test_eager_up_frozen_weight_does_not_scale_fp32_residual_gradient():
     torch.manual_seed(97)
     rank0 = torch.randn(9, 3, dtype=torch.float32)

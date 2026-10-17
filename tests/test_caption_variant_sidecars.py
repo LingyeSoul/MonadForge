@@ -16,13 +16,13 @@ from unittest import mock
 import torch
 from safetensors import safe_open
 
-from library.captioning.correction import (
+from anime_tools.captions.correction import (
     CaptionCorrectionOptions,
     load_tag_knowledge_base,
 )
-from library.captioning.preprocess import write_corrected_preprocess_captions
+from anime_tools.stages.captions import write_corrected_preprocess_captions
 from library.preprocess import text as te
-from library.preprocess.caption_variants import (
+from anime_tools.captions.variants import (
     read_variants_sidecar,
     variants_sidecar_path,
     write_variants_sidecar,
@@ -99,7 +99,7 @@ def test_caption_step_writes_sidecar_v0_is_corrected(tmp_path):
         recursive=False,
         num_variants=4,
         tag_dropout_rate=0.3,
-    )
+    ).stats
     assert stats.variants_written == 1
     corrected = (dst / "a.txt").read_text(encoding="utf-8")
     rows = read_variants_sidecar(variants_sidecar_path(dst / "a.png"))
@@ -152,7 +152,7 @@ def test_caption_step_idempotent_rerun_keeps_sidecar_stable(tmp_path):
     random.seed(99)  # different seed must NOT cause a rewrite
     stats = write_corrected_preprocess_captions(
         src, dst, _kb(tmp_path), options=opts, recursive=False, num_variants=4
-    )
+    ).stats
     after = variants_sidecar_path(dst / "a.png").read_text(encoding="utf-8")
     assert stats.variants_written == 0
     assert before == after
@@ -173,18 +173,19 @@ def test_caption_step_off_removes_stale_sidecar(tmp_path):
     assert sidecar.exists()
     stats = write_corrected_preprocess_captions(
         src, dst, _kb(tmp_path), options=opts, recursive=False, num_variants=0
-    )
+    ).stats
     assert not sidecar.exists()
     assert stats.variants_removed == 1
 
 
-def test_caption_step_missing_source_removes_sidecar(tmp_path):
+def test_caption_step_revised_caption_without_master_keeps_sidecar(tmp_path):
+    """Revised-first (anime_tools >= 0.4.0): a revised caption with no master is
+    the caption, so its sidecar is regenerated from it rather than removed."""
     src, dst = tmp_path / "src", tmp_path / "dst"
     src.mkdir()
     dst.mkdir()
-    # Resized image + leftover caption/sidecar but the source caption is gone.
     (dst / "a.png").write_bytes(b"")
-    (dst / "a.txt").write_text("stale", encoding="utf-8")
+    (dst / "a.txt").write_text("1girl, smile", encoding="utf-8")
     write_variants_sidecar(variants_sidecar_path(dst / "a.png"), [("v0", "stale")])
 
     stats = write_corrected_preprocess_captions(
@@ -194,8 +195,30 @@ def test_caption_step_missing_source_removes_sidecar(tmp_path):
         options=CaptionCorrectionOptions(),
         recursive=False,
         num_variants=2,
-    )
-    assert stats.missing_source == 1
+    ).stats
+    assert stats.no_caption == 0
+    sidecar = variants_sidecar_path(dst / "a.png")
+    assert sidecar.exists()
+    assert "stale" not in sidecar.read_text(encoding="utf-8")
+
+
+def test_caption_step_no_caption_at_all_removes_orphan_sidecar(tmp_path):
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    # Resized image + leftover sidecar, but neither a revised nor a master caption.
+    (dst / "a.png").write_bytes(b"")
+    write_variants_sidecar(variants_sidecar_path(dst / "a.png"), [("v0", "stale")])
+
+    stats = write_corrected_preprocess_captions(
+        src,
+        dst,
+        _kb(tmp_path),
+        options=CaptionCorrectionOptions(),
+        recursive=False,
+        num_variants=2,
+    ).stats
+    assert stats.no_caption == 1
     assert not variants_sidecar_path(dst / "a.png").exists()
 
 
@@ -287,7 +310,6 @@ def test_te_encodes_sidecar_into_variant_keys(tmp_path):
             object(),
             device=torch.device("cpu"),
             recursive=False,
-            min_pixels=0,
             caption_shuffle_variants=0,  # sidecar present → variant mode regardless
         )
     assert stats.written == 1
@@ -312,7 +334,6 @@ def test_te_single_caption_when_no_sidecar_and_no_variants(tmp_path):
             object(),
             device=torch.device("cpu"),
             recursive=False,
-            min_pixels=0,
             caption_shuffle_variants=0,
         )
     with safe_open(str(d / "a_anima_te.safetensors"), framework="pt") as f:
@@ -338,7 +359,6 @@ def test_te_recaches_when_sidecar_is_newer(tmp_path):
             object(),
             device=torch.device("cpu"),
             recursive=False,
-            min_pixels=0,
         )
         cache = d / "a_anima_te.safetensors"
         # Bump the sidecar past the cache → next pass must re-encode, not skip.
@@ -353,7 +373,6 @@ def test_te_recaches_when_sidecar_is_newer(tmp_path):
             object(),
             device=torch.device("cpu"),
             recursive=False,
-            min_pixels=0,
         )
     assert stats.written == 1 and stats.skipped == 0
 
@@ -374,19 +393,21 @@ def test_reconcile_lists_and_deletes_orphan_variant_sidecars(tmp_path):
     (resized / "kept.png").write_bytes(b"")
     (resized / "kept.txt").write_text("c", encoding="utf-8")
     write_variants_sidecar(variants_sidecar_path(resized / "kept.png"), [("v0", "c")])
+    (resized / "kept.layout.txt").write_text("{}", encoding="utf-8")
 
     (resized / "gone.png").write_bytes(b"")
     (resized / "gone.txt").write_text("c", encoding="utf-8")
     write_variants_sidecar(variants_sidecar_path(resized / "gone.png"), [("v0", "c")])
+    (resized / "gone.layout.txt").write_text("{}", encoding="utf-8")
 
     orphans = find_orphan_caches(image_dir, resized, lora, masks)
     orphan_names = {p.name for p in orphans.txt}
-    assert orphan_names == {"gone.txt", "gone.variants.txt"}
+    assert orphan_names == {"gone.txt", "gone.variants.txt", "gone.layout.txt"}
     # kept sidecar/caption must NOT be flagged.
     assert all("kept" not in p.name for p in orphans.txt)
 
     removed = delete_orphans(orphans)
-    assert removed["txt"] == 2
+    assert removed["txt"] == 3
     assert not (resized / "gone.variants.txt").exists()
     assert (resized / "kept.variants.txt").exists()
 

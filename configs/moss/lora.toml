@@ -1,0 +1,41 @@
+# MOSS-Image LoRA training — field defaults for scripts/moss/train.py.
+#
+#   make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
+#
+# Keys are TrainRequest field names (library/moss/requests.py, `--help` lists
+# them); CLI flags win over this file, and a key left out keeps the field
+# default. Values below are the shipped defaults.
+
+cache = "output/moss/cache"
+output = "output/ckpt_moss/moss_lora.safetensors"
+model = "base"                 # base | sft
+epochs = 8
+max_steps = 0                  # 0 = epochs decide
+save_every_epochs = 0          # 0 = final only
+
+algo = "lora"                  # lora | lokr | loha
+rank = 32
+# alpha = 128.0                # unset: 128 for lora, = rank for lokr / loha
+# factor = -1                  # lokr only
+down_init = "weight_svd"       # lora only: weight_svd | kaiming
+lr = 2e-5
+warmup_ratio = 0.05
+caption_dropout = 0.0
+lora_dtype = "bf16"            # bf16 | fp16 | fp32
+
+# Memory / speed (16 GB card). scripts/moss/tune_swap.py measures this machine's pair.
+blocks_to_swap = 12
+activation_memory_budget = 0.1
+compile = true
+grad_checkpointing = false
+
+# Noise sampling (report App. A.2).
+# sigma_mu = -1.09
+# sigma_s = 0.95
+# sigma_cutoff = 0.95
+# sigma_uniform = 0.01
+
+# max_grad_norm = 1.0
+# log_every = 10
+# seed = 0
+# model_dir = ""

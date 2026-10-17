@@ -11,12 +11,11 @@ STRINGS: dict[str, str] = {
     "window_title": "Anima LoRA",
     "tab_config": "训练配置",
     "tab_easycontrol": "EasyControl",
-    "tab_spd": "SPD",
     "tab_turbo": "Turbo",
     "tab_experimental": "实验功能",
-    "tab_images": "数据集Viewer",
     "tab_merge": "合并",
     "tab_queue": "队列状况",
+    "tab_anime_tools": "anime_tools",
     "tab_preprocess": "预处理",
     "tab_tensorboard": "TensorBoard",
     # PreprocessingTab
@@ -39,16 +38,6 @@ STRINGS: dict[str, str] = {
         "预处理根目录是 image_dataset/data_group1。此过滤器再按该根目录的相对路径匹配。"
         "'*'（或空白）处理全部；'1/*' 只处理 data_group1/1；"
         "'1/*|2/*' 处理两个子文件夹。"
-    ),
-    "preprocess_drop_lowres": "丢弃低分辨率图像",
-    "preprocess_drop_lowres_tip": (
-        "跳过小于下方像素阈值的源图像，使其不进入调整大小 / VAE / 文本缓存。"
-        "取消勾选可保留所有图像，无论大小。"
-    ),
-    "preprocess_min_pixels": "最小像素数 (过滤阈值):",
-    "preprocess_min_pixels_tip": (
-        "低分辨率过滤器的像素数阈值。500000 = 0.5MP。"
-        "当「丢弃低分辨率图像」未勾选时忽略。"
     ),
     "preprocess_target_res": "分辨率档位 (target_res):",
     "preprocess_freefit_max_ratio": "最大宽高比:",
@@ -98,7 +87,6 @@ STRINGS: dict[str, str] = {
         "丢弃。0 (默认) 保持打标器的校准判断不变；调高该值会减少标签数量、"
         "使结果更保守。评级始终会被输出，不受此值影响。"
     ),
-    "preprocess_caption_editing": "标注改写",
     "preprocess_caption_position_clauses": "位置子句 (多人物)",
     "preprocess_caption_position_clauses_tip": (
         "用 SAM3 检测多人物图像中的各个人物，分别打标，并在标注末尾追加 "
@@ -111,6 +99,7 @@ STRINGS: dict[str, str] = {
         "跑一遍 SAM3 + 打标器。若想先审阅提案再写入，请先运行 "
         "`make caption-position` 生成试运行报告。"
     ),
+    "preprocess_caption_editing": "标注改写",
     "preprocess_caption_correct_order": "校正标注顺序",
     "preprocess_caption_correct_order_tip": (
         "将校正后的 .txt 标注保存到已调整大小的图像旁边，并用于文本编码器缓存。"
@@ -136,75 +125,32 @@ STRINGS: dict[str, str] = {
     "preprocess_run_pe": "运行 PE 缓存",
     "preprocess_add_to_queue": "加入队列",
     "preprocess_queued": "已将 {label} 加入队列 (任务 {job_id}) — 可在队列标签页查看。",
-    "preprocess_masking_sam": "SAM3 蒙版 (对话气泡)",
-    "preprocess_masking_mit": "MIT 蒙版 (漫画文字)",
-    "preprocess_sam_prompts": "SAM 提示词 (每行一个):",
-    "preprocess_sam_prompts_tip": (
-        "SAM3 要查找的文本提示词,每行一个。默认值: 'speech bubble' 和 'text bubble'。"
-    ),
-    "preprocess_sam_focus_prompts": "SAM 焦点提示词 (每行一个):",
-    "preprocess_sam_focus_prompts_tip": (
-        "反转极性: 指定要保留的主体。设置后,蒙版将仅对该主体进行训练,"
-        "其余全部忽略 (例如 'girl' 会使背景全部被忽略)。"
-        "与上方提示词合成 —— 最终可训练区域为焦点主体去除忽略区域后的部分。"
-        "留空则使用默认的仅忽略模式。"
-    ),
-    "preprocess_sam_rule": "蒙版规则",
-    "preprocess_sam_add_rule": "+ 添加规则",
-    "preprocess_sam_add_rule_tip": (
-        "再添加一条蒙版规则。每条规则通过路径模式定位图像子集,"
-        "模式匹配同一图像的多条规则将相互合成。"
-    ),
-    "preprocess_sam_remove_rule": "删除规则",
-    "preprocess_sam_rule_path_pattern": "路径模式 (此规则):",
-    "preprocess_sam_rule_path_pattern_tip": (
-        "指定此规则适用的图像 —— 以数据集根目录为基准对各图像路径进行"
-        "fnmatch 匹配 ('|' 作 OR 组合)。例: 'character_a/*'。"
-        "留空或 '*' 可匹配所有图像 (通配默认规则)。"
-    ),
-    "preprocess_sam_threshold": "SAM 阈值 (0.0–1.0):",
-    "preprocess_sam_threshold_tip": (
-        "保留 SAM3 检测结果的最低置信度。越低 = 蒙版越多 "
-        "(可能包含误报),越高 = 越严格。默认 0.5。"
-    ),
-    "preprocess_dilate": "膨胀 (px):",
-    "preprocess_dilate_tip": (
-        "对二值蒙版应用的膨胀像素数。值越大蒙版边缘越往外扩。默认 5。设为 0 表示禁用。"
-    ),
-    "preprocess_mit_threshold": "MIT 文字阈值 (0.0–1.0):",
-    "preprocess_mit_threshold_tip": (
-        "MIT/ComicTextDetector 文字分割器的置信度阈值。默认 0.8。"
-    ),
-    "preprocess_mask_path_pattern": "蒙版路径过滤器:",
-    "preprocess_mask_path_pattern_tip": (
-        "限制哪些已缩放图像参与蒙版生成的 fnmatch glob 模式，"
-        "以 post_image_dataset/resized 为基准对每个路径进行匹配。"
-        "同时作用于 SAM 和 MIT。与训练用 path_pattern 语法相同："
-        "'*'（或空白）遮罩全部；'char_a/*' 限定单个子文件夹；"
-        "'char_a/*|char_b/*' 进行 OR 组合。"
-    ),
-    "preprocess_run_mask": "运行蒙版生成",
-    "preprocess_run_sam_mask": "运行 SAM 蒙版",
-    "preprocess_run_sam_mask_tip": (
-        "在蒙版生成阶段运行 SAM3 气泡分割。"
-        "取消勾选则跳过 SAM,仅使用 MIT (或其他已启用的后端)。"
-    ),
-    "preprocess_run_mit_mask": "运行 MIT 蒙版",
-    "preprocess_run_mit_mask_tip": (
-        "在蒙版生成阶段运行 MIT/ComicTextDetector 文字分割。"
-        "取消勾选则跳过 MIT,仅使用 SAM。"
-    ),
-    "preprocess_mask_nothing_enabled": ("SAM 和 MIT 蒙版至少需启用一项。"),
+    "preprocess_invalid_stage": "{stage}: {err}",
     "preprocess_status_resized": "已调整大小的图像: {n}",
     "preprocess_status_caches": "缓存 — latents: {lat}, text: {te}, PE: {pe}",
     "preprocess_status_masks": "蒙版: {masks}",
     "preprocess_status_no_resized": "尚无已调整大小的图像。",
-    "preprocess_no_resized_to_process": (
-        "post_image_dataset/resized/ 中没有已调整大小的图像。请先运行预处理"
-        "（调整大小）——蒙版和分组都基于已调整大小的图像。"
-    ),
     "preprocess_open_dataset_dir": "打开cache文件夹",
     "preprocess_open_dataset_dir_tooltip": "在文件管理器中打开 post_image_dataset/ 文件夹（已调整大小的图像 + 缓存）。",
+    "preprocess_status_export_stale": "anime_tools 有比上次 Export 更新的编辑",
+    "preprocess_resize_preview": "resize 预览",
+    "preprocess_resize_preview_tooltip": "按源图像显示在下方设置下 resize 选择的 bucket 和 tier，以及裁剪区域。不会修改源文件。",
+    "preprocess_resize_preview_title": "resize 预览",
+    "preprocess_resize_preview_refresh": "刷新",
+    "preprocess_resize_preview_col_image": "图像",
+    "preprocess_resize_preview_col_source": "源尺寸",
+    "preprocess_resize_preview_col_bucket": "Bucket",
+    "preprocess_resize_preview_col_tier": "Tier",
+    "preprocess_resize_preview_col_kept": "保留",
+    "preprocess_resize_preview_summary": "{n} 张图像，{buckets} 个 bucket",
+    "preprocess_resize_preview_skipped": "已排除 {n} 张",
+    "preprocess_resize_preview_unreadable": "{n} 张无法读取",
+    "preprocess_resize_preview_empty": "{path} 下没有图像",
+    "anime_tools_failed": "无法启动 anime_tools: {err}",
+    "anime_tools_root_warning": "面板保存的根目录指向 post_image_dataset/ 内部（{roots}），其阶段会覆盖训练器的目录树。请在面板的 ⚙ 设置（或 {path}）中清空它们。",
+    "anime_tools_starting": "正在启动 anime_tools……（日志: {log}）",
+    "anime_tools_timeout": "anime_tools 未能启动。请查看日志: {log}",
+    "anime_tools_no_webengine": "未安装 Qt WebEngine，无法在此显示面板。请在浏览器中打开 {url}。",
     "preprocess_clear_scope_cache": "删除当前 scope 缓存",
     "preprocess_clear_scope_cache_tooltip": "删除当前 path_scope 对应的已调整大小图像和 LoRA 缓存文件夹。",
     "preprocess_clear_scope_cache_all_scope": "无 scope / 全部",
@@ -349,6 +295,7 @@ STRINGS: dict[str, str] = {
     "locked_by_preset": "由预设锁定 (此 VRAM 档位的性能设置是固定的)",
     "lora_variants": "LoRA 变体",
     "variant": "变体:",
+    "hardware_preset": "硬件:",
     "apply_variant": "应用",
     "apply_variant_tooltip": "用此变体的预设值填充下面的表单。点击「保存」前不会落盘。",
     "show_guide": "指南",
@@ -365,7 +312,7 @@ STRINGS: dict[str, str] = {
     "new_variant_exists": "变体 '{name}' 已存在。",
     "basic_section": "基本",
     "advanced_section": "高级 (点击展开)",
-    # SPD / Turbo 蒸馏配置标签页 (gui/tabs/distill_tab.py)
+    # Turbo 蒸馏配置标签页 (gui/tabs/distill_tab.py)
     "distill_general_section": "通用",
     "distill_job_running": "此标签页已有任务正在运行。",
     "distill_config_missing": "无法读取配置文件: {err}",
@@ -376,151 +323,29 @@ STRINGS: dict[str, str] = {
     "adapter_open_dir": "打开目录",
     "n_images": "{n} 张图像",
     # ImageViewerTab
+    # Soup 流水线标签页 (gui/tabs/soup_tab.py) — 仅运行相关的字段;池 /
+    # 剂量 / 种子 / 秩的数值请在下方的 [soup] 部分表单中编辑。
+    "soup_run_section": "运行",
+    "soup_path_pattern": "路径模式",
+    "soup_path_pattern_tip": "用于筛选微调图像的 fnmatch 通配符，与每张图像相对其子集 image_dir 的路径进行匹配。用 '|' 分隔多个候选，例如 'sincos/*' 或 'art_a/*|art_b/*'。必填。",
+    "soup_name": "输出名称",
+    "soup_name_tip": "输出标识 → output/ckpt/anima_soup_<name>.safetensors。留空则从路径模式推导（单纯的 '<dir>/*' 会变成 '<dir>'）。",
+    "soup_ft_args": "微调参数",
+    "soup_ft_args_tip": "转发给每次微调运行的额外 CLI 参数，例如 --network_dim 32 --max_train_epochs 8。",
+    "soup_path_pattern_required": "Soup 需要一个路径模式（例如 'sincos/*' 或 'art_a/*|art_b/*'）。",
+    # Shared labels
     "directory": "目录:",
-    "dataset_reload": "重新加载",
-    "dataset_reload_tooltip": "重新扫描当前目录并刷新图像列表和选择。",
-    "dataset_open_dir": "打开",
-    "dataset_open_dir_tooltip": "在系统文件管理器中打开当前目录。",
-    "dataset_add_dir": "添加目录……",
-    "dataset_add_dir_tooltip": "选择另一个目录并在本次会话中加入下拉框。",
-    "dataset_add_dir_picker": "选择要添加的目录",
-    "dataset_add_dir_already": "目录 '{name}' 已在列表中。",
-    "dataset_search_placeholder": "搜索文件名……",
-    "dataset_sort_asc_tooltip": "升序 A→Z (点击反转)",
-    "dataset_sort_desc_tooltip": "降序 Z→A (点击反转)",
-    "dataset_group_first_tooltip": "分组优先排序：将已分组的图片跨文件夹汇总到最上方显示（未分组图片在下方以文件夹树显示）。",
-    "dataset_view_group": "分组",
-    "dataset_view_tree": "树形",
-    "dataset_group_sort_tooltip": "每个分组内部的图片排序方式。方向键导航会跟随左侧树中的显示顺序。",
-    "dataset_group_sort_name": "按名称",
-    "dataset_group_sort_name_desc": "按名称倒序",
-    "dataset_group_sort_size": "按文件大小",
-    "dataset_group_sort_size_desc": "按文件大小倒序",
-    "dataset_group_sort_resolution": "按分辨率",
-    "dataset_group_sort_resolution_desc": "按分辨率倒序",
-    "dataset_mask_overlay": "显示蒙版覆盖",
-    "dataset_resize_preview": "显示 resize 预览",
-    "dataset_resize_preview_tooltip": "显示预处理 target_res 选择的中心裁剪区域和最终 bucket。不会修改源文件。",
-    "dataset_resize_preview_label": "{width}x{height} @ {edge}",
-    "dataset_preprocess_skip_short": "跳过 (S)",
-    "dataset_preprocess_skip_tooltip": "将当前图像标记为在预处理 resize 阶段跳过。不会修改源文件。",
-    "dataset_preprocess_clear_short": "清除 (F)",
-    "dataset_preprocess_clear_tooltip": "清除当前图像的使用/跳过/移动标记。可通过右侧菜单清除所有标记。",
-    "dataset_preprocess_clear_all": "清除所有标记",
-    "dataset_preprocess_save": "保存预处理决定",
-    "dataset_preprocess_save_tooltip": "将逐图像使用/跳过/移动决定保存为预处理使用的 JSON。移动标记即使在文件实际移动前也会从预处理中排除。",
-    "dataset_preprocess_saved": "预处理决定已保存:\n{path}",
-    "dataset_preprocess_decision_use": "预处理决定: 使用",
-    "dataset_preprocess_decision_skip": "预处理决定: 跳过",
-    "dataset_preprocess_decision_move": "当前状态: 已标记为移动",
-    "dataset_image_meta_empty": "无图像",
-    "dataset_image_meta": "{width}x{height} · {size} · {fmt}",
-    "dataset_image_meta_resize": "调整大小 {width}x{height} @ {edge}",
-    "dataset_delete": "移动 (D)",
-    "dataset_delete_tooltip": "将用 Delete 或 D 键标记的图像和 sidecar 移动到 post_image_dataset/moved/。",
-    "dataset_delete_confirm_title": "移动图像",
-    "dataset_delete_confirm_body": "将 {n} 张图像及 sidecar 移动到 post_image_dataset/moved/ 吗？",
-    "dataset_delete_failed": "部分图像无法移动:\n{err}",
-    "dataset_group_label": "分组 {n} — {size} 张",
-    "dataset_group_rebuild": "分组",
-    "dataset_group_rebuild_tooltip": "按 PE-Spatial 视觉相似度对图像分组 (按作者). 在任务队列中运行.",
-    "dataset_group_queued": "分组任务已加入队列 (任务 {job_id}). 完成后重新加载此目录即可看到分组.",
-    "n_images_filtered": "{shown} / {total} 张图像",
-    "caption": "标注:",
-    "no_caption": "(无标注)",
-    "caption_save": "保存",
-    "caption_revert": "还原",
-    "caption_autotag": "自动标注",
-    "caption_autotag_tooltip": (
-        "对该图像运行 Anima Tagger，并将预测的标签追加到标注中。"
-        "模型在首次使用时自动下载；确认结果后保存即可写入 .txt 文件。"
-    ),
-    "caption_autotag_running": "自动标注中……",
-    "caption_autotag_loading": "正在加载标注器……",
-    "caption_autotag_ready": "标注器已加载 · 待命",
-    "caption_autotag_busy": (
-        "GPU 正被其他任务（训练 / 预处理 / 分组）占用。完成后再重试自动标注。"
-    ),
-    "caption_autotag_error": "自动标注失败：{err}",
-    "caption_autotag_empty": "标注器未为该图像返回任何标签。",
-    "caption_correct": "校正顺序",
-    "caption_correct_tooltip": (
-        "使用 danbooru_tags_classified.csv 将标注按 ANIMA 推荐顺序重排，"
-        "并可按设置插入 @no-artist。"
-    ),
-    "caption_correct_visible": "校正当前列表",
-    "caption_correct_visible_confirm": "要校正当前列表中的 {n} 个标注吗？",
-    "caption_correct_visible_done": "已校正 {n} 个标注。",
-    "caption_correct_visible_failed": "已校正 {n} 个标注。\n\n失败:\n{err}",
-    "caption_correct_no_change": "没有需要校正的更改。",
-    "tag_kb_posts": "{n} 个帖子",
-    "tag_kb_unknown": "{tag} — 不在标签知识库中",
-    "caption_correct_db_missing": (
-        "找不到 danbooru_tags_classified.csv。\n\n"
-        "请在模型窗口下载 Danbooru 标签 DB，或将它放到以下位置:\n{paths}"
-    ),
-    "caption_correct_db_failed": "标签 DB 加载失败: {err}",
-    "caption_versions": "历史……",
-    "caption_variant_training": "训练标注",
-    "caption_variants_tooltip": (
-        "预览预处理生成的训练用标注变体（打乱 / 标签丢弃 / 身份随机化）。"
-        "只读，不影响可编辑的训练标注。"
-    ),
-    "caption_dirty_marker": " *",
-    "caption_diff_stats": "(+{add} / −{rem})",
-    "caption_diff_clean": "(无变化)",
-    "caption_save_failed": "保存标注失败: {err}",
-    "caption_unsaved_title": "未保存的标注",
-    "caption_unsaved_body": "标注编辑尚未保存。切换前先保存吗?",
-    "caption_versions_title": "标注历史 — {name}",
-    "caption_versions_empty": "(无历史版本)",
-    "caption_versions_restore": "恢复所选版本",
-    "caption_versions_close": "关闭",
-    "caption_no_history": "此标注尚无历史记录。",
-    "caption_guideline_html": (
-        "<b>顺序:</b> 评级 → 人数 → 角色 (作品) → 作品 → "
-        "<span style='color:#c9a227;'>@艺术家</span> → 内容标签。"
-        "区域子分节: 在前一个标签末尾加上 <code>.</code>,然后用 "
-        "<span style='color:#5e8eb0;'>On the&nbsp;…,</span> 或 "
-        "<span style='color:#5e8eb0;'>In the&nbsp;…,</span> 开始下一节。"
-        "首个 <code>@艺术家</code> 标签 (含) 之前的顺序保持固定,"
-        "其后的标签在各分节内打乱。"
-        "<b>没有艺术家?</b> 用 "
-        "<span style='color:#c9a227;'>@no-artist</span> 作为占位符 —— "
-        "它仅起到锚定打乱边界的作用,会在 tokenize 之前剥离,因此不会进入模型。"
-    ),
     # Language
     "language": "语言:",
     # Settings dialog
     "settings_btn": "⚙ 设置",
     "settings_btn_tooltip": "应用设置 —— 语言、偏好设置、MCP 服务器注册",
+    "mode_label": "模型",
+    "mode_tooltip": "此窗口训练和测试的模型。Anima 与 MOSS-Image 的缓存、设置和 LoRA 各自独立；切换只改变界面，正在运行的任务会继续。",
+    "mode_anima": "Anima",
+    "mode_moss": "MOSS-Image",
     "settings_title": "设置",
     "settings_prefs_header": "偏好设置",
-    "settings_autotag_confidence": "自动打标置信度:",
-    "settings_autotag_confidence_tooltip": (
-        "在打标器各标签阈值之上额外应用的概率下限（0–1）。"
-        "数值越高，保留的标签越少但越可靠。默认 0.50。"
-    ),
-    "settings_caption_insert_no_artist": "校正时插入 @no-artist",
-    "settings_caption_insert_no_artist_tooltip": (
-        "如果校正后的标注没有作者标签，则在作者位置插入 @no-artist。"
-        "它只用于固定标注打乱边界，并会在分词前移除。"
-    ),
-    "settings_caption_validate_artist_tags": "用 DB 验证作者标签",
-    "settings_caption_validate_artist_tags_tooltip": (
-        "启用后，只有在 danbooru_tags_classified.csv 中分类为作者的 @标签"
-        "才会移动到作者位置。关闭时，所有 @开头的标签都视为作者标签。"
-    ),
-    "settings_group_match_frac": "分组严格度:",
-    "settings_group_match_frac_tooltip": (
-        "在数据集标签页点击分组时，将两张图片归为一组所需的匹配比例（0–1）。"
-        "数值越高，分组越严格、越干净。默认 0.25。"
-    ),
-    "settings_group_cell_match": "分组单元匹配:",
-    "settings_group_cell_match_tooltip": (
-        "数据集分组时判定单元匹配的余弦下限（0–1）。数值越高，单元匹配越严格。"
-        "默认 0.93。"
-    ),
     "settings_theme": "主题:",
     "settings_theme_tooltip": (
         "界面整体配色主题，立即生效；关闭设置窗口时会重建窗口以完全重绘。"
@@ -568,7 +393,7 @@ STRINGS: dict[str, str] = {
     "ec_desc_group_top": "描述符",
     # Top-bar buttons (models / update / report issue)
     "models_btn": "模型",
-    "models_btn_tooltip": "下载或重新下载模型检查点 (Anima 基础、SAM3、MIT、PE 视觉编码器)",
+    "models_btn_tooltip": "下载或重新下载模型检查点 — Anima 权重(含 CJK 词表包)与 anime_tools 策展包, 集中于一处",
     "update_btn": "更新",
     "update_btn_tooltip": "从 GitHub 拉取最新 anima_lora 版本并运行 uv sync",
     "update_btn_available": "更新 ●",
@@ -576,28 +401,61 @@ STRINGS: dict[str, str] = {
     "report_issue": "提交问题",
     "report_issue_tooltip": "在浏览器中打开 GitHub 问题追踪",
     "visit_github": "访问 GitHub 页面",
-    "open_in_system_viewer": "在系统查看器中打开",
     # Models dialog
     "models_title": "下载模型",
-    "models_intro": "在下方选择模型组,或使用「全部下载」获取标准套件 "
-    "(Anima + SAM3 + MIT + PE + 标签 DB)。文件保存于 models/ 下。",
-    "models_download_all": "全部下载 (Anima + SAM3 + MIT + PE + 标签 DB)",
+    "models_intro": "训练 / 推理运行所需的权重, 按包分组显示。「下载首次运行套件」会获取 3 个 Anima 权重、PE-Spatial (REPA)、CJK 词表包(v2 起默认启用)、标注器检查点与标签 DB。SAM3(遮罩)与 OCR 是「策展」标签页中的可选包。文件保存于 models/ 下。",
+    "models_download_all": "下载首次运行套件",
     "models_download": "下载",
     "models_redownload": "重新下载",
     "models_installed": "✓ 已安装",
     "models_missing": "✗ 缺失",
     "model_anima": "Anima — DiT + 文本编码器 + VAE",
     "model_sam3": "SAM3 — 对话气泡蒙版",
-    "model_mit": "MIT — 漫画文字蒙版",
-    "model_pe": "PE-Core-L14-336 — 视觉编码器 (CMMD 验证 / DCW)",
+    "model_pe": "PE-Core-L14-336 — 视觉编码器 (CMMD 验证)",
+    "model_anima_dit": "Anima 基础 DiT — 训练对象模型",
+    "model_anima_te": "Qwen3-0.6B 文本编码器 — 提示词嵌入",
+    "model_anima_vae": "Qwen-Image VAE — 潜变量编码 / 解码",
+    "model_vocab_pack": "CJK 词表包 — 日文 / 韩文 / 中文标注行 (默认启用)",
+    "model_pe_spatial": "PE-Spatial-B16-512 — REPA + 近似图像分组",
+    "models_used_by": "用于: {what}",
+    "models_tab_anima": "Anima",
+    "models_tab_curation": "策展 (anime_tools)",
+    "curation_models_intro": "策展各阶段所需权重, 按包分组显示 — 标注器、标签 DB、遮罩(SAM3, 可选)、OCR(可选)、分组。直接读取 anime_tools 目录。各阶段首次运行时也会自行获取, 这里只是把等待时间挪前。",
+    "models_download_missing": "下载全部缺失项 ({n})",
+    "models_all_installed": "✓ 全部已安装",
+    "models_download_pack": "下载整包",
+    "models_redownload_pack": "重新下载整包",
+    "models_pack_anima": "Anima 基础",
+    "models_pack_anima_desc": "DiT、Qwen3-0.6B 文本编码器与 Qwen-Image VAE — 每次训练 / 推理运行都需要这三者。",
+    "models_pack_pe": "PE-Core",
+    "models_pack_pe_desc": "PE-Core-L14-336: 仅用于 CMMD 验证指标 (use_cmmd, 默认关闭)。REPA 特征缓存使用 PE-Spatial — 位于「策展」标签页的「分组」包。",
+    "models_pack_cjk": "CJK 词表包",
+    "models_pack_cjk_desc": "面向日文 / 韩文 / 中文标注与提示词片段的额外文本编码器行。v2 起默认启用; 英文文本无论启用与否都逐位一致。",
+    "models_pack_moss_base": "MOSS-Image Base",
+    "models_pack_moss_base_desc": "MOSS-Image-Base（不是 Anima）: 5B DiT、Qwen3.5-9B 文本编码器、FLUX.2 VAE 与分词器 — 约 27 GB。MOSS 线 LoRA 训练的基础模型。",
+    "models_pack_moss_sft": "MOSS-Image SFT",
+    "models_pack_moss_sft_desc": "仅含 MOSS-Image-SFT 的 DiT（约 10 GB）; 文本编码器、VAE 与分词器沿用 Base 包。",
+    "models_pack_tagger": "标注器",
+    "models_pack_tagger_desc": "Anima Tagger: 其检查点、受限的 dbv4 主干, 以及由其追踪导出的 ONNX 图。",
+    "models_pack_tags": "Danbooru 标签 DB",
+    "models_pack_tags_desc": "标注修正所参照的约 114k 行标签表及其英文说明。",
+    "models_pack_masking": "遮罩",
+    "models_pack_masking_desc": "SAM3 主体遮罩(受限; v2 起遮罩为可选)以及位置阶段用于检测的主体软提示。",
+    "models_pack_ocr": "OCR",
+    "models_pack_ocr_desc": "AnimeText 文本块检测器与漫画 VL 阅读器(PaddleOCR-VL-1.6 基础 + SFX 微调)。可选。",
+    "models_pack_grouping": "分组",
+    "models_pack_grouping_desc": "PE-Spatial-B16-512: REPA 特征缓存 (preprocess-pe) 与近似图像分组塔。",
     "model_danbooru_tags": "Danbooru 标签 DB — 标注顺序校正",
+    "model_tagger": "Anima Tagger — caformer_b36 主干 (受限)",
     # HuggingFace 认证（模型对话框）
     "models_hf_token_placeholder": "粘贴你的 HuggingFace 令牌 (hf_…)",
     "models_hf_authenticate": "认证",
     "models_hf_token_hint": "用于受限/限速下载（例如 SAM3）。"
     '请在 <a href="https://huggingface.co/settings/tokens">'
     "huggingface.co/settings/tokens</a> 创建令牌，并在 "
-    '<a href="https://huggingface.co/facebook/sam3">huggingface.co/facebook/sam3</a> 申请 SAM3 访问权限。',
+    '<a href="https://huggingface.co/facebook/sam3">huggingface.co/facebook/sam3</a> 申请 SAM3 访问权限。'
+    "Anima Tagger 主干同样受限，"
+    '请在 <a href="https://huggingface.co/animetimm/caformer_b36.dbv4-full">animetimm/caformer_b36.dbv4-full</a> 同意其条款。',
     "models_hf_token_present": "✓ 已保存 HuggingFace 令牌。",
     "models_hf_not_authenticated": "未认证 — 粘贴令牌以启用受限下载。",
     "models_hf_token_empty": "请先粘贴令牌。",
@@ -652,6 +510,47 @@ STRINGS: dict[str, str] = {
     "merge_pick_file": "选择适配器 .safetensors",
     "merge_pick_dit": "选择基础 DiT .safetensors",
     "merge_pick_out": "另存为合并后的 DiT...",
+    # LoRA ⊕ LoRA → LoRA 合并 (merge_loras.py)
+    "merge_mode": "模式：",
+    "merge_mode_dit": "合并到 DiT",
+    "merge_mode_loras": "合并 LoRA",
+    "merge_lora_options": "LoRA 合并选项",
+    "merge_lora_select_hint": "选择 2 个以上的适配器（Ctrl/Shift 单击）以融合为一个 LoRA，可通过常规 --lora_weight 路径使用。",
+    "merge_lora_selected": "已选择：",
+    "merge_lora_need_two": "请至少选择 2 个 LoRA。",
+    "merge_weights": "权重：",
+    "merge_weights_placeholder": "（可选：例如 1.0,0.7,0.7 — 列表顺序）",
+    "merge_weights_tip": "以逗号分隔的每个 LoRA 强度，按列表顺序为每个所选适配器指定一个。留空则全部为 1.0。",
+    "merge_weights_mismatch": "提供了 {n} 个权重，但选择了 {m} 个 LoRA。",
+    "merge_normalize": "归一化：",
+    "merge_normalize_tip": "将合并后的增量重新缩放到单个 LoRA 的量级。'global'（默认）使全局 RMS 与平均单 LoRA 范数匹配；'per_module' 逐模块匹配但会重新加权各层；'off' 为原始精确拼接和（可能过度驱动 DiT）。",
+    "merge_lora_button": "合并 LoRA",
+    "merge_analyze_button": "分析干涉",
+    "merge_analyze_tip": "试运行：报告所选 LoRA 在权重空间中的相互干涉（逐对、逐层的相长增强还是相消抵消），不写出合并文件。",
+    "merge_analysis_safe": "✓ 可安全合并 — LoRA 近似正交 · 最强配对 |cos| {cos} · 能量比 {ratio} · 共享模块 {shared}/{modules}",
+    "merge_analysis_reinforce": "⚠ {strength}相长增强 — {a} ↔ {b} cos {cos} · 能量比 {ratio}（normalize=global 会重新缩放相加后的幅度）· 共享模块 {shared}/{modules}",
+    "merge_analysis_cancel": "⚠ {strength}相消抵消 — {a} ↔ {b} cos {cos} · 这些 LoRA 会部分相互抵消 · 能量比 {ratio} · 共享模块 {shared}/{modules}",
+    "merge_analysis_overlap": "⚠ 子空间冲突 — {a} ↔ {b} 方向近似正交，却写入相同的权重子空间（重叠 {overlap}，为随机水平的 {x} 倍）· 推理时风格可能互相冲突 · 能量比 {ratio} · 共享模块 {shared}/{modules}",
+    "merge_analysis_moderate": "中等",
+    "merge_analysis_strong": "强",
+    "merge_lora_out_placeholder": "（自动：<首个 LoRA>_merged<N>.safetensors）",
+    "merge_mode_extract": "提取 LoRA",
+    "merge_extract_options": "提取 LoRA 选项",
+    "merge_extract_hint": "从两个完整 DiT 检查点之间的权重增量（ΔW = 微调 − 基础）中提取普通 LoRA，并 SVD 截断到所选秩。结果可通过所有普通 LoRA 路径加载（--lora_weight、合并到 DiT、ComfyUI、turbo 热启动）。两个检查点都必须是 net. 前缀的 Anima 布局。",
+    "merge_extract_base": "基础 DiT：",
+    "merge_extract_tuned": "微调检查点：",
+    "merge_extract_tuned_placeholder": "（必填：从左侧列表点击检查点，或浏览）",
+    "merge_extract_rank": "秩：",
+    "merge_extract_rank_tip": "ΔW SVD 截断到的秩（输出 LoRA 的 network_dim）。96 可捕获典型完整模型增量的大部分。",
+    "merge_extract_include_adaln": "包含 adaln 上投影",
+    "merge_extract_include_adaln_tip": "同时提取 adaln_up_{branch} 增量（官方 turbo 增量中变动最大的部分）。默认关闭：普通学生模型不针对 adaln，标准加载器会跳过这些键。",
+    "merge_extract_adaln_layout": "adaln 布局：",
+    "merge_extract_adaln_layout_tip": "adaln LoRA 的键命名：'runtime' = 仓库内模块名（用于 turbo 热启动路径），'comfy' = ComfyUI state-dict 路径（核心原生加载）。仅在包含 adaln 时使用。",
+    "merge_extract_out_placeholder": "（必填：输出 LoRA .safetensors）",
+    "merge_extract_pick_ckpt": "选择完整 DiT .safetensors",
+    "merge_extract_no_tuned": "请选择用于与基础做差的微调检查点。",
+    "merge_extract_no_out": "请指定提取 LoRA 的输出路径。",
+    "merge_extract_button": "提取 LoRA",
     "browse": "浏览……",
     # Multi-scale target_res tiers
     "target_res_bucket_tooltip": "在 {edge}px 档位中仅使用此 bucket 分辨率进行预处理。全部不选则使用所选档位的所有 bucket。",
@@ -688,4 +587,57 @@ STRINGS: dict[str, str] = {
     "tb_open_current_tip": "仅打开正在进行的训练运行的 TensorBoard。",
     "tb_open_current_idle_tip": "训练进行中时可用。",
     "tb_appear_hint": "如果运行未显示在列表中，请尝试点击 TensorBoard 的刷新（更新）按钮。",
+    "preprocess_current_tooltip": "按 GUI 路径范围对当前变体运行预处理。",
+    "sample_prompt_col_prompt": "提示词",
+    "sample_prompt_col_width": "W",
+    "sample_prompt_col_height": "H",
+    "sample_prompt_col_steps": "步数",
+    "sample_prompt_col_seed": "种子",
+    "sample_prompt_col_cfg": "CFG",
+    "sample_prompt_col_guidance": "引导",
+    "sample_prompt_col_shift": "偏移",
+    "sample_prompt_col_negative": "负面",
+    "sample_prompt_col_extra": "额外",
+    "sample_prompt_add": "添加提示词",
+    "sample_prompt_select_all": "全选",
+    "sample_prompt_remove": "删除所选",
+    "sample_prompt_remove_confirm_title": "删除样图提示词",
+    "sample_prompt_remove_confirm_body": "要删除所选的 {n} 条样图提示词吗?",
+    "sample_prompt_expand": "展开编辑器",
+    "sample_prompt_collapse": "收起编辑器",
+    "sample_prompt_select": "选择",
+    "sample_prompt_prompt_placeholder": "提示词文本。换行在此处显示，保存时会转为空格。",
+    "sample_prompt_hint": "留空/默认值不会写入提示词行。",
+    "sample_prompt_default_width": "默认 512",
+    "sample_prompt_default_height": "默认 512",
+    "sample_prompt_default_steps": "默认 30",
+    "sample_prompt_default_seed": "自动种子",
+    "sample_prompt_default_cfg": "默认 7.5",
+    "sample_prompt_default_guidance": "默认 1.0",
+    "sample_prompt_default_shift": "默认 3.0",
+    "sample_prompt_default_negative": "默认: 无",
+    "sample_prompt_tip_width": "图像宽度 (`--w`)。留空则使用 train.py 默认值 512。",
+    "sample_prompt_tip_height": "图像高度 (`--h`)。留空则使用 train.py 默认值 512。",
+    "sample_prompt_tip_steps": "采样步数 (`--s`)。留空则使用 train.py 默认值 30。",
+    "sample_prompt_tip_seed": "种子 (`--d`)。自动种子可让每条提示词在不同 epoch 之间保持可比。",
+    "sample_prompt_tip_cfg": "CFG 强度 (`--l`)。留空则使用 train.py 默认值 7.5。",
+    "sample_prompt_tip_guidance": "引导强度 (`--g`)。留空则使用 train.py 默认值 1.0。",
+    "sample_prompt_tip_shift": "采样 sigma 调度所用的 Flow shift (`--fs`)。留空则使用 train.py 默认值 3.0。",
+    "sample_prompt_tip_negative": "仅用于此样图的负面提示词 (`--n`)。",
+    "sample_prompt_tip_extra": "额外的原始样图参数，按输入内容原样保留。",
+    "daemon_submitting": "正在向训练守护进程提交任务……",
+    "daemon_submit_failed": "无法连接训练守护进程: {err}",
+    "daemon_queued": "已将任务 {job_id} 加入训练守护进程队列。\n",
+    "queue_submitting_train_preprocess": "正在将 {variant} 的预处理 + 训练加入训练守护进程队列……",
+    "queue_submitting_preprocess": "正在将 {variant} 的预处理加入训练守护进程队列……",
+    "queue_added_preprocess_only": "已将 {variant} 作为预处理任务 {job_id} 加入队列。\n",
+    "daemon_reattached": "已重新连接到正在运行的任务 {job_id} (在之前的会话中启动)。\n",
+    "daemon_next_queued": "正在跟踪训练守护进程中的下一个排队任务 {job_id}。\n",
+    "daemon_job_finished": "--- Job {job_id} {state} ---",
+    "train_queued": "训练 (已排队)",
+    "train_running_daemon": "训练 (运行中……)",
+    "models_done_title": "下载完成",
+    "models_done_message": "模型下载成功。文件保存在 models/ 下。",
+    "models_failed_title": "下载失败",
+    "models_failed_message": "下载以退出码 {code} 结束。详情请查看日志。",
 }

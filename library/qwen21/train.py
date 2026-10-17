@@ -38,11 +38,12 @@ import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from safetensors import safe_open
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_file
 
 from library.env import resolve_under_home
+from library.lines.progress import TrainingProgress, training_progress
 from library.qwen21.validation import validate_request
-from library.qwen21 import blockswap
+import library.runtime.blockswap as blockswap
 from library.qwen21.accel import compile_blocks, recompile_report
 from library.qwen21.loader import (
     TRANSFORMER_BLOCKS,
@@ -232,6 +233,11 @@ def report_fit(blocks, attached, batch: TrainingBatch) -> None:
 
 def run_train(req: TrainRequest) -> Path:
     """Train on ``req.cache``; returns the final LoRA path."""
+    with training_progress("qwen21", req.output) as progress:
+        return _run_train(req, progress)
+
+
+def _run_train(req: TrainRequest, progress: TrainingProgress) -> Path:
     validate_request(req)
     paths = model_paths(req)
     cache_dir = resolve_under_home(req.cache)
@@ -239,11 +245,11 @@ def run_train(req: TrainRequest) -> Path:
     random.seed(req.seed)
     torch.cuda.init()
     device = torch.device("cuda")
-    save_dtype = DTYPES[req.lora_dtype]
 
     items = load_cache(cache_dir)
     if not items:
         raise SystemExit(f"no cached pairs under {cache_dir}")
+    progress.start(total_steps=req.epochs * len(items), total_epochs=req.epochs)
     image_tokens = sorted(i["latents"].shape[0] for i in items)
     text_lens = sorted(i["prompt_embeds"].shape[0] for i in items)
     sizes = {i["size"] for i in items}
@@ -270,6 +276,9 @@ def run_train(req: TrainRequest) -> Path:
         alpha=req.alpha,
         targets=req.targets,
         dtype=torch.float32,  # master weights; the rank GEMMs run in bf16
+        algo=req.algo,
+        factor=req.factor,
+        down_init=req.down_init,
     )
     patched = network.apply_to()
     network.to(device)
@@ -379,19 +388,23 @@ def run_train(req: TrainRequest) -> Path:
                 if tag is None
                 else out_path.with_name(f"{out_path.stem}_{tag}{out_path.suffix}")
             )
-            state = {
-                k: v.detach().to("cpu", save_dtype).contiguous()
-                for k, v in network.state_dict().items()
-            }
-            save_file(state, path, metadata=metadata)
+            network.save(
+                path,
+                req.lora_dtype,
+                **{
+                    key: value for key, value in metadata.items() if key != "lora_dtype"
+                },
+            )
+            progress.checkpoint(path)
             return path
 
         # The largest sample first, so step 1 is the worst case and the fit report
         # below is a bound rather than a sample of the middle of the band.
         order = sorted(
             range(len(items)),
-            key=lambda i: items[i]["latents"].shape[0]
-            + items[i]["prompt_embeds"].shape[0],
+            key=lambda i: (
+                items[i]["latents"].shape[0] + items[i]["prompt_embeds"].shape[0]
+            ),
             reverse=True,
         )
         history = []
@@ -431,6 +444,14 @@ def run_train(req: TrainRequest) -> Path:
                 losses.append(loss.item())
                 step += 1
                 peak = torch.cuda.max_memory_allocated() / 1024**3
+                progress.step(
+                    global_step=step,
+                    epoch=epoch + 1,
+                    loss=losses[-1],
+                    average_loss=sum(losses) / len(losses),
+                    lr=scheduler_lr.get_last_lr()[0],
+                    peak_vram_gb=peak,
+                )
                 if step == 1:
                     report_fit(blocks, attached, batch)
                 # One short line per step for progress readers (the GUI bar); the

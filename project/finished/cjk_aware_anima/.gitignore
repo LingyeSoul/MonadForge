@@ -1,0 +1,3 @@
+# dated reports moved to _archive/<line>/reports/; the dir is untracked so a
+# probe re-run that recreates it stays quiet
+/reports/

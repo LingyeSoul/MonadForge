@@ -1,0 +1,10 @@
+# hira_cold_mix — cold arm C (user 10-14, after hira_cold's read): A's rows, bands
+# and 150 / row, the mix moved toward the windows (grid 20 / lone 5 / bubbleN 55 /
+# bubble1 20, split inside each form as A). A and B repeat their glyph (dup 12 – 17
+# against the floor's 1) at ¼ of retrain_kana's in-word exposure; C gives the
+# windows ≈ 1 320 draws a row back and keeps ≈ 750 in grids (1.7× retrain_kana's).
+rows = ["chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをんゔ"]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0930"
+steps_per_row = 150
+shares = { grid_44 = 4, grid_29 = 8, grid_16 = 8, lone_44 = 1.65, lone_28 = 1.65, lone_16 = 1.7, bubbleN_34 = 22.55, bubbleN_18 = 32.45, bubble1_52 = 11.1, bubble1_32 = 8.9 }

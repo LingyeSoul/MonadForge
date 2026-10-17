@@ -6,6 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Anima — LoRA/T-LoRA training and inference pipeline for the Anima diffusion model (DiT-based, flow-matching). Supports several adapter families (LoRA / OrthoLoRA / T-LoRA / HydraLoRA / FeRA / ChimeraHydra / EasyControl) selectable via method config + hardware preset. The LoRA family is routed via a three-axis surface — `use_moe_style` / `route_per_layer` / `router_source` — see `configs/methods/lora.toml`.
 
+## MonadForge integrated workspaces (2026-10-18)
+
+The Vue WebUI supports `anima | qwen21 | moss`; MOSS and Qwen have independent
+profiles, caches, job results and training telemetry. Native dataset curation
+lives in `webui/frontend/src/components/curation/` and `/api/curation`.
+`anima_daemon/` is the canonical queue; `scripts/daemon/` forwards old imports.
+History is not pruned on startup. Pause (`unpause`) and checkpoint continuation
+(`continue`) are distinct operations.
+
+Normal environments use the locked Torch 2.14 stack. Protected V100 training
+continues on Torch 2.10/CUDA 12.9; do not run ordinary `uv sync` there. Register
+separate runtimes in `configs/custom/runtime.toml`. See
+[`docs/upstream-sync-20261018.md`](docs/upstream-sync-20261018.md) for migration,
+validation evidence, the inherited SAM3/NumPy constraint conflict and rollback.
+
 ## Setup
 
 ```bash

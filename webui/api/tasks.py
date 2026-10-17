@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from webui.services.daemon_client import (
     DaemonError,
@@ -38,9 +38,11 @@ _FORBIDDEN_ARG_FLAGS = frozenset(
 
 
 class TaskStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     command: str = Field(min_length=1, max_length=64)
     args: list[str] = Field(default_factory=list, max_length=256)
     env: dict[str, str] = Field(default_factory=dict, max_length=64)
+    runtime_profile: Literal["default", "curation", "v100"] = "default"
 
 
 class TaskCommandListResponse(BaseModel):
@@ -246,7 +248,10 @@ async def start_task(body: TaskStartRequest):
         raise HTTPException(status_code=400, detail=f"Unknown command: {body.command}")
     _reject_forbidden_args(body.args)
     try:
-        task = await task_service.start_task(body.command, body.args, body.env or None)
+        task = await task_service.start_task(
+            body.command, body.args, body.env or None,
+            runtime_profile=body.runtime_profile,
+        )
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except DaemonError as exc:

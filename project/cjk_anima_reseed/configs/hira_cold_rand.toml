@@ -1,0 +1,11 @@
+# hira_cold_rand — arm A from random rows (user 10-15): hira_cold_hp's items (its
+# data), bands, 150 / row and seed context, the 81 hiragana rows started at
+# isotropic random directions at their pack rows' norms instead of the pack rows
+# (the norm pull centred on that start); the pair against A differs in the start only.
+rows = ["chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをんゔ"]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0930"
+steps_per_row = 150
+shares = { grid_44 = 10, grid_29 = 20, grid_16 = 20, lone_44 = 3.3, lone_28 = 3.3, lone_16 = 3.4, bubbleN_34 = 8.2, bubbleN_18 = 11.8, bubble1_52 = 11.1, bubble1_32 = 8.9 }
+data_from = "hira_cold_hp"
+init = "random"

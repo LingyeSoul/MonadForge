@@ -2,14 +2,13 @@
 
 2026-06-10: the fp32-bottleneck matmul policy (``F.linear(x.float(),
 w.float())`` + the custom down-projection autograd) was removed. Training
-GEMMs now run in the adapter PARAMETER dtype (bf16; fp32 only for OrthoInit's
-trainable master bases). The first cut keyed the GEMM dtype off the *activation*
+GEMMs now run in the adapter PARAMETER dtype (bf16). The first cut keyed the GEMM dtype off the *activation*
 (``x.dtype`` / ``weight.to(x_lora.dtype)``); that silently upcast, because the
 AdaLN ``nn.LayerNorm`` feeding the adapted Linears emits fp32 under
 autocast(bf16), so ``x`` arrives fp32 — materializing a full fp32 weight copy
 AND (with per-channel scaling on) a fresh fp32 activation out of ``_rebalance``
 (``inv_scale``), OOMing for zero numeric gain. The modules now cast ``x`` DOWN
-to the param dtype before the rank GEMMs (mirroring OrthoLoRAModule), pinned by
+to the param dtype before the rank GEMMs, pinned by
 ``test_*_fp32_activation_no_upcast`` below. The justification, measured in
 ``bench/lora_fp32_bottleneck``:
 
@@ -26,25 +25,22 @@ These tests pin the two contracts the rewrite must keep:
 
   1. **Legacy parity** — under autocast, the new forward (and its grads) is
      bitwise identical to an inline replica of the retired fp32-bottleneck
-     code. This is "behavior unchanged for train.py". (Channel-scale chimera
-     is the one documented exception: the retired custom Function folded
-     ``inv_scale`` into the weight in fp32 while ``_rebalance`` applies it to
-     x in bf16 — one rounding apart, asserted with allclose.)
+     code. This is "behavior unchanged for train.py".
   2. **Dtype honesty** — the training forward produces the same result with
      and without autocast, so non-autocast callers (bespoke loops, tests) see
      the same numerics as train.py.
 
-Inference paths are NOT touched by the rewrite: HydraLoRAModule at eval, the
-chimera inference module, and EasyControl's KV prefill keep their historical
-fp32 compute (the inference engine runs without autocast). Asserted below.
+Inference paths are NOT touched by the rewrite: HydraLoRAModule at eval and
+EasyControl's KV prefill keep their historical fp32 compute (the inference
+engine runs without autocast). Asserted below.
 
-Also home to the flag-independent invariants that lived in the retired
-``test_lora_custom_autograd.py``: the hydra σ-feature cache, the chimera
-rank-cat down-projection equivalence, and the OrthoInit-chimera zero-at-init
-+ distill roundtrips.
+Also home to the flag-independent invariant that lived in the retired
+``test_lora_custom_autograd.py``: the hydra σ-feature cache.
 """
 
 from __future__ import annotations
+
+import pytest
 
 import torch
 import torch.nn.functional as F
@@ -92,16 +88,6 @@ def _legacy_lora_forward(module, x):
     lx = lx * module._timestep_mask
     lx, scale = module._apply_rank_dropout(lx)
     lx = F.linear(lx, module.lora_up.weight.float())
-    return org_forwarded + (lx * module.multiplier * scale).to(org_forwarded.dtype)
-
-
-def _legacy_ortho_init_forward(module, x):
-    org_forwarded = module.org_forward(x)
-    x_lora = module._rebalance(x)
-    lx = F.linear(x_lora.float(), module.Q_init.float())
-    lx = lx * module.lambda_layer.float() * module._timestep_mask
-    lx, scale = module._apply_rank_dropout(lx)
-    lx = F.linear(lx, module.P_init.float())
     return org_forwarded + (lx * module.multiplier * scale).to(org_forwarded.dtype)
 
 
@@ -183,30 +169,6 @@ def test_lora_channel_scale_training_matches_legacy_under_autocast():
     assert torch.equal(o_new, o_old)
     _assert_grads_equal(g_new, g_old, "LoRA+channel_scale")
     assert torch.equal(gx_new, gx_old)
-
-
-def test_ortho_init_training_matches_legacy_under_autocast():
-    from networks.lora_modules.ortho import OrthoInitLoRAModule
-
-    def make():
-        torch.manual_seed(0)
-        base = torch.nn.Linear(32, 24, bias=False)
-        base.weight.requires_grad_(False)
-        module = OrthoInitLoRAModule("m", base, multiplier=1.0, lora_dim=4, alpha=4)
-        with torch.no_grad():
-            module.lambda_layer.copy_(torch.randn(1, 4))
-        base.to(torch.bfloat16)
-        module.apply_to()
-        return base, module
-
-    (o_new, g_new, gx_new), (o_old, g_old, gx_old) = _run_pair(
-        make, lambda m, x: m.forward(x), _legacy_ortho_init_forward
-    )
-    assert torch.equal(o_new, o_old), "OrthoInit forward != legacy under autocast"
-    _assert_grads_equal(g_new, g_old, "OrthoInit")
-    assert torch.equal(gx_new, gx_old)
-    # Grads reach the trainable SVD bases (the point of OrthoInit).
-    assert g_new["Q_init"].abs().sum() > 0 and g_new["P_init"].abs().sum() > 0
 
 
 def test_hydra_training_matches_legacy_under_autocast():
@@ -297,31 +259,6 @@ def test_lora_fp32_activation_no_upcast():
         )
         with torch.no_grad():
             module.lora_up.weight.copy_(torch.randn_like(module.lora_up.weight) * 0.1)
-        module.apply_to()
-        return base, module
-
-    _fp32_activation_no_upcast(make)
-
-
-def test_ortho_init_fp32_activation_no_upcast():
-    # OrthoInit is the live ``use_ortho_init=true`` variant; it was MISSED by
-    # 8c2005c (which only fixed lora/hydra/chimera/step_expert/stacked_experts)
-    # and kept ``work = x.dtype`` — so the fp32 AdaLN activation + on-by-default
-    # channel scaling materialized a full fp32 ``_rebalance`` activation per
-    # module and OOMed. This pins the bf16 compute dtype.
-    from networks.lora_modules.ortho import OrthoInitLoRAModule
-
-    cs = _make_channel_scale(32)  # inv_scale ON — the path that OOMed
-
-    def make():
-        torch.manual_seed(0)
-        base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
-        base.weight.requires_grad_(False)
-        module = OrthoInitLoRAModule(
-            "o", base, multiplier=1.0, lora_dim=4, alpha=4, channel_scale=cs
-        )
-        with torch.no_grad():
-            module.lambda_layer.copy_(torch.randn_like(module.lambda_layer) * 0.1)
         module.apply_to()
         return base, module
 
@@ -424,6 +361,7 @@ def test_lora_fp32_compute_uses_fp32_rank_path_on_fp16_base():
     assert y.dtype == torch.float32
 
 
+@pytest.mark.training_step
 def test_lora_fp32_compute_keeps_large_finite_merge_in_fp32():
     """A finite FP32 adapter update must not overflow at the FP16 merge."""
     from networks.lora_modules.lora import LoRAModule
@@ -705,6 +643,7 @@ def test_hydra_sigma_feature_cache_updates_and_clears():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.training_step
 def test_chimera_down_proj_rank_cat_matches_separate():
     in_dim, r, tokens = 32, 4, 8
 
@@ -800,6 +739,7 @@ def test_chimera_ortho_init_zero_at_init():
     assert torch.equal(module.forward(x), module.org_forward(x))
 
 
+@pytest.mark.training_step
 def test_chimera_ortho_init_grads_reach_bases():
     """Training forward+backward: the trainable SVD bases carry gradient (the
     whole point of OrthoInit), and the routing buffers' grad path stays

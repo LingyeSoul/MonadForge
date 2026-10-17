@@ -23,6 +23,8 @@ def validate_request(req: CacheRequest | TrainRequest | GenerateRequest) -> None
         if req.resolution < 32:
             raise ValueError(f"--resolution must be at least 32; got {req.resolution}")
     if isinstance(req, TrainRequest):
+        if req.factor != -1 and req.factor < 1:
+            raise ValueError("--factor must be -1 or a positive integer")
         if req.epochs < 1 or req.rank < 1 or req.lr <= 0 or req.max_grad_norm <= 0:
             raise ValueError(
                 "Training requires positive epochs, rank, lr and max_grad_norm"

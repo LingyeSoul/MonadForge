@@ -1,7 +1,6 @@
 """Cache text-encoder (Qwen3) outputs.
 
-Orchestration extracted from ``preprocess/cache_text_embeddings.py`` (see
-``docs/proposal/tooling_architecture.md`` §A). The script keeps argparse + model
+Orchestration for ``preprocess/cache_text_embeddings.py``, which keeps argparse + model
 load + uncond staging; the caption-variant generation and the batched
 tokenize→encode→(LLM-adapter)→save loop live here.
 """
@@ -14,18 +13,16 @@ from collections.abc import Callable, Collection
 from pathlib import Path
 
 import torch
-from PIL import Image
 
 from library.io.cache import TE_CACHE_SUFFIX, resolve_cache_path
 from library.preprocess._dataset import PreprocessStats, walk_images
 from library.preprocess._progress import ProgressFn
 
 # generate_caption_variants + build_erasure_token_pool live in the torch-free
-# caption_variants module so the caption-correction step (which materializes the
-# variant sidecars before the encoder loads) and the GUI can reuse them. Re-export
-# here for backward compatibility (existing callers import them off this module /
-# the package façade).
-from library.preprocess.caption_variants import (  # noqa: F401
+# anime_tools.captions.variants (shared with the caption-correction step, which
+# writes the variant sidecars before the encoder loads, and the GUI); re-exported
+# for callers importing them off this module / the package façade.
+from library.curation_compat.captions.variants import (  # noqa: F401
     build_erasure_token_pool,
     generate_caption_variants,
     read_variants_sidecar,
@@ -141,12 +138,11 @@ def _walk_te_candidates(
     path_pattern: str | None,
     keep_stems: Collection[str] | None,
     keep_rel_stems: Collection[str] | None,
-    min_pixels: int,
     verbose: bool,
 ) -> list[Path]:
     """Enumerate the images a TE cache pass would encode (caption-agnostic).
 
-    Applies the same ``keep_stems`` + ``min_pixels`` filters as
+    Applies the same ``keep_stems`` filters as
     :func:`cache_text_embeddings`; an absent or empty ``.txt`` is *not* a
     filter (uncaptioned images are encoded with an empty caption). Shared by
     the encode loop and :func:`count_pending_text` so they agree on the set.
@@ -181,37 +177,7 @@ def _walk_te_candidates(
                 f"Matched-image filter: keeping {len(candidates)}/{pre} captions "
                 "(resized outputs only)."
             )
-
-    # The per-image header open below exists only to mirror the resize-time
-    # min_pixels drop. When a ``keep_*`` filter is active the candidate set is
-    # already the resized/curated outputs — every survivor passed min_pixels at
-    # resize — so re-opening each (large, original) source image just to re-derive
-    # that fact is pure I/O waste. Skip it; the matched set is the authority.
-    # (TE only needs the caption ``.txt``, never the image pixels.)
-    already_filtered = keep_stems is not None or keep_rel_stems is not None
-    check_pixels = min_pixels > 0 and not already_filtered
-
-    kept: list[Path] = []
-    skipped_small = 0
-    for p in candidates:
-        if check_pixels:
-            try:
-                with Image.open(p) as im:
-                    w, h = im.size
-            except Exception as e:
-                logger.warning("could not read %s: %s", p.name, e)
-                continue
-            if w * h < min_pixels:
-                skipped_small += 1
-                continue
-        kept.append(p)
-
-    if skipped_small and verbose:
-        print(
-            f"Skipping {skipped_small} images below {min_pixels:,} pixels "
-            f"({min_pixels / 1e6:.2f}MP) -- same filter as resize_images.py."
-        )
-    return kept
+    return candidates
 
 
 def count_pending_text(
@@ -222,14 +188,13 @@ def count_pending_text(
     path_pattern: str | None = None,
     keep_stems: Collection[str] | None = None,
     keep_rel_stems: Collection[str] | None = None,
-    min_pixels: int = 500_000,
     overwrite: bool = False,
 ) -> tuple[int, int]:
     """Return ``(pending, total)`` TE caches **without loading the encoder**.
 
     ``pending`` is the number of candidate images whose
     ``{stem}_anima_te.safetensors`` isn't on disk; ``total`` is every candidate
-    (post ``keep_stems`` / ``min_pixels`` filtering). Mirrors the per-batch skip
+    (post ``keep_stems`` filtering). Mirrors the per-batch skip
     in :func:`cache_text_embeddings`, so the entry point can skip the (slow)
     Qwen3 + LLM-adapter load when ``pending == 0``. With ``overwrite`` every
     candidate counts as pending (the encoder always loads)."""
@@ -239,7 +204,6 @@ def count_pending_text(
         path_pattern=path_pattern,
         keep_stems=keep_stems,
         keep_rel_stems=keep_rel_stems,
-        min_pixels=min_pixels,
         verbose=False,
     )
     if overwrite:
@@ -271,7 +235,6 @@ def cache_text_embeddings(
     caption_tag_randomize_rate: float = 0.0,
     caption_transform: Callable[[str], str] | None = None,
     caption_protect_fn: Callable[[str], bool] | None = None,
-    min_pixels: int = 500_000,
     overwrite: bool = False,
     verbose: bool = True,
     progress: ProgressFn | None = None,
@@ -284,8 +247,7 @@ def cache_text_embeddings(
     and the trainer's cache-completeness probe expects a TE cache for each.
 
     Strategies + encoder + (optional) ``llm_adapter`` are supplied loaded + on
-    ``device``. Images below ``min_pixels`` are skipped (mirrors the resize
-    filter). With ``caption_shuffle_variants > 0`` each cache holds N variants
+    ``device``. With ``caption_shuffle_variants > 0`` each cache holds N variants
     (v0 pristine, v1..v{N-1} shuffled + optionally tag-dropped + optionally
     identity-randomized via ``caption_tag_randomize_rate``). Returns counts;
     pass ``progress`` for a per-image bar.
@@ -313,7 +275,6 @@ def cache_text_embeddings(
         path_pattern=path_pattern,
         keep_stems=keep_stems,
         keep_rel_stems=keep_rel_stems,
-        min_pixels=min_pixels,
         verbose=verbose,
     )
 
@@ -346,6 +307,12 @@ def cache_text_embeddings(
     # Dual-single erasure pool, built once: words that are exactly one token in
     # *both* Qwen3 and T5, minus this dataset's real tags (so a filler is never a
     # genuine tag). Built from the loaded strategy's two tokenizers.
+    # Vocab-pack stamp (None with the stock tokenizer): lets a later run with a
+    # different pack state warn instead of silently training on stale ids.
+    from library.anima.vocab_pack import strategy_pack
+
+    _pack = strategy_pack(tokenize_strategy)
+    pack_metadata = _pack.cache_metadata() if _pack is not None else None
     erasure_pool = None
     if want_randomized:
         real_tags = {
@@ -422,10 +389,10 @@ def cache_text_embeddings(
         to_encode: list[tuple[Path, str, Path]] = []
         for img_path, caption in batch:
             cache_path = _te_cache_path(img_path, cache_dir, data_dir)
-            # Re-encode an existing cache only to add a newly-requested r-family
-            # (in-place upgrade); otherwise the existence check skips it.
-            # ``overwrite`` forces a full re-encode (e.g. after changing the
-            # randomize rate / variant count, which the existence check can't see).
+            # Re-encode an existing cache only when it is older than the caption
+            # / variant sidecar, or to add a newly-requested r-family (in-place
+            # upgrade). ``overwrite`` forces a full re-encode for the changes
+            # mtime cannot see — randomize rate, variant count, vocab pack.
             if (
                 not overwrite
                 and _cache_is_current(img_path, cache_path)
@@ -497,12 +464,8 @@ def cache_text_embeddings(
                     k = flat + off
                     save_dict[f"t5_attn_mask_{label}"] = t5_attn_mask[k]
                     if crossattn_emb is not None:
-                        # Adapter-output cache: prune the unused Qwen
-                        # prompt_embeds / attn_mask / t5_input_ids (~half the
-                        # file). Only crossattn_emb (+ t5_attn_mask for postfix)
-                        # is read at train time — see
-                        # library/training/forward/text_conds.py. 512-pad kept,
-                        # so crossattn is bit-identical to the legacy layout.
+                        # Adapter-output cache: prune the unused Qwen keys (see
+                        # the single-caption branch above).
                         save_dict[f"crossattn_emb_{label}"] = crossattn_emb[k]
                     else:
                         save_dict[f"prompt_embeds_{label}"] = prompt_embeds[k]
@@ -510,7 +473,7 @@ def cache_text_embeddings(
                         save_dict[f"t5_input_ids_{label}"] = t5_input_ids[k]
                 detail = f"{img_path.name} ({n_v}v" + (f"+{n_r}r)" if n_r else ")")
 
-            save_file(save_dict, str(cache_path))
+            save_file(save_dict, str(cache_path), metadata=pack_metadata)
             stats.written += 1
             if progress is not None:
                 progress(1, detail=detail)

@@ -140,13 +140,13 @@ def _resolve_daemon_client():
 
     The trainer node is self-contained: it talks to a running Anima daemon over
     localhost HTTP through the pure-stdlib client vendored under ``_vendor/``
-    (kept verbatim-in-sync with the live ``scripts/daemon/client.py`` by
+    (kept verbatim-in-sync with the live ``anima_daemon/client.py`` by
     ``scripts/release/sync_vendor.py``). We import it via a *relative* import so we
-    never bind the generic top-level ``scripts`` name — the old live-first probe
-    did ``import scripts.daemon.client`` against a ``../..`` it assumed was the
-    repo, which is ComfyUI's root in a standalone install; that poisoned
-    ``sys.modules['scripts']`` with some unrelated on-path package and broke the
-    vendor fallback too (``ModuleNotFoundError: scripts.daemon``).
+    never bind a generic top-level name — an old live-first probe that did
+    ``import anima_daemon.client`` against a ``../..`` it assumed was the repo
+    (which is ComfyUI's root in a standalone install) could poison
+    ``sys.modules`` with an unrelated on-path package and break the vendor
+    fallback (``ModuleNotFoundError``).
 
     The client never *starts* a daemon — it only talks to one. Its
     ``config.discover_pidfile`` finds a running daemon's pidfile (the per-user
@@ -155,7 +155,7 @@ def _resolve_daemon_client():
     fallback port; failing all that it uses ``127.0.0.1:8765`` (override with
     ``$ANIMA_DAEMON_PORT``).
     """
-    from ._vendor.scripts.daemon.client import DaemonClient
+    from ._vendor.anima_daemon.client import DaemonClient
 
     return DaemonClient
 
@@ -461,14 +461,12 @@ def _load_anima_model(anima_model: str):
 def _apply_lora_to_model(model, file_path: str, strength: float) -> None:
     """Patch the trained LoRA onto ``model`` in place via ComfyUI's native path.
 
-    The trainer only ever emits an ortho-T-LoRA, which serialises as plain LoRA
-    keys: OrthoLoRA folds down to ``lora_down``/``lora_up`` at save time, and the
-    T-LoRA rank mask is training-only (inference is full-rank). So ComfyUI's
+    The trainer only ever emits a T-LoRA, which serialises as plain LoRA keys:
+    the T-LoRA rank mask is training-only (inference is full-rank). So ComfyUI's
     stock machinery — ``model_lora_keys_unet`` + ``convert_lora`` + ``load_lora``
     — maps and applies it directly, exactly as the built-in LoraLoader node would
-    on a natively-loaded Anima DiT. No Anima adapter loader (HydraLoRA /
-    Chimera live routing) is involved, so we don't pull in the comfyui-hydralora
-    node here (which imports its chimera module at load time).
+    on a natively-loaded Anima DiT. No Anima adapter loader (HydraLoRA live
+    routing) is involved, so we don't pull in the comfyui-hydralora node here.
     """
     import comfy.lora
     import comfy.lora_convert
@@ -485,7 +483,7 @@ def _apply_lora_to_model(model, file_path: str, strength: float) -> None:
 def _fold_inv_scale(lora_sd: dict) -> dict:
     """Fold ``per_channel_scaling`` ``inv_scale`` into ``lora_down`` and drop it.
 
-    Inert for the trainer's default ortho-T-LoRA (no ``per_channel_scaling`` →
+    Inert for the trainer's default T-LoRA (no ``per_channel_scaling`` →
     no ``.inv_scale`` keys). Kept as a guard so the native patcher never silently
     drops an ``.inv_scale`` suffix it doesn't recognise and applies a delta
     that's off by ``s_norm`` per input column. Mirrors ``LoRAModule.merge_to``:

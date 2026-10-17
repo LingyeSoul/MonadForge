@@ -26,6 +26,8 @@ identical (fp16 max is 65504 everywhere).
 
 from __future__ import annotations
 
+import pytest
+
 import torch
 
 from library.anima.models import Block, FinalLayer
@@ -262,6 +264,7 @@ def test_enable_before_compile_no_recompile():
     )
 
 
+@pytest.mark.training_step
 def test_residual_add_backward_under_fp16_autocast():
     """Gradients flow through _residual_add under fp16 autocast.
 
@@ -339,6 +342,7 @@ def test_gated_residual_add_guards_the_product_overflow():
     assert torch.equal(guarded_off, legacy), "inert path drifted from legacy gate*branch+residual"
 
 
+@pytest.mark.training_step
 def test_gated_residual_add_backward_under_fp16_autocast():
     """Gradients flow through _gated_residual_add's fp32 mul+add under autocast.
 

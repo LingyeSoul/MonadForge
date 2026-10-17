@@ -7,12 +7,11 @@ STRINGS: dict[str, str] = {
     "window_title": "Anima LoRA",
     "tab_config": "学習設定",
     "tab_easycontrol": "EasyControl",
-    "tab_spd": "SPD",
     "tab_turbo": "Turbo",
     "tab_experimental": "実験機能",
-    "tab_images": "データセットViewer",
     "tab_merge": "マージ",
     "tab_queue": "キュー状況",
+    "tab_anime_tools": "anime_tools",
     "tab_preprocess": "前処理",
     "tab_tensorboard": "TensorBoard",
     # PreprocessingTab
@@ -37,17 +36,6 @@ STRINGS: dict[str, str] = {
         "image_dataset/data_group1 になります。このフィルターはそのルートからの"
         "相対パスに適用されます。'*'(または空欄) は全件、'1/*' は "
         "data_group1/1 のみ、'1/*|2/*' は両方のサブフォルダーを処理します。"
-    ),
-    "preprocess_drop_lowres": "低解像度画像を除外",
-    "preprocess_drop_lowres_tip": (
-        "下のピクセル閾値を下回るソース画像をスキップし、"
-        "リサイズ / VAE / テキストキャッシュに含まれないようにします。"
-        "チェックを外すとサイズに関わらずすべての画像を保持します。"
-    ),
-    "preprocess_min_pixels": "最小ピクセル数 (フィルター閾値):",
-    "preprocess_min_pixels_tip": (
-        "低解像度フィルターのピクセル数閾値。500000 = 0.5MP。"
-        "「低解像度画像を除外」がオフの場合は無視されます。"
     ),
     "preprocess_target_res": "解像度ティア (target_res):",
     "preprocess_freefit_max_ratio": "最大アスペクト比:",
@@ -103,7 +91,6 @@ STRINGS: dict[str, str] = {
         "判断をそのまま使います。値を上げるとタグ数は減り、より安全になります。"
         "レーティングはこの値に関わらず常に出力されます。"
     ),
-    "preprocess_caption_editing": "キャプション編集",
     "preprocess_caption_position_clauses": "位置節の生成 (複数被写体)",
     "preprocess_caption_position_clauses_tip": (
         "複数被写体の画像から SAM3 で被写体を検出し、それぞれをタグ付けして "
@@ -117,6 +104,7 @@ STRINGS: dict[str, str] = {
         "SAM3 + タガーのパスが1回追加されます。書き込む前に提案を確認したい場合は、"
         "まず `make caption-position` でドライラン レポートを出してください。"
     ),
+    "preprocess_caption_editing": "キャプション編集",
     "preprocess_caption_correct_order": "キャプション順序補正",
     "preprocess_caption_correct_order_tip": (
         "補正済み .txt キャプションをリサイズ画像の隣に保存し、"
@@ -144,82 +132,32 @@ STRINGS: dict[str, str] = {
     "preprocess_run_pe": "PE キャッシュ実行",
     "preprocess_add_to_queue": "キューに追加",
     "preprocess_queued": "{label} をキューに追加しました (ジョブ {job_id}) — キュータブで確認できます。",
-    "preprocess_masking_sam": "SAM3 マスキング (テキストバブル)",
-    "preprocess_masking_mit": "MIT マスキング (漫画テキスト)",
-    "preprocess_sam_prompts": "SAM プロンプト (1行1件):",
-    "preprocess_sam_prompts_tip": (
-        "SAM3 が検索するテキストプロンプト。1行1件。"
-        "デフォルトは 'speech bubble' と 'text bubble'。"
-    ),
-    "preprocess_sam_focus_prompts": "SAM フォーカスプロンプト (1行1件):",
-    "preprocess_sam_focus_prompts_tip": (
-        "逆極性: 残したい被写体を指定します。設定すると、マスクはその被写体のみを"
-        "学習対象とし、それ以外はすべて無視されます (例: 'girl' を指定すると背景全体が"
-        "無視されます)。上のプロンプトと合成され、最終的な学習領域はフォーカスした"
-        "被写体から無視領域を除いた部分になります。空欄にするとデフォルトの"
-        "無視専用の動作になります。"
-    ),
-    "preprocess_sam_rule": "マスクルール",
-    "preprocess_sam_add_rule": "+ ルール追加",
-    "preprocess_sam_add_rule_tip": (
-        "マスクルールをもう一つ追加します。各ルールはパスパターンで画像の"
-        "サブセットを対象とし、パターンが一致するルールは互いに合成されます。"
-    ),
-    "preprocess_sam_remove_rule": "ルール削除",
-    "preprocess_sam_rule_path_pattern": "パスパターン (このルール):",
-    "preprocess_sam_rule_path_pattern_tip": (
-        "このルールを適用する画像を指定します — データセットルート基準の各画像"
-        "パスに対する fnmatch グロブ ('|' で OR 結合)。例: 'character_a/*'。"
-        "空欄または '*' はすべての画像にマッチするキャッチオール規則です。"
-    ),
-    "preprocess_sam_threshold": "SAM しきい値 (0.0–1.0):",
-    "preprocess_sam_threshold_tip": (
-        "SAM3 の検出結果を採用するための最小信頼度。"
-        "低いほど多くのマスクを生成 (誤検出が増える可能性あり)、"
-        "高いほど厳しくなります。デフォルト 0.5。"
-    ),
-    "preprocess_dilate": "膨張 (px):",
-    "preprocess_dilate_tip": (
-        "バイナリマスクに適用するピクセル膨張量。"
-        "大きい値ほどマスクのエッジが外側に広がります。"
-        "デフォルト 5。0 で無効化。"
-    ),
-    "preprocess_mit_threshold": "MIT テキストしきい値 (0.0–1.0):",
-    "preprocess_mit_threshold_tip": (
-        "MIT/ComicTextDetector テキストセグメンタの信頼度しきい値。デフォルト 0.8。"
-    ),
-    "preprocess_mask_path_pattern": "マスクパスフィルター:",
-    "preprocess_mask_path_pattern_tip": (
-        "マスク対象のリサイズ済み画像を絞り込む fnmatch glob パターン。"
-        "post_image_dataset/resized を基準とした各パスに対してマッチングされます。"
-        "SAM と MIT の両方に適用されます。学習用 path_pattern と同じ文法: "
-        "'*'(または空欄) で全件マスク; 'char_a/*' で 1 サブフォルダー; "
-        "'char_a/*|char_b/*' で OR 結合。"
-    ),
-    "preprocess_run_mask": "マスキング実行",
-    "preprocess_run_sam_mask": "SAM マスキング実行",
-    "preprocess_run_sam_mask_tip": (
-        "マスク生成時に SAM3 バブルセグメンテーションを実行します。"
-        "チェックを外すと SAM をスキップし、MIT のみ (または有効な他のバックエンド) を使用します。"
-    ),
-    "preprocess_run_mit_mask": "MIT マスキング実行",
-    "preprocess_run_mit_mask_tip": (
-        "マスク生成時に MIT/ComicTextDetector テキストセグメンテーションを実行します。"
-        "チェックを外すと MIT をスキップし、SAM のみを使用します。"
-    ),
-    "preprocess_mask_nothing_enabled": (
-        "SAM または MIT のどちらか一方を有効にしてください。"
-    ),
+    "preprocess_invalid_stage": "{stage}: {err}",
     "preprocess_status_resized": "リサイズ済み画像: {n}",
     "preprocess_status_caches": "キャッシュ — 潜在変数: {lat}, テキスト: {te}, PE: {pe}",
     "preprocess_status_masks": "マスク: {masks}",
     "preprocess_status_no_resized": "リサイズ済み画像がありません。",
-    "preprocess_no_resized_to_process": (
-        "post_image_dataset/resized/ にリサイズ済み画像がありません。先に前処理"
-        "（リサイズ）を実行してください — マスク生成とグループ化はリサイズ済み画像を対象に動作します。"
-    ),
     "preprocess_open_dataset_dir": "cacheフォルダを開く",
     "preprocess_open_dataset_dir_tooltip": "post_image_dataset/ フォルダ（リサイズ済み画像 + キャッシュ）をファイルマネージャーで開きます。",
+    "preprocess_status_export_stale": "anime_tools に最後の Export より新しい編集があります",
+    "preprocess_resize_preview": "リサイズプレビュー",
+    "preprocess_resize_preview_tooltip": "元画像ごとに、下の設定でリサイズが選ぶ bucket と tier、そしてクロップ領域を表示します。元ファイルは変更しません。",
+    "preprocess_resize_preview_title": "リサイズプレビュー",
+    "preprocess_resize_preview_refresh": "更新",
+    "preprocess_resize_preview_col_image": "画像",
+    "preprocess_resize_preview_col_source": "元サイズ",
+    "preprocess_resize_preview_col_bucket": "Bucket",
+    "preprocess_resize_preview_col_tier": "Tier",
+    "preprocess_resize_preview_col_kept": "保持",
+    "preprocess_resize_preview_summary": "画像 {n} 枚、bucket {buckets} 個",
+    "preprocess_resize_preview_skipped": "{n} 枚除外",
+    "preprocess_resize_preview_unreadable": "{n} 枚読み込み不可",
+    "preprocess_resize_preview_empty": "{path} に画像がありません",
+    "anime_tools_failed": "anime_tools を起動できません: {err}",
+    "anime_tools_root_warning": "パネルに保存されたルートが post_image_dataset/ 内を指しています（{roots}）。パネルのステージがトレーナーのツリーを上書きします。パネルの ⚙ 設定（または {path}）で空にしてください。",
+    "anime_tools_starting": "anime_tools を起動中…（ログ: {log}）",
+    "anime_tools_timeout": "anime_tools が起動しませんでした。ログを確認してください: {log}",
+    "anime_tools_no_webengine": "Qt WebEngine がインストールされていないため、ここにパネルを表示できません。ブラウザで {url} を開いてください。",
     "preprocess_clear_scope_cache": "現在scopeのキャッシュ削除",
     "preprocess_clear_scope_cache_tooltip": "現在の path_scope に対応するリサイズ画像と LoRA キャッシュフォルダーを削除します。",
     "preprocess_clear_scope_cache_all_scope": "scopeなし / 全体",
@@ -369,6 +307,7 @@ STRINGS: dict[str, str] = {
     "locked_by_preset": "プリセットによりロックされています (このVRAMプロファイルではパフォーマンス設定は固定されています)",
     "lora_variants": "LoRA バリアント",
     "variant": "バリアント:",
+    "hardware_preset": "ハードウェア:",
     "apply_variant": "適用",
     "apply_variant_tooltip": "このバリアントのプリセット値をフォームに反映します。「保存」をクリックするまで保存されません。",
     "show_guide": "ガイド",
@@ -385,7 +324,7 @@ STRINGS: dict[str, str] = {
     "new_variant_exists": "バリアント '{name}' は既に存在します。",
     "basic_section": "基本",
     "advanced_section": "詳細 (クリックして展開)",
-    # SPD / Turbo 蒸留設定タブ (gui/tabs/distill_tab.py)
+    # Turbo 蒸留設定タブ (gui/tabs/distill_tab.py)
     "distill_general_section": "全般",
     "distill_job_running": "このタブでは既にジョブが実行中です。",
     "distill_config_missing": "設定ファイルを読み込めませんでした: {err}",
@@ -396,154 +335,29 @@ STRINGS: dict[str, str] = {
     "adapter_open_dir": "ディレクトリを開く",
     "n_images": "{n} 枚の画像",
     # ImageViewerTab
+    # Soup パイプラインタブ (gui/tabs/soup_tab.py) — 実行専用フィールド。プール /
+    # 投与量 / シード / ランクの値は下の [soup] セクションフォームで編集します。
+    "soup_run_section": "実行",
+    "soup_path_pattern": "パスパターン",
+    "soup_path_pattern_tip": "ファインチューニング画像を選択する fnmatch グロブ。各画像のパス（サブセットの image_dir を基準とした相対パス）と照合します。'|' で複数パターンを区切ります（例: 'sincos/*' や 'art_a/*|art_b/*'）。必須です。",
+    "soup_name": "出力名",
+    "soup_name_tip": "出力スラッグ → output/ckpt/anima_soup_<name>.safetensors。空欄ならパスパターンから導出します（単純な '<dir>/*' は '<dir>' になります）。",
+    "soup_ft_args": "ファインチューニング引数",
+    "soup_ft_args_tip": "各ファインチューニング実行に渡す追加 CLI 引数。例: --network_dim 32 --max_train_epochs 8。",
+    "soup_path_pattern_required": "Soup にはパスパターンが必要です（例: 'sincos/*' や 'art_a/*|art_b/*'）。",
+    # Shared labels
     "directory": "ディレクトリ:",
-    "dataset_reload": "再読み込み",
-    "dataset_reload_tooltip": "現在のディレクトリを再スキャンして画像リストと選択を更新します。",
-    "dataset_open_dir": "開く",
-    "dataset_open_dir_tooltip": "現在のディレクトリをシステムのファイルマネージャーで開きます。",
-    "dataset_add_dir": "ディレクトリを追加…",
-    "dataset_add_dir_tooltip": "別のディレクトリを選択してこのセッションのドロップダウンに追加します。",
-    "dataset_add_dir_picker": "追加するディレクトリを選択",
-    "dataset_add_dir_already": "ディレクトリ '{name}' は既にリストにあります。",
-    "dataset_search_placeholder": "ファイル名を検索…",
-    "dataset_sort_asc_tooltip": "A→Z 順 (クリックで逆順)",
-    "dataset_sort_desc_tooltip": "Z→A 順 (クリックで逆順)",
-    "dataset_group_first_tooltip": "グループ優先表示: グループ化された画像をフォルダを跨いで最上部にまとめて表示 (グループ外の画像は下にフォルダツリーで表示)。",
-    "dataset_view_group": "グループ",
-    "dataset_view_tree": "ツリー",
-    "dataset_group_sort_tooltip": "各グループ内の画像の並び順です。矢印キー移動は左のツリー表示順に従います。",
-    "dataset_group_sort_name": "名前順",
-    "dataset_group_sort_name_desc": "名前逆順",
-    "dataset_group_sort_size": "容量順",
-    "dataset_group_sort_size_desc": "容量逆順",
-    "dataset_group_sort_resolution": "解像度順",
-    "dataset_group_sort_resolution_desc": "解像度逆順",
-    "dataset_mask_overlay": "マスクオーバーレイを表示",
-    "dataset_resize_preview": "リサイズプレビューを表示",
-    "dataset_resize_preview_tooltip": "前処理 target_res が選択する中央クロップ領域と最終 bucket を表示します。元ファイルは変更しません。",
-    "dataset_resize_preview_label": "{width}x{height} @ {edge}",
-    "dataset_preprocess_skip_short": "スキップ (S)",
-    "dataset_preprocess_skip_tooltip": "現在の画像を前処理 resize でスキップするようにマークします。元ファイルは変更しません。",
-    "dataset_preprocess_clear_short": "解除 (F)",
-    "dataset_preprocess_clear_tooltip": "現在の画像の使用/スキップ/移動マークを解除します。右側メニューですべてのマークを解除できます。",
-    "dataset_preprocess_clear_all": "すべてのマークを解除",
-    "dataset_preprocess_save": "前処理決定を保存",
-    "dataset_preprocess_save_tooltip": "前処理用の画像別使用/スキップ/移動決定を JSON として保存します。移動マークは実際に移動する前でも前処理から除外されます。",
-    "dataset_preprocess_saved": "前処理決定を保存しました:\n{path}",
-    "dataset_preprocess_decision_use": "前処理決定: 使用",
-    "dataset_preprocess_decision_skip": "前処理決定: スキップ",
-    "dataset_preprocess_decision_move": "現在の状態: 移動予定",
-    "dataset_image_meta_empty": "画像なし",
-    "dataset_image_meta": "{width}x{height} · {size} · {fmt}",
-    "dataset_image_meta_resize": "リサイズ {width}x{height} @ {edge}",
-    "dataset_delete": "移動 (D)",
-    "dataset_delete_tooltip": "Delete または D キーで印を付けた画像とサイドカーを post_image_dataset/moved/ へ移動します。",
-    "dataset_delete_confirm_title": "画像を移動",
-    "dataset_delete_confirm_body": "{n} 枚の画像とサイドカーを post_image_dataset/moved/ へ移動しますか？",
-    "dataset_delete_failed": "一部の画像を移動できませんでした:\n{err}",
-    "dataset_group_label": "グループ {n} — {size} 枚",
-    "dataset_group_rebuild": "グループ化",
-    "dataset_group_rebuild_tooltip": "PE-Spatial の視覚的類似度で画像をグループ化 (作者ごと). ジョブキューで実行されます.",
-    "dataset_group_queued": "グループ化をキューに追加しました (ジョブ {job_id}). 完了後にこのディレクトリを再読み込みするとグループが表示されます.",
-    "n_images_filtered": "{shown} / {total} 枚の画像",
-    "caption": "キャプション:",
-    "no_caption": "(キャプションなし)",
-    "caption_save": "保存",
-    "caption_revert": "元に戻す",
-    "caption_autotag": "自動タグ付け",
-    "caption_autotag_tooltip": (
-        "Anima Tagger をこの画像に実行し、予測されたタグをキャプションに追加します。"
-        "モデルは初回使用時に自動でダウンロードされます。結果を確認してから保存すると "
-        ".txt に書き込まれます。"
-    ),
-    "caption_autotag_running": "自動タグ付け中…",
-    "caption_autotag_loading": "タガーを読み込み中…",
-    "caption_autotag_ready": "タガー読み込み済み · 待機中",
-    "caption_autotag_busy": (
-        "GPU が別のジョブ（学習 / 前処理 / グルーピング）で使用中です。"
-        "完了後にもう一度自動タグ付けしてください。"
-    ),
-    "caption_autotag_error": "自動タグ付けに失敗しました: {err}",
-    "caption_autotag_empty": "タガーはこの画像のタグを返しませんでした。",
-    "caption_correct": "順序補正",
-    "caption_correct_tooltip": (
-        "danbooru_tags_classified.csv を使ってキャプションを ANIMA 推奨順に並べ替え、"
-        "設定に応じて @no-artist を挿入します。"
-    ),
-    "caption_correct_visible": "現在の一覧を一括補正",
-    "caption_correct_visible_confirm": "現在の一覧のキャプション {n} 件を補正しますか？",
-    "caption_correct_visible_done": "キャプション {n} 件を補正しました。",
-    "caption_correct_visible_failed": "キャプション {n} 件を補正しました。\n\n失敗:\n{err}",
-    "caption_correct_no_change": "補正する変更はありません。",
-    "tag_kb_posts": "{n} 件の投稿",
-    "tag_kb_unknown": "{tag} — タグ知識ベースにありません",
-    "caption_correct_db_missing": (
-        "danbooru_tags_classified.csv が見つかりません。\n\n"
-        "モデル画面から Danbooru タグ DB をダウンロードするか、次の場所に置いてください:\n{paths}"
-    ),
-    "caption_correct_db_failed": "タグ DB の読み込みに失敗: {err}",
-    "caption_versions": "履歴…",
-    "caption_variant_training": "学習キャプション",
-    "caption_variants_tooltip": (
-        "前処理が生成した学習用キャプションのバリアント（シャッフル / タグドロップ"
-        "アウト / アイデンティティのランダム化）をプレビューします。読み取り専用で、"
-        "編集可能な学習キャプションには影響しません。"
-    ),
-    "caption_dirty_marker": " *",
-    "caption_diff_stats": "(+{add} / −{rem})",
-    "caption_diff_clean": "(変更なし)",
-    "caption_save_failed": "キャプションの保存に失敗しました: {err}",
-    "caption_unsaved_title": "未保存のキャプション",
-    "caption_unsaved_body": "キャプションに未保存の編集があります。切り替える前に保存しますか?",
-    "caption_versions_title": "キャプション履歴 — {name}",
-    "caption_versions_empty": "(過去のバージョンなし)",
-    "caption_versions_restore": "選択したバージョンを復元",
-    "caption_versions_close": "閉じる",
-    "caption_no_history": "このキャプションにはまだ履歴がありません。",
-    "caption_guideline_html": (
-        "<b>順序:</b> レーティング → カウント → キャラクター (シリーズ) → シリーズ → "
-        "<span style='color:#c9a227;'>@artist</span> → コンテンツタグ。"
-        "リージョンごとのサブセクション: 前のタグを <code>.</code> で終了し、"
-        "次を <span style='color:#5e8eb0;'>On the&nbsp;…,</span> "
-        "または <span style='color:#5e8eb0;'>In the&nbsp;…,</span> で開始します。"
-        "最初の <code>@artist</code> 以前のタグは固定されます;"
-        "それ以降はセクション内でシャッフルされます。"
-        "<b>アーティストがいない場合は</b> "
-        "<span style='color:#c9a227;'>@no-artist</span> をプレースホルダーとして使用してください — "
-        "同じようにシャッフル境界を固定し、トークン化前に除去されるためモデルには届きません。"
-    ),
     # Language
     "language": "言語:",
     # Settings dialog
     "settings_btn": "⚙ 設定",
     "settings_btn_tooltip": "アプリ設定 — 言語、環境設定、MCP サーバー登録",
+    "mode_label": "モデル",
+    "mode_tooltip": "このウィンドウで学習・テストするモデルです。Anima と MOSS-Image はキャッシュ、設定、LoRA を別々に持ちます。切り替えは表示だけが変わり、実行中のジョブは止まりません。",
+    "mode_anima": "Anima",
+    "mode_moss": "MOSS-Image",
     "settings_title": "設定",
     "settings_prefs_header": "環境設定",
-    "settings_autotag_confidence": "自動タグの信頼度:",
-    "settings_autotag_confidence_tooltip": (
-        "タガーのタグ別しきい値に追加で適用する確率の下限（0–1）です。"
-        "高いほど確信度の高いタグだけが少数残ります。既定値 0.50。"
-    ),
-    "settings_caption_insert_no_artist": "補正時に @no-artist を挿入",
-    "settings_caption_insert_no_artist_tooltip": (
-        "補正後のキャプションに作家タグがない場合、作家位置に @no-artist を入れます。"
-        "キャプションシャッフルの境界としてのみ使われ、トークン化前に除去されます。"
-    ),
-    "settings_caption_validate_artist_tags": "作家タグを DB で検証",
-    "settings_caption_validate_artist_tags_tooltip": (
-        "有効にすると danbooru_tags_classified.csv で作家に分類された @タグだけを"
-        "作家位置へ移動します。無効なら @ で始まるタグを作家タグとして扱います。"
-    ),
-    "settings_group_match_frac": "グループ化の厳しさ:",
-    "settings_group_match_frac_tooltip": (
-        "データセットタブでグループ化を押したとき、2枚の画像をまとめるのに必要な"
-        "一致割合（0–1）です。高いほど厳密で整ったグループになります。既定値 0.25。"
-    ),
-    "settings_group_cell_match": "グループ化のセル一致:",
-    "settings_group_cell_match_tooltip": (
-        "データセットのグループ化でセル単位の一致とみなすコサイン下限（0–1）です。"
-        "高いほどセル一致の基準が厳しくなります。既定値 0.93。"
-    ),
     "settings_theme": "テーマ:",
     "settings_theme_tooltip": (
         "インターフェース全体のカラーテーマです。即時に反映され、設定画面を閉じると"
@@ -595,7 +409,7 @@ STRINGS: dict[str, str] = {
     "ec_desc_group_top": "ディスクリプター",
     # Top-bar buttons (models / update / report issue)
     "models_btn": "モデル",
-    "models_btn_tooltip": "モデルチェックポイントをダウンロードまたは再ダウンロードします (Anima ベース、SAM3、MIT、PE ビジョンエンコーダー)",
+    "models_btn_tooltip": "モデルチェックポイントをダウンロード / 再ダウンロード — Anima の重み(CJK 語彙パック含む)と anime_tools のキュレーションパックをまとめて",
     "update_btn": "更新",
     "update_btn_tooltip": "GitHub から最新の anima_lora リリースを取得して uv sync を実行します",
     "update_btn_available": "更新 ●",
@@ -603,28 +417,61 @@ STRINGS: dict[str, str] = {
     "report_issue": "問題を報告",
     "report_issue_tooltip": "ブラウザで GitHub Issue トラッカーを開きます",
     "visit_github": "GitHub ページを開く",
-    "open_in_system_viewer": "システムビューアで開く",
     # Models dialog
     "models_title": "モデルのダウンロード",
-    "models_intro": "以下からモデルグループを選択するか、「すべてダウンロード」で標準セット "
-    "(Anima + SAM3 + MIT + PE + タグ DB) をダウンロードします。ファイルは models/ に保存されます。",
-    "models_download_all": "すべてダウンロード (Anima + SAM3 + MIT + PE + タグ DB)",
+    "models_intro": "学習 / 推論の実行に必要な重みをパック単位で表示します。「初回セットをダウンロード」で Anima の重み 3 点、PE-Spatial (REPA)、CJK 語彙パック(v2 から既定で有効)、タガーのチェックポイント、タグ DB を取得します。SAM3(マスキング)と OCR は「キュレーション」タブの任意パックです。ファイルは models/ に保存されます。",
+    "models_download_all": "初回セットをダウンロード",
     "models_download": "ダウンロード",
     "models_redownload": "再ダウンロード",
     "models_installed": "✓ インストール済み",
     "models_missing": "✗ 未インストール",
     "model_anima": "Anima — DiT + テキストエンコーダー + VAE",
     "model_sam3": "SAM3 — テキストバブルマスキング",
-    "model_mit": "MIT — 漫画テキストマスキング",
-    "model_pe": "PE-Core-L14-336 — ビジョンエンコーダー (CMMD 検証 / DCW)",
+    "model_pe": "PE-Core-L14-336 — ビジョンエンコーダー (CMMD 検証)",
+    "model_anima_dit": "Anima ベース DiT — 学習対象のモデル",
+    "model_anima_te": "Qwen3-0.6B テキストエンコーダー — プロンプト埋め込み",
+    "model_anima_vae": "Qwen-Image VAE — 潜在表現のエンコード / デコード",
+    "model_vocab_pack": "CJK 語彙パック — 日本語 / 韓国語 / 中国語のキャプション行 (既定で有効)",
+    "model_pe_spatial": "PE-Spatial-B16-512 — REPA + 類似画像のグルーピング",
+    "models_used_by": "使用箇所: {what}",
+    "models_tab_anima": "Anima",
+    "models_tab_curation": "キュレーション (anime_tools)",
+    "curation_models_intro": "キュレーション各段階の重みをパック単位で表示します — タガー、タグ DB、マスキング(SAM3、任意)、OCR(任意)、グルーピング。anime_tools のカタログを直接読みます。各段階は初回実行時に自分で取得もするため、ここでは待ち時間を移すだけです。",
+    "models_download_missing": "未取得をすべてダウンロード ({n} 件)",
+    "models_all_installed": "✓ すべてインストール済み",
+    "models_download_pack": "パックをダウンロード",
+    "models_redownload_pack": "パックを再ダウンロード",
+    "models_pack_anima": "Anima ベース",
+    "models_pack_anima_desc": "DiT、Qwen3-0.6B テキストエンコーダー、Qwen-Image VAE — すべての学習 / 推論の実行に 3 点とも必要です。",
+    "models_pack_pe": "PE-Core",
+    "models_pack_pe_desc": "PE-Core-L14-336: CMMD 検証メトリック専用 (use_cmmd、既定で無効)。REPA の特徴キャッシュは PE-Spatial を使います — 「キュレーション」タブの「グルーピング」パック。",
+    "models_pack_cjk": "CJK 語彙パック",
+    "models_pack_cjk_desc": "日本語 / 韓国語 / 中国語のキャプション・プロンプト区間向けの追加テキストエンコーダー行。v2 から既定で有効で、英語テキストはどちらでもビット単位で同一です。",
+    "models_pack_moss_base": "MOSS-Image Base",
+    "models_pack_moss_base_desc": "MOSS-Image-Base（Anima ではありません）: 5B DiT、Qwen3.5-9B テキストエンコーダー、FLUX.2 VAE とトークナイザー — 約 27 GB。MOSS ラインの LoRA 学習のベースです。",
+    "models_pack_moss_sft": "MOSS-Image SFT",
+    "models_pack_moss_sft_desc": "MOSS-Image-SFT の DiT のみ（約 10 GB）。テキストエンコーダー・VAE・トークナイザーは Base パックのものを使います。",
+    "models_pack_tagger": "タガー",
+    "models_pack_tagger_desc": "Anima Tagger: チェックポイント、ゲート付きの dbv4 バックボーン、そこからトレースした ONNX グラフ。",
+    "models_pack_tags": "Danbooru タグ DB",
+    "models_pack_tags_desc": "キャプション補正が照合する約 114k 行のタグ表と、その英語説明。",
+    "models_pack_masking": "マスキング",
+    "models_pack_masking_desc": "SAM3 被写体マスク(ゲート付き; v2 からマスキングは任意)と、位置段階が検出に使う被写体ソフトプロンプト。",
+    "models_pack_ocr": "OCR",
+    "models_pack_ocr_desc": "AnimeText テキストブロック検出器と漫画 VL リーダー(PaddleOCR-VL-1.6 ベース + SFX ファインチューン)。任意。",
+    "models_pack_grouping": "グルーピング",
+    "models_pack_grouping_desc": "PE-Spatial-B16-512: REPA の特徴キャッシュ (preprocess-pe) と類似画像グルーピング用タワー。",
     "model_danbooru_tags": "Danbooru タグ DB — キャプション順序補正",
+    "model_tagger": "Anima Tagger — caformer_b36 バックボーン (ゲート付き)",
     # HuggingFace 認証 (モデルダイアログ)
     "models_hf_token_placeholder": "HuggingFace トークンを貼り付けてください (hf_…)",
     "models_hf_authenticate": "認証",
     "models_hf_token_hint": "ゲート付き/レート制限のあるダウンロード(SAM3 など)に必要です。"
     '<a href="https://huggingface.co/settings/tokens">'
     "huggingface.co/settings/tokens</a> でトークンを作成し、"
-    '<a href="https://huggingface.co/facebook/sam3">huggingface.co/facebook/sam3</a> で SAM3 のアクセスを申請してください。',
+    '<a href="https://huggingface.co/facebook/sam3">huggingface.co/facebook/sam3</a> で SAM3 のアクセスを申請してください。'
+    "Anima Tagger のバックボーンもゲート付きです。"
+    '<a href="https://huggingface.co/animetimm/caformer_b36.dbv4-full">animetimm/caformer_b36.dbv4-full</a> で利用規約に同意してください。',
     "models_hf_token_present": "✓ HuggingFace トークンは既に保存されています。",
     "models_hf_not_authenticated": "未認証 — トークンを貼り付けてゲート付きダウンロードを有効にしてください。",
     "models_hf_token_empty": "先にトークンを貼り付けてください。",
@@ -679,6 +526,47 @@ STRINGS: dict[str, str] = {
     "merge_pick_file": "アダプター .safetensors を選択",
     "merge_pick_dit": "ベース DiT .safetensors を選択",
     "merge_pick_out": "マージ済み DiT を名前を付けて保存...",
+    # LoRA ⊕ LoRA → LoRA マージ (merge_loras.py)
+    "merge_mode": "モード:",
+    "merge_mode_dit": "DiT にマージ",
+    "merge_mode_loras": "LoRA をマージ",
+    "merge_lora_options": "LoRA マージオプション",
+    "merge_lora_select_hint": "2 つ以上のアダプターを選択（Ctrl/Shift クリック）して 1 つの LoRA に統合します。通常の --lora_weight パスで使用できます。",
+    "merge_lora_selected": "選択中:",
+    "merge_lora_need_two": "LoRA を 2 つ以上選択してください。",
+    "merge_weights": "重み:",
+    "merge_weights_placeholder": "（任意: 例 1.0,0.7,0.7 — リスト順）",
+    "merge_weights_tip": "カンマ区切りの LoRA ごとの強度で、リスト順に選択した各アダプターに 1 つずつ指定します。空欄ですべて 1.0。",
+    "merge_weights_mismatch": "重みが {n} 個指定されましたが、LoRA は {m} 個選択されています。",
+    "merge_normalize": "正規化:",
+    "merge_normalize_tip": "マージしたデルタを単一 LoRA の大きさに再スケーリングします。'global'（既定）はグローバル RMS を平均単一 LoRA ノルムに合わせ、'per_module' はモジュールごとに合わせますがレイヤー重みが変わり、'off' は生の厳密連結和（DiT を過剰駆動する可能性があります）です。",
+    "merge_lora_button": "LoRA をマージ",
+    "merge_analyze_button": "干渉を分析",
+    "merge_analyze_tip": "ドライラン: 選択した LoRA が重み空間でどう干渉するか（ペアごと・層ごとの強め合い対打ち消し合い）を、マージファイルを書き出さずにレポートします。",
+    "merge_analysis_safe": "✓ マージ安全 — LoRA はほぼ直交 · 最大ペア |cos| {cos} · エネルギー比 {ratio} · 共有モジュール {shared}/{modules}",
+    "merge_analysis_reinforce": "⚠ {strength}強め合い — {a} ↔ {b} cos {cos} · エネルギー比 {ratio}（normalize=global が合算量を再スケール）· 共有モジュール {shared}/{modules}",
+    "merge_analysis_cancel": "⚠ {strength}打ち消し合い — {a} ↔ {b} cos {cos} · これらの LoRA は互いに部分的に消し合う · エネルギー比 {ratio} · 共有モジュール {shared}/{modules}",
+    "merge_analysis_overlap": "⚠ 部分空間の衝突 — {a} ↔ {b} は方向はほぼ直交だが同じ重み部分空間に書き込む（重なり {overlap}、ランダム比 {x}倍）· 推論時にスタイルが競合する可能性 · エネルギー比 {ratio} · 共有モジュール {shared}/{modules}",
+    "merge_analysis_moderate": "中程度の",
+    "merge_analysis_strong": "強い",
+    "merge_lora_out_placeholder": "（自動: <最初の LoRA>_merged<N>.safetensors）",
+    "merge_mode_extract": "LoRA 抽出",
+    "merge_extract_options": "LoRA 抽出オプション",
+    "merge_extract_hint": "2 つのフル DiT チェックポイント間の重みデルタ（ΔW = チューニング − ベース）から素の LoRA を抽出し、選択したランクに SVD 切り詰めします。結果はすべての素の LoRA 経路（--lora_weight、DiT へのマージ、ComfyUI、ターボのウォームスタート）で読み込めます。両チェックポイントとも net. プレフィックスの Anima レイアウトである必要があります。",
+    "merge_extract_base": "ベース DiT:",
+    "merge_extract_tuned": "チューニング済みチェックポイント:",
+    "merge_extract_tuned_placeholder": "（必須: 左のリストからチェックポイントをクリック、または参照）",
+    "merge_extract_rank": "ランク:",
+    "merge_extract_rank_tip": "ΔW を SVD 切り詰めするランク（出力 LoRA の network_dim）。96 で一般的なフルモデルデルタのほとんどを捉えます。",
+    "merge_extract_include_adaln": "adaln アッププロジェクションを含める",
+    "merge_extract_include_adaln_tip": "adaln_up_{branch} デルタも抽出します（公式ターボデルタで最も大きく動く部分）。デフォルトはオフ: 素の生徒モデルは adaln を対象とせず、標準ローダーはこれらのキーをスキップします。",
+    "merge_extract_adaln_layout": "adaln レイアウト:",
+    "merge_extract_adaln_layout_tip": "adaln LoRA のキー命名: 'runtime' = リポジトリ内モジュール名（ターボのウォームスタート経路用）、'comfy' = ComfyUI state-dict パス（コアでネイティブに読み込み）。adaln を含める場合のみ使用されます。",
+    "merge_extract_out_placeholder": "（必須: 出力 LoRA .safetensors）",
+    "merge_extract_pick_ckpt": "フル DiT .safetensors を選択",
+    "merge_extract_no_tuned": "ベースと差分を取るチューニング済みチェックポイントを選択してください。",
+    "merge_extract_no_out": "抽出した LoRA の出力パスを指定してください。",
+    "merge_extract_button": "LoRA 抽出",
     "browse": "参照…",
     # Multi-scale target_res tiers
     "target_res_bucket_tooltip": "{edge}px ティアでこの bucket 解像度だけを前処理に使用します。すべて未選択なら選択ティアの全 bucket を使用します。",
@@ -715,4 +603,57 @@ STRINGS: dict[str, str] = {
     "tb_open_current_tip": "進行中の学習実行のみを TensorBoard で開きます。",
     "tb_open_current_idle_tip": "学習が進行中のときに使用できます。",
     "tb_appear_hint": "実行がリストに表示されない場合は、TensorBoard の再読み込み（アップデート）ボタンを押してみてください。",
+    "preprocess_current_tooltip": "現在のバリアントに対し、GUI のパス範囲で前処理を実行します。",
+    "sample_prompt_col_prompt": "プロンプト",
+    "sample_prompt_col_width": "W",
+    "sample_prompt_col_height": "H",
+    "sample_prompt_col_steps": "ステップ",
+    "sample_prompt_col_seed": "シード",
+    "sample_prompt_col_cfg": "CFG",
+    "sample_prompt_col_guidance": "ガイダンス",
+    "sample_prompt_col_shift": "シフト",
+    "sample_prompt_col_negative": "ネガティブ",
+    "sample_prompt_col_extra": "追加",
+    "sample_prompt_add": "プロンプトを追加",
+    "sample_prompt_select_all": "すべて選択",
+    "sample_prompt_remove": "選択を削除",
+    "sample_prompt_remove_confirm_title": "サンプルプロンプトの削除",
+    "sample_prompt_remove_confirm_body": "選択した {n} 件のサンプルプロンプトを削除しますか?",
+    "sample_prompt_expand": "エディタを展開",
+    "sample_prompt_collapse": "エディタを折りたたむ",
+    "sample_prompt_select": "選択",
+    "sample_prompt_prompt_placeholder": "プロンプト本文。改行はここでは表示され、保存時にはスペースになります。",
+    "sample_prompt_hint": "空欄/デフォルト値はプロンプト行に書き込まれません。",
+    "sample_prompt_default_width": "デフォルト 512",
+    "sample_prompt_default_height": "デフォルト 512",
+    "sample_prompt_default_steps": "デフォルト 30",
+    "sample_prompt_default_seed": "自動シード",
+    "sample_prompt_default_cfg": "デフォルト 7.5",
+    "sample_prompt_default_guidance": "デフォルト 1.0",
+    "sample_prompt_default_shift": "デフォルト 3.0",
+    "sample_prompt_default_negative": "デフォルト: なし",
+    "sample_prompt_tip_width": "画像の幅 (`--w`)。空欄なら train.py のデフォルト 512 を使用します。",
+    "sample_prompt_tip_height": "画像の高さ (`--h`)。空欄なら train.py のデフォルト 512 を使用します。",
+    "sample_prompt_tip_steps": "サンプリングステップ数 (`--s`)。空欄なら train.py のデフォルト 30 を使用します。",
+    "sample_prompt_tip_seed": "シード (`--d`)。自動シードにすると、エポックをまたいで各プロンプトを比較できます。",
+    "sample_prompt_tip_cfg": "CFG スケール (`--l`)。空欄なら train.py のデフォルト 7.5 を使用します。",
+    "sample_prompt_tip_guidance": "ガイダンススケール (`--g`)。空欄なら train.py のデフォルト 1.0 を使用します。",
+    "sample_prompt_tip_shift": "サンプリングのシグマスケジュール用 Flow shift (`--fs`)。空欄なら train.py のデフォルト 3.0 を使用します。",
+    "sample_prompt_tip_negative": "このサンプルだけに使うネガティブプロンプト (`--n`)。",
+    "sample_prompt_tip_extra": "追加のサンプル引数。入力したまま保持されます。",
+    "daemon_submitting": "学習デーモンにジョブを送信中…",
+    "daemon_submit_failed": "学習デーモンに接続できませんでした: {err}",
+    "daemon_queued": "ジョブ {job_id} を学習デーモンのキューに追加しました。\n",
+    "queue_submitting_train_preprocess": "{variant} の前処理 + 学習を学習デーモンのキューに追加中…",
+    "queue_submitting_preprocess": "{variant} の前処理を学習デーモンのキューに追加中…",
+    "queue_added_preprocess_only": "{variant} を前処理ジョブ {job_id} としてキューに追加しました。\n",
+    "daemon_reattached": "実行中のジョブ {job_id} に再接続しました (前のセッションで開始)。\n",
+    "daemon_next_queued": "学習デーモンの次の待機ジョブ {job_id} を追跡します。\n",
+    "daemon_job_finished": "--- Job {job_id} {state} ---",
+    "train_queued": "学習 (キュー登録済み)",
+    "train_running_daemon": "学習 (実行中…)",
+    "models_done_title": "ダウンロード完了",
+    "models_done_message": "モデルのダウンロードが完了しました。ファイルは models/ 以下に保存されます。",
+    "models_failed_title": "ダウンロード失敗",
+    "models_failed_message": "ダウンロードが終了コード {code} で終了しました。詳細はログを確認してください。",
 }

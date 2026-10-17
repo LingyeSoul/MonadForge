@@ -1,114 +1,73 @@
-"""Mask generation: SAM3 + MIT/ComicTextDetector → merged.
+"""Mask generation: SAM3 rule passes → merged.
 
-``make mask`` is a one-shot orchestrator: it runs SAM and MIT into a
+``make mask`` is a one-shot orchestrator: it runs every SAM rule into a
 ``tempfile.TemporaryDirectory()`` (cross-platform — honors ``TMPDIR`` /
-``TEMP``) and writes only the merged result to the selected preprocess run's
-``masks/<rel>/{stem}_mask.png``. Per-tool intermediates are never persisted
-under the project root. A direct legacy invocation without a run manifest keeps
-using the fixed ``post_image_dataset/masks`` compatibility path.
+``TEMP``) and writes only the merged result to
+``<mask_dir>/<rel>/{stem}_mask.png``, where ``mask_dir`` comes from the
+merged config chain (``configs/preprocess.toml``, default
+``post_image_dataset/masks``). Per-rule intermediates are never persisted
+under the project root.
 
-Either backend can be turned off via the ``RUN_SAM_MASK`` /
-``RUN_MIT_MASK`` env vars (set by the GUI's Preprocessing tab) — values
-``"0"`` / ``"false"`` / ``"no"`` (case-insensitive) skip that backend.
-When only one runs, the merge step still fires; ``merge_masks.py`` is a
-no-op for single-source inputs.
+Every stage runs as an ``anime_tools`` **request object**
+(``anime_tools.masking.requests.{SamMaskRequest,MergeMasksRequest}``) through
+``_common.execute_stage``: in-process under a daemon job (``make daemon-run
+ARGS="tasks.py mask"``), so one SAM3 load is shared by every
+rule pass and the package's ``_progress`` heartbeat keeps a quiet model load from
+tripping the daemon's stall watchdog; a ``python -m`` child per stage from a plain
+shell.
+
+The rules come from ``configs/sam_mask.yaml``: a flat ``masks`` list
+(``ROLE:KIND:VALUE`` regions) or a ``rules:`` list routed by ``path_pattern``,
+plus the optional ``run_sam`` switch. A pre-0.6.4 ``prompts`` /
+``focus_prompts`` pair still reads (``library.config.sam_masks``). Every knob
+absent from the config falls back to the package's request default; the trainer
+carries no literal of its own. The GUI does not mask — that is the
+``anime_tools`` panel's.
+
+Each rule becomes one SAM pass into its own temp dir; the merge step's
+pixel-min union composes them (ignore regions unioned).
 """
 
 from __future__ import annotations
 
-import json
-import os
 import shutil
 import tempfile
-import time
+from contextlib import contextmanager
 from pathlib import Path
 
-from ._common import PY, ROOT, _path, run
+from ._common import (
+    ROOT,
+    _path,
+    run,
+    execute_stage,
+    stage_by_id,
+)
 
-try:
-    from library.preprocess.runs import (
-        PreprocessRunError,
-        atomic_write_manifest,
-        load_manifest,
-        run_from_manifest,
-    )
-except ImportError:  # pragma: no cover - lightweight task discovery fallback
-    PreprocessRunError = RuntimeError  # type: ignore[assignment]
-    atomic_write_manifest = None  # type: ignore[assignment]
-    load_manifest = None  # type: ignore[assignment]
-    run_from_manifest = None  # type: ignore[assignment]
-
-MASK_OUTPUT_DIR = ROOT / "post_image_dataset" / "masks"
+DEFAULT_MASK_DIR = "post_image_dataset/masks"
 RESIZED_IMAGE_DIR = ROOT / "post_image_dataset" / "resized"
-SAM_CONFIG = ROOT / "configs" / "custom" / "sam_mask.yaml"
-_UNSET = object()
+SAM_CONFIG = ROOT / "configs" / "sam_mask.yaml"
 
 
-def _selected_run(extra: list[str]):
-    from .preprocess import _consume_preprocess_run
+def _mask_output_dir() -> Path:
+    """Unscoped mask root — ``mask_dir`` from the merged config chain.
 
-    selected, cleaned = _consume_preprocess_run(extra)
-    if not selected:
-        return None, cleaned
-    if run_from_manifest is None:
-        raise SystemExit("preprocess run support is unavailable")
-    manifest = Path(selected).expanduser()
-    if manifest.is_dir() or manifest.suffix.lower() != ".json":
-        manifest = manifest / "manifest.json"
-    try:
-        return run_from_manifest(manifest), cleaned
-    except (OSError, ValueError, PreprocessRunError) as exc:
-        raise SystemExit(f"invalid preprocess run {manifest}: {exc}") from exc
+    Owned by ``configs/preprocess.toml`` (preserved across ``make update``);
+    a preset/method/GUI snapshot may override it. Kept a function rather than
+    a module constant so a ``CONFIG_FILE`` snapshot is read at call time.
+    """
+    return ROOT / _path("mask_dir", DEFAULT_MASK_DIR)
 
 
-def _mask_paths(
-    extra: list[str] | None = None,
-) -> tuple[object | None, Path, Path, list[str]]:
-    """Resolve image and output roots, preferring the selected run."""
-
-    run_obj, cleaned = _selected_run(list(extra or []))
-    if run_obj is not None:
-        return run_obj, run_obj.resized_image_dir, run_obj.masks_dir, cleaned
-    resized_dir = _resized_image_dir_legacy()
-    return None, resized_dir, _scoped_mask_output_dir(resized_dir), cleaned
-
-
-def _update_run_mask_count(run_obj: object | None, mask_dir: Path) -> None:
-    """Refresh only the selected run's mask count without dropping metadata."""
-
-    if run_obj is None or load_manifest is None or atomic_write_manifest is None:
-        return
-    try:
-        manifest_path = run_obj.manifest_path  # type: ignore[attr-defined]
-        payload = load_manifest(manifest_path)
-        artifacts = dict(payload.get("artifacts") or {})
-        artifacts["masks"] = sum(
-            1 for path in mask_dir.rglob("*_mask.png") if path.is_file()
-        )
-        payload["artifacts"] = artifacts
-        payload["updated_at"] = time.time()
-        atomic_write_manifest(manifest_path, payload)
-    except (OSError, PreprocessRunError) as exc:
-        print(f"Warning: unable to update preprocess run mask count: {exc}")
-
-
-def _resized_image_dir_legacy() -> Path:
+def _resized_image_dir() -> Path:
     """Scoped resized dir to mask, honoring GUI ``path_scope``.
 
     Reads ``resized_image_dir`` from the merged config chain (the GUI passes a
     config snapshot via ``CONFIG_FILE`` whose ``resized_image_dir`` is already
     scoped to ``post_image_dataset/resized/<path_scope>``). Scoping the input
     is what stops a scoped run from re-masking every other folder. Without a
-    snapshot (direct ``make mask``) this falls back to the unscoped default, so
-    CLI behavior is unchanged.
+    snapshot (direct ``make mask``) this falls back to the unscoped default.
     """
     return ROOT / _path("resized_image_dir", "post_image_dataset/resized")
-
-
-def _resized_image_dir() -> Path:
-    """Backward-compatible alias for callers that only need the legacy path."""
-
-    return _resized_image_dir_legacy()
 
 
 def _scoped_mask_output_dir(resized_dir: Path) -> Path:
@@ -122,153 +81,235 @@ def _scoped_mask_output_dir(resized_dir: Path) -> Path:
     ``masks/<scope>`` — not flat in ``masks/`` — or the trainer won't find
     them. Mirror whatever scope ``resized_dir`` carries over the unscoped
     ``post_image_dataset/resized`` default. Unscoped (direct ``make mask``)
-    returns the bare output dir, so CLI behavior is unchanged.
+    returns the bare output dir.
     """
+    mask_root = _mask_output_dir()
     try:
         scope = resized_dir.resolve().relative_to(RESIZED_IMAGE_DIR.resolve())
     except ValueError:
-        return MASK_OUTPUT_DIR
+        return mask_root
     if str(scope) == ".":
-        return MASK_OUTPUT_DIR
-    return MASK_OUTPUT_DIR / scope
+        return mask_root
+    return mask_root / scope
 
 
-def _runtime_sam_config() -> dict | None:
-    """GUI queue jobs can pass an immutable SAM config snapshot via env.
-
-    Direct CLI usage leaves this unset and continues to read
-    ``configs/custom/sam_mask.yaml``.
-    """
-    raw = os.environ.get("SAM_MASK_CONFIG_JSON")
-    if not raw:
-        return None
-    try:
-        cfg = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"Invalid SAM_MASK_CONFIG_JSON: {exc}") from exc
-    if not isinstance(cfg, dict):
-        raise SystemExit("Invalid SAM_MASK_CONFIG_JSON: expected an object")
-    return cfg
+# ----- config (CLI fallback) ---------------------------------------------------
 
 
-def _load_sam_config(runtime: dict | None | object = _UNSET) -> dict:
-    if runtime is _UNSET:
-        runtime = _runtime_sam_config()
+def _load_mask_config() -> dict:
+    """Prefer the queued job's immutable config, then the user-owned YAML."""
+    runtime = _legacy._runtime_sam_config()
     if runtime is not None:
         return runtime
+    custom = ROOT / "configs" / "custom" / "sam_mask.yaml"
+    selected = custom if custom.is_file() else SAM_CONFIG
     try:
         import yaml
 
-        with open(SAM_CONFIG, encoding="utf-8") as f:
+        with open(selected, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except (OSError, ImportError):
         return {}
 
 
 def _config_path_pattern(cfg: dict) -> str | None:
-    """Read ``path_pattern`` so both backends filter alike.
-
-    The key lives with the SAM config but is a dataset-level filter, so ``make
-    mask`` forwards it to the MIT backend too (both run on the same resized
-    dir). Missing key / ``"*"`` means mask everything.
-    """
+    """Read the config's global ``path_pattern`` scope. Missing key / ``"*"``
+    means mask everything."""
     pattern = cfg.get("path_pattern")
     return pattern if pattern and pattern != "*" else None
 
 
-def _sam_config_path(cfg: dict, tmp_root: str, *, from_env: bool) -> str:
-    if not from_env:
-        return "configs/custom/sam_mask.yaml"
-    path = Path(tmp_root) / "sam_mask.yaml"
-    path.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
-    return str(path)
-
-
-def _run_sam(
-    image_dir: Path, out_dir: Path, extra: list[str], config_path: str
-) -> None:
-    run(
-        [
-            PY,
-            "scripts/preprocess/generate_masks.py",
-            "--config",
-            config_path,
-            "--image-dir",
-            str(image_dir),
-            "--mask-dir",
-            str(out_dir),
-            "--checkpoint",
-            "models/sam3/sam3.pt",
-            "--batch-size",
-            "4",
-            "--recursive",
-            *extra,
-        ]
-    )
-
-
-
-def _env_flag(name: str, default: bool = True) -> bool:
-    raw = os.environ.get(name)
+def _config_flag(cfg: dict, key: str, default: bool = True) -> bool:
+    """A ``run_sam`` switch: absent → on; a string spelled the env-var way
+    (``"0"`` / ``"false"`` / ``"no"`` / ``"off"``) → off."""
+    raw = cfg.get(key)
     if raw is None:
         return default
-    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+    if isinstance(raw, str):
+        return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+    return bool(raw)
+
+
+# ----- requests ------------------------------------------------------------------
+
+
+def _sam_rules(cfg: dict) -> list[dict]:
+    """Normalize the SAM config into an ordered list of mask rules.
+
+    Two schemas, as documented in ``configs/sam_mask.yaml``: a flat
+    ``masks`` list (wrapped as one rule with no pattern of its own) or a
+    ``rules:`` list, each entry routing its own regions by ``path_pattern``.
+    Per-rule ``threshold`` / ``dilate`` fall back to the top-level values,
+    and those to the package's request defaults.
+    """
+    from library.config.sam_masks import LEGACY_KEYS, rule_masks
+
+    default_threshold = cfg.get("threshold")
+    default_dilate = cfg.get("dilate")
+    raw_rules = cfg.get("rules")
+    if raw_rules is None:
+        raw_rules = [{k: cfg[k] for k in ("masks", *LEGACY_KEYS) if k in cfg}]
+    rules: list[dict] = []
+    for raw in raw_rules:
+        pattern = raw.get("path_pattern")
+        rule = {
+            "masks": tuple(rule_masks(raw)),
+            "path_pattern": pattern if pattern and pattern != "*" else None,
+        }
+        threshold = raw.get("threshold", default_threshold)
+        if threshold is not None:
+            rule["threshold"] = float(threshold)
+        dilate = raw.get("dilate", default_dilate)
+        if dilate is not None:
+            rule["dilate"] = int(dilate)
+        rules.append(rule)
+    return rules
+
+
+def _sam_request(image_dir: Path, out_dir: Path, rule: dict, path_pattern: str | None):
+    """The ``SamMaskRequest`` one yaml rule runs as.
+
+    The package takes one glob per run, so a rule that names a
+    ``path_pattern`` runs on that pattern alone (the global scope applies to
+    every rule without one). The SAM3 checkpoint is the request default.
+    Validation fires here, before the SAM3 load: a rule naming no region (or
+    a malformed one) raises.
+    """
+    from anime_tools.masking.requests import MaskPrompt, SamMaskRequest
+
+    kwargs = {key: rule[key] for key in ("threshold", "dilate") if key in rule}
+    try:
+        return SamMaskRequest(
+            image_dir=str(image_dir),
+            mask_dir=str(out_dir),
+            masks=tuple(MaskPrompt.parse(m) for m in rule["masks"]),
+            recursive=True,
+            path_pattern=rule["path_pattern"] or path_pattern,
+            **kwargs,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"SAM mask rule {rule!r}: {exc}") from exc
+
+
+def _merge_request(sources: list[str], output_dir: Path):
+    from anime_tools.masking.requests import MergeMasksRequest
+
+    return MergeMasksRequest(mask_dirs=tuple(sources), output_dir=str(output_dir))
+
+
+# ----- execution -----------------------------------------------------------------
+
+
+def _stage(stage_id: str):
+    return stage_by_id(stage_id)
+
+
+def _execute(stage_id: str, req) -> None:
+    """Run one mask stage: in-process under a daemon job, else as a child."""
+    execute_stage(_stage(stage_id), req)
+
+
+def _sam_requests(resized_dir: Path, tmp_root: Path) -> list:
+    """Every SAM pass this run makes: one per ``sam_mask.yaml`` rule
+    (``run_sam: false`` → none). Built up front so validation fires before the
+    first model load."""
+    cfg = _load_mask_config()
+    if not _legacy._env_flag("RUN_SAM_MASK") or not _config_flag(cfg, "run_sam"):
+        return []
+    pattern = _config_path_pattern(cfg)
+    return [
+        _sam_request(resized_dir, tmp_root / f"sam{i}", rule, pattern)
+        for i, rule in enumerate(_sam_rules(cfg))
+    ]
 
 
 def cmd_mask(extra):
-    """Run SAM into a tempdir and write masks for the selected run.
-
-    ``RUN_SAM_MASK`` gates the backend (default on). If disabled the command
-    is a no-op. (The MIT text masker is gone since v2 — masking is SAM-only.)
-    """
-    run_sam = _env_flag("RUN_SAM_MASK")
-    if _env_flag("RUN_MIT_MASK", default=False):
-        # The GUI still round-trips the MIT fields; say plainly that they do
-        # nothing now instead of failing silently when only MIT is enabled.
-        print(
-            "Note: the MIT text masker was removed with v2 masking — the MIT "
-            "switch has no effect (masking is SAM-only)."
+    """Run every SAM rule into a tempdir, merge, write to post_image_dataset/masks/."""
+    if extra:
+        raise SystemExit(
+            f"make mask takes no ARGS ({' '.join(extra)!r}); the knobs live in "
+            f"{SAM_CONFIG.relative_to(ROOT)}."
         )
-    if not run_sam:
-        print("SAM masking is disabled — nothing to do.")
-        return
-    run_obj, resized_dir, mask_output_dir, extra = _mask_paths(list(extra))
-    runtime_sam_cfg = _runtime_sam_config()
-    sam_cfg = _load_sam_config(runtime_sam_cfg)
-    pattern = _config_path_pattern(sam_cfg)
-    pattern_args = ["--path-pattern", pattern] if pattern else []
+    resized_dir = _resized_image_dir()
+    mask_output_dir = _scoped_mask_output_dir(resized_dir)
     with tempfile.TemporaryDirectory(prefix="anima-masks-") as tmp_root:
-        sam_config_path = _sam_config_path(
-            sam_cfg,
-            tmp_root,
-            from_env=runtime_sam_cfg is not None,
-        )
-        merge_sources: list[str] = []
-        if run_sam:
-            tmp_sam = Path(tmp_root) / "sam"
-            _run_sam(resized_dir, tmp_sam, [*pattern_args], sam_config_path)
-            merge_sources.append(str(tmp_sam))
+        requests = _sam_requests(resized_dir, Path(tmp_root))
+        if not requests:
+            print("SAM masking is disabled — nothing to do.")
+            return
+        # One SAM pass per rule, each into its own dir; the merge below unions
+        # them (pixel-min).
+        for req in requests:
+            _execute("masks_sam", req)
         mask_output_dir.mkdir(parents=True, exist_ok=True)
-        run(
-            [
-                PY,
-                "scripts/preprocess/merge_masks.py",
-                *merge_sources,
-                "--output-dir",
-                str(mask_output_dir),
-                *extra,
-            ]
+        _execute(
+            "masks_merge",
+            _merge_request([req.mask_dir for req in requests], mask_output_dir),
         )
-    _update_run_mask_count(run_obj, mask_output_dir)
 
+
+def cmd_mask_clean(_extra):
+    mask_dir = _mask_output_dir()
+    if mask_dir.exists():
+        shutil.rmtree(mask_dir)
+        try:
+            shown = mask_dir.relative_to(ROOT)
+        except ValueError:  # mask_dir configured outside the repo
+            shown = mask_dir
+        print(f"  Removed {shown}/")
+
+
+from . import _legacy_masking as _legacy
+from . import _common as _shared
+_canonical_mask = cmd_mask
+_canonical_clean = cmd_mask_clean
+MASK_OUTPUT_DIR = ROOT / DEFAULT_MASK_DIR
+_run_sam = _legacy._run_sam
+
+
+@contextmanager
+def _legacy_bindings():
+    values = {"_path": _path, "run": run, "_run_sam": _run_sam,
+              "_scoped_mask_output_dir": _scoped_mask_output_dir}
+    previous = {key: getattr(_legacy, key) for key in values}
+    try:
+        for key, value in values.items():
+            setattr(_legacy, key, value)
+        yield
+    finally:
+        for key, value in previous.items():
+            setattr(_legacy, key, value)
+
+
+def _mask_paths(extra=None):
+    with _legacy_bindings():
+        return _legacy._mask_paths(extra)
+
+def _with_selected_run(action, extra):
+    global _path
+    run_obj, cleaned = _legacy._selected_run(list(extra))
+    old_path = _path
+    previous = _shared._PATH_OVERRIDES_CACHE
+    values = dict(_shared._path_overrides())
+    if run_obj is not None:
+        run_paths = run_obj.path_overrides()
+        values.update(run_paths)
+        _path = lambda key, default: run_paths[key] if key in run_paths else old_path(key, default)
+    _shared._PATH_OVERRIDES_CACHE = values
+    try:
+        action(cleaned)
+        if run_obj is not None:
+            _legacy._update_run_mask_count(run_obj, run_obj.masks_dir)
+    finally:
+        _path = old_path
+        _shared._PATH_OVERRIDES_CACHE = previous
+
+def cmd_mask(extra):
+    from library.runtime.profiles import is_v100_runtime
+    if is_v100_runtime():
+        with _legacy_bindings():
+            return _legacy.cmd_mask(extra)
+    return _with_selected_run(_canonical_mask, extra)
 
 def cmd_mask_clean(extra):
-    run_obj, _, mask_output_dir, _ = _mask_paths(list(extra))
-    if mask_output_dir.exists():
-        shutil.rmtree(mask_output_dir)
-        try:
-            display = mask_output_dir.relative_to(ROOT)
-        except ValueError:
-            display = mask_output_dir
-        print(f"  Removed {display}/")
-    _update_run_mask_count(run_obj, mask_output_dir)
+    return _with_selected_run(_canonical_clean, extra)

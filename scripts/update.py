@@ -34,6 +34,7 @@ import difflib
 import fnmatch
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -55,14 +56,187 @@ for _stream in (sys.stdout, sys.stderr):
             pass
 
 ROOT = Path(__file__).resolve().parent.parent
+def _detect_windows_gpu_vendor() -> str | None:
+    """Return 'nvidia' or 'amd' from the installed display adapters, or None."""
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_VideoController | "
+                "ForEach-Object { $_.Name + ' ' + $_.AdapterCompatibility }",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    adapters = result.stdout.lower()
+    # Prefer NVIDIA on mixed-vendor systems (iGPU + dGPU), matching install.ps1.
+    if "nvidia" in adapters:
+        return "nvidia"
+    if (
+        "amd" in adapters
+        or "advanced micro devices" in adapters
+        or "radeon" in adapters
+    ):
+        return "amd"
+    return None
+
+
+def _selected_windows_backend() -> str:
+    """Keep the accelerator chosen at install time across release updates."""
+    override = os.environ.get("ANIMA_BACKEND", "").strip().lower()
+    if override in {"cuda", "rocm"}:
+        return override
+
+    marker = ROOT / ".anima_backend"
+    if marker.is_file():
+        saved = marker.read_text(encoding="ascii").strip().lower()
+        if saved in {"cuda", "rocm"}:
+            return saved
+
+    # No marker yet: decide from the hardware, NOT from the venv's torch build —
+    # an older extra-unaware `uv sync` installed ROCm torch on every Windows
+    # machine (GH #92), so trusting `torch.version.hip` would lock NVIDIA users
+    # into that state.
+    vendor = _detect_windows_gpu_vendor()
+    if vendor == "amd":
+        return "rocm"
+    if vendor == "nvidia":
+        return "cuda"
+
+    # No adapter identified (headless/VM): the venv build is the last resort.
+    python = ROOT / ".venv" / "Scripts" / "python.exe"
+    if python.is_file():
+        try:
+            result = subprocess.run(
+                [str(python), "-c", "import torch; print(bool(torch.version.hip))"],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            if result.stdout.strip() == "True":
+                return "rocm"
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    return "cuda"
+
+
+# Opt-in CUDA torch stacks (pyproject `torch-213` / `torch-212` groups); the
+# default 2.14 stack needs no flags.
+TORCH_STACKS = {"2.12": "torch-212", "2.13": "torch-213", "2.14": None}
+
+
+def _selected_torch_group() -> str | None:
+    """Return the opt-in torch group to sync, or None for the default stack.
+
+    ``ANIMA_TORCH=2.13`` picks one (and is saved to ``.anima_torch`` so later
+    updates keep it); otherwise the saved marker is reused.
+    """
+    marker = ROOT / ".anima_torch"
+    choice = os.environ.get("ANIMA_TORCH", "").strip()
+    if choice:
+        if choice not in TORCH_STACKS:
+            print(
+                f"  ignoring ANIMA_TORCH={choice!r} "
+                f"(expected one of {', '.join(TORCH_STACKS)})"
+            )
+            return None
+        try:
+            marker.write_text(choice + "\n", encoding="ascii")
+        except OSError:
+            pass
+    elif marker.is_file():
+        choice = marker.read_text(encoding="ascii").strip()
+    return TORCH_STACKS.get(choice)
+
+
+def _uv_sync_command() -> tuple[list[str], str | None]:
+    """Return the sync command and the Windows backend it targets (None off-Windows)."""
+    torch_group = _selected_torch_group()
+    command = ["uv", "sync"]
+    # An opt-in stack carries every platform's torch, so it replaces both
+    # default groups (torch-214 + cuda-windows), which it conflicts with.
+    cuda_command = (
+        command + ["--no-default-groups", "--group", torch_group]
+        if torch_group
+        else command
+    )
+    if sys.platform != "win32":
+        return cuda_command, None
+    backend = _selected_windows_backend()
+    # cuda-windows is a DEFAULT dependency group (GH #92), so the CUDA stack
+    # needs no flags; ROCm swaps the default group out explicitly.
+    if backend == "rocm":
+        if torch_group:
+            print(f"  ROCm ships its own torch; ignoring the {torch_group} choice")
+        command.extend(["--no-group", "cuda-windows", "--group", "rocm-windows"])
+    else:
+        command = cuda_command
+    # Persist the decision so later updates (and manual `make update` runs)
+    # stop re-deriving it — install.ps1 writes the same marker.
+    try:
+        (ROOT / ".anima_backend").write_text(backend + "\n", encoding="ascii")
+    except OSError:
+        pass
+    return command, backend
+
+
+def _verify_windows_backend(backend: str) -> None:
+    """Warn loudly when the synced venv's torch build contradicts the backend."""
+    python = ROOT / ".venv" / "Scripts" / "python.exe"
+    if not python.is_file():
+        return
+    try:
+        result = subprocess.run(
+            [
+                str(python),
+                "-c",
+                "import torch; print('rocm' if torch.version.hip else "
+                "('cuda' if torch.version.cuda else 'cpu'))",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return
+    build = result.stdout.strip()
+    if build != backend:
+        torch_group = _selected_torch_group()
+        if backend == "rocm":
+            fix = "uv sync --no-group cuda-windows --group rocm-windows"
+        elif torch_group:
+            fix = f"uv sync --no-default-groups --group {torch_group}"
+        else:
+            fix = "uv sync"
+        print(
+            f"\nWARNING: the installed PyTorch is a {build} build but the "
+            f"selected backend is {backend} — training/caching would fall back "
+            f"to CPU.\n  Fix: {fix}\n"
+            f"  (backend override: set ANIMA_BACKEND=cuda|rocm or edit "
+            f".anima_backend)"
+        )
+
+
 REPO = "LingyeSoul/MonadForge"
 MANIFEST_FILE = ROOT / ".anima_release.json"
 BACKUP_ROOT = ROOT / ".anima-update-backups"
 
 # Directories never touched by update (user data, caches, env, downloads).
 # Matched by leading path segments, so "archive/graft/runtime" matches that
-# prefix while leaving the rest of archive/ updatable.
+# prefix while leaving the rest of archive/ updatable. "_archive/" is
+# preserved wholesale (never overwritten or pruned).
 PRESERVE_DIRS: tuple[str, ...] = (
+    "_archive",
+    "workspace",
     "image_dataset",
     "post_image_dataset",
     "ip-adapter-dataset",
@@ -71,6 +245,7 @@ PRESERVE_DIRS: tuple[str, ...] = (
     "models",
     "masks",
     "masks_sam",
+    "masks_mit",
     "bench",
     "logs",
     "results",
@@ -92,9 +267,8 @@ PRESERVE_FILES: tuple[str, ...] = (
 )
 
 # Files that prompt on conflict instead of silent overwrite (globs relative to
-# ROOT). NB: configs/base.toml is intentionally NOT here — it's shared infra,
-# so new upstream keys must always be delivered; it rides the code-file path
-# (always overwrite, backing up a user copy) and ignores --keep-conflicts.
+# ROOT). configs/base.toml is not here: it takes the code-file path (see the
+# module docstring).
 CONFLICT_GLOBS: tuple[str, ...] = (
     "configs/methods/*.toml",
     "configs/gui-methods/*.toml",
@@ -103,8 +277,7 @@ CONFLICT_GLOBS: tuple[str, ...] = (
     "configs/sam_mask.yaml",
     "configs/clause_vocabulary.yaml",
     "configs/datasets/*",
-    # Self-contained per-method dirs (EasyControl pilot) — same policy as
-    # configs/methods/*.toml.
+    # Self-contained per-method dirs (EasyControl).
     "configs/easycontrol/*.toml",
 )
 
@@ -207,11 +380,24 @@ def _download(url: str, dest: Path) -> None:
         shutil.copyfileobj(resp, f, length=1 << 20)
 
 
+def _skip_links_filter(member, path):
+    """The data filter, but symlinks/hardlinks are dropped instead of fatal.
+
+    A committed symlink in the release tarball (absolute target →
+    LinkOutsideDestinationError) would otherwise abort the update; release
+    content never depends on links, so skipping is safe.
+    """
+    if member.islnk() or member.issym():
+        print(f"  skipping link in tarball: {member.name}")
+        return None
+    return tarfile.data_filter(member, path)
+
+
 def _extract_tarball(tar: Path, dest: Path) -> Path:
     """Extract tarball to dest/, return path to single top-level dir inside."""
     dest.mkdir(parents=True, exist_ok=True)
     with tarfile.open(tar, "r:gz") as tf:
-        tf.extractall(dest, filter="data")
+        tf.extractall(dest, filter=_skip_links_filter)
     children = [p for p in dest.iterdir() if p.is_dir()]
     if len(children) != 1:
         sys.exit(f"unexpected tarball layout: {[p.name for p in children]}")
@@ -365,7 +551,7 @@ def _restart_daemon_if_idle() -> None:
     """Bring the training daemon onto the freshly-updated code.
 
     The daemon supervisor runs detached and has already imported the OLD
-    ``scripts/daemon/*`` into memory; swapping the files on disk doesn't touch
+    ``anima_daemon/*`` into memory; swapping the files on disk doesn't touch
     it, so a new-code client would otherwise be talking to a stale-code daemon.
     Restarting fixes that — but training jobs run in their own detached
     processes (they imported everything at launch), so an *active* run is not
@@ -378,7 +564,7 @@ def _restart_daemon_if_idle() -> None:
     Best-effort: any daemon hiccup is reported, never fatal to the update.
     """
     try:
-        from scripts.daemon import client as _client
+        from anima_daemon import client as _client
     except Exception:  # noqa: BLE001 — daemon module optional / mid-swap
         return
     if not _client.is_running():
@@ -404,6 +590,26 @@ def _restart_daemon_if_idle() -> None:
         print(f"\ncould not stop the idle training daemon: {e} (restart manually)")
 
 
+def _v100_sync_protected() -> bool:
+    """Never replace a dedicated V100 stack with the default uv groups.
+
+    Probe distribution metadata, not CUDA. Check the project venv as well as
+    this process: users may invoke the updater with a system Python.
+    """
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from library.runtime.profiles import is_v100_runtime, resolve_runtime
+
+    default = resolve_runtime("default", configs_dir=ROOT / "configs")
+    candidates = {Path(sys.executable), default.python}
+    project_python = ROOT / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    if project_python.is_file():
+        candidates.add(project_python)
+    return os.environ.get("ANIMA_RUNTIME_PROFILE") == "v100" or any(
+        is_v100_runtime(python) for python in candidates
+    )
+
+
 def _apply(
     new_root: Path,
     new_tag: str,
@@ -414,6 +620,19 @@ def _apply(
     keep_conflicts: bool,
     no_sync: bool,
 ) -> int:
+    if not no_sync and not dry_run:
+        try:
+            protected = _v100_sync_protected()
+        except ValueError as exc:
+            print(f"Cannot safely select the dependency runtime: {exc}")
+            return 2
+        if protected:
+            no_sync = True
+            print(
+                "V100 Torch 2.10/CUDA 12.9 runtime detected: skipping ordinary uv sync. "
+                "Code will update; preserve the dedicated requirements-v100.txt stack "
+                "and re-run the V100 FlashAttention validation separately."
+            )
     new_files: dict[str, Path] = {}
     new_hashes: dict[str, str] = {}
     for p in _walk_tree(new_root):
@@ -527,20 +746,22 @@ def _apply(
     print(f"\nmanifest updated: {MANIFEST_FILE.name} → {new_tag}")
 
     if not no_sync:
-        print("\nrunning uv sync …")
-        import os
-
+        sync_command, backend = _uv_sync_command()
+        print(f"\nrunning {' '.join(sync_command)} …")
         env = os.environ.copy()
         venv_scripts = ROOT / ".venv" / ("Scripts" if sys.platform == "win32" else "bin")
         if venv_scripts.exists():
             env["PATH"] = str(venv_scripts) + os.pathsep + env.get("PATH", "")
         try:
-            subprocess.run(["uv", "sync"], cwd=ROOT, check=True, env=env)
+            subprocess.run(sync_command, cwd=ROOT, check=True, env=env)
         except FileNotFoundError:
             print("  uv not found on PATH; skip or run `uv sync` manually")
         except subprocess.CalledProcessError as e:
             print(f"  uv sync failed (exit {e.returncode}); rerun manually")
             return e.returncode
+        else:
+            if backend is not None:
+                _verify_windows_backend(backend)
 
     # Code on disk changed → the running daemon supervisor is now stale (skip
     # if nothing was written — a no-op update leaves the daemon correct).

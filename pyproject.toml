@@ -1,34 +1,40 @@
 [project]
 name = "monad-forge"
 version = "0.1.0"
-description = "MonadForge — improved fork of anima_lora (https://github.com/sorryhyun/anima_lora)"
+description = "MonadForge — integrated Anima, Qwen and MOSS training workbench"
 requires-python = "==3.13.*"
 dependencies = [
     # Core ML.
-    "torch>=2.12.0,<2.13",
-    "torchvision>=0.27.0,<0.28",
+    # The exact torch version is picked by a dependency group below: torch-214
+    # (Linux) + cuda-windows (Windows) are default-on; torch-213 / torch-212 are
+    # opt-in (`uv sync --no-default-groups --group torch-213`). Windows torch
+    # lives only in the groups; keeping the backend groups mutually exclusive
+    # prevents a uv resolution from crossing CUDA and ROCm package indexes.
+    "torch>=2.12.0,<2.15 ; sys_platform != 'win32'",
+    "torchvision>=0.27.0,<0.30 ; sys_platform != 'win32'",
+    # Version comes from each torch's own pin; listed only so the PyPI source
+    # in [tool.uv.sources] binds (sources apply to direct deps only).
+    "triton ; sys_platform == 'linux'",
     "accelerate>=1.13.0",
     "transformers>=5.10.1",
+    # Pinned to a git commit in [tool.uv.sources]: the QwenImage21 classes
+    # (project/qwen21_lora/) exist only on main, not in any release.
     "diffusers>=0.41.0.dev0",
     "einops>=0.7.0",
-    "lycoris-lora==4.0.0",
-    "bitsandbytes>=0.45.0",
     # Optimizers
     "pytorch-optimizer>=3.9.0",
     "prodigyopt>=1.1.2",
-    "dadaptation>=3.1",
-    "lion-pytorch>=0.2.3",
-    "schedulefree>=1.4",
-    "prodigy-plus-schedule-free>=0.1.5",
+    # CJK glossary (scripts/distill_cjk/corpus, --lang zh): pure-python OpenCC
+    "opencc-python-reimplemented>=0.1.7",
     # Data & Config
     "toml>=0.10.2",
-    "tomlkit>=0.13",  # style-preserving TOML for the sectioned distill-config editor
+    "tomlkit>=0.13",  # style-preserving TOML for the GUI's sectioned distill-config editor
     "voluptuous>=0.15.2",
-    "safetensors>=0.8.0",
+    "safetensors>=0.7.0",
     "imagesize>=1.4.1",
     # Text processing
     "sentencepiece>=0.2.1",
-    "huggingface-hub>=1.31.0",
+    "huggingface-hub>=1.9.0",
     # Monitoring & Utilities
     "tensorboard",
     "rich>=14.0.0",
@@ -37,16 +43,23 @@ dependencies = [
     "Pillow",
     "psutil",
     "opencv-python>=4.11.0.86",
-    # Masking
+    # Both opencv wheels write the same cv2/ tree. Venvs synced before 840298b1
+    # carry headless (via albumentations); letting a later sync uninstall it
+    # deletes cv2/ out from under opencv-python, which stays "installed" so no
+    # sync repairs it. Declaring headless keeps the pair, and reinstalls cv2/
+    # into venvs that already lost it.
+    "opencv-python-headless>=4.11.0.86",
+    # Masking moved to anime-tools (curation split). The direct sam3 row is now
+    # redundant -- its last trainer-side consumer, probe_autocaption.py, moved to
+    # _archive/bench/position_captions/ (2026-09-08), and anime-tools declares sam3
+    # itself -- kept only so that archived probe still resolves.
+    # segmentation-models-pytorch is gone from both sides with the MIT text masker
+    # (anime_tools 0.5).
     "pyyaml",
     "sam3 @ git+https://github.com/facebookresearch/sam3.git",
-    "segmentation-models-pytorch>=0.3.4",
-    "albumentations>=1.4.0",
     "packaging",
     "pycocotools>=2.0.11",
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.17/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-linux_x86_64.whl ; sys_platform == 'linux'",
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.25/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
-    "triton-windows>=3.7.0,<3.8.0 ; sys_platform == 'win32'",
+    "pyside6>=6.11.0",
     "ruff>=0.15.9",
     "matplotlib",
     "torchsde>=0.2.6",
@@ -56,63 +69,170 @@ dependencies = [
     "sqlalchemy>=2.1.0b2",
     "aiohttp>=3.13.5",
     "comfy-cli>=1.10.3",
-    "comfy-aimdo>=0.4.9",
+    "comfy-aimdo>=0.5.6",
     "av>=17.0.1",
     "alembic>=1.18.4",
     "pydantic-settings>=2.14.0",
     "kornia>=0.8.2",
-    "comfy-kitchen>=0.2.10",
+    "comfy-kitchen>=0.2.38",
     "simpleeval>=1.0.7",
     "pytest>=9.0.3",
     "blake3>=1.0.8",
-    # WebUI
+    "softtorch>=0.1.1",
+    "scikit-learn>=1.9.0",
+    "peft>=0.20.0",
+    # Curation package (caption grammar, Anima Tagger, caption stages — split
+    # out 2026-08-30); pinned to a release tag in [tool.uv.sources].
+    # LyCORIS LoKr / LoHa weight math for the MOSS adapters (library/moss/lora.py).
+    "lycoris-lora==4.0.0",
+    "bitsandbytes>=0.45.0",
+    "dadaptation>=3.1",
+    "lion-pytorch>=0.2.3",
+    "schedulefree>=1.4",
+    "prodigy-plus-schedule-free>=0.1.5",
+    "segmentation-models-pytorch>=0.3.4",
+    "albumentations>=1.4.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "python-multipart>=0.0.20",
-    # System tray (Windows status indicator for the training daemon).
-    # pywin32 is the Win32 backend pystray's Win backend leans on; declaring it
-    # here keeps a future `uv sync` from pruning a transitive install.
     "pystray>=0.19.5 ; sys_platform == 'win32'",
     "pywin32>=308 ; sys_platform == 'win32'",
-    # WD Tagger (timm + PyTorch, no ONNX Runtime)
     "timm>=1.0.0",
-    # Experiment tracking
     "wandb>=0.19.0",
-    # Upstream additions
-    "softtorch>=0.1.1",
     "controlnet-aux>=0.0.10",
-    "scikit-learn>=1.9.0rc1",
     "datasets>=4.8.5",
     "send2trash>=2.1.0",
     "onnxruntime-gpu>=1.27.0",
 ]
 
+[project.gui-scripts]
+monadforge-tray = "scripts.tray.__main__:main"
+
 [project.optional-dependencies]
+gui = ["PySide6>=6.7"]
+# Transition shims (GH #92): v1.16.1/v1.16.2 shipped `update.py` scripts that
+# pass `--extra cuda-windows|rocm-windows`, so these names must keep resolving
+# without error. The real backend selection lives in [dependency-groups] below
+# — `cuda-windows` is a DEFAULT group, so a plain `uv sync` (what every
+# pre-v1.16.1 updater runs) installs the CUDA stack on Windows instead of
+# letting the resolver pick the ROCm torch. Removable once no shipped updater
+# passes the --extra form (~v1.18).
+cuda-windows = []
+rocm-windows = []
 dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.6",
     "pytest-timeout>=2.3",
 ]
 
-# Windows tray entry point. `gui-scripts` binds to pythonw.exe on Windows so
-# launching it pops no console (the tray runs its own message loop). Invoke as
-# `pythonw -m scripts.tray` directly if the installed script isn't on PATH.
-[project.gui-scripts]
-monadforge-tray = "scripts.tray.__main__:main"
-
-# Qwen-Image-2.1 is not available in the released Diffusers used by Anima.
-[tool.uv.sources]
-diffusers = { git = "https://github.com/huggingface/diffusers", rev = "80c7ed262aeffbeb43ef13ae04baeb9b84515a69" }
-
 [tool.uv]
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "sys_platform == 'win32'",
+]
 index-strategy = "unsafe-best-match"
-# Both wheels are looked up from these indexes — the version pin in
-# `dependencies` (active vs. commented) decides which one resolves.
-extra-index-url = [
-    "https://download.pytorch.org/whl/cu132"
+# `cuda-windows` is default-on so the no-flag `uv sync` run by old updaters
+# lands the CUDA stack on Windows (GH #92). ROCm opts in with
+# `uv sync --no-group cuda-windows --group rocm-windows`.
+# Torch version: the default stack is torch 2.14 (`torch-214` on Linux,
+# `cuda-windows` on Windows). torch-214 carries no Windows deps, so it does not
+# conflict with rocm-windows and the ROCm command above needs no extra flag.
+# The opt-in stacks carry every platform: `uv sync --no-default-groups --group
+# torch-213` (or torch-212).
+default-groups = ["dev", "torch-214", "cuda-windows", "curation"]
+conflicts = [
+    [
+        { group = "cuda-windows" },
+        { group = "rocm-windows" },
+        { group = "torch-213" },
+        { group = "torch-212" },
+    ],
+    [
+        { group = "torch-214" },
+        { group = "torch-213" },
+        { group = "torch-212" },
+    ],
 ]
 prerelease = "allow"
-override-dependencies = ["numpy>=2.0.0", "httptools<0.8.0"]
+override-dependencies = [
+    "numpy>=2.0.0",
+]
+
+# uv resolves every wheel of a version from one wheel's metadata, and for the
+# ROCm torch it reads the linux_x86_64 wheel's, which pins a Linux-only
+# `triton==…+rocm10.0.0` that has no Windows wheel. This is the win_amd64
+# wheel's own METADATA (no triton; triton-windows comes from rocm-windows),
+# trimmed to the device extras rocm-windows selects. It replaces a blanket
+# `triton` override that also erased each cu132 torch's own triton pin.
+[[tool.uv.dependency-metadata]]
+name = "torch"
+version = "2.13.0+rocm10.0.0"
+requires-dist = [
+    "filelock",
+    "typing-extensions>=4.10.0",
+    "setuptools>=77.0.3",
+    "sympy>=1.13.3",
+    "networkx>=2.5.1",
+    "jinja2",
+    "fsspec>=0.8.5",
+    "rocm[libraries]==10.0.0",
+    "rocm-bootstrap",
+    "amd-torch-device-gfx1200==2.13.0+rocm10.0.0 ; extra == 'device-gfx1200'",
+    "amd-torch-device-gfx12-0==2.13.0+rocm10.0.0 ; extra == 'device-gfx1200'",
+    "amd-torch-device-gfx1201==2.13.0+rocm10.0.0 ; extra == 'device-gfx1201'",
+    "amd-torch-device-gfx12-0==2.13.0+rocm10.0.0 ; extra == 'device-gfx1201'",
+]
+provides-extras = ["device-gfx1200", "device-gfx1201"]
+
+
+[tool.uv.sources]
+# diffusers: `QwenImage21Pipeline` / `QwenImage21Transformer2DModel` /
+# `AutoencoderKLQwenImage21` (the Qwen-Image-2.1 sidecar) landed on main after
+# the 0.40.0 release, so there is no wheel to pin to. Pinned to a commit rather
+# than floating `main` — the trainer's own diffusers surface is small
+# (`randn_tensor`, `EulerAncestralDiscreteScheduler`, `ConfigMixin`,
+# `modular_pipelines.anima`) but it still rides this pin. Bump deliberately.
+diffusers = { git = "https://github.com/huggingface/diffusers", rev = "80c7ed262aeffbeb43ef13ae04baeb9b84515a69" }
+# anime_tools: pinned release tag only. No sibling-checkout path source — the
+# lock would then reference ../anime_tools, and a flagless `uv sync` fails on
+# every machine without one. Test an unreleased change with
+# PYTHONPATH=../anime_tools instead.
+anime-tools = { git = "https://github.com/sorryhyun/anime_tools", tag = "v0.7.15" }
+torch = [
+    { index = "pytorch-cu132", marker = "sys_platform != 'darwin' and sys_platform != 'win32'" },
+    { index = "pytorch-cu132", group = "cuda-windows" },
+    { index = "pytorch-cu132", group = "torch-213" },
+    { index = "pytorch-cu132", group = "torch-212" },
+    { index = "amd-rocm-100", group = "rocm-windows" },
+]
+torchvision = [
+    { index = "pytorch-cu132", marker = "sys_platform != 'darwin' and sys_platform != 'win32'" },
+    { index = "pytorch-cu132", group = "cuda-windows" },
+    { index = "pytorch-cu132", group = "torch-213" },
+    { index = "pytorch-cu132", group = "torch-212" },
+    { index = "amd-rocm-100", group = "rocm-windows" },
+]
+
+# PyPI triton only: amd-rocm-100 is not explicit, and torch's `triton==3.8.0`
+# also matches its local `3.8.0+git….rocm…` builds.
+triton = { index = "pypi" }
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+# This index also hosts the ROCm runtime/device packages pulled by the device
+# extras, so it cannot be explicit-only.
+[[tool.uv.index]]
+name = "amd-rocm-100"
+url = "https://stable.repo.amd.com/rocm/whl-next/"
 
 [tool.ruff.lint.per-file-ignores]
 # `train.py` / `inference.py` call `install_no_window_default()` at module scope
@@ -128,28 +248,96 @@ override-dependencies = ["numpy>=2.0.0", "httptools<0.8.0"]
 # `import anima_lora` (the programmatic front door) + `import library` /
 # `networks` resolve without the repo root on sys.path. The tooling trees
 # (`bench` / `scripts` / `preprocess`) are also installed so cross-tree imports
-# (`from bench._common import …`, `from scripts.dcw.haar import …`) resolve via
+# (`from bench._common import …`, `from scripts.distill_turbo.setup import …`) resolve via
 # the editable finder instead of per-file `sys.path.insert` shims — and any tool
-# runs as `python -m bench.spd.foo`. `gui` stays CLI-only (not importable).
+# runs as `python -m bench.dave.foo`. `gui` stays CLI-only (not importable).
+[tool.pytest.ini_options]
+# `slow` tags the sleep/subprocess-bound suites (daemon job queue): ~55s serial
+# but ~4x faster under xdist because they overlap on real timers, not CPU. The
+# fast unit tests are the opposite — xdist per-worker startup exceeds their
+# runtime — so `make test-unit` splits them (fast serial + `-m slow -n auto`).
+# Registered here so the marker isn't an "unknown mark" warning.
+addopts = '-m "not qwen_training and not training_step"'
+markers = [
+    "qwen_training: executes Qwen backward/optimizer; explicitly opt in",
+    "training_step: executes model backward/optimizer; explicitly opt in",
+    "slow: sleep/subprocess-bound integration test — parallelize under xdist",
+]
+
 [tool.setuptools.packages.find]
-include = ["anima_lora*", "library*", "networks*", "bench*", "scripts*", "preprocess*"]
+include = ["anima_lora*", "anima_daemon*", "library*", "networks*", "bench*", "scripts*", "preprocess*"]
 
 [tool.setuptools.package-data]
 # Ship the model-scoped T5("") CFG-uncond sidecar bundled in library/anima/assets/
 # (resolved package-relative in library/anima/uncond.py) inside wheels/sdists.
 "library.anima" = ["assets/*.safetensors"]
 "library.qwen21" = ["configs/*.json"]
+"library.models" = ["LICENSE.PE"]
+"library.curation_compat" = ["LICENSE", "SOURCE.json"]
 
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [dependency-groups]
-dev = [
-    "markdownify",
+dev = []
+curation = ["anime-tools"]
+# Torch stacks (see [tool.uv] for how they compose). The default 2.14 stack is
+# split: `torch-214` holds the Linux pins, `cuda-windows` the Windows ones.
+# Every flash-attn row is a cu132 mjun0812 prebuild matched to its torch minor.
+torch-214 = [
+    "torch>=2.14.0,<2.15 ; sys_platform != 'win32'",
+    "torchvision>=0.29.0,<0.30 ; sys_platform != 'win32'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.0/flash_attn-2.8.3+cu132torch2.14-cp313-cp313-linux_x86_64.whl ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.1/flash_attn-2.8.3+cu132torch2.14-cp313-cp313-linux_aarch64.whl ; sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]
-# ResShift/RSD super-resolution sidecar. Kept opt-in because pyiqa pulls a
-# comparatively large metrics/runtime closure that is not needed by Anima LoRA.
+torch-213 = [
+    "torch>=2.13.0,<2.14 ; sys_platform != 'win32'",
+    "torchvision>=0.28.0,<0.29 ; sys_platform != 'win32'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.47/flash_attn-2.8.3+cu132torch2.13-cp313-cp313-linux_x86_64.whl ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.49/flash_attn-2.8.3+cu132torch2.13-cp313-cp313-linux_aarch64.whl ; sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "torch==2.13.0+cu132 ; sys_platform == 'win32'",
+    "torchvision==0.28.0+cu132 ; sys_platform == 'win32'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.52/flash_attn-2.8.3+cu132torch2.13-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
+    "triton-windows>=3.7.0,<3.8.0 ; sys_platform == 'win32'",
+]
+torch-212 = [
+    "torch>=2.12.0,<2.13 ; sys_platform != 'win32'",
+    "torchvision>=0.27.0,<0.28 ; sys_platform != 'win32'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.17/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-linux_x86_64.whl ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.22/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-linux_aarch64.whl ; sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "torch==2.12.0+cu132 ; sys_platform == 'win32'",
+    "torchvision==0.27.0+cu132 ; sys_platform == 'win32'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.25/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
+    "triton-windows>=3.7.0,<3.8.0 ; sys_platform == 'win32'",
+]
+# Windows accelerator backends. `cuda-windows` is in default-groups (see
+# [tool.uv]) so it composes into every plain `uv sync`; every dep is
+# win32-marked, so both groups are inert on Linux/macOS.
+cuda-windows = [
+    "torch==2.14.1+cu132 ; sys_platform == 'win32'",
+    "torchvision==0.29.1+cu132 ; sys_platform == 'win32'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.2/flash_attn-2.8.3+cu132torch2.14-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
+    "triton-windows>=3.8.0,<3.9.0 ; sys_platform == 'win32'",
+]
+rocm-windows = [
+    # Initial RDNA 4 path. AMD's device-all extra currently includes Linux-only
+    # Instinct packages and cannot resolve on Windows, so select gfx120X only.
+    "torch[device-gfx1200,device-gfx1201]==2.13.0+rocm10.0.0 ; sys_platform == 'win32'",
+    "torchvision[device-gfx1200,device-gfx1201]==0.28.0+rocm10.0.0 ; sys_platform == 'win32'",
+    # AMD's Windows wheel metadata currently points at a Linux-only `triton`
+    # distribution. The Windows package provides the same import/runtime used
+    # by torch.compile in the working ROCm environment.
+    "triton-windows>=3.7.0,<3.8.0 ; sys_platform == 'win32'",
+]
+# ResShift super-resolution sidecar (finished line — project/finished/sr/). Kept as
+# an OPT-IN group rather than core `dependencies` so the heavy metrics closure
+# (pyiqa → opencv-python-headless, bitsandbytes, facexlib, datasets, plus dev-tools
+# as runtime deps) doesn't land in every `uv sync`. torch/torchvision are already
+# core deps (same cu132 Blackwell build), and the SR env has converged on them — the
+# old isolated per-sidecar venv split (torch 2.1.1 + xformers) is obsolete now that
+# ResShift is vendored basicsr-free under project/finished/sr/resshift/. Install
+# with:  uv sync --group sr   (see project/finished/sr/README.md).
 sr = [
     "scipy",
     "timm",
@@ -169,12 +357,3 @@ sr = [
     "scikit-learn",
     "tqdm",
 ]
-
-[tool.pytest.ini_options]
-markers = [
-    # docs/qwen21-handoff.md: backward/optimizer steps are the user's training
-    # acceptance to run, never ours. Deselected by default; a command-line
-    # `-m qwen_training` overrides the addopts `-m` below and re-enables them.
-    "qwen_training: executes backward/optimizer steps — the user owns training acceptance; enable explicitly with `-m qwen_training`",
-]
-addopts = '-m "not qwen_training"'
