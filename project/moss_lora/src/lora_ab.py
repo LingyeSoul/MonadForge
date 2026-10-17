@@ -6,7 +6,9 @@ An arm is ``<sampler>:<multiplier>``; sampler ``euler``, ``er_sde`` or ``cns``
 Spectrum at its shipped settings (50 steps, flex_window 0.5), ``er_sde:1.0,er_sde:0.0``;
 ``--no-spectrum --steps 30 --arms euler:1.0,euler:0.0`` is the pre-2026-10-17 A/B.
 Same noise per (prompt, seed), so each row differs by the arm only. Writes one row
-per (variant, prompt, seed) into ``--out``.
+per (variant, prompt, seed) into ``--out``. Blocks are compiled after the LoRA is
+attached (``--no-compile`` for eager; grids made before 2026-10-17 16:30 are eager,
+so compare compiled arms only against compiled arms).
 
     make daemon-run ARGS="project/moss_lora/src/lora_ab.py --lora output/moss/lora/x.safetensors"
 """
@@ -28,7 +30,13 @@ from library.moss.generate import (
     denoise,
     initial_noise,
 )
-from library.moss.loader import empty_cache, load_transformer, load_vae, pad_embeds
+from library.moss.loader import (
+    compile_blocks,
+    empty_cache,
+    load_transformer,
+    load_vae,
+    pad_embeds,
+)
 from library.moss.lora import load_for_inference
 from library.moss.model import decode, snapped_sigmas
 from library.moss.requests import GenerateRequest
@@ -65,6 +73,12 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Spectrum at GenerateRequest's defaults",
+    )
+    ap.add_argument(
+        "--compile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="compile the blocks after the LoRA is attached, as generate does",
     )
     ap.add_argument(
         "--prompt_format",
@@ -119,6 +133,8 @@ def main() -> None:
             continue
         tr = load_transformer("", variant, device=device)
         net = load_for_inference(tr, resolve_under_home(args.lora))
+        if args.compile:
+            compile_blocks(tr.layers)
         for job in todo:
             _, pi, seed, (sampler, m) = job
             cond, cond_mask = pad_embeds([embeds[prompts[pi]]], device)

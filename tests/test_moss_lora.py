@@ -9,6 +9,7 @@ import torch
 
 from library.moss.lora import (
     DEFAULT_TARGETS,
+    LoKrAdapter,
     LoRANetwork,
     load_for_inference,
     load_network,
@@ -90,10 +91,11 @@ def test_save_load_round_trip(tmp_path):
         load_network(_tiny(layers=4), path)
 
 
-def test_one_step_decreases_loss():
+@pytest.mark.parametrize("algo", ["lora", "lokr", "loha"])
+def test_one_step_decreases_loss(algo):
     model = _tiny()
     model.requires_grad_(False)
-    net = LoRANetwork(model, rank=4)
+    net = LoRANetwork(model, rank=4, algo=algo)
     net.apply_to()
     checkpoint_blocks(model.layers)
     model.train()
@@ -148,3 +150,71 @@ def test_weight_svd_down_init():
     assert torch.equal(_out(model, x, e), base)
     with pytest.raises(ValueError):
         LoRANetwork(model, rank=4, down_init="pissa")
+
+
+def _dense_delta(adapter):
+    """ΔW written out densely, independent of the bypass / merge paths."""
+    if isinstance(adapter, LoKrAdapter):
+        w2 = (
+            adapter.lokr_w2
+            if hasattr(adapter, "lokr_w2")
+            else adapter.lokr_w2_a @ adapter.lokr_w2_b
+        )
+        return torch.kron(adapter.lokr_w1, w2) * adapter.scale
+    hada = (adapter.hada_w1_a @ adapter.hada_w1_b) * (
+        adapter.hada_w2_a @ adapter.hada_w2_b
+    )
+    return hada * adapter.scale
+
+
+@pytest.mark.parametrize("algo", ["lokr", "loha"])
+def test_lycoris_matches_dense_and_round_trips(algo, tmp_path):
+    from safetensors import safe_open
+
+    model = _tiny()
+    x, e = _inputs()
+    base = _out(model, x, e)
+    net = LoRANetwork(model, rank=4, alpha=2.0, algo=algo)
+    net.apply_to()
+    assert torch.equal(_out(model, x, e), base)
+    for adapter in net.adapters.values():
+        for param in adapter.parameters():
+            torch.nn.init.normal_(param, std=0.1)
+    got = _out(model, x, e)
+    assert not torch.allclose(got, base)
+
+    merged = _tiny()
+    with torch.no_grad():
+        for name, _module in net._targets:
+            delta = _dense_delta(net.adapters[name.replace(".", "_")])
+            merged.get_submodule(name).weight += delta
+    assert torch.allclose(got, _out(merged, x, e), atol=1e-5)
+    net.set_multiplier(0.0)
+    assert torch.equal(_out(model, x, e), base)
+    net.set_multiplier(1.0)
+
+    path = tmp_path / f"{algo}.safetensors"
+    net.save(path, "fp32")
+    net.restore()
+    prefix = {"lokr": "lokr_w", "loha": "hada_w"}[algo]
+    with safe_open(str(path), framework="pt") as handle:
+        keys = list(handle.keys())
+        assert handle.get_tensor(keys[0].rsplit(".", 1)[0] + ".alpha").item() == 2.0
+    assert all(
+        k.endswith(".alpha") or k.split(".")[-1].startswith(prefix) for k in keys
+    )
+    fresh = _tiny()
+    load_for_inference(fresh, path)
+    assert torch.allclose(_out(fresh, x, e), got, atol=1e-6)
+    assert load_network(_tiny(), path)[1]["algo"] == algo
+
+
+def test_lokr_full_w2_scale_is_one():
+    # rank >= half the larger factor's side: w2 is a full matrix and LyCORIS
+    # drops alpha (scale 1), whatever alpha says.
+    net = LoRANetwork(_tiny(), rank=16, alpha=2.0, algo="lokr")
+    for adapter in net.adapters.values():
+        assert hasattr(adapter, "lokr_w2") and adapter.scale == 1.0
+        assert adapter.alpha.item() == 16.0
+    with pytest.raises(ValueError, match="algo"):
+        LoRANetwork(_tiny(), algo="glora")

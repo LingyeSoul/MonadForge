@@ -16,6 +16,14 @@ and the gate halves share the rank.
 SVD, as Anima's SVD-Down (``docs/methods/svd-down-lora.md``). The Kaiming draw
 still runs first, so the global RNG stream (and the training noise drawn after
 it) is the same under either init.
+
+``algo`` picks the adapter: ``lora``, or the LyCORIS ``lokr`` / ``loha``. Their
+init, scale and ΔW math come from ``lycoris.functional`` (pinned ``backend="torch"``
+so dynamo traces them inside the compiled blocks), and their tensors carry
+LyCORIS's key names (``lokr_w1``, ``hada_w1_a``, …, plus an ``alpha`` buffer).
+LoKr applies in bypass (grouped GEMMs on the tokens; ΔW is never built). LoHa
+rebuilds ΔW each forward and runs one GEMM against ``W + ΔW``, LyCORIS's own
+LoHa path, so the delta is rounded to the base weight's bf16 grid in the forward.
 """
 
 from __future__ import annotations
@@ -32,6 +40,7 @@ from library.moss.requests import TrainRequest
 DEFAULT_TARGETS = TrainRequest.TARGETS
 SAVED_DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
 DOWN_INITS = ("kaiming", "weight_svd")
+ALGOS = ("lora", "lokr", "loha")
 
 
 class LoRAAdapter(nn.Module):
@@ -72,6 +81,107 @@ class LoRAAdapter(nn.Module):
         delta = F.linear(lx, self.up.weight.to(work))
         return base_out + delta * (self.scale * self.multiplier)
 
+    def patched(self, module: nn.Linear, base, x: torch.Tensor) -> torch.Tensor:
+        return self(x, base(module, x))
+
+
+class LoKrAdapter(nn.Module):
+    """LyCORIS LoKr: ``ΔW = scale · kron(w1, w2)``, ``out = a·b``, ``in = c·d``.
+
+    ``w1`` (a, c) is the small full factor; ``w2`` (b, d) is ``w2_a @ w2_b`` at
+    ``rank`` when the rank is under half its larger side, else a full matrix
+    (LyCORIS's huge-dim convention), and with both halves full the scale is 1
+    whatever alpha says. ``factor`` caps ``a`` / ``c`` (-1 = near-square).
+    """
+
+    def __init__(self, base: nn.Linear, rank, alpha, factor, dtype):
+        super().__init__()
+        from lycoris.functional import lokr
+
+        # tucker=False: weight_gen's default inits a conv-only t2 that a
+        # Linear never allocates (None).
+        w1, _w1a, _w1b, w2, w2a, w2b, _t = lokr.weight_gen(
+            base.weight, rank, tucker=False, factor=factor
+        )
+        self.lokr_w1 = nn.Parameter(w1.to(dtype))
+        if w2 is not None:
+            self.lokr_w2 = nn.Parameter(w2.to(dtype))
+            alpha = rank
+        else:
+            self.lokr_w2_a = nn.Parameter(w2a.to(dtype))
+            self.lokr_w2_b = nn.Parameter(w2b.to(dtype))
+        self.register_buffer("alpha", torch.tensor(float(alpha)))
+        self.scale = alpha / rank
+        self.multiplier = 1.0
+
+    def forward(self, x: torch.Tensor, base_out: torch.Tensor) -> torch.Tensor:
+        if self.multiplier == 0.0:
+            return base_out
+        from lycoris.functional import lokr
+
+        work = base_out.dtype
+        full = hasattr(self, "lokr_w2")
+        delta = lokr.kron_bypass(
+            x.to(work),
+            self.lokr_w1.to(work),
+            None,
+            None,
+            self.lokr_w2.to(work) if full else None,
+            None if full else self.lokr_w2_a.to(work),
+            None if full else self.lokr_w2_b.to(work),
+            None,
+            scale=self.scale * self.multiplier,
+            backend="torch",
+        )
+        return base_out + delta
+
+    def patched(self, module: nn.Linear, base, x: torch.Tensor) -> torch.Tensor:
+        return self(x, base(module, x))
+
+
+class LoHaAdapter(nn.Module):
+    """LyCORIS LoHa: ``ΔW = scale · (w1_a @ w1_b) ⊙ (w2_a @ w2_b)``, each pair at
+    ``rank`` (an effective rank up to rank²). ``hada_w1_a`` starts at zero, so
+    ΔW does too."""
+
+    def __init__(self, base: nn.Linear, rank, alpha, dtype):
+        super().__init__()
+        from lycoris.functional import loha
+
+        w1d, w1u, w2d, w2u, _t1, _t2 = loha.weight_gen(base.weight, rank)
+        self.hada_w1_a = nn.Parameter(w1u.to(dtype))
+        self.hada_w1_b = nn.Parameter(w1d.to(dtype))
+        self.hada_w2_a = nn.Parameter(w2u.to(dtype))
+        self.hada_w2_b = nn.Parameter(w2d.to(dtype))
+        self.register_buffer("alpha", torch.tensor(float(alpha)))
+        # HadaWeight saves its gamma for backward, so it must be a tensor; a
+        # device-resident 1 keeps the Python-float scale outside it.
+        self.register_buffer("_unit", torch.ones(()), persistent=False)
+        self.scale = alpha / rank
+        self.multiplier = 1.0
+
+    def delta_weight(self, dtype: torch.dtype) -> torch.Tensor:
+        from lycoris.functional import loha
+
+        hada = loha.diff_weight(
+            self.hada_w1_b.to(dtype),
+            self.hada_w1_a.to(dtype),
+            self.hada_w2_b.to(dtype),
+            self.hada_w2_a.to(dtype),
+            None,
+            None,
+            gamma=self._unit.to(dtype),
+            backend="torch",
+        )
+        return hada * (self.scale * self.multiplier)
+
+    def patched(self, module: nn.Linear, base, x: torch.Tensor) -> torch.Tensor:
+        if self.multiplier == 0.0:
+            return base(module, x)
+        weight = module.weight
+        merged = weight + self.delta_weight(weight.dtype)
+        return F.linear(x.to(weight.dtype), merged, module.bias)
+
 
 class LoRANetwork(nn.Module):
     """The adapters for one transformer, held outside it.
@@ -88,13 +198,19 @@ class LoRANetwork(nn.Module):
         targets: str = DEFAULT_TARGETS,
         dtype: torch.dtype = torch.float32,
         down_init: str = "kaiming",
+        algo: str = "lora",
+        factor: int = -1,
     ):
         super().__init__()
         if down_init not in DOWN_INITS:
             raise ValueError(
                 f"down_init must be one of {DOWN_INITS}, not {down_init!r}"
             )
+        if algo not in ALGOS:
+            raise ValueError(f"algo must be one of {ALGOS}, not {algo!r}")
         pattern = re.compile(targets)
+        self.algo = algo
+        self.factor = factor
         self.rank = rank
         self.alpha = float(rank if alpha is None else alpha)
         self.targets = targets
@@ -105,11 +221,16 @@ class LoRANetwork(nn.Module):
         for name, module in model.named_modules():
             if not isinstance(module, nn.Linear) or not pattern.fullmatch(name):
                 continue
-            adapter = LoRAAdapter(
-                module.in_features, module.out_features, rank, self.alpha, dtype
-            )
-            if down_init == "weight_svd":
-                adapter.init_down_weight_svd(module)
+            if algo == "lokr":
+                adapter = LoKrAdapter(module, rank, self.alpha, factor, dtype)
+            elif algo == "loha":
+                adapter = LoHaAdapter(module, rank, self.alpha, dtype)
+            else:
+                adapter = LoRAAdapter(
+                    module.in_features, module.out_features, rank, self.alpha, dtype
+                )
+                if down_init == "weight_svd":
+                    adapter.init_down_weight_svd(module)
             self.adapters[name.replace(".", "_")] = adapter
             self._targets.append((name, module))
         if not self._targets:
@@ -150,13 +271,17 @@ class LoRANetwork(nn.Module):
     def metadata(self, **extra) -> dict[str, str]:
         meta = {
             "base_model": "MOSS-Image",
+            "algo": self.algo,
             "rank": str(self.rank),
             "alpha": str(self.alpha),
             "targets": self.targets,
-            "down_init": self.down_init,
             # A LoRA is depth-specific: module names carry the block index.
             "ss_num_blocks": str(self.num_blocks),
         }
+        if self.algo == "lora":
+            meta["down_init"] = self.down_init
+        if self.algo == "lokr":
+            meta["factor"] = str(self.factor)
         meta.update({k: str(v) for k, v in extra.items()})
         return meta
 
@@ -172,18 +297,19 @@ class LoRANetwork(nn.Module):
         )
 
 
-def _patched_forward(module: nn.Linear, adapter: LoRAAdapter):
+def _patched_forward(module: nn.Linear, adapter: nn.Module):
     base = module.__class__.forward
 
     def forward(x: torch.Tensor) -> torch.Tensor:
-        return adapter(x, base(module, x))
+        return adapter.patched(module, base, x)
 
     return forward
 
 
 def load_network(model: nn.Module, path, dtype=None) -> tuple[LoRANetwork, dict]:
     """Rebuild the network a ``train.py`` checkpoint describes, and load it.
-    Rank, alpha and targets come from the file's metadata; a depth mismatch
+    Algo, rank, alpha and targets come from the file's metadata (no ``algo``
+    = a LoRA from before LyCORIS); a depth mismatch
     (``ss_num_blocks``) raises instead of silently dropping blocks."""
     from safetensors import safe_open
 
@@ -204,6 +330,8 @@ def load_network(model: nn.Module, path, dtype=None) -> tuple[LoRANetwork, dict]
         alpha=float(meta["alpha"]),
         targets=meta["targets"],
         dtype=dtype or SAVED_DTYPES.get(meta.get("lora_dtype", ""), torch.float32),
+        algo=meta.get("algo", "lora"),
+        factor=int(meta.get("factor", -1)),
     )
     network.load_state_dict(state)
     return network, meta

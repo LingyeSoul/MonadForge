@@ -84,6 +84,8 @@ dependencies = [
     # Curation package (caption grammar, Anima Tagger, caption stages — split
     # out 2026-08-30); pinned to a release tag in [tool.uv.sources].
     "anime-tools",
+    # LyCORIS LoKr / LoHa weight math for the MOSS adapters (library/moss/lora.py).
+    "lycoris-lora==4.0.0",
 ]
 
 [project.optional-dependencies]

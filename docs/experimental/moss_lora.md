@@ -70,6 +70,17 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
   down projection starts on the base weight's top-r right singular vectors. On the
   caststation set it kept the artist's style better by eye than Kaiming; the two
   inits land different samples at the same seed, as far apart as a seed change.
+- **LyCORIS** (`--algo lokr` / `--algo loha`, from `lycoris-lora`): LoKr is the
+  Kronecker product (`--factor` caps the small factor; a `--rank` at or above half the
+  larger factor's side makes `w2` a full matrix and the scale 1, the usual
+  `--rank 100000 --factor 8` setup), LoHa the Hadamard product of two rank-r pairs.
+  Files keep LyCORIS's tensor names and load through the same `--lora`. Both need more
+  room than a LoRA: at 1024² the default swap 12 / budget 0.15 runs out of memory, so
+  train them with `--blocks_to_swap 24 --activation_memory_budget 0.1` (LoKr f8
+  2.26 s/step with 3.6 GB free, LoHa r16 2.49 s/step with 1.7 GB free, against
+  LoRA's 1.77). `tune_swap.py` measures a LoRA only. `--down_init` applies to `lora`.
+  On the caststation set at lr 1e-4, LoKr f8 came close to the LoRA and LoHa r16
+  overshot (palette shift, costume leakage onto other characters); try LoHa lower.
 - **A LoRA trained on Base also works on SFT.** It removes most of SFT's glossy look and
   lands close to Base + LoRA.
 - **Captions**: Anima-style tag captions trained and prompted fine. MOSS itself was

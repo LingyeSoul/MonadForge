@@ -279,11 +279,18 @@ def train(
         targets=req.targets,
         dtype=torch.float32,
         down_init=req.down_init,
+        algo=req.algo,
+        factor=req.factor,
     )
     patched = network.apply_to()
     network.to(device)
+    detail = {
+        "lora": f"{req.down_init} down",
+        "lokr": f"factor {req.factor}",
+        "loha": "hadamard",
+    }[req.algo]
     print(
-        f"lora: rank {req.rank} alpha {network.alpha} ({req.down_init} down) on {patched} linears, "
+        f"{req.algo}: rank {req.rank} alpha {network.alpha} ({detail}) on {patched} linears, "
         f"{network.num_parameters / 1e6:.1f}M params (fp32 masters, saved {req.lora_dtype})",
         flush=True,
     )

@@ -299,11 +299,26 @@ class TrainRequest(_Request):
     model: str = _f("base", "which DiT to train on", choices=VARIANTS)
     epochs: int = _f(8, "passes over the cache")
     max_steps: int = _f(0, "stop after this many steps (0 = epochs decide)")
-    rank: int = _f(16, "LoRA rank")
-    alpha: float | None = _f(None, "LoRA alpha (default = rank)")
+    algo: str = _f(
+        "lora",
+        "adapter: lora, or LyCORIS lokr (Kronecker product) / loha (Hadamard "
+        "product of two rank-r pairs)",
+        choices=("lora", "lokr", "loha"),
+    )
+    rank: int = _f(16, "LoRA rank (lokr: rank of the larger Kronecker factor)")
+    alpha: float | None = _f(
+        None,
+        "LoRA alpha (default = rank); scale = alpha / rank. lokr ignores it "
+        "when the rank reaches half the larger factor's side and both factors are full",
+    )
+    factor: int = _f(
+        -1,
+        "lokr only: cap on the small Kronecker factor's side (-1 = near-square "
+        "split; LyCORIS's usual 4 / 8 / 16 give a larger full-rank w2)",
+    )
     down_init: str = _f(
         "weight_svd",
-        "lora down-projection init: weight_svd (the base weight's top-r right "
+        "lora only, down-projection init: weight_svd (the base weight's top-r right "
         "singular vectors / sqrt 3, Anima's SVD-Down; kept the caststation style "
         "better by eye, 2026-10-17) or kaiming",
         choices=("kaiming", "weight_svd"),

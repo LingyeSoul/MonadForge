@@ -219,3 +219,133 @@ Mean |Δ| at 256 px over 3 prompts × 4 seeds:
 - weight_svd sits ~13 % further from base by pixel L1, a coarse, composition-dominated
   measure on 12 images. The user's read: weight_svd keeps the caststation style better.
   **`down_init` defaults to `weight_svd`** on that read.
+
+## Compiled A/B, alpha 90 at lr 5e-5 (2026-10-17)
+
+`lora_ab.py` compiles the blocks after the LoRA is attached by default now
+(`--no-compile` for eager). Compiled vs eager on the same LoRA: mean |Δ| 0.03 at ×1.0,
+0.037 at ×0.0, a quarter of the seed-twin floor, but not zero, so compiled grids compare
+only with compiled grids. The floor arms were regenerated compiled under
+`output/moss/lora/ab_compiled/<run>/` (`ab_initcmp/` stays eager). One A/B job (3 prompts × 4
+seeds × 2 arms = 24 denoises) is 8.8 min compiled against 11.8 min eager: 20.6 s against
+28.5 s per denoise (1.38×), no recompiles after the first cell of each arm, and the
+first latent lands 34 s after start in either mode.
+
+Arm: `caststation_layout_r16a90_svd`, rank 16 / alpha 90 (scale 5.6), lr 5e-5,
+weight_svd, everything else as the weight_svd run (swap 12, budget 0.1, seed 0,
+19.7 min). Under Adam, scale s at lr η equals scale 1 with up at s·η and down at η, so
+this arm is up 2.8e-4 / down 5e-5 against the α16 arm's 1e-4 / 1e-4.
+
+Mean |Δ| at 256 px (bilinear, which reproduces the eager table above to the
+third decimal), 3 prompts × 4 seeds, compiled:
+
+| pair | mean \|Δ\| |
+|---|---|
+| LoRA vs base: svd α16 / svd α90 / kaiming s0 / kaiming s1 | 0.171 / 0.162 / 0.152 / 0.156 |
+| svd α16 vs svd α90 | 0.126 |
+| kaiming s0 vs kaiming s1 (seed-twin floor) | 0.123 |
+| svd α90 vs kaiming s0 | 0.104 |
+
+- α90 moves less than α16 and sits a seed change away from it. By eye it shifts the same
+  way (thin lines, flat pale fills) but softer: Miku keeps more of base's shading, Neru
+  gets two pale yellow panels and one sticker outline (tie stays yellow / black), the NL
+  prompt keeps darker uniforms and fuller backgrounds. svd α16 at lr 1e-4 stays the
+  flattest and closest to the set. The default (alpha = rank) stands.
+
+## LyCORIS LoKr / LoHa (2026-10-17)
+
+`--algo lokr|loha` (`library/moss/lora.py` `LoKrAdapter` / `LoHaAdapter`), init and ΔW
+math from `lycoris-lora` 4.0.0 (`lycoris.functional`, `backend="torch"`, traced fullgraph
+under the block compile). LoKr runs as a bypass (grouped GEMMs on the tokens); LoHa
+rebuilds ΔW and runs one GEMM against `W + ΔW` (the delta rounds to W's bf16 grid in the
+forward, as LyCORIS's own LoHa). Upstream bug worked around: `lokr.weight_gen` with its
+default `tucker=True` inits a `None` t2 for a Linear.
+
+Fit, `fit_smoke.py --sizes 1024x1024:300 --steps 12`, both 74.3 M params (LoRA r16 is
+37.2 M): LoKr `--rank 100000 --factor 8` (full w2, scale 1), LoHa `--rank 16`.
+
+| arm | swap | budget | s/step (mean of steps 2–12) | peak alloc / reserved | free |
+|---|---|---|---|---|---|
+| LoKr f8 | 12 | 0.15 | OOM at step 1 (13.8 GB allocated) | | |
+| LoHa r16 | 12 | 0.15 | OOM at step 1 | | |
+| LoKr f8 | 24 | 0.1 | 2.26 | 10.48 / 11.08 | 3.63 |
+| LoHa r16 | 24 | 0.1 | 2.49 | 11.54 / 13.04 | 1.67 |
+
+LoRA at swap 24 / 0.2 is 1.77. The LoKr OOM allocation is T × 16384 bf16: the bypass
+saves a full-width intermediate on `ffn_up_gate`, where a LoRA saves T × r.
+`step_reserve_gb` is LoRA-calibrated, so `--blocks_to_swap -1` under-reserves for both.
+LoHa's |g| runs 11–66 against LoKr's 1–31 on these 12 steps (`hada_w2` starts at N(0, 0.1) × N(0, 1));
+clip 1.0 bounds the step.
+
+## Round 2: LoKr / LoHa, alpha 90 at lr 1e-4, Anima-style σ (2026-10-17)
+
+All on the layout-JSON caststation cache, 20 epochs, seed 0, compiled A/B
+(`ab_compiled/<run>/`, base, seeds 1–4). Arms:
+
+| run | adapter | lr | σ sampling | swap / budget | train |
+|---|---|---|---|---|---|
+| `caststation_layout_r16_svd` (floor) | LoRA r16 α16 weight_svd | 1e-4 | report final interval | 12 / 0.1 | 18.2 min |
+| `caststation_layout_r16a90_svd` | LoRA r16 α90 weight_svd | 5e-5 | same | 12 / 0.1 | 19.7 min |
+| `caststation_layout_r16a90_lr1e4_svd` | LoRA r16 α90 weight_svd | 1e-4 | same | 12 / 0.1 | 19.2 min |
+| `caststation_layout_r16_svd_sig0` | LoRA r16 α16 weight_svd | 1e-4 | sigmoid(N(0,1)), no cutoff / uniform (Anima base.toml) | 12 / 0.1 | 18.6 min |
+| `caststation_layout_lokr_f8` | LoKr factor 8, full w2 (scale 1), 74 M | 1e-4 | report final interval | 24 / 0.1 | 22.7 min, 2.23 s/step |
+| `caststation_layout_loha_r16` | LoHa r16 α16, 74 M | 1e-4 | same | 24 / 0.1 | 23.5 min, 2.30 s/step |
+
+`--sigma_mu 0 --sigma_s 1 --sigma_cutoff 1.0 --sigma_uniform 0` is Anima's default
+sampler in MOSS's sign convention (σ = 1 − sigmoid(Z) with μ 0 equals sigmoid(Z)):
+median σ 0.50 against the final interval's ~0.79. A shift s is the same as μ − ln s in
+this sampler (logit σ = −Z), so the final interval (μ −1.09, shift 1) equals μ 0 with
+shift ≈ 3; there is no separate shift to turn off.
+
+Mean |Δ| at 256 px (bilinear), 3 prompts × 4 seeds:
+
+| vs base | mean \|Δ\| |
+|---|---|
+| floor svd α16 | 0.171 |
+| α90 lr 5e-5 / lr 1e-4 | 0.162 / 0.169 |
+| σ sigmoid(N(0,1)) | **0.124** |
+| LoKr f8 | 0.172 |
+| LoHa r16 | **0.191** |
+| kaiming s0 / s1 | 0.152 / 0.156 |
+
+| vs floor (svd α16) | mean \|Δ\| |
+|---|---|
+| α90 lr 1e-4 | 0.109 |
+| LoKr f8 | 0.116 |
+| kaiming s0 | 0.119 |
+| α90 lr 5e-5 | 0.126 |
+| σ sigmoid(N(0,1)) | 0.127 |
+| LoHa r16 | 0.149 |
+| (seed-twin floor, kaiming s0 vs s1) | 0.123 |
+
+- The low-σ arm moves the image least (0.124 from base): with half the steps below
+  σ 0.5, composition and palette stay closer to base.
+- LoHa moves it most (0.191) and sits furthest from every other arm (0.147–0.181).
+- α90 at lr 1e-4 and LoKr f8 land within a seed change of the floor.
+
+Eyeball (a general-purpose Opus agent, columns lettered and shuffled, judged per prompt ×
+seed against 8–12 of the training images; the column → folder map it opened carried
+descriptive folder names, so it was not fully blind). Its ranking for "looks like the
+artist without damage":
+
+1. **floor svd α16 lr 1e-4**: the most artist cues (red eyeliner stroke, sweat drops,
+   flat pale fills, airy white backgrounds), no leakage seen. Medium-high confidence.
+2. **LoKr f8**: as flat and clean as the floor, a little less character in the faces,
+   no damage. Medium.
+3. **α90 lr 1e-4**: style indistinguishable from LoKr at 4 seeds, but p2 s1 carries a
+   **"caststanel" watermark plus a handle** (checked at full size) and p2 s4 crops the
+   frame. Low confidence on LoKr vs α90-lr1e-4.
+4. **α90 lr 5e-5**: partial transfer, base gloss on Miku, a signature scribble (p1 s2),
+   an aqua collar stripe on Neru (p1 s4), a tangled peace-sign hand (p0 s3).
+5. **σ sigmoid(N(0,1))**: weakest transfer, nearly base on every prompt (saturated,
+   glossy, orange blonde), undamaged. Reads as under-trained.
+6. **LoHa r16**: strong but wrong: a grey-teal desaturation that is not the artist's
+   palette, Neru's tie replaced by the set's red striped bow + black vest in 4/4 seeds,
+   amber eyes, Miku's tie turned into a bow in 2/4. Over-fit with costume leakage.
+
+- Defaults stand: LoRA r16, alpha = rank, lr 1e-4, the report's final σ interval.
+- The low-σ sampler lost: a style LoRA on MOSS wants the noise-heavy pretraining σ, the
+  opposite of the guess that style lives at low σ.
+- A higher effective lr (α90 at 1e-4, up 5.6e-4) starts to copy the set's signature.
+- LoKr f8 is a usable alternative to the LoRA at 2× the params and +26 % s/step. LoHa at
+  lr 1e-4 overshoots; a lower lr would be its next arm.

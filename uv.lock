@@ -260,6 +260,7 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "imagesize" },
     { name = "kornia" },
+    { name = "lycoris-lora" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "opencc-python-reimplemented" },
@@ -390,6 +391,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.9.0" },
     { name = "imagesize", specifier = ">=1.4.1" },
     { name = "kornia", specifier = ">=0.8.2" },
+    { name = "lycoris-lora", specifier = "==4.0.0" },
     { name = "matplotlib" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "opencc-python-reimplemented", specifier = ">=0.1.7" },
@@ -1811,6 +1813,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e8/2d/4b8148d32f5bd461eb7d5daa54fcc998f86eaa709a57f4ef6aa4c62f024f/lpips-0.1.4.tar.gz", hash = "sha256:3846331df6c69688aec3d300a5eeef6c529435bc8460bd58201c3d62e56188fa", size = 18029, upload-time = "2021-08-25T22:10:32.803Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9b/13/1df50c7925d9d2746702719f40e864f51ed66f307b20ad32392f1ad2bb87/lpips-0.1.4-py3-none-any.whl", hash = "sha256:fd537af5828b69d2e6ffc0a397bd506dbc28ca183543617690844c08e102ec5e", size = 53763, upload-time = "2021-08-25T22:10:31.257Z" },
+]
+
+[[package]]
+name = "lycoris-lora"
+version = "4.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "einops" },
+    { name = "numpy" },
+    { name = "safetensors" },
+    { name = "toml" },
+    { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "extra == 'group-10-anima-lora-torch-212' or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-rocm-windows') or (extra == 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-213') or (extra == 'group-10-anima-lora-torch-213' and extra == 'group-10-anima-lora-torch-214') or (extra == 'group-10-anima-lora-cuda-windows' and extra != 'group-10-anima-lora-torch-212' and extra == 'group-10-anima-lora-torch-213')" },
+    { name = "torch", version = "2.13.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "extra == 'group-10-anima-lora-torch-213' or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-rocm-windows') or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-torch-212') or (extra == 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-212') or (extra == 'group-10-anima-lora-torch-212' and extra == 'group-10-anima-lora-torch-214')" },
+    { name = "torch", version = "2.13.0+rocm10.0.0", source = { registry = "https://stable.repo.amd.com/rocm/whl-next/" }, marker = "(sys_platform == 'win32' and extra == 'group-10-anima-lora-rocm-windows') or (sys_platform == 'win32' and extra != 'group-10-anima-lora-cuda-windows' and extra != 'group-10-anima-lora-torch-212' and extra != 'group-10-anima-lora-torch-213') or (extra == 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-212') or (extra == 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-213') or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-rocm-windows') or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-torch-212') or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-torch-213') or (extra == 'group-10-anima-lora-torch-212' and extra == 'group-10-anima-lora-torch-213') or (extra == 'group-10-anima-lora-torch-212' and extra == 'group-10-anima-lora-torch-214') or (extra == 'group-10-anima-lora-torch-213' and extra == 'group-10-anima-lora-torch-214')" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'group-10-anima-lora-cuda-windows') or (sys_platform == 'darwin' and extra == 'group-10-anima-lora-rocm-windows') or (sys_platform == 'darwin' and extra != 'group-10-anima-lora-torch-212' and extra != 'group-10-anima-lora-torch-213') or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-rocm-windows') or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-torch-212') or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-torch-213') or (extra == 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-212') or (extra == 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-213') or (extra == 'group-10-anima-lora-torch-212' and extra == 'group-10-anima-lora-torch-213') or (extra == 'group-10-anima-lora-torch-212' and extra == 'group-10-anima-lora-torch-214') or (extra == 'group-10-anima-lora-torch-213' and extra == 'group-10-anima-lora-torch-214')" },
+    { name = "torch", version = "2.14.1+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "(sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'group-10-anima-lora-rocm-windows') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra != 'group-10-anima-lora-torch-212' and extra != 'group-10-anima-lora-torch-213') or (sys_platform != 'darwin' and extra == 'group-10-anima-lora-cuda-windows') or (sys_platform == 'win32' and extra == 'group-10-anima-lora-cuda-windows') or (sys_platform == 'darwin' and extra == 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-212') or (sys_platform == 'darwin' and extra == 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-213') or (sys_platform == 'win32' and extra == 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-212') or (sys_platform == 'win32' and extra == 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-213') or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-rocm-windows') or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-torch-212') or (extra == 'group-10-anima-lora-cuda-windows' and extra == 'group-10-anima-lora-torch-213') or (extra != 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-212' and extra == 'group-10-anima-lora-torch-213') or (extra != 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-212' and extra == 'group-10-anima-lora-torch-214') or (extra != 'group-10-anima-lora-rocm-windows' and extra == 'group-10-anima-lora-torch-213' and extra == 'group-10-anima-lora-torch-214')" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6e/6a/fc2b41aead2d6d815a6a5edf486f8d84f9b4cd1247bc84642fd82ce9b383/lycoris_lora-4.0.0.tar.gz", hash = "sha256:197356a30ff6628b3a9077ac963f69c07bbd863e0bc890e4f3838a59c8e84a2d", size = 137664, upload-time = "2026-09-01T15:20:17.939Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9c/26/dfb3de84fbdc67603a78aca329b0d04fa49ea3ca98e87bd5fcb8d86f20be/lycoris_lora-4.0.0-py3-none-any.whl", hash = "sha256:7b2c6a82107ce4ce8950ef876959c7e38ecbed88fdd5cea80cb0f2e6306700b7", size = 179544, upload-time = "2026-09-01T15:20:16.275Z" },
 ]
 
 [[package]]
