@@ -5,15 +5,16 @@ invariants are load-bearing *there* — carrying them over here has produced wro
 than once. Qwen-Image-2.1 is a different architecture, VAE, text encoder, rope and sampler
 schedule. What the two share is `library.runtime.offloading` (the block swapper) with
 `library.runtime.blockswap` (its hook attachment for block lists we don't own; shared with `library/moss/`),
-`library.runtime.dynamo` (torch config pins), the `library.env` path helpers, and nothing else: the rest of `library/`, `networks/`,
+`library.runtime.dynamo` (torch config pins), the `library.env` path helpers, and `library.lines` (the request base and
+adapters shared with `library/moss/`), and nothing else: the rest of `library/`, `networks/`,
 `configs/` and `train.py` are Anima-only, and nothing Anima-side imports `library.qwen21`.
 
 | Module | Role |
 |---|---|
-| `requests.py` | **torch-free** `CacheRequest` / `TrainRequest` — every flag, its default and help; `to_argv()` / `from_argv()`; model-dir resolution |
-| `loader.py` | phase-split loading under a 16 GB budget, `place()`, `load_transformer` |
+| `requests.py` | **torch-free** `CacheRequest` / `TrainRequest` — every flag, its default and help; argv round-trip from `library.lines.requests.Request`; model-dir resolution |
+| `loader.py` | phase-split loading under a 16 GB budget, `load_transformer`; re-exports `place()` (`library.runtime.blockswap`) |
 | `accel.py` | attention backend + per-block `torch.compile` |
-| `lora.py` | adapters held **outside** the swapped blocks |
+| `lora.py` | `library.lines.adapters` bound to `transformer_blocks` (LoRA / LoKr / LoHa, held **outside** the swapped blocks); `--algo` / `--down_init` default to LoRA + Kaiming |
 | `cache.py` / `train.py` / `generate.py` | `run_cache` / `run_train` / `run_generate(req)` — sidecars in `scripts/qwen21/` |
 | `scan.py` | **torch-free** source/cache folder counts for the GUI (stale text caches) |
 

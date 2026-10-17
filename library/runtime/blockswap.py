@@ -29,7 +29,7 @@ import gc
 import torch
 import torch.nn as nn
 
-from library.runtime.device import weighs_to_device
+from library.runtime.device import free_vram_gb, weighs_to_device
 from library.runtime.offloading import ModelOffloader
 
 
@@ -75,7 +75,9 @@ def activation_reserve_for_tokens(joint_tokens: int, slack_gb: float = 0.0) -> f
     ``slack_gb`` is what the caller adds for allocator growth over the first
     steps — one block's worth is what the step-1 fit report also leaves.
     """
-    return _ACTIVATION_BASE_GB + _ACTIVATION_MB_PER_TOKEN * joint_tokens / 1024 + slack_gb
+    return (
+        _ACTIVATION_BASE_GB + _ACTIVATION_MB_PER_TOKEN * joint_tokens / 1024 + slack_gb
+    )
 
 
 def auto_blocks_to_swap(
@@ -303,6 +305,57 @@ def attach(
         )
 
     return attached, blocks
+
+
+def place(
+    model,
+    blocks_path: str,
+    device: torch.device,
+    *,
+    blocks_to_swap: int | None = None,
+    supports_backward: bool = False,
+    activation_reserve_gb: float = 2.5,
+    label: str = "model",
+    minimal_schedule: bool = True,
+):
+    """Move ``model`` onto ``device``, block-swapping as little as fits.
+
+    ``blocks_to_swap=None`` sizes the swap against what is actually free;
+    0 keeps everything resident. Returns the ``Attached`` handle (or None) —
+    the caller must ``detach()`` it to give the VRAM back.
+    """
+    blocks = find_blocks(model, blocks_path)
+    if blocks_to_swap is None:
+        blocks_to_swap = auto_blocks_to_swap(
+            model,
+            blocks,
+            free_vram_gb(),
+            activation_reserve_gb=activation_reserve_gb,
+        )
+    per = block_size_gb(blocks)
+    resident = resident_size_gb(model, blocks)
+    print(
+        f"{label}: {len(blocks)} blocks x {per:.2f} GB + {resident:.2f} GB resident; "
+        f"swapping {blocks_to_swap}, "
+        f"{resident + (len(blocks) - blocks_to_swap) * per:.2f} GB on card "
+        f"({free_vram_gb():.2f} GB free)",
+        flush=True,
+    )
+
+    attached, blocks = attach(
+        model,
+        blocks_path,
+        blocks_to_swap,
+        device,
+        supports_backward=supports_backward,
+        minimal_schedule=minimal_schedule,
+    )
+    if attached is None:
+        model.to(device)
+        return None
+    to_device_except_blocks(model, blocks, device)
+    attached.prepare()
+    return attached
 
 
 def _make_wait_hook(offloader: ModelOffloader, idx: int):

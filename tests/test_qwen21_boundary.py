@@ -26,6 +26,7 @@ _QWEN21_HOMES = (
 # What library.qwen21 may import from the rest of library.
 _SHARED = (
     "library.env",
+    "library.lines",
     "library.runtime.offloading",
     "library.runtime.blockswap",
     "library.runtime.device",

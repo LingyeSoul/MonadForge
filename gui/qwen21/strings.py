@@ -56,8 +56,20 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
     "cache": ("缓存文件夹", "预处理写入的缓存文件夹"),
     "output": ("输出", "LoRA 输出路径（同目录下会写入 .json 运行报告）"),
     "epochs": ("轮数", "遍历缓存的次数"),
-    "rank": ("秩", "LoRA 秩"),
+    "algo": (
+        "适配器",
+        "lora，或 LyCORIS 的 lokr（Kronecker 积）/ loha（两组秩 r 矩阵的 Hadamard 积）",
+    ),
+    "rank": ("秩", "LoRA 秩（lokr：较大 Kronecker 因子的秩）"),
     "alpha": ("alpha", "LoRA alpha（默认等于秩）"),
+    "factor": (
+        "lokr 因子",
+        "仅 lokr：较小 Kronecker 因子的边长上限（-1 = 接近平方的拆分）",
+    ),
+    "down_init": (
+        "down 初始化",
+        "仅 lora：kaiming = 默认随机初始化；weight_svd = 用基础权重前 r 个右奇异向量 / √3 初始化（MOSS 的默认值，未在 Qwen-Image-2.1 上测量）",
+    ),
     "lr": ("学习率", "AdamW 学习率"),
     "save_every_epochs": ("每 N 轮保存", "每 N 轮额外保存一次（0 = 只保存最终结果）"),
     "warmup_ratio": ("预热比例", "线性预热占总步数的比例"),

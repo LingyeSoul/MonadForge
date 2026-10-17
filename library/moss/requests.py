@@ -19,17 +19,16 @@ in ``transformer/`` only.
 
 from __future__ import annotations
 
-import argparse
-import dataclasses
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from library.downloads import MOSS_DIR as MODEL_DIR_NAME
 from library.downloads import MOSS_VARIANT_DIRS as VARIANT_DIRS
 from library.downloads import default_moss_dir
-from library.env import load_dotenv, resolve_under_home
+from library.env import resolve_under_home
+from library.lines.requests import Request, env_model_dir
+from library.lines.requests import request_field as _f
 
 MODEL_DIR_ENV = "ANIMA_MOSS_MODEL_DIR"
 VARIANTS = tuple(VARIANT_DIRS)
@@ -37,11 +36,7 @@ VARIANTS = tuple(VARIANT_DIRS)
 
 def default_model_dir() -> Path:
     """``ANIMA_MOSS_MODEL_DIR`` if set, else ``<repo home>/models/moss_image``."""
-    load_dotenv()
-    override = os.environ.get(MODEL_DIR_ENV)
-    if override:
-        return resolve_under_home(override)
-    return default_moss_dir()
+    return env_model_dir(MODEL_DIR_ENV, default_moss_dir())
 
 
 def resolve_model_dir(model_dir: str | Path | None) -> Path:
@@ -56,90 +51,11 @@ def variant_dir(model_dir: str | Path | None, variant: str) -> Path:
     return resolve_model_dir(model_dir) / VARIANT_DIRS[variant]
 
 
-def _f(
-    default: Any,
-    help: str,
-    *,
-    choices: tuple | None = None,
-    advanced=False,
-    multiline=False,
-):
-    """A request field: ``help`` / ``choices`` / ``advanced`` / ``multiline``
-    ride in metadata (the last two are GUI layout only)."""
-    meta = {
-        "help": help,
-        "choices": choices,
-        "advanced": advanced,
-        "multiline": multiline,
-    }
-    return field(default=default, metadata=meta)
-
-
-class _Request:
-    """argv round-trip over the dataclass fields.
-
-    Types map to argparse by the field's default: ``bool`` is a flag (``--x`` when
-    the default is False, ``--no-x`` when it is True), ``None`` defaults are
-    typed from the annotation, the rest from the default's own type.
-    """
-
-    SCRIPT: ClassVar[str]
-
-    @classmethod
-    def parser(cls) -> argparse.ArgumentParser:
-        ap = argparse.ArgumentParser(description=cls.__doc__)
-        for f in dataclasses.fields(cls):
-            flag = f"--{f.name}"
-            help = f.metadata.get("help")
-            if isinstance(f.default, bool):
-                ap.add_argument(
-                    flag,
-                    action=argparse.BooleanOptionalAction,
-                    default=f.default,
-                    help=help,
-                )
-                continue
-            ap.add_argument(
-                flag,
-                type=_field_type(f),
-                default=f.default,
-                choices=f.metadata.get("choices"),
-                required=f.default is dataclasses.MISSING,
-                help=help,
-            )
-        return ap
-
-    @classmethod
-    def from_argv(cls, argv: list[str] | None = None):
-        return cls(**vars(cls.parser().parse_args(argv)))
-
-    def to_argv(self) -> list[str]:
-        argv: list[str] = []
-        for f in dataclasses.fields(self):
-            value = getattr(self, f.name)
-            if f.default is not dataclasses.MISSING and value == f.default:
-                continue
-            if isinstance(value, bool):
-                argv.append(f"--{f.name}" if value else f"--no-{f.name}")
-            elif value is not None:
-                argv += [f"--{f.name}", str(value)]
-        return argv
-
-
-def _field_type(f: dataclasses.Field) -> type:
-    annotation = str(f.type)
-    if "int" in annotation:
-        return int
-    if "float" in annotation:
-        return float
-    return str
-
-
 _MODEL_DIR_HELP = f"folder holding MOSS-Image-Base/ and MOSS-Image-SFT/ (default: ${MODEL_DIR_ENV} or models/{MODEL_DIR_NAME})"
 
 
 @dataclass
-class CacheRequest(_Request):
+class CacheRequest(Request):
     """Precache Qwen3.5-9B text embeddings and FLUX.2 VAE latents for a training folder."""
 
     SCRIPT: ClassVar[str] = "scripts/moss/cache.py"
@@ -180,7 +96,7 @@ class CacheRequest(_Request):
 
 
 @dataclass
-class GenerateRequest(_Request):
+class GenerateRequest(Request):
     """Render prompts with MOSS-Image (Base or SFT), optionally with a LoRA."""
 
     SCRIPT: ClassVar[str] = "scripts/moss/generate.py"
@@ -282,7 +198,7 @@ class GenerateRequest(_Request):
 
 
 @dataclass
-class TrainRequest(_Request):
+class TrainRequest(Request):
     """Train a LoRA on a precached folder — flow matching."""
 
     SCRIPT: ClassVar[str] = "scripts/moss/train.py"
@@ -390,7 +306,7 @@ class TrainRequest(_Request):
 
 
 @dataclass
-class TuneSwapRequest(_Request):
+class TuneSwapRequest(Request):
     """Find the --blocks_to_swap / --activation_memory_budget pair to train with on
     this machine: one arm per swap count at the largest budget that fits, timed
     on the largest sample."""

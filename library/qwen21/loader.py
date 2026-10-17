@@ -25,29 +25,21 @@ then give the card to the transformer + VAE. Callers that want embeddings alone
 
 from __future__ import annotations
 
-import gc
 from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 
 from library.qwen21.requests import resolve_model_dir
+from library.runtime.blockswap import place  # noqa: F401  (callers import it from here)
+from library.runtime.device import clean_memory as empty_cache
+from library.runtime.device import free_vram_gb
 
 
 # Rough bf16 footprints, for picking a strategy without loading anything.
 _TRANSFORMER_GB = 14.3
 _TEXT_ENCODER_GB = 17.6
 _VAE_GB = 1.4
-
-
-def free_vram_gb(device: int = 0) -> float:
-    free, _total = torch.cuda.mem_get_info(device)
-    return free / 1024**3
-
-
-def empty_cache() -> None:
-    gc.collect()
-    torch.cuda.empty_cache()
 
 
 @dataclass(frozen=True)
@@ -121,59 +113,6 @@ def load_transformer(
 
 def block_devices(blocks) -> list[str]:
     return [next(block.parameters()).device.type for block in blocks]
-
-
-def place(
-    model,
-    blocks_path: str,
-    device: torch.device,
-    *,
-    blocks_to_swap: int | None = None,
-    supports_backward: bool = False,
-    activation_reserve_gb: float = 2.5,
-    label: str = "model",
-    minimal_schedule: bool = True,
-):
-    """Move ``model`` onto ``device``, block-swapping as little as fits.
-
-    ``blocks_to_swap=None`` sizes the swap against what is actually free;
-    0 keeps everything resident. Returns the ``Attached`` handle (or None) —
-    the caller must ``detach()`` it to give the VRAM back.
-    """
-    import library.runtime.blockswap as blockswap
-
-    blocks = blockswap.find_blocks(model, blocks_path)
-    if blocks_to_swap is None:
-        blocks_to_swap = blockswap.auto_blocks_to_swap(
-            model,
-            blocks,
-            free_vram_gb(),
-            activation_reserve_gb=activation_reserve_gb,
-        )
-    per = blockswap.block_size_gb(blocks)
-    resident = blockswap.resident_size_gb(model, blocks)
-    print(
-        f"{label}: {len(blocks)} blocks x {per:.2f} GB + {resident:.2f} GB resident; "
-        f"swapping {blocks_to_swap}, "
-        f"{resident + (len(blocks) - blocks_to_swap) * per:.2f} GB on card "
-        f"({free_vram_gb():.2f} GB free)",
-        flush=True,
-    )
-
-    attached, blocks = blockswap.attach(
-        model,
-        blocks_path,
-        blocks_to_swap,
-        device,
-        supports_backward=supports_backward,
-        minimal_schedule=minimal_schedule,
-    )
-    if attached is None:
-        model.to(device)
-        return None
-    blockswap.to_device_except_blocks(model, blocks, device)
-    attached.prepare()
-    return attached
 
 
 def load_pipeline(

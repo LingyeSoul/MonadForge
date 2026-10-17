@@ -37,7 +37,7 @@ import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from safetensors import safe_open
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_file
 
 from library.env import resolve_under_home
 import library.runtime.blockswap as blockswap
@@ -52,8 +52,6 @@ from library.qwen21.loader import (
 )
 from library.qwen21.lora import LoRANetwork
 from library.qwen21.requests import TrainRequest, resolve_model_dir
-
-DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
 
 
 def load_cache(cache_dir: Path) -> list[dict]:
@@ -191,7 +189,6 @@ def run_train(req: TrainRequest) -> Path:
     random.seed(req.seed)
     torch.cuda.init()
     device = torch.device("cuda")
-    save_dtype = DTYPES[req.lora_dtype]
 
     items = load_cache(cache_dir)
     if not items:
@@ -224,11 +221,14 @@ def run_train(req: TrainRequest) -> Path:
         alpha=req.alpha,
         targets=req.targets,
         dtype=torch.float32,  # master weights; the rank GEMMs run in bf16
+        down_init=req.down_init,
+        algo=req.algo,
+        factor=req.factor,
     )
     patched = network.apply_to()
     network.to(device)
     print(
-        f"lora: rank {req.rank} alpha {network.alpha} on {patched} linears, "
+        f"{req.algo}: rank {req.rank} alpha {network.alpha} on {patched} linears, "
         f"{network.num_parameters / 1e6:.1f}M params, fp32 masters saved as "
         f"{req.lora_dtype}",
         flush=True,
@@ -262,7 +262,10 @@ def run_train(req: TrainRequest) -> Path:
         )
     else:
         reserve_gb = req.activation_reserve_gb
-        print(f"activation reserve {reserve_gb:.2f} GB (--activation_reserve_gb)", flush=True)
+        print(
+            f"activation reserve {reserve_gb:.2f} GB (--activation_reserve_gb)",
+            flush=True,
+        )
 
     attached = place(
         transformer,
@@ -308,11 +311,6 @@ def run_train(req: TrainRequest) -> Path:
     out_path = resolve_under_home(req.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     metadata = {
-        "base_model": "Qwen-Image-2.1",
-        "rank": str(req.rank),
-        "alpha": str(network.alpha),
-        "targets": req.targets,
-        "lora_dtype": req.lora_dtype,
         "image_tokens": f"{image_tokens[0]}-{image_tokens[-1]}",
         "epochs": str(req.epochs),
         "samples": str(len(items)),
@@ -325,11 +323,7 @@ def run_train(req: TrainRequest) -> Path:
             if tag is None
             else out_path.with_name(f"{out_path.stem}_{tag}{out_path.suffix}")
         )
-        state = {
-            k: v.detach().to("cpu", save_dtype).contiguous()
-            for k, v in network.state_dict().items()
-        }
-        save_file(state, path, metadata=metadata)
+        network.save(path, req.lora_dtype, **metadata)
         return path
 
     # The largest sample first, so step 1 is the worst case and the fit report
@@ -407,7 +401,7 @@ def run_train(req: TrainRequest) -> Path:
         print(recompile_report(), flush=True)
     summary = {
         "output": str(final),
-        "metadata": metadata,
+        "metadata": network.metadata(lora_dtype=req.lora_dtype, **metadata),
         "total_steps": total_steps,
         "minutes": (time.time() - t_start) / 60,
         "history": history,

@@ -6,6 +6,8 @@ invariants describe the Anima DiT; most of them are wrong here. Shared with Anim
 `library.runtime.offloading` (+ `library.runtime.blockswap`, also used by `library/qwen21/`), `library.runtime.dynamo`, `library.env`, the daemon, and
 the pure Spectrum core (`networks/spectrum_forecast.py`, `networks/spectrum_sea.py`), and
 the ER-SDE sampler + CNS core (`library.inference.sampling`, `library.inference.corrections.cns_core`).
+Shared with `library/qwen21/`: `library.lines` (`requests.py` request base, `adapters.py`
+LoRA / LoKr / LoHa network) and `library.runtime.blockswap.place`.
 Nothing Anima-side imports `library.moss`.
 
 | Module | Role |
@@ -17,7 +19,7 @@ Nothing Anima-side imports `library.moss`.
 | `generate.py` | `run_generate(req)`: Euler or ER-SDE (`sampler`, Anima's `ERSDESampler`), CFG + uncond skip-22, Spectrum hook-in |
 | `cns.py` | CNS noise recolor for ER-SDE on the un-patchified 32 ch grid + γ estimator; bench-only so far (`project/moss_lora/sampler.md`) |
 | `spectrum.py` | per-branch feature forecaster (cond and uncond forecast separately) |
-| `lora.py` | adapters held **outside** `layers` (the swapper moves every `.weight` under a block) |
+| `lora.py` | `library.lines.adapters` bound to `layers` (held **outside** the blocks: the swapper moves every `.weight` under a block) |
 | `train.py` | `run_train(req)` |
 | `tune.py` | `run_tune(req)`: one process, one arm per swap count at the largest budget that fits, timed on the largest sample → recommended `--blocks_to_swap` / `--activation_memory_budget` |
 | `scan.py` | **torch-free** cache file layout (suffixes, stem prefixing) + source/cache counts for the GUI; `cache.py` imports its constants |

@@ -11,25 +11,16 @@ offload hooks break on Qwen3.5's gated-DeltaNet layers, which read
 
 from __future__ import annotations
 
-import gc
 from pathlib import Path
 
 import torch
 
 from library.moss.model import MOSSImageTransformer
 from library.moss.requests import variant_dir
+from library.runtime.device import clean_memory as empty_cache
+from library.runtime.device import free_vram_gb
 
 MAX_SEQUENCE_LENGTH = 4096
-
-
-def empty_cache() -> None:
-    gc.collect()
-    torch.cuda.empty_cache()
-
-
-def free_vram_gb(device: int = 0) -> float:
-    free, _total = torch.cuda.mem_get_info(device)
-    return free / 1024**3
 
 
 def _offload_by_layer(te, device, reserve_gb):

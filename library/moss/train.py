@@ -171,29 +171,17 @@ def set_activation_memory_budget(budget: float) -> None:
 def place(transformer, device, blocks_to_swap: int, reserve_gb: float):
     """Everything on ``device``, or the block swapper for ``blocks_to_swap`` > 0
     (``-1`` sizes it from ``mem_get_info`` free). Returns the attachment or None."""
-    import library.runtime.blockswap as blockswap
+    from library.runtime.blockswap import place as place_blocks
 
-    blocks = transformer.layers
-    if blocks_to_swap < 0:
-        blocks_to_swap = blockswap.auto_blocks_to_swap(
-            transformer, blocks, free_vram_gb(), activation_reserve_gb=reserve_gb
-        )
-    per = blockswap.block_size_gb(blocks)
-    resident = blockswap.resident_size_gb(transformer, blocks)
-    print(
-        f"transformer: {len(blocks)} blocks x {per:.3f} GB + {resident:.2f} GB resident; "
-        f"swapping {blocks_to_swap} ({free_vram_gb():.2f} GB free)",
-        flush=True,
+    return place_blocks(
+        transformer,
+        "layers",
+        device,
+        blocks_to_swap=None if blocks_to_swap < 0 else blocks_to_swap,
+        supports_backward=True,
+        activation_reserve_gb=reserve_gb,
+        label="transformer",
     )
-    attached, _ = blockswap.attach(
-        transformer, "layers", blocks_to_swap, device, supports_backward=True
-    )
-    if attached is None:
-        transformer.to(device)
-        return None
-    blockswap.to_device_except_blocks(transformer, blocks, device)
-    attached.prepare()
-    return attached
 
 
 def report_fit(transformer, attached, n_img: int, n_text: int) -> dict:
