@@ -42,7 +42,12 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from library.env import resolve_under_home
-from library.moss.loader import compile_blocks, empty_cache, free_vram_gb, load_transformer
+from library.moss.loader import (
+    compile_blocks,
+    empty_cache,
+    free_vram_gb,
+    load_transformer,
+)
 from library.moss.lora import LoRANetwork
 from library.moss.requests import TrainRequest
 
@@ -57,7 +62,9 @@ class Sample:
     stem: str
     n_img: int
     n_text: int
-    load: Callable[[], tuple[torch.Tensor, torch.Tensor]]  # latent (128,h,w), embeds (S,4096)
+    load: Callable[
+        [], tuple[torch.Tensor, torch.Tensor]
+    ]  # latent (128,h,w), embeds (S,4096)
 
 
 def samples_from_cache(cache_dir: Path) -> list[Sample]:
@@ -72,7 +79,9 @@ def samples_from_cache(cache_dir: Path) -> list[Sample]:
             return latent, embeds
 
         out.append(
-            Sample(item.stem, (item.width // 16) * (item.height // 16), item.n_text, load)
+            Sample(
+                item.stem, (item.width // 16) * (item.height // 16), item.n_text, load
+            )
         )
     return out
 
@@ -100,7 +109,9 @@ def sample_sigma(
 
 def training_loss(transformer, latent, embeds, sigma: float, gen=None):
     """``latent (1,128,h,w)`` fp32, ``embeds (1,S,4096)`` at true length."""
-    noise = torch.randn(latent.shape, generator=gen, device=latent.device, dtype=latent.dtype)
+    noise = torch.randn(
+        latent.shape, generator=gen, device=latent.device, dtype=latent.dtype
+    )
     noisy = (1.0 - sigma) * latent + sigma * noise
     target = noise - latent
     timestep = torch.tensor([NUM_TRAIN_TIMESTEPS * sigma], device=latent.device)
@@ -176,7 +187,10 @@ def report_fit(transformer, attached, n_img: int, n_text: int) -> dict:
     if swapped:
         spare = max(0, int((free - per) // per))
         if spare:
-            print(f"  -> rerun with --blocks_to_swap {max(0, swapped - spare)}", flush=True)
+            print(
+                f"  -> rerun with --blocks_to_swap {max(0, swapped - spare)}",
+                flush=True,
+            )
     return fit
 
 
@@ -203,7 +217,9 @@ def run_train(req: TrainRequest) -> Path:
     return train(req, samples, empty)
 
 
-def train(req: TrainRequest, samples: list[Sample], empty: torch.Tensor | None = None) -> Path:
+def train(
+    req: TrainRequest, samples: list[Sample], empty: torch.Tensor | None = None
+) -> Path:
     """The loop, over already-built ``samples`` (``run_train`` reads the cache;
     a fit smoke passes synthetic ones)."""
     torch.manual_seed(req.seed)
@@ -222,7 +238,11 @@ def train(req: TrainRequest, samples: list[Sample], empty: torch.Tensor | None =
     transformer = load_transformer(req.model_dir, req.model)
     transformer.requires_grad_(False)
     network = LoRANetwork(
-        transformer, rank=req.rank, alpha=req.alpha, targets=req.targets, dtype=torch.float32
+        transformer,
+        rank=req.rank,
+        alpha=req.alpha,
+        targets=req.targets,
+        dtype=torch.float32,
     )
     patched = network.apply_to()
     network.to(device)
@@ -273,7 +293,9 @@ def train(req: TrainRequest, samples: list[Sample], empty: torch.Tensor | None =
         optimizer, lambda step: min(1.0, (step + 1) / warmup)
     )
     epochs = math.ceil(total / len(samples))
-    print(f"{total} steps ({epochs} epochs x {len(samples)}), warmup {warmup}", flush=True)
+    print(
+        f"{total} steps ({epochs} epochs x {len(samples)}), warmup {warmup}", flush=True
+    )
 
     out_path = resolve_under_home(req.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -289,7 +311,11 @@ def train(req: TrainRequest, samples: list[Sample], empty: torch.Tensor | None =
     }
 
     def save(tag: str | None = None) -> Path:
-        path = out_path if tag is None else out_path.with_name(f"{out_path.stem}_{tag}{out_path.suffix}")
+        path = (
+            out_path
+            if tag is None
+            else out_path.with_name(f"{out_path.stem}_{tag}{out_path.suffix}")
+        )
         network.save(path, req.lora_dtype, **meta)
         return path
 
@@ -311,7 +337,9 @@ def train(req: TrainRequest, samples: list[Sample], empty: torch.Tensor | None =
                 embeds = empty
             latent = latent.unsqueeze(0).to(device, torch.float32)
             embeds = embeds.unsqueeze(0).to(device)
-            sigma = sample_sigma(gen, req.sigma_mu, req.sigma_s, req.sigma_cutoff, req.sigma_uniform)
+            sigma = sample_sigma(
+                gen, req.sigma_mu, req.sigma_s, req.sigma_cutoff, req.sigma_uniform
+            )
             loss = training_loss(transformer, latent, embeds, sigma)
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(params, req.max_grad_norm)
@@ -344,7 +372,9 @@ def train(req: TrainRequest, samples: list[Sample], empty: torch.Tensor | None =
         if not losses:
             break
         mean = sum(losses) / len(losses)
-        history.append({"epoch": epoch + 1, "loss": mean, "seconds": time.time() - t_epoch})
+        history.append(
+            {"epoch": epoch + 1, "loss": mean, "seconds": time.time() - t_epoch}
+        )
         print(
             f"epoch {epoch + 1}/{epochs}: loss {mean:.4f} {time.time() - t_epoch:.0f}s "
             f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB",
