@@ -32,6 +32,8 @@ from library.lines.requests import request_field as _f
 
 MODEL_DIR_ENV = "ANIMA_MOSS_MODEL_DIR"
 VARIANTS = tuple(VARIANT_DIRS)
+# LoRA alpha when the request leaves it unset (lokr / loha fall back to rank).
+LORA_ALPHA = 128.0
 
 
 def default_model_dir() -> Path:
@@ -221,10 +223,11 @@ class TrainRequest(Request):
         "product of two rank-r pairs)",
         choices=("lora", "lokr", "loha"),
     )
-    rank: int = _f(16, "LoRA rank (lokr: rank of the larger Kronecker factor)")
+    rank: int = _f(32, "LoRA rank (lokr: rank of the larger Kronecker factor)")
     alpha: float | None = _f(
         None,
-        "LoRA alpha (default = rank); scale = alpha / rank. lokr ignores it "
+        f"LoRA alpha; scale = alpha / rank. Default {LORA_ALPHA:g} for lora (scale 4 "
+        "at rank 32), = rank for lokr / loha. lokr ignores it "
         "when the rank reaches half the larger factor's side and both factors are full",
     )
     factor: int = _f(
@@ -239,7 +242,11 @@ class TrainRequest(Request):
         "better by eye, 2026-10-17) or kaiming",
         choices=("kaiming", "weight_svd"),
     )
-    lr: float = _f(1e-4, "AdamW learning rate")
+    lr: float = _f(
+        2e-5,
+        "AdamW learning rate (2e-5 with rank 32 / alpha 128 kept complex prompts' "
+        "details that 1e-4 lost, 2026-10-17)",
+    )
     warmup_ratio: float = _f(0.05, "linear warmup, as a fraction of all steps")
     save_every_epochs: int = _f(0, "also save every N epochs (0 = final only)")
     caption_dropout: float = _f(
@@ -278,17 +285,18 @@ class TrainRequest(Request):
         "--blocks_to_swap 0 to keep the whole DiT on the card",
     )
     activation_memory_budget: float = _f(
-        0.15,
+        0.1,
         "cap on the compiled blocks' saved-for-backward set (Inductor's min-cut "
         "partitioner recomputes the rest); applies with --compile and "
-        "--no-grad_checkpointing, ignored otherwise",
+        "--no-grad_checkpointing, ignored otherwise. 0.1 at rank 32: ~1.7 GB free "
+        "and 1.85 s/step on 16 GB at ~4.5k joint tokens (0.15 left ~0.7 GB at rank 16)",
         advanced=True,
     )
     blocks_to_swap: int = _f(
         12,
         "DiT blocks to swap to CPU (-1 = size from free VRAM). 12 fits budget "
-        "0.15 at ~4.4k joint tokens on 16 GB with ~0.7 GB to spare (24 for more "
-        "room); more swap costs PCIe time the step cannot hide. scripts/moss/tune_swap.py measures "
+        "0.1 at rank 32 and ~4.5k joint tokens on 16 GB with ~1.7 GB to spare (24 "
+        "for more room); more swap costs PCIe time the step cannot hide. scripts/moss/tune_swap.py measures "
         "this machine's pair",
         advanced=True,
     )
@@ -322,7 +330,7 @@ class TuneSwapRequest(Request):
         "synthetic WxH:text_tokens instead of the cache (e.g. 1024x1024:300)",
     )
     model: str = _f("base", "which DiT to time", choices=VARIANTS)
-    rank: int = _f(16, "LoRA rank (the adapters and AdamW state take VRAM too)")
+    rank: int = _f(32, "LoRA rank (the adapters and AdamW state take VRAM too)")
     swap_grid: str = _f(
         "8,12,16,20,24,28,32,36,40",
         "swap counts to try, ascending (at most num_layers - 2)",

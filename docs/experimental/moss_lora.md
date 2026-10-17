@@ -48,13 +48,22 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
 
 ## What to expect
 
-- **Training** (5070 Ti, Base, rank 16, compiled, checkpointed, no block swap): 30
+- **Defaults**: `--rank 32`, alpha 128 for `lora` (scale 4; `lokr` / `loha` fall back
+  to alpha = rank), `--lr 2e-5`. On the caststation set (20 epochs, `weight_svd`,
+  layout_json, artist tag injected), rank 32 / alpha 128 at lr 1e-4 pushed the style
+  hard (white backgrounds, flat pale fills) but lost details on two complex gallery
+  prompts (wrong bag holder, missing plush); at lr 2e-5 the details held with a
+  milder style shift, judged much better.
+- **Training** (earlier default: 5070 Ti, Base, rank 16, alpha 16, lr 1e-4, compiled, checkpointed, no block swap): 30
   images × 20 epochs took 21 min at about 2.1 s/step, with an 11.8 GiB peak. The LoRA
   moved line work and palette toward the set. Character identity held, including
   characters the set does not contain.
 - **Memory plan**: the default is no checkpointing, 12 blocks swapped to CPU and
-  `--activation_memory_budget 0.15`: 1.77 s/step (−15 % against checkpointing) with
-  ~0.7 GiB free on a synthetic 1024² fit at 4.4k joint tokens. `--blocks_to_swap 24`
+  `--activation_memory_budget 0.1` (rank 32): 1.85 s/step with ~1.7 GB free and a
+  ~13.1 GB peak reserved at ~4.5k joint tokens (image 4096 + text 455). The earlier
+  default (rank 16, budget 0.15) measured 1.77 s/step (−15 % against checkpointing)
+  with ~0.7 GiB free on a synthetic 1024² fit at 4.4k joint tokens; rank 16 at
+  budget 0.1 measured 1.82 s/step with ~2.0 GB free. `--blocks_to_swap 24`
   leaves more room for longer captions at the same speed; budgets 0.1–0.3 barely move
   the step. The best swap count depends on the PCIe link and the GPU: more swap lets
   the budget rise (less recompute) until the transfers stop hiding behind compute.
@@ -75,7 +84,7 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
   larger factor's side makes `w2` a full matrix and the scale 1, the usual
   `--rank 100000 --factor 8` setup), LoHa the Hadamard product of two rank-r pairs.
   Files keep LyCORIS's tensor names and load through the same `--lora`. Both need more
-  room than a LoRA: at 1024² the default swap 12 / budget 0.15 runs out of memory, so
+  room than a LoRA: at 1024² the earlier default swap 12 / budget 0.15 ran out of memory, so
   train them with `--blocks_to_swap 24 --activation_memory_budget 0.1` (LoKr f8
   2.26 s/step with 3.6 GB free, LoHa r16 2.49 s/step with 1.7 GB free, against
   LoRA's 1.77). `tune_swap.py` measures a LoRA only. `--down_init` applies to `lora`.

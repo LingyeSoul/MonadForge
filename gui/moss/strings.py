@@ -62,7 +62,10 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
         "lora，或 LyCORIS 的 lokr（Kronecker 积）/ loha（两组秩 r 矩阵的 Hadamard 积）",
     ),
     "rank": ("秩", "LoRA 秩（lokr：较大 Kronecker 因子的秩）"),
-    "alpha": ("alpha", "LoRA alpha（默认等于秩）；缩放 = alpha / 秩"),
+    "alpha": (
+        "alpha",
+        "LoRA alpha（lora 默认 128，lokr / loha 默认等于秩）；缩放 = alpha / 秩",
+    ),
     "factor": (
         "lokr 因子",
         "仅 lokr：较小 Kronecker 因子的边长上限（-1 = 接近平方的拆分）",

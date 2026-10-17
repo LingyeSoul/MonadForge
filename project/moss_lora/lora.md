@@ -349,3 +349,32 @@ artist without damage":
 - A higher effective lr (α90 at 1e-4, up 5.6e-4) starts to copy the set's signature.
 - LoKr f8 is a usable alternative to the LoRA at 2× the params and +26 % s/step. LoHa at
   lr 1e-4 overshoots; a lower lr would be its next arm.
+
+## Round 3: rank 32 / alpha 128 at lr 1e-4 vs 2e-5, complex prompts (2026-10-17)
+
+Same cache and recipe as round 2 (layout-JSON caststation cache, weight_svd, 20 epochs,
+seed 0, swap 12 / budget 0.1), rank 32 / alpha 128 (scale 4, 74 M params):
+
+| run | lr | effective up / down | train | s/step | free at fit |
+|---|---|---|---|---|---|
+| `caststation_layout_r32a128_svd` | 1e-4 | 4e-4 / 1e-4 | 18.5 min | 1.85 | 1.71 GB |
+| `caststation_layout_r32a128_lr2e5_svd` | 2e-5 | 8e-5 / 2e-5 | 19.3 min | 1.86 | 1.71 GB |
+
+r16 at the same swap / budget: 1.82 s/step, 1.98 GB free.
+
+Test: the two Space gallery prompts (`project/moss_lora/space/{004,017}`, each at its own
+size / seed), with the artist injected as a top-level `"artists":["channel (caststation)"]`
+and a `gen_brief` prefix (`output/moss/test/space_prompts_caststation/`), er_sde +
+Spectrum + compile, LoRA ×1.0 against base (`output/moss/test/space_cs_*`). One seed per
+prompt; read by eye.
+
+- **lr 1e-4**: the strongest move toward the set: 004's courtyard washes out to the
+  set's airy white, fills go flat and pale, sweat drops appear; all ten characters and the
+  arch composition hold. Prompt details slip: Koharu holds the schoolbag Azusa should
+  hold, the Peroro plush is gone, the slapstick reads calmer. 017 holds every prop.
+- **lr 2e-5**: between base and 1e-4. Background (stairs, building) kept and lightened,
+  cleaner line work, fills still fuller than the set's. Prompt details hold: Azusa holds
+  the open bag under the plush, Peroro is there.
+- The user judged 2e-5 much better. **Defaults moved to rank 32, alpha 128 (lora; lokr /
+  loha keep alpha = rank), lr 2e-5, budget 0.1.** Not yet run against the round-2 tag
+  prompts; the 1e-4 run's `_e10` and an lr 5e-5 arm are the open comparisons.

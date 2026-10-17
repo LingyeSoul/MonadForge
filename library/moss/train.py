@@ -49,7 +49,7 @@ from library.moss.loader import (
     load_transformer,
 )
 from library.moss.lora import LoRANetwork
-from library.moss.requests import TrainRequest
+from library.moss.requests import LORA_ALPHA, TrainRequest
 
 EMPTY_TE_NAME = "_empty.moss_te.safetensors"
 NUM_TRAIN_TIMESTEPS = 1000
@@ -263,7 +263,7 @@ def train(
     network = LoRANetwork(
         transformer,
         rank=req.rank,
-        alpha=req.alpha,
+        alpha=req.alpha if req.alpha is not None or req.algo != "lora" else LORA_ALPHA,
         targets=req.targets,
         dtype=torch.float32,
         down_init=req.down_init,
