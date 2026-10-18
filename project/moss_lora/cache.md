@@ -28,7 +28,8 @@ second time. Anything else is LANCZOS cover-resized and then centre-cropped by l
 
 This is the same folder qwen21 used, so the two lines can be compared. The 30 images use
 their existing Anima tag-bag captions (open question 1 is still open).
-Output is `output/moss/cache/channel_(caststation)/`; `output/moss` → `/media/sorryhyun/new/anima_output/moss`.
+Output is `post_image_dataset/moss/channel_(caststation)/` (the `CacheRequest.out` default,
+a plain folder inside the post_image_dataset tree).
 
 | | value |
 |---|---|

@@ -4,6 +4,9 @@ Attention sinks / registers on MOSS-Image: does a small set of keys take most of
 attention, and if so, where is it? Tier 1 §1 of
 `docs/proposal/moss_anima_negatives_revisit.md`; started 2026-10-18.
 
+Summary of what the runs found: `docs/moss-findings/attention_sink_chat_template.md`.
+This file is the run log.
+
 ```bash
 make daemon-run ARGS="bench/moss_sinks/probe_attention.py --label base"
 ```
@@ -167,8 +170,7 @@ on most blocks, up to ~20 % on a handful with the stronger LoRA.
    keys changes how far each head shuts off. That is a cheap global lever, the token-axis
    counterpart of what `dc_isolate` removes on the channel axis. First read done (LoRA
    arms above): the shift is small (3–5 % mean, ≤ 20 % on a few blocks, write cosine
-   ≥ 0.9). Parked: a template-row mask on the LoRA delta is not worth an A/B on this
-   evidence. Reopen if a LoRA shows a global tone or gloss shift that channel scaling
-   and `dc_isolate` do not explain, or if a much stronger LoRA (higher lr / rank) moves
-   the step-0 mass well past 20 %.
+   ≥ 0.9). Masked renders (`render_template_mask.py`, 2026-10-18): style stays, content
+   details change on 4 / 8 seeds. Open: is masking better or worse, read on
+   layout-JSON prompts and more seeds.
 5. Test-time registers: dropped. The model already ships fixed registers.
