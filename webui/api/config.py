@@ -94,7 +94,10 @@ class SamplePromptsUpdate(BaseModel):
 
 @router.get("/sample-prompts", response_model=SamplePromptsResponse)
 def get_sample_prompts(path: str = Query("sample_prompts.txt")):
-    entries = svc.read_sample_prompts(path)
+    try:
+        entries = svc.read_sample_prompts(path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return SamplePromptsResponse(
         path=path,
         entries=[SamplePromptEntry(**e) for e in entries],
@@ -103,7 +106,10 @@ def get_sample_prompts(path: str = Query("sample_prompts.txt")):
 
 @router.put("/sample-prompts")
 def put_sample_prompts(body: SamplePromptsUpdate):
-    svc.write_sample_prompts(body.path, [e.model_dump() for e in body.entries])
+    try:
+        svc.write_sample_prompts(body.path, [e.model_dump() for e in body.entries])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"status": "ok"}
 
 
@@ -156,11 +162,6 @@ class PrelaunchCheckResponse(BaseModel):
     compatibility: dict
 
 
-class WipeCheckpointRequest(BaseModel):
-    output_dir: str
-    output_name: str = "last"
-
-
 @router.get("/prelaunch-check", response_model=PrelaunchCheckResponse)
 def prelaunch_check(
     variant: str = Query(...),
@@ -173,16 +174,6 @@ def prelaunch_check(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return PrelaunchCheckResponse(**result)
-
-
-@router.post("/wipe-checkpoint")
-def wipe_checkpoint(body: WipeCheckpointRequest):
-    """Delete a checkpoint state directory and its sidecar adapter file."""
-    try:
-        svc.wipe_checkpoint(body.output_dir, body.output_name)
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    return {"status": "ok"}
 
 
 # Static settings routes must precede the single-segment layer catch-all.
@@ -239,13 +230,10 @@ def put_layer(
     return ConfigLayerResponse(layer=layer, data=data)
 
 
+# Kept on purpose: a read-only validation contract with no filesystem surface
+# (tests/test_webui_config_persistence.py pins the response shape), unlike the
+# write-side endpoints removed with it.
 @router.post("/validate", response_model=ConfigValidationResult)
 def validate_config(body: ConfigUpdateRequest):
     errors = svc.validate_config(body.data)
     return ConfigValidationResult(valid=len(errors) == 0, errors=errors)
-
-
-@router.get("/schema/groups")
-def get_groups():
-    """Return field groupings for the form layout."""
-    return svc.get_field_groups()

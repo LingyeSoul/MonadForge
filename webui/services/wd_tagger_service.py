@@ -14,13 +14,14 @@ import csv
 import json
 import logging
 import threading
+from functools import lru_cache
 from pathlib import Path
-from typing import Generator
+from typing import TYPE_CHECKING, Generator
 
-import torch
-import torch.nn.functional as F
 from PIL import Image
-from torch import Tensor
+
+if TYPE_CHECKING:  # annotation only: torch must not load with the WebUI process
+    from torch import Tensor
 
 from webui.services.config_service import ROOT
 from webui.services.config_storage import (
@@ -45,7 +46,19 @@ SETTINGS_FILE = ROOT / "configs" / "webui_settings.json"
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+@lru_cache(maxsize=1)
+def _device():
+    """Device the tagger runs on, resolved on first use.
+
+    Importing torch at module scope would make every WebUI process pay for the
+    tagger's stack and — with CUDA available — open a context next to the
+    training subprocess; both stay behind the first real tag request.
+    """
+    import torch
+
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 # ── Singleton state ─────────────────────────────────────────────
 
@@ -165,7 +178,7 @@ def _load_model_unlocked(model_name: str) -> None:
     model_args = config.get("model_args", {})
 
     # Create timm model (no pretrained download)
-    logger.info("Creating WD tagger: %s (%s) on %s", model_name, arch, DEVICE)
+    logger.info("Creating WD tagger: %s (%s) on %s", model_name, arch, _device())
     _model = timm.create_model(
         arch, pretrained=False, num_classes=config["num_classes"], **model_args
     )
@@ -174,7 +187,7 @@ def _load_model_unlocked(model_name: str) -> None:
     state_dict = load_file(str(weights_path))
     _model.load_state_dict(state_dict)
     _model.eval()
-    _model.to(DEVICE)
+    _model.to(_device())
 
     _transform = create_transform(
         **resolve_data_config(config["pretrained_cfg"], model=_model)
@@ -189,7 +202,7 @@ def _load_model_unlocked(model_name: str) -> None:
             _tags.append({"name": row[1], "category": int(row[2])})
 
     _current_model = model_name
-    logger.info("WD tagger loaded on %s", DEVICE)
+    logger.info("WD tagger loaded on %s", _device())
 
 
 # ── Preprocessing ───────────────────────────────────────────────
@@ -249,11 +262,14 @@ def _predict(
     model_name = model_name or settings["model_name"]
     threshold = threshold if threshold is not None else settings["threshold"]
 
+    import torch
+    import torch.nn.functional as F
+
     _load_model(model_name)
     assert _model is not None and _tags is not None
 
     with Image.open(image_path) as img:
-        inputs = _preprocess(img).to(DEVICE)
+        inputs = _preprocess(img).to(_device())
 
     with torch.inference_mode():
         outputs = _model(inputs)

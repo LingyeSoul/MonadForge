@@ -75,7 +75,8 @@ _WEBUI_COMMAND_NAMES = frozenset(
         "test-unit",
         "print-config",
         "update",
-        "vendor-sync",
+        # ``vendor-sync`` is deliberately excluded: it rewrites tracked vendored
+        # sources, has no WebUI surface, and must stay a terminal command.
         "export-logs",
     }
 )

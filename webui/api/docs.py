@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -35,19 +34,3 @@ def get_guidebook(lang: str = Query("cn")):
             raise HTTPException(status_code=404, detail="Guidebook not found")
     content = guidebook_path.read_text(encoding="utf-8")
     return {"content": content, "filename": guidebook_path.name, "lang": lang}
-
-
-class DocEntry(BaseModel):
-    name: str
-    filename: str
-
-
-@router.get("/list", response_model=list[DocEntry])
-def list_docs():
-    """List available documentation files."""
-    if not _GUIDELINES_DIR.is_dir():
-        return []
-    entries = []
-    for p in sorted(_GUIDELINES_DIR.glob("*.md")):
-        entries.append(DocEntry(name=p.stem, filename=p.name))
-    return entries

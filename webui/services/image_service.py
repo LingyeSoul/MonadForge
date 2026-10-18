@@ -23,6 +23,7 @@ from library.captioning.position_clauses import (
     parse_caption,
 )
 from webui.services.config_service import ROOT, get_path_overrides
+from webui.services.sandbox import resolve_within
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -454,24 +455,12 @@ def batch_update_captions(
 def _resolve_extract_target(target: str) -> Path:
     """Resolve the extraction target directory without requiring it to exist.
 
-    Relative paths are anchored to ROOT and rejected on ``..`` components or
-    containment escapes; absolute paths are accepted as-is (localhost tool,
-    mirrors ``resolve_path``). Raises ``ValueError`` for invalid targets.
+    The target must stay inside ROOT (or a root named by
+    ``ANIMA_ALLOW_OUTSIDE_ROOTS``): the upload endpoint is browser-reachable, so
+    an absolute path must not be able to drop an archive anywhere on the disk.
+    Raises ``ValueError`` for invalid targets.
     """
-    target = (target or "").strip()
-    if not target:
-        raise ValueError("Extraction target path is required")
-    p = Path(target)
-    if p.is_absolute():
-        resolved = p
-    else:
-        if ".." in p.parts:
-            raise ValueError("Target path may not contain '..'")
-        resolved = (ROOT / p).resolve()
-        try:
-            resolved.relative_to(ROOT)
-        except ValueError as e:
-            raise ValueError("Target path escapes the project root") from e
+    resolved = resolve_within(ROOT, target)
     if resolved.exists() and not resolved.is_dir():
         raise ValueError(f"Target exists and is not a directory: {target}")
     return resolved

@@ -21,6 +21,7 @@ from webui.services.config_storage import (
     atomic_write_text,
     read_json_object,
 )
+from webui.services.sandbox import resolve_within
 from library.config.lokr import (
     LOKR_BACKENDS,
 )
@@ -1947,8 +1948,9 @@ def wipe_checkpoint(output_dir: str, output_name: str) -> None:
     )
 
     name = safe_output_name(output_name or "last")
-    raw_parent = Path(str(output_dir))
-    parent = raw_parent if raw_parent.is_absolute() else ROOT / raw_parent
+    # Browser-reachable: an absolute path must stay inside ROOT (or a root named
+    # by ANIMA_ALLOW_OUTSIDE_ROOTS), never delete files elsewhere on the disk.
+    parent = resolve_within(ROOT, output_dir)
     layout = resolve_output_layout(parent, name)
     roots: list[Path] = []
     for root in layout.legacy_candidates():
@@ -1975,6 +1977,10 @@ def wipe_checkpoint(output_dir: str, output_name: str) -> None:
 _NEG_PROMPT_RE = re.compile(r"n (.+)", re.IGNORECASE)
 _CN_RE = re.compile(r"cn (.+)", re.IGNORECASE)
 
+# A prompt file is plain text; refusing other extensions keeps the read/write
+# endpoint from doubling as an arbitrary-file primitive.
+_SAMPLE_PROMPT_SUFFIXES = (".txt",)
+
 
 def read_sample_prompts(path_str: str) -> list[dict]:
     """Parse a sample_prompts.txt file into structured prompt entries.
@@ -1982,7 +1988,7 @@ def read_sample_prompts(path_str: str) -> list[dict]:
     Returns a list of ``{"prompt": str, "negative_prompt": str, "controlnet_image": str}`` dicts.
     Lines starting with ``#`` and blank lines are skipped.
     """
-    path = ROOT / path_str
+    path = resolve_within(ROOT, path_str, suffixes=_SAMPLE_PROMPT_SUFFIXES)
     if not path.is_file():
         return []
     entries: list[dict] = []
@@ -2012,7 +2018,7 @@ def read_sample_prompts(path_str: str) -> list[dict]:
 
 def write_sample_prompts(path_str: str, entries: list[dict]) -> None:
     """Write structured prompt entries back to a .txt file."""
-    path = ROOT / path_str
+    path = resolve_within(ROOT, path_str, suffixes=_SAMPLE_PROMPT_SUFFIXES)
     lines: list[str] = []
     for entry in entries:
         prompt = entry.get("prompt", "").strip()

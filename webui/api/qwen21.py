@@ -15,15 +15,18 @@ from webui.services.daemon_client import DaemonError
 from webui.services.task_service import task_service
 
 # Workspace operations never initialize torch or a GPU context.
-from contextlib import contextmanager
-from typing import Iterator
-
 from library.env import resolve_under_home
+from webui.api.errors import workspace_errors as _shared_workspace_errors
 from webui.services import qwen21_workspace as workspace
 from webui.services.daemon_client import daemon_client
 
 
 router = APIRouter()
+
+
+def workspace_errors():
+    """The shared model-line mapping, labelled with this line's name."""
+    return _shared_workspace_errors("Qwen")
 
 
 class JobResponse(BaseModel):
@@ -56,7 +59,9 @@ async def submit_job(
     try:
         req = svc.request_from_values(request_type, body.values)
         task = await task_service.start_task(
-            f"qwen21-{phase}", req.to_argv(), runtime_profile=body.runtime_profile,
+            f"qwen21-{phase}",
+            req.to_argv(),
+            runtime_profile=body.runtime_profile,
         )
         return JobResponse(task_id=task.id, command=task.command)
     except (ValueError, FileNotFoundError) as exc:
@@ -79,7 +84,9 @@ async def submit_chain(body: svc.ChainRequest) -> JobResponse:
             json.dumps(train.to_argv()),
         ]
         task = await task_service.start_task(
-            "qwen21-cache-train", args, runtime_profile=body.runtime_profile,
+            "qwen21-cache-train",
+            args,
+            runtime_profile=body.runtime_profile,
         )
         return JobResponse(task_id=task.id, command=task.command)
     except (ValueError, FileNotFoundError) as exc:
@@ -88,39 +95,6 @@ async def submit_chain(body: svc.ChainRequest) -> JobResponse:
         raise HTTPException(
             status_code=502, detail=f"Qwen workflow submission failed: {exc}"
         ) from exc
-
-
-@router.get("/results", response_model=svc.ResultManifest)
-def get_results(directory: str) -> svc.ResultManifest:
-    try:
-        return svc.read_results(directory)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.get("/result-image")
-def get_result_image(directory: str, file: str) -> FileResponse:
-    try:
-        path = svc.result_image_path(directory, file)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return FileResponse(path, media_type="image/png")
-
-
-@contextmanager
-def workspace_errors() -> Iterator[None]:
-    try:
-        yield
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except DaemonError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/profiles", response_model=list[str])

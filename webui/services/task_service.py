@@ -1001,6 +1001,18 @@ class TaskService:
         await self._notify_subscribers(task, {"type": "stopping", "task_id": task_id})
         return True
 
+    async def ensure_task_loaded(self, task_id: str) -> None:
+        """Hydrate a task before :meth:`subscribe`, off the event loop.
+
+        ``_get_or_load_task`` falls back to blocking ``urllib`` daemon calls
+        (15 s timeout each) for an unknown/historical id, which would freeze
+        every other request on the loop. ``subscribe`` itself stays synchronous:
+        it creates asyncio tasks and queues and must run on the loop thread.
+        """
+        if self._tasks.get(task_id) is not None:
+            return
+        await asyncio.to_thread(self._get_or_load_task, task_id)
+
     def subscribe(self, task_id: str) -> asyncio.Queue:
         """Subscribe to log lines for a task. Returns an asyncio.Queue."""
         queue: asyncio.Queue = asyncio.Queue()

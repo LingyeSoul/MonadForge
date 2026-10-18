@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -141,7 +140,10 @@ def get_status(
     manifest: str | None = Query(None),
 ):
     """Return current preprocess pipeline counts."""
-    return svc.get_status(variant=variant, preset=preset, manifest=manifest)
+    try:
+        return svc.get_status(variant=variant, preset=preset, manifest=manifest)
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/paths", response_model=DatasetPaths)
@@ -165,17 +167,6 @@ def list_runs(
 ):
     """List isolated preprocessing manifests available to training."""
     return svc.list_runs(variant=variant, preset=preset, source=source)
-
-
-@router.get("/run-status", response_model=PreprocessRunSummary)
-def get_run_status(manifest: str = Query(..., min_length=1)):
-    """Return completion and artifact state for one preprocessing manifest."""
-    info = svc.get_run_status(manifest)
-    if info.get("status") == "invalid" and not Path(manifest).exists():
-        raise HTTPException(
-            status_code=404, detail=info.get("error") or "manifest not found"
-        )
-    return info
 
 
 @router.put("/paths", response_model=DatasetPaths)

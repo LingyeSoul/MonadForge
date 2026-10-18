@@ -23,6 +23,10 @@ async def task_log_ws(websocket: WebSocket, task_id: str):
     client disconnects.
     """
     await websocket.accept()
+    # Hydrate a historical/unknown task off the event loop first: the daemon
+    # lookups behind it are blocking, and doing them here would stall every
+    # other request for up to two 15 s timeouts.
+    await task_service.ensure_task_loaded(task_id)
     queue = task_service.subscribe(task_id)
 
     async def forward():

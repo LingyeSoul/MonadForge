@@ -172,7 +172,8 @@ def batch_caption(body: BatchCaptionRequest):
 async def upload_archive(
     file: UploadFile = File(...),
     target: str = Form(
-        ..., description="Extraction directory (relative to project root or absolute)"
+        ...,
+        description="Extraction directory (relative to the project root; an absolute path must stay inside it)",
     ),
 ):
     """Upload a dataset archive (zip / tar.*) and start extracting into *target*.
@@ -218,15 +219,3 @@ def get_upload_task(task_id: str):
             status_code=404, detail=f"Unknown extraction task: {task_id}"
         )
     return task
-
-
-# ── mask info ──────────────────────────────────────────────────
-
-
-@router.get("/mask-info/{path:path}")
-def get_mask_info(path: str, directory: str | None = Query(None)):
-    """Return mask metadata for an image."""
-    try:
-        return svc.get_mask_info(directory or _default_directory(), path)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))

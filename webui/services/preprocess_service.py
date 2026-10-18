@@ -421,12 +421,6 @@ def _count_cache_files(cache_dir: Path, fallback: Path | None = None) -> dict[st
     return out
 
 
-def count_caches(cache_dir: Path | None = None) -> dict[str, int]:
-    """Count latent / TE / PE cache sidecars under *cache_dir*."""
-    d = cache_dir or _get_paths()["cache"]
-    return _count_cache_files(d)
-
-
 def adapter_stats(source_dir: str) -> dict:
     """Return dataset statistics for an adapter's source directory.
 
@@ -488,21 +482,11 @@ def _count_images(d: Path) -> int:
     )
 
 
-def count_resized() -> int:
-    """Count resized images under the configured ``resized_image_dir``."""
-    return _count_images(_get_paths()["resized"])
-
-
 def _count_mask_files(d: Path) -> int:
     """Count merged mask files under *d*."""
     if not d.is_dir():
         return 0
     return sum(1 for _ in d.rglob("*_mask.png"))
-
-
-def count_masks() -> int:
-    """Count merged mask files under the configured masks directory."""
-    return _count_mask_files(_get_paths()["masks"])
 
 
 def get_status(
@@ -639,12 +623,40 @@ def list_runs(
     return found
 
 
-def get_run_status(manifest: str | Path) -> dict:
-    """Return one manifest summary and validate complete runs when possible."""
+def _run_manifest_path(manifest: str | Path) -> Path:
+    """Resolve a manifest path, restricted to this install's run roots.
 
-    path = Path(manifest)
-    if path.is_dir():
-        path = path / "manifest.json"
+    ``GET /api/preprocess/run-status?manifest=`` is browser-reachable, so the
+    value must name a manifest the install actually owns — anything else would
+    turn the endpoint into an arbitrary-file reader. A directory is expanded to
+    its ``manifest.json``. Raises ``ValueError`` when the path escapes every
+    run root (``POST_IMAGE_DATASET`` included, so a relocated dataset root
+    keeps working).
+    """
+
+    raw = str(manifest or "").strip()
+    if not raw:
+        raise ValueError("manifest is required")
+    candidate = Path(raw).expanduser()
+    if ".." in candidate.parts:
+        raise ValueError(f"manifest may not contain '..': {raw}")
+    resolved = (
+        candidate.resolve() if candidate.is_absolute() else (ROOT / candidate).resolve()
+    )
+    if resolved.is_dir():
+        resolved = (resolved / "manifest.json").resolve()
+    if not any(resolved.is_relative_to(root) for root in _run_roots()):
+        raise ValueError(f"manifest is outside the preprocessing run roots: {raw}")
+    return resolved
+
+
+def get_run_status(manifest: str | Path) -> dict:
+    """Return one manifest summary and validate complete runs when possible.
+
+    ``manifest`` is restricted to the run roots (see :func:`_run_manifest_path`).
+    """
+
+    path = _run_manifest_path(manifest)
     summary = _manifest_summary(path)
     if summary.get("complete"):
         try:

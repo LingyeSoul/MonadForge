@@ -125,6 +125,9 @@ def test_failed_rollback_retains_recovery_backup(tmp_path, monkeypatch):
     ],
 )
 def test_config_replace_failure_keeps_old_bytes(tmp_path, monkeypatch, save):
+    # Both writers refuse a path outside ROOT now, so the fixture's tmp dir is
+    # the project root for this test (same pattern as the system-paths test).
+    monkeypatch.setattr(config, "ROOT", tmp_path)
     path = tmp_path / "config.txt"
     path.write_text("old file")
     _fail_replace(monkeypatch, path)
