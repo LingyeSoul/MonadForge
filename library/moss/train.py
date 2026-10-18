@@ -23,7 +23,7 @@ than checkpointing on 16 GB (``project/moss_lora/lora.md`` § Swap + budget).
 the block swapper's forward hooks fire once per step and never again during
 the recompute; ``MOSSImageTransformer.gradient_checkpointing`` is left off.
 
-    make daemon-run ARGS="scripts/moss/train.py --cache output/moss/cache/<set> --epochs 8"
+    make daemon-run ARGS="scripts/moss/train.py --cache post_image_dataset/moss/<set> --epochs 8"
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ from library.moss.loader import (
     free_vram_gb,
     load_transformer,
 )
-from library.moss.lora import LoRANetwork
+from library.moss.lora import LoRANetwork, load_channel_stats
 from library.moss.requests import LORA_ALPHA, TrainRequest
 
 EMPTY_TE_NAME = "_empty.moss_te.safetensors"
@@ -260,6 +260,7 @@ def train(
 
     transformer = load_transformer(req.model_dir, req.model)
     transformer.requires_grad_(False)
+    channel_alpha = req.channel_scaling_alpha if req.algo == "lora" else 0.0
     network = LoRANetwork(
         transformer,
         rank=req.rank,
@@ -269,11 +270,16 @@ def train(
         down_init=req.down_init,
         algo=req.algo,
         factor=req.factor,
+        channel_stats=load_channel_stats(resolve_under_home(req.channel_stats))
+        if channel_alpha > 0
+        else None,
+        channel_scaling_alpha=channel_alpha,
     )
     patched = network.apply_to()
     network.to(device)
     detail = {
-        "lora": f"{req.down_init} down",
+        "lora": f"{req.down_init} down"
+        + (f", channel scaling α={channel_alpha:g}" if channel_alpha > 0 else ""),
         "lokr": f"factor {req.factor}",
         "loha": "hadamard",
     }[req.algo]

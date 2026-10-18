@@ -39,8 +39,8 @@ The window shares its code with `make gui-qwen` (`gui/lines/`).
 The GUI submits these. Run them through the daemon:
 
 ```bash
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'output/moss/cache/<set>'"
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'post_image_dataset/moss/<set>'"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
 ```
@@ -54,11 +54,13 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
 ## What to expect
 
 - **Defaults**: `--rank 32`, alpha 128 for `lora` (scale 4; `lokr` / `loha` fall back
-  to alpha = rank), `--lr 2e-5`. On the caststation set (20 epochs, `weight_svd`,
-  layout_json, artist tag injected), rank 32 / alpha 128 at lr 1e-4 pushed the style
-  hard (white backgrounds, flat pale fills) but lost details on two complex gallery
-  prompts (wrong bag holder, missing plush); at lr 2e-5 the details held with a
-  milder style shift, judged much better.
+  to alpha = rank), `--lr 1e-4`, `--channel_scaling_alpha 0.5`. On the caststation set
+  (20 epochs, `weight_svd`, layout_json, artist tag injected), rank 32 / alpha 128 at
+  lr 1e-4 without channel scaling pushed the style hard (white backgrounds, flat pale
+  fills) but lost details on two complex gallery prompts (wrong bag holder, missing
+  plush); lr 2e-5 held the details with a milder style shift and was the default until
+  2026-10-18. With channel scaling, lr 1e-4 kept the style strength and stayed on-prompt
+  (`docs/moss/channel_scaling.md`).
 - **Training** (earlier default: 5070 Ti, Base, rank 16, alpha 16, lr 1e-4, compiled, checkpointed, no block swap): 30
   images × 20 epochs took 21 min at about 2.1 s/step, with an 11.8 GiB peak. The LoRA
   moved line work and palette toward the set. Character identity held, including
@@ -76,7 +78,7 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   pair (about 4 min, on the cache's largest sample):
 
   ```bash
-  make daemon-run ARGS="scripts/moss/tune_swap.py --cache output/moss/cache/<set>"
+  make daemon-run ARGS="scripts/moss/tune_swap.py --cache post_image_dataset/moss/<set>"
   ```
 
   It prints one line per swap count and the flags to train with.
@@ -98,8 +100,8 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   In the GUI, `algo` and `factor` sit on the Train step; on the CLI:
 
   ```bash
-  make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
-  make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
+  make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
+  make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
   make daemon-run ARGS="scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
   ```
 
@@ -135,5 +137,7 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
 ## More
 
 Measured numbers, A/B notes and open questions are in `project/moss_lora/`: `lora.md`
-(training), `spectrum.md`, `cache.md`, `phase0.md` (parity with the reference pipeline).
+(training), `spectrum.md`, `cache.md`, `phase0.md` (parity with the reference pipeline),
+`channel_scaling.md`. Channel scaling (`--channel_scaling_alpha`, 0.5 by default):
+`docs/moss/channel_scaling.md`.
 Code map: `library/moss/CLAUDE.md`.

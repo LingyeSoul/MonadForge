@@ -29,6 +29,15 @@ LyCORIS's key names (``lokr_w1``, ``hada_w1_a``, …, plus an ``alpha`` buffer).
 LoKr applies in bypass (grouped GEMMs on the tokens; ΔW is never built). LoHa
 rebuilds ΔW each forward and runs one GEMM against ``W + ΔW``, LyCORIS's own
 LoHa path, so the delta is rounded to the base weight's bf16 grid in the forward.
+
+``channel_scaling_alpha`` > 0 (``lora`` only) is Anima's channel scaling
+(``docs/optimizations/channel_scaling.md``): ``down[:, c]`` is stored multiplied by
+``s[c] = mean|x[c]|^α`` (mean-normalized) and the forward uses ``down · s⁻¹``, so
+the output is unchanged and only Adam's per-channel step moves. The scale goes on
+the ``(rank, in)`` weight instead of the ``(T, in)`` activation — same product, same
+gradient, no activation-sized op. ``save`` writes ``down · s⁻¹``: the file is a plain
+LoRA. ``mean|x|`` comes from a calibration file keyed by target name
+(``load_channel_stats``).
 """
 
 from __future__ import annotations
@@ -68,6 +77,20 @@ class LoRAAdapter(nn.Module):
         nn.init.zeros_(self.up.weight)
         self.scale = alpha / rank
         self.multiplier = 1.0
+        self.register_buffer("inv_scale", None, persistent=False)
+
+    @torch.no_grad()
+    def absorb_channel_scale(self, scale: torch.Tensor) -> None:
+        """Store ``down · s`` and run ``down · s⁻¹``: same output, Adam's step on
+        input channel ``c`` reweighted by ``s[c]``."""
+        scale = scale.to(self.down.weight.device, torch.float32)
+        self.down.weight.mul_(scale.to(self.down.weight.dtype))
+        self.inv_scale = scale.reciprocal()
+
+    def down_weight(self) -> torch.Tensor:
+        """The down projection the forward applies (what a plain LoRA file holds)."""
+        w = self.down.weight
+        return w if self.inv_scale is None else w * self.inv_scale.to(w.dtype)
 
     @torch.no_grad()
     def init_down_weight_svd(self, base: nn.Linear) -> None:
@@ -85,7 +108,7 @@ class LoRAAdapter(nn.Module):
         if self.multiplier == 0.0:
             return base_out
         work = base_out.dtype
-        lx = F.linear(x.to(work), self.down.weight.to(work))
+        lx = F.linear(x.to(work), self.down_weight().to(work))
         delta = F.linear(lx, self.up.weight.to(work))
         return base_out + delta * (self.scale * self.multiplier)
 
@@ -213,6 +236,8 @@ class LoRANetwork(nn.Module):
         down_init: str = "kaiming",
         algo: str = "lora",
         factor: int = -1,
+        channel_stats: dict[str, torch.Tensor] | None = None,
+        channel_scaling_alpha: float = 0.0,
     ):
         super().__init__()
         if down_init not in DOWN_INITS:
@@ -221,6 +246,10 @@ class LoRANetwork(nn.Module):
             )
         if algo not in ALGOS:
             raise ValueError(f"algo must be one of {ALGOS}, not {algo!r}")
+        if channel_scaling_alpha > 0 and algo != "lora":
+            raise ValueError("channel scaling applies to algo='lora' only")
+        if channel_scaling_alpha > 0 and channel_stats is None:
+            raise ValueError("channel_scaling_alpha > 0 needs channel_stats")
         targets = targets or self.DEFAULT_TARGETS
         pattern = re.compile(targets)
         self.algo = algo
@@ -229,6 +258,7 @@ class LoRANetwork(nn.Module):
         self.alpha = float(rank if alpha is None else alpha)
         self.targets = targets
         self.down_init = down_init
+        self.channel_scaling_alpha = float(channel_scaling_alpha)
         self.num_blocks = self._num_blocks(model)
         self.adapters = nn.ModuleDict()
         self._targets: list[tuple[str, nn.Linear]] = []
@@ -245,6 +275,12 @@ class LoRANetwork(nn.Module):
                 )
                 if down_init == "weight_svd":
                     adapter.init_down_weight_svd(module)
+                if self.channel_scaling_alpha > 0:
+                    if name not in channel_stats:
+                        raise ValueError(f"no channel stats for {name}")
+                    adapter.absorb_channel_scale(
+                        channel_scale(channel_stats[name], self.channel_scaling_alpha)
+                    )
             self.adapters[name.replace(".", "_")] = adapter
             self._targets.append((name, module))
         if not self._targets:
@@ -300,6 +336,9 @@ class LoRANetwork(nn.Module):
             meta["ss_num_blocks"] = str(self.num_blocks)
         if self.algo == "lora":
             meta["down_init"] = self.down_init
+            if self.channel_scaling_alpha > 0:
+                # Provenance only: the saved down is already ``down · s⁻¹``.
+                meta["channel_scaling_alpha"] = str(self.channel_scaling_alpha)
         if self.algo == "lokr":
             meta["factor"] = str(self.factor)
         meta.update({k: str(v) for k, v in extra.items()})
@@ -312,9 +351,10 @@ class LoRANetwork(nn.Module):
         for key, value in self.state_dict().items():
             name, rest = key.removeprefix("adapters.").split(".", 1)
             stem = FILE_PREFIX + name
-            state[f"{stem}.{_LORA_FILE_KEYS.get(rest, rest)}"] = value
             if self.algo == "lora" and rest == "down.weight":
+                value = self.adapters[name].down_weight()
                 state[f"{stem}.alpha"] = torch.tensor(self.alpha)
+            state[f"{stem}.{_LORA_FILE_KEYS.get(rest, rest)}"] = value
         state = {
             k: v.detach().to("cpu", SAVED_DTYPES[dtype]).contiguous()
             for k, v in state.items()
@@ -368,6 +408,20 @@ class LoRANetwork(nn.Module):
         network.apply_to()
         network.set_multiplier(multiplier)
         return network
+
+
+def load_channel_stats(path) -> dict[str, torch.Tensor]:
+    """Per-target ``mean|x|`` input vectors, keyed by qualified module name."""
+    from safetensors.torch import load_file
+
+    return load_file(str(path))
+
+
+def channel_scale(mean_abs: torch.Tensor, alpha: float) -> torch.Tensor:
+    """``s = mean|x|^α``, normalized to ``s.mean() == 1`` (Anima's
+    ``_load_channel_scales``)."""
+    s = mean_abs.float().clamp_min(1e-6).pow(alpha)
+    return s / s.mean()
 
 
 def _state_from_file(state: dict, algo: str) -> dict:

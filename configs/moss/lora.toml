@@ -6,7 +6,7 @@
 # them); CLI flags win over this file, and a key left out keeps the field
 # default. Values below are the shipped defaults.
 
-cache = "output/moss/cache"
+cache = "post_image_dataset/moss"
 output = "output/ckpt_moss/moss_lora.safetensors"
 model = "base"                 # base | sft
 epochs = 8
@@ -18,7 +18,8 @@ rank = 32
 # alpha = 128.0                # unset: 128 for lora, = rank for lokr / loha
 # factor = -1                  # lokr only
 down_init = "weight_svd"       # lora only: weight_svd | kaiming
-lr = 2e-5
+channel_scaling_alpha = 0.5     # lora only: 0 = off (docs/moss/channel_scaling.md)
+lr = 1e-4
 warmup_ratio = 0.05
 caption_dropout = 0.0
 lora_dtype = "bf16"            # bf16 | fp16 | fp32

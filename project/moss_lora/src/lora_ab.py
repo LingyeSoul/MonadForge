@@ -43,13 +43,13 @@ from library.moss.requests import GenerateRequest
 
 PROMPTS = [
     # Tag bag in the training captions' own format, characters it saw.
-    "safe, 1girl, hatsune miku, vocaloid, @channel (caststation), aqua eyes, aqua hair, "
+    "safe, 1girl, hatsune miku, vocaloid, {artist}, aqua eyes, aqua hair, "
     "twintails, smile, peace sign, upper body, looking at viewer, simple background, white background",
-    # A character the set never shows.
-    "safe, 1girl, akita neru, vocaloid, @channel (caststation), yellow eyes, blonde hair, "
+    # A character the caststation set never shows.
+    "safe, 1girl, akita neru, vocaloid, {artist}, yellow eyes, blonde hair, "
     "side ponytail, holding phone, looking at viewer, upper body, simple background",
     # Natural language, no tag grammar.
-    "An illustration in the style of @channel (caststation): a girl with short black hair "
+    "An illustration in the style of {artist}: a girl with short black hair "
     "in a sailor school uniform sitting on a bench under cherry blossoms, smiling.",
 ]
 
@@ -57,6 +57,11 @@ PROMPTS = [
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--lora", required=True)
+    ap.add_argument(
+        "--artist",
+        default="@channel (caststation)",
+        help="artist tag substituted into PROMPTS (the LoRA's trigger)",
+    )
     ap.add_argument("--variants", default="base,sft")
     ap.add_argument("--seeds", default="1,2")
     ap.add_argument("--steps", type=int, default=50)
@@ -87,18 +92,21 @@ def main() -> None:
         help="encode PROMPTS as typed or mapped to layout JSON (match the LoRA's cache)",
     )
     ap.add_argument(
-        "--out", default="", help="default: output/moss/lora/ab_<lora stem>_<steps>st"
+        "--out", default="", help="default: output/tests/ab_<lora stem>_<steps>st"
     )
     args = ap.parse_args()
     w, h = map(int, args.size.split("x"))
     seeds = [int(s) for s in args.seeds.split(",")]
     arms = [(a.split(":")[0], float(a.split(":")[1])) for a in args.arms.split(",")]
     out = resolve_under_home(
-        args.out or f"output/moss/lora/ab_{Path(args.lora).stem}_{args.steps}st"
+        args.out or f"output/tests/ab_{Path(args.lora).stem}_{args.steps}st"
     )
     out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda")
-    prompts = list(map(caption_converter(args.prompt_format), PROMPTS))
+    prompts = [
+        caption_converter(args.prompt_format)(p.format(artist=args.artist))
+        for p in PROMPTS
+    ]
 
     embeds = _cached_embeds(
         "", [*prompts, ""], resolve_under_home("output/moss/te_cache")

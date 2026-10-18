@@ -74,6 +74,11 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
         "down 初始化",
         "仅 lora：kaiming = 默认随机初始化；weight_svd = 用基础权重前 r 个右奇异向量 / √3 初始化（Anima 的 SVD-Down）",
     ),
+    "channel_scaling_alpha": (
+        "通道缩放 α",
+        "仅 lora：按 mean|x[c]|^α 重新平衡各输入通道的 AdamW 步长（Anima 的 channel scaling）；"
+        "输出不变，保存为普通 LoRA。0 = 关闭，0.5 = Anima 默认",
+    ),
     "lr": ("学习率", "AdamW 学习率"),
     "warmup_ratio": ("预热比例", "线性预热占总步数的比例"),
     "save_every_epochs": ("每 N 轮保存", "每 N 轮额外保存一次（0 = 只保存最终结果）"),

@@ -38,7 +38,7 @@ relative folder (``sub__dir__stem``).
 
     make daemon-run ARGS="scripts/moss/cache.py \\
         --src 'post_image_dataset/resized/channel_(caststation)' \\
-        --out 'output/moss/cache/channel_(caststation)'"
+        --out 'post_image_dataset/moss/channel_(caststation)'"
 """
 
 from __future__ import annotations

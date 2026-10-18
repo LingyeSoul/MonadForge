@@ -28,7 +28,7 @@ MOSS 라인은 **알파** 단계입니다. 지금까지 실제 스타일 학습�
 | 디퓨전 모델 | Anima DiT | 5B single-stream DiT (42 블록) |
 | 텍스트 인코더 | Qwen3 0.6B | Qwen3.5-9B |
 | VAE | QwenImage VAE | FLUX.2 VAE |
-| 캐시 | `post_image_dataset/lora/` | `output/moss/cache/` |
+| 캐시 | `post_image_dataset/lora/` | `post_image_dataset/moss/` |
 | LoRA | `output/ckpt/` | `output/ckpt_moss/` |
 | 설정 | variant TOML + Hardware 프리셋 | 패널의 입력 필드 |
 
@@ -79,7 +79,7 @@ make download-model ARGS=moss-sft
 | 필드 | 기본값 | 하는 일 |
 |---|---|---|
 | `src` | `post_image_dataset/resized` | 이미지 + 캡션 폴더 |
-| `out` | `output/moss/cache` | 캐시 폴더: 이미지당 파일 두 개, 하위 폴더 없이 저장 |
+| `out` | `post_image_dataset/moss` | 캐시 폴더: 이미지당 파일 두 개, 하위 폴더 없이 저장 |
 | `resolution` | `1024` | 픽셀 면적 상한: 원본 비율 그대로 최대 약 1024² 픽셀, 양변은 16의 배수, 업스케일하지 않음 |
 | `caption_format` | `layout_json` | `layout_json` 또는 `text` (§3.1) |
 
@@ -89,7 +89,7 @@ make download-model ARGS=moss-sft
 
 | 필드 | 기본값 | 하는 일 |
 |---|---|---|
-| `cache` | `output/moss/cache` | 전처리 결과 폴더 |
+| `cache` | `post_image_dataset/moss` | 전처리 결과 폴더 |
 | `output` | `output/ckpt_moss/moss_lora.safetensors` | LoRA 경로. 옆에 `.json` 실행 리포트(스텝별 loss)가 함께 저장됨 |
 | `model` | `base` | 학습할 DiT |
 | `epochs` | `8` | 캐시를 도는 횟수 (스텝당 이미지 1장) |
@@ -103,26 +103,28 @@ make download-model ARGS=moss-sft
 
 - `lora` 를 비워 두면 Train 탭의 `output` 을 씁니다. 다른 파일(예: `_e10` 체크포인트)을 테스트하려면 여기에 지정합니다.
 - `model` 을 `sft` 로 바꾸면 Base LoRA를 SFT에서 테스트합니다.
-- 결과: `output/moss/test/<날짜-시각>/lora/` 와 `…/base/`, 각각 `manifest.json` 포함. 테스트마다 새 폴더가 생기므로 이전 결과는 남습니다.
+- 결과: `output/tests/<날짜-시각>/lora/` 와 `…/base/`, 각각 `manifest.json` 포함. 테스트마다 새 폴더가 생기므로 이전 결과는 남습니다.
 
 ---
 
 ## 4. 권장 설정
 
-측정한 학습: 한 작가(`@channel (caststation)`)의 이미지 30장, Base, LoRA 랭크 16, alpha 16, lr 1e-4(이전 기본값), `weight_svd`, 20 에폭 = 600 스텝, 약 18–21분. 시도한 변형 중 작가의 특징을 가장 많이 담으면서 다른 캐릭터로의 누출이 없었습니다. 현재 기본값(랭크 32, alpha 128, lr 2e-5)은 이후 비교에서 나왔으며 아래에 설명합니다.
+측정한 학습: 한 작가(`@channel (caststation)`)의 이미지 30장, Base, LoRA 랭크 16, alpha 16, lr 1e-4(이전 기본값), `weight_svd`, 20 에폭 = 600 스텝, 약 18–21분. 시도한 변형 중 작가의 특징을 가장 많이 담으면서 다른 캐릭터로의 누출이 없었습니다. 현재 기본값(랭크 32, alpha 128, lr 1e-4, 채널 스케일링 0.5)은 이후 비교에서 나왔으며 아래에 설명합니다.
 
 | 필드 | 기본값 | 참고 |
 |---|---|---|
 | `algo` | `lora` | `lokr` / `loha`: §4.1 |
 | `rank` | `32` | 랭크 16에서 파라미터 37.2 M (이전 기본값) |
 | `alpha` | `lora`는 `128`(랭크 32에서 scale 4), `lokr` / `loha`는 = rank | scale = alpha / rank |
-| `lr` | `2e-5` | AdamW, 5 % 선형 워밍업 |
+| `lr` | `1e-4` | AdamW, 5 % 선형 워밍업 |
+| `channel_scaling_alpha` | `0.5` | `lora` 전용; `0`이면 끔 |
 | `down_init` | `weight_svd` | `weight_svd` 또는 `kaiming` |
 | `epochs` | `8` | 측정한 학습은 20 |
 | `caption_dropout` | `0` | 측정한 학습은 0 |
 
 - **alpha와 lr**: AdamW에서는 scale을 올리는 것이 LoRA up 행렬의 lr을 그 배수만큼 올리는 것과 같습니다. 랭크 16에 alpha 90(scale 5.6), lr 1e-4면 up 행렬은 약 5.6e-4가 됩니다. 이 설정은 기본값과 같은 스타일을 냈지만 세트의 서명을 베끼기 시작했습니다. 샘플 하나에 작가의 워터마크와 핸들이 찍혀 나왔습니다. alpha 90에 lr 5e-5는 더 약하고 부분적인 전이만 보였습니다. 그 비교에서는 alpha = rank, lr 1e-4가 1위였고, 아래의 이후 비교 전까지 기본값이었습니다.
-- **현재 기본값(랭크 32, alpha 128, lr 2e-5)**: caststation 세트(20 에폭, `weight_svd`, layout_json)에 작가 태그를 넣은 상태에서, 복잡한 갤러리 프롬프트 두 개(10명 앙상블, 4:1 배너)의 결과가 달랐습니다. 랭크 32 / alpha 128에 lr 1e-4는 스타일을 강하게 밀어(흰 배경, 단조로운 옅은 채색) 프롬프트의 디테일을 잃었습니다(가방을 든 캐릭터가 틀림, 인형 누락). lr 2e-5에서는 디테일이 유지되고(가방 든 캐릭터 정확, 인형 있음) 스타일 변화는 더 약했으며, "훨씬 낫다"고 판단해 기본값이 되었습니다. AdamW에서 scale 4, lr 2e-5의 실효 lr은 up 행렬 8e-5, down 행렬 2e-5입니다.
+- **랭크 32, alpha 128: lr 1e-4 vs 2e-5 (채널 스케일링 없음)**: caststation 세트(20 에폭, `weight_svd`, layout_json)에 작가 태그를 넣은 상태에서, 복잡한 갤러리 프롬프트 두 개(10명 앙상블, 4:1 배너)의 결과가 달랐습니다. 랭크 32 / alpha 128에 lr 1e-4는 스타일을 강하게 밀어(흰 배경, 단조로운 옅은 채색) 프롬프트의 디테일을 잃었습니다(가방을 든 캐릭터가 틀림, 인형 누락). lr 2e-5에서는 디테일이 유지되고(가방 든 캐릭터 정확, 인형 있음) 스타일 변화는 더 약했으며, "훨씬 낫다"고 판단되어 채널 스케일링이 들어오기 전까지 기본값이었습니다. AdamW에서 scale 4, lr 2e-5의 실효 lr은 up 행렬 8e-5, down 행렬 2e-5입니다.
+- **현재 기본값(lr 1e-4, 채널 스케일링 0.5)**: 채널 스케일링은 LoRA의 채널별 업데이트를 재조정해, 소수의 매우 큰 입력 채널(MOSS에서는 모든 FFN에 입력되는 채널 하나)이 가장 큰 몫을 차지하지 않게 합니다. 시작 시점의 출력은 그대로이며 저장되는 파일은 일반 LoRA입니다. lr 1e-4에서 강한 스타일을 유지하면서도 프롬프트를 따랐고, 채널 스케일링 없이 같은 학습을 하면 프롬프트에 없는 요소(안경, 깨진 글자 간판, 공원 대신 거리)가 추가되었습니다. 자세한 내용: `docs/moss/channel_scaling.md`. 이전 동작을 원하면 `channel_scaling_alpha 0`과 `lr 2e-5`로 설정하세요.
 - **down_init**: `weight_svd` 는 LoRA의 down 행렬을 베이스 가중치의 상위 특이 벡터로 시작하고, `kaiming` 은 무작위 초기화입니다. 육안으로는 `weight_svd` 가 작가 스타일을 더 잘 유지했습니다. 두 초기화는 같은 시드에서도 다른 샘플을 내며, 그 차이는 시드를 바꾼 정도입니다.
 - **epochs**: 20 에폭 중 10 에폭 시점의 결과는 더 느슨하고 다양했고, 20 에폭은 더 깔끔하고 균일했지만 정면·중앙 상반신 구도로 약간 쏠렸습니다. `save_every_epochs` 를 설정하면 한 번의 학습으로 둘을 비교할 수 있습니다.
 - **sigma_\*** (Advanced): 기본값은 MOSS의 최종 사전학습 노이즈 스케줄입니다. Anima의 스케줄(`sigma_mu 0`, `sigma_s 1`, `sigma_cutoff 1.0`, `sigma_uniform 0`)은 모든 설정 중 전이가 가장 약했습니다.
@@ -194,7 +196,7 @@ make download-model ARGS=moss-sft
 |---|---|
 | 학습 중 메모리 부족 | Advanced: `blocks_to_swap 24`, 그다음 `activation_memory_budget 0.1`. 또는 `tune_swap.py` 실행. LoKr/LoHa는 24 / 0.1 필요. `grad_checkpointing` 켬 + `blocks_to_swap 0` 은 swap 없이 들어가는 더 느린 구성 |
 | 스타일이 너무 약함 | 에폭을 늘립니다 (측정한 학습은 20). 프롬프트에 캡션과 같은 철자의 작가 태그가 있는지, `prompt_format` 이 `caption_format` 과 같은지 확인 |
-| 스타일이 너무 강함, 세트의 서명·워터마크가 나옴, 모든 이미지 구도가 같음 | 앞 에폭의 `_e<N>` 체크포인트를 테스트하거나 `lora_multiplier` 를 낮춥니다. 서명을 베끼기 시작한 것은 실효 lr을 올렸을 때였음(현재 기본 lr은 2e-5) |
+| 스타일이 너무 강함, 세트의 서명·워터마크가 나옴, 모든 이미지 구도가 같음 | 앞 에폭의 `_e<N>` 체크포인트를 테스트하거나 `lora_multiplier` 를 낮춥니다. 서명을 베끼기 시작한 것은 실효 lr을 올렸을 때였음; `lr 2e-5`를 시도해 보세요 |
 | 세트의 의상이나 색이 다른 캐릭터에 샘 | `caption_format layout_json` 사용 (기본값, 일반 태그보다 누출이 적었음). LoHa는 LoRA나 LoKr로 교체 |
 | `caption_format` 을 바꿨음 | 전처리를 다시 실행: 텍스트 캐시는 다시 인코딩되고 잠재는 재사용됨. 상태 줄 개수에는 형식 변경이 반영되지 않음. `prompt_format` 을 맞추고 다시 학습 |
 | `layout_json needs the danbooru tag CSV` | `make download-model ARGS=danbooru_tags` |
@@ -207,18 +209,18 @@ make download-model ARGS=moss-sft
 GUI가 제출하는 작업과 같으며, 데몬으로 직접 실행할 수도 있습니다. 각 스크립트의 `--help` 에 모든 플래그가 나옵니다. `train.py --config configs/moss/lora.toml` 로 플래그를 TOML 파일에서 읽을 수 있습니다(기본값이 들어 있으니 복사해서 레시피로 쓰세요). 명령줄에 직접 준 플래그가 우선합니다.
 
 ```bash
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'output/moss/cache/<set>'"
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'post_image_dataset/moss/<set>'"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
-make daemon-run ARGS="scripts/moss/tune_swap.py --cache output/moss/cache/<set>"
+make daemon-run ARGS="scripts/moss/tune_swap.py --cache post_image_dataset/moss/<set>"
 ```
 
 LoKr / LoHa:
 
 ```bash
-make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
-make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
+make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
+make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
 ```
 
 더 자세한 측정 결과: [`docs/experimental/moss_lora.md`](../experimental/moss_lora.md).

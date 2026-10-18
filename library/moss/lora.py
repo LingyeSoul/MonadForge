@@ -15,6 +15,8 @@ from library.lines.adapters import (  # noqa: F401  (the line's adapter surface)
     LoHaAdapter,
     LoKrAdapter,
     LoRAAdapter,
+    channel_scale,
+    load_channel_stats,
 )
 from library.lines.adapters import LoRANetwork as _LoRANetwork
 from library.moss.requests import TrainRequest

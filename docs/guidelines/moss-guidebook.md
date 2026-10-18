@@ -28,7 +28,7 @@ The MOSS line is **alpha**: one real style run has been measured so far (a 30-im
 | Diffusion model | Anima DiT | 5B single-stream DiT (42 blocks) |
 | Text encoder | Qwen3 0.6B | Qwen3.5-9B |
 | VAE | QwenImage VAE | FLUX.2 VAE |
-| Caches | `post_image_dataset/lora/` | `output/moss/cache/` |
+| Caches | `post_image_dataset/lora/` | `post_image_dataset/moss/` |
 | LoRAs | `output/ckpt/` | `output/ckpt_moss/` |
 | Settings | variant TOML + Hardware preset | the panel's fields |
 
@@ -79,7 +79,7 @@ Caches the Qwen3.5-9B text embedding and the FLUX.2 VAE latent of every image, s
 | Field | Default | What it does |
 |---|---|---|
 | `src` | `post_image_dataset/resized` | Image + caption folder |
-| `out` | `output/moss/cache` | Cache folder: two files per image, flat |
+| `out` | `post_image_dataset/moss` | Cache folder: two files per image, flat |
 | `resolution` | `1024` | Pixel-area cap: at most ~1024² pixels at the image's own aspect, both sides multiples of 16, never upscaled |
 | `caption_format` | `layout_json` | `layout_json` or `text` (§3.1) |
 
@@ -89,7 +89,7 @@ Press **Run preprocessing**. The status line counts images, captions and cached 
 
 | Field | Default | What it does |
 |---|---|---|
-| `cache` | `output/moss/cache` | The Preprocess output |
+| `cache` | `post_image_dataset/moss` | The Preprocess output |
 | `output` | `output/ckpt_moss/moss_lora.safetensors` | LoRA path; a `.json` run report (per-step loss) lands beside it |
 | `model` | `base` | Which DiT to train on |
 | `epochs` | `8` | Passes over the cache (one image per step) |
@@ -103,26 +103,28 @@ Renders the prompt twice with the same seed: once with the LoRA at `lora_multipl
 
 - `lora` empty = the Train tab's `output`. Set it to test another file, e.g. an `_e10` checkpoint.
 - `model` = `sft` tests the Base LoRA on SFT.
-- Output: `output/moss/test/<date-time>/lora/` and `…/base/`, each with a `manifest.json`. Every Test gets a new folder, so earlier runs stay.
+- Output: `output/tests/<date-time>/lora/` and `…/base/`, each with a `manifest.json`. Every Test gets a new folder, so earlier runs stay.
 
 ---
 
 ## 4. Recommended Settings
 
-The measured run: 30 images of one artist (`@channel (caststation)`), Base, LoRA rank 16, alpha 16, lr 1e-4 (the earlier defaults), `weight_svd`, 20 epochs = 600 steps, about 18–21 minutes. Of the variants tried, this one carried the most of the artist's cues with no leakage. The current defaults (rank 32, alpha 128, lr 2e-5) came from a later comparison, below.
+The measured run: 30 images of one artist (`@channel (caststation)`), Base, LoRA rank 16, alpha 16, lr 1e-4 (the earlier defaults), `weight_svd`, 20 epochs = 600 steps, about 18–21 minutes. Of the variants tried, this one carried the most of the artist's cues with no leakage. The current defaults (rank 32, alpha 128, lr 1e-4, channel scaling 0.5) came from later comparisons, below.
 
 | Field | Default | Notes |
 |---|---|---|
 | `algo` | `lora` | `lokr` / `loha`: §4.1 |
 | `rank` | `32` | 37.2 M parameters at rank 16 (the earlier default) |
 | `alpha` | `128` for `lora` (scale 4 at rank 32); = rank for `lokr` / `loha` | scale = alpha / rank |
-| `lr` | `2e-5` | AdamW, 5 % linear warmup |
+| `lr` | `1e-4` | AdamW, 5 % linear warmup |
+| `channel_scaling_alpha` | `0.5` | `lora` only; `0` turns it off |
 | `down_init` | `weight_svd` | `weight_svd` or `kaiming` |
 | `epochs` | `8` | the measured run used 20 |
 | `caption_dropout` | `0` | the measured run used 0 |
 
 - **alpha and lr**: under AdamW, raising the scale is the same as raising the lr of the LoRA's up matrix by that factor. Rank 16 with alpha 90 (scale 5.6) at lr 1e-4 puts the up matrix at ~5.6e-4. That arm matched the default's style but started copying the set's signature: one sample carried the artist's watermark and handle. Alpha 90 at lr 5e-5 gave a softer, partial transfer. That comparison ranked alpha = rank at lr 1e-4 first, and it was the default until the later comparison below.
-- **Current defaults (rank 32, alpha 128, lr 2e-5)**: on the caststation set (20 epochs, `weight_svd`, layout_json) with the artist tag injected, the two complex gallery prompts (a ten-character ensemble, a 4:1 banner) behaved differently. Rank 32 / alpha 128 at lr 1e-4 pushed the style hard (white backgrounds, flat pale fills) but lost prompt details (the wrong character held the bag, a plush was missing). At lr 2e-5 the details held (right bag holder, plush present) with a milder style shift, judged much better, so it became the default. Under AdamW the effective lr at scale 4 and lr 2e-5 is 8e-5 for the up matrix and 2e-5 for the down matrix.
+- **Rank 32, alpha 128: lr 1e-4 vs 2e-5 (without channel scaling)**: on the caststation set (20 epochs, `weight_svd`, layout_json) with the artist tag injected, the two complex gallery prompts (a ten-character ensemble, a 4:1 banner) behaved differently. Rank 32 / alpha 128 at lr 1e-4 pushed the style hard (white backgrounds, flat pale fills) but lost prompt details (the wrong character held the bag, a plush was missing). At lr 2e-5 the details held (right bag holder, plush present) with a milder style shift, judged much better, and it was the default until channel scaling came in. Under AdamW the effective lr at scale 4 and lr 2e-5 is 8e-5 for the up matrix and 2e-5 for the down matrix.
+- **Current defaults (lr 1e-4 with channel scaling 0.5)**: channel scaling rebalances the LoRA's per-channel updates so that a few very loud input channels (on MOSS, one channel feeding every FFN) stop taking the largest share; the output at the start is unchanged and the saved file is an ordinary LoRA. At lr 1e-4 it kept the strong style while staying on-prompt, where the same run without it added things the prompt never asked for (glasses, garbled-text signs, a street instead of a park). Details: `docs/moss/channel_scaling.md`. Set `channel_scaling_alpha 0` and `lr 2e-5` for the previous behaviour.
 - **down_init**: `weight_svd` starts the LoRA's down projection on the base weight's top singular vectors; `kaiming` is the random init. `weight_svd` kept the artist's style better by eye. The two inits give different samples at the same seed, about as different as a seed change.
 - **epochs**: at 10 of 20 epochs the results were looser and more varied; at 20 they were cleaner and more uniform, with a mild drift toward frontal, centred upper bodies. Set `save_every_epochs` to compare both from one run.
 - **sigma_\*** (Advanced): the defaults are MOSS's final pretraining noise schedule. Anima's schedule (`sigma_mu 0`, `sigma_s 1`, `sigma_cutoff 1.0`, `sigma_uniform 0`) gave the weakest transfer of every arm.
@@ -194,7 +196,7 @@ The sampler defaults come from MOSS's reference pipeline; Anima's sampler habits
 |---|---|
 | Out of memory in training | Advanced: `blocks_to_swap 24`, then `activation_memory_budget 0.1`; or run `tune_swap.py`. LoKr/LoHa need 24 / 0.1. `grad_checkpointing` on with `blocks_to_swap 0` is the slower plan that fits without swap |
 | Style too weak | More epochs (the measured run used 20). Check the prompt carries the artist tag spelled as in the captions, and that `prompt_format` matches `caption_format` |
-| Style too strong, the set's signature or watermark shows up, every image has the same composition | Test an earlier `_e<N>` checkpoint or lower `lora_multiplier`. A higher effective lr is what started copying the signature (the default lr is now 2e-5) |
+| Style too strong, the set's signature or watermark shows up, every image has the same composition | Test an earlier `_e<N>` checkpoint or lower `lora_multiplier`. A higher effective lr is what started copying the signature; try `lr 2e-5` |
 | The set's costume or colours leak onto other characters | Use `caption_format layout_json` (the default; it leaked less than plain tags). Switch LoHa back to LoRA or LoKr |
 | Switched `caption_format` | Run Preprocess again: the text cache is re-encoded, latents are reused. The status line counts do not show the switch. Set `prompt_format` to match, then retrain |
 | `layout_json needs the danbooru tag CSV` | `make download-model ARGS=danbooru_tags` |
@@ -207,18 +209,18 @@ The sampler defaults come from MOSS's reference pipeline; Anima's sampler habits
 The GUI submits these jobs; they can also be run through the daemon directly. `--help` on each script lists every flag. `train.py --config configs/moss/lora.toml` reads flags from a TOML file (the shipped defaults; copy it to keep a recipe); flags given on the command line still win.
 
 ```bash
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'output/moss/cache/<set>'"
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'post_image_dataset/moss/<set>'"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
-make daemon-run ARGS="scripts/moss/tune_swap.py --cache output/moss/cache/<set>"
+make daemon-run ARGS="scripts/moss/tune_swap.py --cache post_image_dataset/moss/<set>"
 ```
 
 LoKr / LoHa:
 
 ```bash
-make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
-make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
+make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
+make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
 ```
 
 More measurements: [`docs/experimental/moss_lora.md`](../experimental/moss_lora.md).

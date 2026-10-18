@@ -67,7 +67,7 @@ class CacheRequest(Request):
         "folder of images + .txt captions, subfolders included (default: the "
         "Anima resized tree, whose captions are the revised ones)",
     )
-    out: str = _f("output/moss/cache", "cache folder (two files per image, flat)")
+    out: str = _f("post_image_dataset/moss", "cache folder (two files per image, flat)")
     resolution: int = _f(
         1024,
         "pixel-area cap as a square edge — 1024 means at most ~1024^2 pixels at "
@@ -144,7 +144,7 @@ class GenerateRequest(Request):
     seed: int = _f(
         42, "seed of the first prompt (+1 per prompt); fp32 noise from a CPU generator"
     )
-    out_dir: str = _f("output/moss/test", "images + manifest.json land here")
+    out_dir: str = _f("output/tests", "images + manifest.json land here")
     prompts_file: str = _f("", "one prompt per line; overrides prompt", advanced=True)
     example: str = _f(
         "",
@@ -220,7 +220,7 @@ class TrainRequest(Request):
     TARGETS: ClassVar[str] = r"layers\.\d+\.proj\.(q|k|v|o|ffn_up_gate|ffn_down)"
 
     cache: str = _f(
-        "output/moss/cache", "cache folder written by scripts/moss/cache.py"
+        "post_image_dataset/moss", "cache folder written by scripts/moss/cache.py"
     )
     output: str = _f(
         "output/ckpt_moss/moss_lora.safetensors",
@@ -254,10 +254,25 @@ class TrainRequest(Request):
         "better by eye, 2026-10-17) or kaiming",
         choices=("kaiming", "weight_svd"),
     )
+    channel_scaling_alpha: float = _f(
+        0.5,
+        "lora only (lokr / loha ignore it): Anima's channel scaling — rescale each "
+        "target's input channel c by mean|x[c]|^alpha inside the down projection, so "
+        "Adam's step no longer favours the few high-magnitude channels (on MOSS: ch 42 "
+        "into ffn_up_gate). Same output, plain LoRA on disk. At lr 1e-4 it kept prompt "
+        "details plain LoRA lost (2026-10-18). 0 = off",
+    )
+    channel_stats: str = _f(
+        "library/moss/calibration/channel_stats.safetensors",
+        "per-target mean|x| calibration for channel_scaling_alpha (from "
+        "bench/moss_channel_stats/probe_lora_inputs.py on Base)",
+        advanced=True,
+    )
     lr: float = _f(
-        2e-5,
-        "AdamW learning rate (2e-5 with rank 32 / alpha 128 kept complex prompts' "
-        "details that 1e-4 lost, 2026-10-17)",
+        1e-4,
+        "AdamW learning rate (rank 32 / alpha 128: 1e-4 with channel scaling keeps "
+        "prompt details and a stronger style; without it 1e-4 lost details and 2e-5 "
+        "was the safer pick, 2026-10-17/18)",
     )
     warmup_ratio: float = _f(0.05, "linear warmup, as a fraction of all steps")
     save_every_epochs: int = _f(0, "also save every N epochs (0 = final only)")
@@ -334,7 +349,7 @@ class TuneSwapRequest(Request):
     SCRIPT: ClassVar[str] = "scripts/moss/tune_swap.py"
 
     cache: str = _f(
-        "output/moss/cache",
+        "post_image_dataset/moss",
         "cache folder; its largest sample (image + text tokens) is the one timed",
     )
     sizes: str = _f(

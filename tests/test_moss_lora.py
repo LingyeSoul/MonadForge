@@ -11,6 +11,7 @@ from library.moss.lora import (
     DEFAULT_TARGETS,
     LoKrAdapter,
     LoRANetwork,
+    channel_scale,
     load_for_inference,
     load_network,
 )
@@ -193,6 +194,87 @@ def test_weight_svd_down_init():
     assert torch.equal(_out(model, x, e), base)
     with pytest.raises(ValueError):
         LoRANetwork(model, rank=4, down_init="pissa")
+
+
+def _skewed_stats(model):
+    """One loud input channel per target, like MOSS's ch 42 into ffn_up_gate."""
+    g = torch.Generator().manual_seed(3)
+    stats = {}
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear) and re.fullmatch(DEFAULT_TARGETS, name):
+            m = torch.rand(module.in_features, generator=g) + 0.1
+            m[0] = 30.0
+            stats[name] = m
+    return stats
+
+
+def test_channel_scaling_is_output_neutral_and_saves_plain(tmp_path):
+    model = _tiny()
+    x, e = _inputs()
+    stats = _skewed_stats(model)
+    torch.manual_seed(5)
+    plain = LoRANetwork(model, rank=4, alpha=2.0, down_init="weight_svd")
+    torch.manual_seed(5)
+    net = LoRANetwork(
+        model,
+        rank=4,
+        alpha=2.0,
+        down_init="weight_svd",
+        channel_stats=stats,
+        channel_scaling_alpha=0.5,
+    )
+    for name, adapter in net.adapters.items():
+        s = channel_scale(stats[adapter_name(net, name)], 0.5)
+        assert torch.allclose(s.mean(), torch.tensor(1.0))
+        assert torch.allclose(adapter.down.weight, plain.adapters[name].down.weight * s)
+        assert torch.allclose(adapter.down_weight(), plain.adapters[name].down.weight)
+        torch.nn.init.normal_(adapter.up.weight, std=0.1)
+        plain.adapters[name].up.weight.data.copy_(adapter.up.weight)
+
+    def loss_and_grads(network):
+        network.apply_to()
+        loss = model(x, torch.tensor([600.0]), e).sample.square().mean()
+        loss.backward()
+        network.restore()
+        return loss.detach(), {
+            k: a.down.weight.grad for k, a in network.adapters.items()
+        }
+
+    want = _out_with(model, plain, x, e)
+    assert torch.allclose(_out_with(model, net, x, e), want, atol=1e-5)
+    # Adam geometry only: down's gradient on input channel c is scaled by 1/s[c].
+    loss_plain, g_plain = loss_and_grads(plain)
+    loss_net, g_net = loss_and_grads(net)
+    assert torch.allclose(loss_net, loss_plain, rtol=1e-5)
+    for name, adapter in net.adapters.items():
+        assert torch.allclose(g_net[name], g_plain[name] * adapter.inv_scale, atol=1e-7)
+
+    path = tmp_path / "cs.safetensors"
+    net.save(path, "fp32")
+    fresh = _tiny()
+    loaded = load_for_inference(fresh, path)
+    assert all(a.inv_scale is None for a in loaded.adapters.values())  # plain LoRA
+    assert torch.allclose(_out(fresh, x, e), want, atol=1e-5)
+    assert load_network(_tiny(), path)[1]["channel_scaling_alpha"] == "0.5"
+
+    with pytest.raises(ValueError, match="lora'"):
+        LoRANetwork(
+            model, rank=4, algo="lokr", channel_stats=stats, channel_scaling_alpha=0.5
+        )
+    with pytest.raises(ValueError, match="needs channel_stats"):
+        LoRANetwork(model, rank=4, channel_scaling_alpha=0.5)
+
+
+def _out_with(model, network, x, e):
+    network.apply_to()
+    try:
+        return _out(model, x, e)
+    finally:
+        network.restore()
+
+
+def adapter_name(net, key):
+    return next(n for n, _ in net._targets if n.replace(".", "_") == key)
 
 
 def _dense_delta(adapter):
