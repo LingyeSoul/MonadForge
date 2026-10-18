@@ -2,10 +2,17 @@
 
 One window class for the non-Anima lines (``make gui-qwen``, ``make gui-moss``).
 A ``LineSpec`` names the line's torch-free request classes, scan helpers and
-strings; the forms are rendered from the requests (one widget per field,
-advanced ones folded), with a shared log and progress bar, and every action is
-a daemon command job running the line's sidecar (``req.SCRIPT``). No torch here,
-and nothing line-specific: ``gui/<line>/app.py`` builds the spec.
+strings; the forms are rendered from the requests (one widget per field, folded
+into ``QGroupBox``es by the request's group, advanced ones under "Advanced"),
+with a shared log and progress bar, and every action is a daemon command job
+running the line's sidecar (``req.SCRIPT``). No torch here, and nothing
+line-specific: ``gui/<line>/app.py`` builds the spec.
+
+Each tab carries a collapsible "Extra args" box: its TOML is written to a temp
+file and handed to that tab's sidecar as ``--config <path>`` (the request layer
+merges it under the CLI flags). Preprocess / Train are split buttons — the main
+action starts the job now, the dropdown queues it on the daemon
+(``start=False``) instead.
 
 Chains run on the GUI side: "Preprocess, then train" submits the train job when
 the cache job succeeds, so a failed cache pass never trains on a stale folder,
@@ -18,14 +25,18 @@ from __future__ import annotations
 
 import dataclasses
 import html
+import os
 import re
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt, QTimer
+import toml
+
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -38,6 +49,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -46,6 +58,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -53,24 +66,35 @@ from PySide6.QtWidgets import (
 from gui.jobs import daemon as gui_daemon
 from gui import i18n as main_i18n
 from gui import theme as gui_theme
+from gui.core import variant_form
 from gui.jobs.mixin import DaemonJobMixin
 from gui.core.paths import ROOT, get_setting, set_setting
-from gui.jobs.progress import TQDM_RE
+from gui.jobs.progress import TQDM_RE, make_progress_bar
 from gui.lines.strings import LANGUAGES, UI
-from gui.theme import rich_text_pt, tok
+from gui.theme import action_button_qss, rich_text_pt, tok
 from gui.widgets import (
     ExplainPanel,
+    SplitButtonStyle,
     _no_wheel,
     action_button,
     apply_variant,
     make_field_label,
 )
 from library.env import resolve_under_home
+from library.lines.requests import GROUPS as REQUEST_GROUPS
+from library.lines.requests import field_group
 
 TEST_THUMB_PX = 360
 # Loading a multi-GB text encoder can be silent for a while; the default
 # command-job watchdog (120 s) would kill it.
 STALL_TIMEOUT = 900.0
+# Where the "Extra args" boxes' TOML is staged for the sidecars' ``--config``.
+EXTRA_ARGS_DIR = "monadforge-line-args"
+# A staged file must outlive the job that reads it (a queued job starts later),
+# so they are only reaped once they cannot belong to a live job any more.
+EXTRA_ARGS_TTL = 7 * 86400
+# The "Extra args" box does not parse / is not this request's TOML.
+_EXTRA_INVALID = object()
 
 
 @dataclass(frozen=True)
@@ -136,9 +160,32 @@ def _base_type(f: dataclasses.Field) -> type:
     return str
 
 
+def _add_field_rows(target: QFormLayout, flat: list, groups: dict[str, list]) -> None:
+    """Fill one form section: ungrouped rows stay flat (exactly as before), and
+    each group becomes a ``QGroupBox`` — groups in ``REQUEST_GROUPS`` order,
+    rows in the dataclass's declaration order."""
+    for label, row in flat:
+        target.addRow(label, row)
+    for name in REQUEST_GROUPS:
+        rows = groups.get(name)
+        if not rows:
+            continue
+        box = QGroupBox(name)
+        form = QFormLayout(box)
+        for label, row in rows:
+            form.addRow(label, row)
+        target.addRow(box)
+
+
 class RequestForm(QWidget):
     """One widget per request field; ``request()`` reads them back typed.
-    Clicking a field label calls ``help_cb(label, help_text)``."""
+    Clicking a field label calls ``help_cb(label, help_text)``.
+
+    Fields that name a group (``request_field(group=…)`` or the shared name
+    table in ``library.lines.requests``) are collected into one ``QGroupBox``
+    per group — inside the basic area, or inside the Advanced fold, which is
+    orthogonal to grouping. Ungrouped fields keep the old flat layout.
+    """
 
     def __init__(self, cls, help_cb: Callable[[str, str], None], parent=None):
         super().__init__(parent)
@@ -156,6 +203,10 @@ class RequestForm(QWidget):
         advanced_inner.setVisible(False)
         advanced_box.toggled.connect(advanced_inner.setVisible)
 
+        flat_basic: list = []
+        flat_advanced: list = []
+        groups_basic: dict[str, list] = {}
+        groups_advanced: dict[str, list] = {}
         for f in dataclasses.fields(cls):
             label, help_text = field_text(f, cls)
             widget, row = self._make(f)
@@ -165,8 +216,17 @@ class RequestForm(QWidget):
                 tooltip=help_text,
                 on_click=lambda _l=label, _h=help_text: help_cb(_l, _h),
             )
-            (advanced if f.metadata.get("advanced") else basic).addRow(name, row)
+            advanced_field = bool(f.metadata.get("advanced"))
+            flat = flat_advanced if advanced_field else flat_basic
+            groups = groups_advanced if advanced_field else groups_basic
+            group = field_group(f)
+            if group:
+                groups.setdefault(group, []).append((name, row))
+            else:
+                flat.append((name, row))
             self.widgets[f.name] = widget
+        _add_field_rows(basic, flat_basic, groups_basic)
+        _add_field_rows(advanced, flat_advanced, groups_advanced)
         layout.addLayout(basic)
         layout.addWidget(advanced_box)
 
@@ -296,6 +356,40 @@ class RequestForm(QWidget):
                 w.toggled.connect(callback)
 
 
+class ExtraArgs(QWidget):
+    """Collapsible "Extra args" box: TOML for one request, staged as a file.
+
+    The text is parsed on submit and written to a temp file that rides into the
+    sidecar's argv as ``--config <path>`` (the request layer merges it under the
+    CLI flags). The request class validates the file first, so an unknown or
+    mistyped key is a dialog here instead of a failed job.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        self.button = QPushButton(tr("extra_args"))
+        self.button.setCheckable(True)
+        self.button.setToolTip(tr("extra_args_tooltip"))
+        self.edit = QPlainTextEdit()
+        self.edit.setPlaceholderText(tr("extra_args_placeholder"))
+        self.edit.setToolTip(tr("extra_args_tooltip"))
+        self.edit.setMaximumHeight(120)
+        self.edit.setVisible(False)
+        self.button.toggled.connect(self.edit.setVisible)
+        v.addWidget(self.button)
+        v.addWidget(self.edit)
+
+    def text(self) -> str:
+        return self.edit.toPlainText().strip()
+
+    def set_text(self, text: str) -> None:
+        """Restore persisted args; a non-empty box opens so they stay visible."""
+        self.edit.setPlainText(text or "")
+        self.button.setChecked(bool(text))
+
+
 class _LineProgress:
     """Drives the bar from the sidecars' ``  step|text|latents i/n`` lines.
 
@@ -385,28 +479,46 @@ class LinePanel(DaemonJobMixin, QWidget):
         self.tabs = QTabWidget()
         self.cache_explain = ExplainPanel()
         self.train_explain = ExplainPanel()
-        self.cache_form = RequestForm(spec.cache_cls, self.cache_explain.show_field_help)
-        self.train_form = RequestForm(spec.train_cls, self.train_explain.show_field_help)
+        self.cache_form = RequestForm(
+            spec.cache_cls, self.cache_explain.show_field_help
+        )
+        self.train_form = RequestForm(
+            spec.train_cls, self.train_explain.show_field_help
+        )
         saved = get_setting(self._settings_key, {}) or {}
         self.cache_form.set_values(saved.get("cache", {}))
         self.train_form.set_values(saved.get("train", {}))
 
+        # One "Extra args" box per request class — each tab's TOML is validated
+        # against, and handed to, that tab's own sidecar (``--config``).
+        self._extra: dict[str, ExtraArgs] = {
+            kind: ExtraArgs() for kind in ("cache", "train", "test")
+        }
+        for kind, box in self._extra.items():
+            box.set_text((saved.get("extra") or {}).get(kind, ""))
+        # kind → the staged ``--config`` file of the last submit (None = no args).
+        self._extra_paths: dict[str, Path | None] = {}
+        self._extra_seq = 0
+
         self.cache_summary = QLabel()
         self.cache_summary.setWordWrap(True)
-        self.btn_cache = action_button(tr("run_cache"), on_click=self._run_cache)
+        # SplitButtonStyle must outlive its buttons (setStyle takes no ownership).
+        self._split_styles: list[SplitButtonStyle] = []
+        self.btn_cache = self._run_button(tr("run_cache"), "primary", self._run_cache)
         self.tabs.addTab(
             self._page(
                 self.cache_form,
                 self.cache_summary,
                 [self.btn_cache],
                 self.cache_explain,
+                extras=[self._extra["cache"]],
             ),
             tr("tab_preprocess"),
         )
 
         self.train_summary = QLabel()
         self.train_summary.setWordWrap(True)
-        self.btn_train = action_button(tr("run_train"), on_click=self._run_train)
+        self.btn_train = self._run_button(tr("run_train"), "primary", self._run_train)
         self.btn_chain = action_button(
             tr("run_chain"), variant="secondary", on_click=self._run_chain
         )
@@ -427,6 +539,7 @@ class LinePanel(DaemonJobMixin, QWidget):
         row.addStretch(1)
         row.addWidget(self.btn_test)
         tb.addLayout(row)
+        tb.addWidget(self._extra["test"])
         tb.addLayout(self.test_images)
         self.tabs.addTab(
             self._page(
@@ -434,7 +547,7 @@ class LinePanel(DaemonJobMixin, QWidget):
                 self.train_summary,
                 [self.btn_train, self.btn_chain],
                 self.train_explain,
-                extra=test_box,
+                extras=[test_box, self._extra["train"]],
             ),
             tr("tab_train"),
         )
@@ -446,12 +559,26 @@ class LinePanel(DaemonJobMixin, QWidget):
         status_row.addWidget(self.status, 1)
         status_row.addWidget(self.btn_stop)
 
-        bar = QProgressBar()
-        bar.setVisible(False)
+        bar = make_progress_bar()
         self._progress_tracker = _LineProgress(bar)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(5000)
+        self.log.setStyleSheet("font-family:monospace;font-size:11px;")
+        # Copy button pinned to the log's top-right corner (ConfigTab's pattern).
+        self._log_copy_btn = QToolButton(self.log)
+        self._log_copy_btn.setText(tr("copy_log"))
+        self._log_copy_btn.setToolTip(tr("copy_log_tooltip"))
+        self._log_copy_btn.setCursor(Qt.PointingHandCursor)
+        self._log_copy_btn.setStyleSheet(
+            f"QToolButton {{ background:{tok('surface')}; color:{tok('text')};"
+            f" border:1px solid {tok('border')}; border-radius:4px; padding:2px 8px;"
+            " font-size:11px; }"
+            f"QToolButton:hover {{ background:{tok('surface_hover')}; }}"
+        )
+        self._log_copy_btn.clicked.connect(self._copy_log)
+        self.log.installEventFilter(self)
+        self._reposition_log_copy_btn()
 
         self._bottom = bottom = QWidget()
         bl = QVBoxLayout(bottom)
@@ -495,7 +622,7 @@ class LinePanel(DaemonJobMixin, QWidget):
         summary: QLabel,
         buttons: list,
         explain: ExplainPanel,
-        extra=None,
+        extras: list | None = None,
     ) -> QWidget:
         inner = QWidget()
         v = QVBoxLayout(inner)
@@ -506,8 +633,8 @@ class LinePanel(DaemonJobMixin, QWidget):
         for b in buttons:
             row.addWidget(b)
         v.addLayout(row)
-        if extra is not None:
-            v.addWidget(extra)
+        for widget in extras or []:
+            v.addWidget(widget)
         v.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -519,6 +646,28 @@ class LinePanel(DaemonJobMixin, QWidget):
         split.setStretchFactor(1, 2)
         split.setSizes([620, 380])
         return split
+
+    def _run_button(self, label: str, variant: str, run_cb) -> QToolButton:
+        """Split Run button: the main action starts the job now, the dropdown
+        queues it on the daemon (``run_cb(queue=True)``, submit without attach).
+        """
+        btn = QToolButton()
+        # The style must outlive the button (setStyle takes no ownership).
+        style = SplitButtonStyle()
+        self._split_styles.append(style)
+        btn.setStyle(style)
+        btn.setText(label)
+        # A per-widget stylesheet, not the global [variant] rule: the app
+        # stylesheet wraps the app style and bypasses the proxy above.
+        btn.setStyleSheet(action_button_qss(variant))
+        btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        btn.setPopupMode(QToolButton.MenuButtonPopup)
+        btn.clicked.connect(lambda _checked=False: run_cb())
+        menu = QMenu(btn)
+        queue_action = menu.addAction(tr("add_to_queue"))
+        queue_action.triggered.connect(lambda _checked=False: run_cb(queue=True))
+        btn.setMenu(menu)
+        return btn
 
     def _guide_html(self, guide_key: str, model: Path, model_ok: bool) -> str:
         """The tab's default help: what the tab does, the model folder (red
@@ -609,6 +758,7 @@ class LinePanel(DaemonJobMixin, QWidget):
                 "cache": self.cache_form.changed_values(),
                 "train": self.train_form.changed_values(),
                 "test": self.test_form.changed_values(),
+                "extra": {kind: box.text() for kind, box in self._extra.items()},
             },
         )
 
@@ -617,6 +767,80 @@ class LinePanel(DaemonJobMixin, QWidget):
             b.setEnabled(not busy)
         self.btn_stop.setEnabled(busy)
         apply_variant(self.btn_stop, "danger" if busy else "busy")
+
+    # ── extra args ───────────────────────────────────────────────────────
+
+    def _request_cls(self, kind: str):
+        return {
+            "cache": self.spec.cache_cls,
+            "train": self.spec.train_cls,
+            "test": self.spec.test_cls,
+        }[kind]
+
+    def _label_kind(self, label: str) -> str | None:
+        """The request kind a job label names (``cache`` / ``train`` / ``test``)."""
+        return {
+            self.label_cache: "cache",
+            self.label_train: "train",
+            self.label_test: "test",
+        }.get(label)
+
+    def _prepare_extra(self, *kinds: str) -> bool:
+        """Stage the extra args of ``kinds`` before anything is submitted, so a
+        box that does not parse aborts the whole action — a chain included."""
+        for kind in kinds:
+            config = self._extra_config(kind)
+            if config is _EXTRA_INVALID:
+                return False
+            self._extra_paths[kind] = config
+        return True
+
+    def _extra_config(self, kind: str):
+        """Stage ``kind``'s "Extra args" box as the sidecar's ``--config`` TOML.
+
+        Returns the file path, ``None`` when the box is empty, or
+        :data:`_EXTRA_INVALID` (after warning) when the text does not parse or
+        names fields this request does not have.
+        """
+        text = self._extra[kind].text()
+        if not text:
+            return None
+        try:
+            parsed = variant_form.parse_extra_args(text)
+        except variant_form.ExtraArgsError as e:
+            return self._warn_extra_args(e)
+        path = self._extra_config_path(kind)
+        try:
+            # Dump the parsed table: the sidecar reads the file back with
+            # tomllib, so a bare-backslash paste must not ride along verbatim.
+            path.write_text(toml.dumps(parsed), encoding="utf-8")
+            self._request_cls(kind).load_config(path)  # names / types / choices
+        except (OSError, ValueError) as e:
+            return self._warn_extra_args(e)
+        return path
+
+    def _warn_extra_args(self, err) -> object:
+        """Report a bad "Extra args" box; the sentinel aborts the submit."""
+        QMessageBox.warning(
+            self, tr("window_title"), tr("bad_extra_args", err=str(err))
+        )
+        return _EXTRA_INVALID
+
+    def _extra_config_path(self, kind: str) -> Path:
+        """A fresh file per submit, so a job queued earlier keeps reading the
+        args it was submitted with."""
+        d = Path(tempfile.gettempdir()) / EXTRA_ARGS_DIR
+        d.mkdir(parents=True, exist_ok=True)
+        cutoff = time.time() - EXTRA_ARGS_TTL
+        for old in d.glob(f"{self.spec.key}-*.toml"):
+            try:
+                if old.stat().st_mtime < cutoff:  # no live job can still need it
+                    old.unlink()
+            except OSError:
+                pass
+        self._extra_seq += 1
+        stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{self._extra_seq}"
+        return d / f"{self.spec.key}-{kind}-{stamp}.toml"
 
     # ── jobs ─────────────────────────────────────────────────────────────
 
@@ -635,38 +859,64 @@ class LinePanel(DaemonJobMixin, QWidget):
         QMessageBox.warning(self, tr("window_title"), tr("scan_no_src"))
         return False
 
-    def _submit(self, req, label: str) -> bool:
+    def _submit(self, req, label: str, *, start: bool = True) -> bool:
+        """Submit ``req`` as a daemon job under ``label``.
+
+        ``start=True`` runs it now and attaches the log/bar; ``start=False``
+        only enqueues it (the daemon holds it until the queue is started), so
+        there is nothing to attach. Either way the tab's staged extra args ride
+        along as ``--config``.
+        """
+        kind = self._label_kind(label)
+        if kind is not None and kind not in self._extra_paths:
+            # A caller that did not pre-flight (a chain successor) still gets
+            # its args — or a warning instead of a silently dropped --config.
+            if not self._prepare_extra(kind):
+                return False
         argv = [req.SCRIPT, *req.to_argv()]
+        config = self._extra_paths.get(kind) if kind else None
+        if config is not None:
+            argv += ["--config", str(config)]
         job_id = self._submit_job(
             lambda: gui_daemon.ensure_daemon().submit_command(
-                label=label, argv=argv, stall_timeout=STALL_TIMEOUT, start=True
+                label=label, argv=argv, stall_timeout=STALL_TIMEOUT, start=start
             ),
-            on_fail=lambda: self._set_busy(False),
+            on_fail=(lambda: self._set_busy(False)) if start else None,
         )
         if job_id is None:
-            self._pending = []
+            if start:
+                self._pending = []
             return False
-        self._job_label = label
         self.log.appendPlainText(f"$ python {' '.join(argv)}")
+        if not start:
+            queued = tr("queued", label=label, job=job_id)
+            self.log.appendPlainText(queued)
+            self.status.setText(queued)
+            return True
+        self._job_label = label
         self.status.setText(tr("running", label=label, job=job_id))
         self._set_busy(True)
         self._progress_tracker.starting(label)
         self._watch_job(job_id, replay_log=False)
         return True
 
-    def _run_cache(self) -> None:
+    def _run_cache(self, *, queue: bool = False) -> None:
         req = self.cache_form.request()
         if req is None or not self._src_ok(req) or not self._model_ok(req):
             return
         self._persist()
-        self._submit(req, self.label_cache)
+        if not self._prepare_extra("cache"):
+            return
+        self._submit(req, self.label_cache, start=not queue)
 
-    def _run_train(self) -> None:
+    def _run_train(self, *, queue: bool = False) -> None:
         req = self.train_form.request()
         if req is None or not self._model_ok(req):
             return
         self._persist()
-        self._submit(req, self.label_train)
+        if not self._prepare_extra("train"):
+            return
+        self._submit(req, self.label_train, start=not queue)
 
     def _run_chain(self) -> None:
         cache_req = self.cache_form.request()
@@ -682,6 +932,10 @@ class LinePanel(DaemonJobMixin, QWidget):
         if train_req is None or not self._model_ok(train_req):
             return
         self._persist()
+        # Both steps' extra args are staged before the first job starts, so a
+        # bad train box cannot fail the chain halfway through.
+        if not self._prepare_extra("cache", "train"):
+            return
         self.log.appendPlainText(
             tr("chain_cache", path=resolve_under_home(cache_req.out))
         )
@@ -697,6 +951,8 @@ class LinePanel(DaemonJobMixin, QWidget):
             QMessageBox.warning(self, tr("window_title"), tr("no_lora", path=lora))
             return
         self._persist()
+        if not self._prepare_extra("test"):
+            return
         # One folder per run, so earlier tests stay on disk.
         out = resolve_under_home(req.out_dir) / time.strftime("%Y%m%d-%H%M%S")
         req = dataclasses.replace(req, lora=str(lora), out_dir=str(out))
@@ -710,7 +966,8 @@ class LinePanel(DaemonJobMixin, QWidget):
             item = self.test_images.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
-        for path, m, prompt in self.spec.test_images(out) if out else []:
+        images = self.spec.test_images(out) if out else []
+        for path, m, prompt in images:
             cell = QWidget()
             v = QVBoxLayout(cell)
             v.setContentsMargins(0, 0, 0, 0)
@@ -730,6 +987,15 @@ class LinePanel(DaemonJobMixin, QWidget):
             v.addWidget(caption)
             self.test_images.addWidget(cell)
         self.test_images.addStretch(1)
+        # The same renders, full size, in the right-hand gallery — but only when
+        # there are some: an empty gallery would replace the tab's guide.
+        if images:
+            self.train_explain.show_gallery(
+                "test",
+                "test_output_title",
+                "test_output_empty",
+                [path for path, _m, _prompt in images],
+            )
 
     def _latest_test_dir(self) -> Path | None:
         base = resolve_under_home(
@@ -737,6 +1003,33 @@ class LinePanel(DaemonJobMixin, QWidget):
         )
         runs = sorted(p for p in base.iterdir() if p.is_dir()) if base.is_dir() else []
         return next((p for p in reversed(runs) if self.spec.test_images(p)), None)
+
+    # ── log ──────────────────────────────────────────────────────────────
+
+    def eventFilter(self, obj, event):
+        if obj is self.log and event.type() == QEvent.Resize:
+            self._reposition_log_copy_btn()
+        return super().eventFilter(obj, event)
+
+    def _reposition_log_copy_btn(self) -> None:
+        """Keep the Copy button pinned to the top-right of the log viewport."""
+        btn = getattr(self, "_log_copy_btn", None)
+        if btn is None:
+            return
+        btn.adjustSize()
+        margin = 6
+        # Account for a visible vertical scrollbar so the button doesn't overlap it.
+        sb = self.log.verticalScrollBar()
+        sb_w = sb.width() if sb is not None and sb.isVisible() else 0
+        x = self.log.width() - btn.width() - sb_w - margin
+        btn.move(max(margin, x), margin)
+        btn.raise_()
+
+    def _copy_log(self) -> None:
+        QApplication.clipboard().setText(self.log.toPlainText())
+        btn = self._log_copy_btn
+        btn.setText(tr("copy_log_done"))
+        QTimer.singleShot(1200, lambda: btn.setText(tr("copy_log")))
 
     def _stop(self) -> None:
         self._pending = []

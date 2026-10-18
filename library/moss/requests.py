@@ -298,7 +298,6 @@ class TrainRequest(Request):
         "0.1 at rank 32 and ~4.5k joint tokens on 16 GB with ~1.7 GB to spare (24 "
         "for more room); more swap costs PCIe time the step cannot hide. scripts/moss/tune_swap.py measures "
         "this machine's pair",
-        advanced=True,
     )
     compile: bool = _f(
         True,

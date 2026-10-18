@@ -53,6 +53,20 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
         "diffusers 格式的文件夹（默认：$ANIMA_QWEN21_MODEL_DIR 或 "
         "models/qwen_image_2.1）",
     ),
+    "dit": (
+        "DiT 权重",
+        "覆盖 transformer：ComfyUI BF16 safetensors 文件或 diffusers 组件目录",
+    ),
+    "text_encoder": (
+        "文本编码器",
+        "覆盖 Qwen3-VL-8B：ComfyUI BF16 safetensors 文件或组件目录",
+    ),
+    "vae": ("VAE", "覆盖 RGBA VAE：ComfyUI BF16 safetensors 文件或组件目录"),
+    "processor": (
+        "processor 目录",
+        "覆盖 tokenizer/processor 文件夹（默认：model_dir/processor）；"
+        "可用 tasks.py qwen21-processor 生成",
+    ),
     "cache": ("缓存文件夹", "预处理写入的缓存文件夹"),
     "output": ("输出", "LoRA 输出路径（同目录下会写入 .json 运行报告）"),
     "epochs": ("轮数", "遍历缓存的次数"),

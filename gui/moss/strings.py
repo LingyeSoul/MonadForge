@@ -45,6 +45,13 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
         "两边均为 16 的倍数；不会放大",
     ),
     "overwrite": ("覆盖", "即使缓存是最新的也重新编码"),
+    "caption_format": (
+        "标注格式",
+        "文本编码器编码的内容：把 Anima 标注映射成 MOSS 的 layout-JSON 提示词"
+        "（anime_tools.captions.layout_json，需要 danbooru 标签 CSV），"
+        "或直接使用 .txt 原文；相比纯标签更少把整套图的属性泄漏到其他角色上"
+        "（project/moss_lora/lora.md，2026-10-17）；生成时请使用相同的格式",
+    ),
     "skip_text": ("跳过文本", "跳过文本编码器"),
     "skip_latents": ("跳过潜变量", "跳过 VAE 编码"),
     "model_dir": (
@@ -86,6 +93,17 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
         "保存的 LoRA 文件精度。训练时保持 fp32 主权重，秩矩阵乘法按 bf16 进行",
     ),
     "grad_checkpointing": ("梯度检查点", "按块的激活检查点"),
+    "blocks_to_swap": (
+        "交换块数",
+        "交换到 CPU 的 DiT 块数（-1 = 根据可用显存决定）；交换越多，"
+        "无法隐藏的 PCIe 传输时间越长",
+    ),
+    "prompt_format": (
+        "提示词格式",
+        "layout_json = 把 Anima 格式的提示词映射成 MOSS 的 layout JSON"
+        "（与缓存的 caption_format 相同）；text = 按原文使用，"
+        "适用于本身就是 JSON 的提示词，或用 text 缓存训练的 LoRA（example 不受影响）",
+    ),
     "seed": ("随机种子", "随机数种子"),
 }
 

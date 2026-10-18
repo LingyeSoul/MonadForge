@@ -123,22 +123,27 @@ class _ModelRequest(_Request):
     model_dir: str = _f(
         "",
         f"official Diffusers model directory, including sharded weights (default: ${MODEL_DIR_ENV} or models/{MODEL_DIR_NAME})",
+        advanced=True,
     )
     dit: str = _f(
         "",
         "override transformer with a ComfyUI BF16 safetensors file or Diffusers component directory",
+        advanced=True,
     )
     text_encoder: str = _f(
         "",
         "override Qwen3-VL-8B with a ComfyUI BF16 safetensors file or component directory",
+        advanced=True,
     )
     vae: str = _f(
         "",
         "override RGBA VAE with a ComfyUI BF16 safetensors file or component directory",
+        advanced=True,
     )
     processor: str = _f(
         "",
         "override tokenizer/processor folder (default: model_dir/processor); prepare with tasks.py qwen21-processor",
+        advanced=True,
     )
 
 

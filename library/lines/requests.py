@@ -39,6 +39,125 @@ def env_model_dir(env_name: str, fallback: Path) -> Path:
     return fallback
 
 
+# The form's group headings, borrowed from Anima (``gui/core/config_io.py::
+# _GROUPS`` plus its trailing ``Other``) so the same kind of knob reads the same
+# way on every line. The tuple order is the order the GUI draws the boxes in.
+_GROUP_FIELDS: dict[str, tuple[str, ...]] = {
+    "Paths": (
+        "src",
+        "out",
+        "out_dir",
+        "cache",
+        "output",
+        "model_dir",
+        "lora",
+        "prompts_file",
+        "example",
+        "scheduler",
+        "dit",
+        "text_encoder",
+        "vae",
+        "processor",
+    ),
+    "Training": (
+        "epochs",
+        "max_steps",
+        "lr",
+        "warmup_ratio",
+        "save_every_epochs",
+        "caption_dropout",
+        "max_grad_norm",
+        "logit_mean",
+        "logit_std",
+        "sigma_mu",
+        "sigma_s",
+        "sigma_cutoff",
+        "sigma_uniform",
+        "seed",
+    ),
+    "Architecture": (
+        "algo",
+        "rank",
+        "alpha",
+        "factor",
+        "down_init",
+        "targets",
+        "model",
+    ),
+    "Performance": (
+        "blocks_to_swap",
+        "te_blocks_to_swap",
+        "activation_memory_budget",
+        "activation_reserve_gb",
+        "grad_checkpointing",
+        "compile",
+        "compile_seq",
+        "compile_mode",
+        "lora_dtype",
+        "vae_dtype",
+        "batched",
+        "spectrum",
+        "spectrum_window_size",
+        "spectrum_flex_window",
+        "spectrum_warmup",
+        "spectrum_stop_caching_step",
+        "spectrum_w",
+        "spectrum_m",
+        "spectrum_lam",
+    ),
+    "Other": (
+        "resolution",
+        "caption_format",
+        "prompt",
+        "negative_prompt",
+        "prompt_format",
+        "lora_multiplier",
+        "multipliers",
+        "width",
+        "height",
+        "steps",
+        "cfg",
+        "true_cfg_scale",
+        "sampler",
+        "uncond_skip",
+        "shift",
+        "decode_only",
+        "overwrite",
+        "skip_text",
+        "skip_latents",
+        "save_crops",
+        "max_text_tokens",
+        "log_every",
+        "sizes",
+        "swap_grid",
+        "patience",
+        "margin_gb",
+        "tolerance",
+        "reference",
+        "budget_step",
+        "warmup",
+    ),
+}
+
+# Group headings, in form order.
+GROUPS: tuple[str, ...] = tuple(_GROUP_FIELDS)
+
+# Field name → group. Keyed by name because the lines' request modules
+# (``library/moss/requests.py``, ``library/qwen21/requests.py``) declare their
+# fields through :func:`request_field` without naming a group; a name is mapped
+# once so a knob that several requests share (``model_dir``, ``seed``, …) reads
+# the same everywhere. ``group=`` on the field itself still wins.
+_GROUPS_BY_FIELD: dict[str, str] = {
+    name: group for group, names in _GROUP_FIELDS.items() for name in names
+}
+
+
+def field_group(f: dataclasses.Field) -> str | None:
+    """The form group of ``f``: its own ``group`` metadata if set, else the
+    shared name table, else ``None`` — an ungrouped field keeps the flat form."""
+    return f.metadata.get("group") or _GROUPS_BY_FIELD.get(f.name)
+
+
 def request_field(
     default: Any,
     help: str,
@@ -46,14 +165,17 @@ def request_field(
     choices: tuple | None = None,
     advanced=False,
     multiline=False,
+    group: str | None = None,
 ):
-    """A request field: ``help`` / ``choices`` / ``advanced`` / ``multiline``
-    ride in metadata (the last two are GUI layout only)."""
+    """A request field: ``help`` / ``choices`` ride in metadata (``advanced`` /
+    ``multiline`` / ``group`` are GUI layout only). ``group`` overrides the
+    shared :func:`field_group` table for this field."""
     meta = {
         "help": help,
         "choices": choices,
         "advanced": advanced,
         "multiline": multiline,
+        "group": group,
     }
     return field(default=default, metadata=meta)
 

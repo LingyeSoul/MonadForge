@@ -17,9 +17,22 @@ UI: dict[str, dict[str, str]] = {
         "run_train": "Train",
         "run_chain": "Preprocess, then train",
         "stop": "Stop",
+        "add_to_queue": "Add to queue",
+        "queued": "Queued as {label} ({job}) — it runs when the queue is started.",
         "advanced": "Advanced",
         "browse": "Browse…",
         "auto": "auto",
+        "extra_args": "+ Extra args",
+        "extra_args_tooltip": "TOML for fields the form does not show, handed to "
+        "this tab's sidecar: parsed, written to a temp file and appended to its "
+        "command line as --config <path>. Names and types are checked against the "
+        "request, so a bad key is a dialog here instead of a failed job.",
+        "extra_args_placeholder": "TOML lines for fields not in the form, e.g.\n"
+        "max_steps = 500\noverwrite = true",
+        "bad_extra_args": "Extra args: {err}",
+        "copy_log": "Copy",
+        "copy_log_tooltip": "Copy the full log to the clipboard",
+        "copy_log_done": "Copied",
         "language": "Language",
         "model": "Model folder: {path}",
         "guide_preprocess": "Preprocessing encodes every image in the image folder "
@@ -28,7 +41,7 @@ UI: dict[str, dict[str, str]] = {
         "are skipped, so after adding images only the new ones are encoded. "
         "Training reads the cache folder only.",
         "guide_train": "Training fits a LoRA on the cached samples; the base model "
-        "stays frozen. \"Preprocess, then train\" runs both in order and starts "
+        'stays frozen. "Preprocess, then train" runs both in order and starts '
         "training only if preprocessing succeeds. Test renders the prompt with the "
         "LoRA and without it at the same seed, so the pair differs by the adapter "
         "only.",
@@ -64,9 +77,21 @@ UI: dict[str, dict[str, str]] = {
         "run_train": "开始训练",
         "run_chain": "预处理后训练",
         "stop": "停止",
+        "add_to_queue": "加入队列",
+        "queued": "已加入队列：{label}（{job}）——启动队列后才会运行。",
         "advanced": "高级",
         "browse": "浏览…",
         "auto": "自动",
+        "extra_args": "+ 额外参数",
+        "extra_args_tooltip": "表单之外的字段，用 TOML 交给本标签页的 sidecar：解析后写入临时文件，"
+        "并以 --config <路径> 追加到它的命令行。字段名和类型会按该请求校验，"
+        "写错只会弹窗提示，不会变成失败的任务。",
+        "extra_args_placeholder": "表单中没有的字段用 TOML 行表示，例如：\n"
+        "max_steps = 500\noverwrite = true",
+        "bad_extra_args": "额外参数有误：{err}",
+        "copy_log": "复制",
+        "copy_log_tooltip": "把完整日志复制到剪贴板",
+        "copy_log_done": "已复制",
         "language": "语言",
         "model": "模型文件夹：{path}",
         "guide_preprocess": "预处理会把图片文件夹中的每张图片编码一次——.txt 标注经过"
