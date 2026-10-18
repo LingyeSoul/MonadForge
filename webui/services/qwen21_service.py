@@ -15,6 +15,7 @@ from typing import Literal, TypeVar
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from library.env import resolve_under_home
+from library.lines.requests import field_group
 from library.qwen21.requests import (
     CacheRequest,
     GenerateRequest,
@@ -61,6 +62,10 @@ class FormField(BaseModel):
     help: str
     advanced: bool
     multiline: bool
+    # Form section this field belongs to. Owned by the request classes through
+    # ``library.lines.requests.field_group`` so the browser form, the desktop
+    # GUI and the CLI agree on where a knob lives; ``None`` means "no section".
+    group: str | None = None
 
 
 class FormSchema(BaseModel):
@@ -99,6 +104,7 @@ def form_fields(request_type: type[RequestT]) -> list[FormField]:
                 help=str(field.metadata["help"]),
                 advanced=bool(field.metadata.get("advanced")),
                 multiline=bool(field.metadata.get("multiline")),
+                group=field_group(field),
             )
         )
     return result

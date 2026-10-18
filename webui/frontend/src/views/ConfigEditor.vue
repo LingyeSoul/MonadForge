@@ -29,6 +29,10 @@
         </v-btn>
       </template>
       <template #preset>
+        <!-- Presets are an Anima concept; the typed model workspaces carry their
+             own saved profiles, so the slot stays empty rather than showing a
+             disabled control that looks editable. -->
+        <template v-if="isAnima">
         <v-select :model-value="isAnima ? selectedPreset : modelPresetLabel"
           :items="isAnima ? continuation.presetItems : [modelPresetLabel]" :label="t('cfgPreset')"
           :disabled="!isAnima || toolbarBusy || continuation.active" variant="outlined" density="compact" hide-details
@@ -39,9 +43,11 @@
         </v-btn>
         <v-btn v-if="isAnima && isCustomPreset" icon="mdi-delete-outline" variant="text" density="compact" size="small"
           color="error" :disabled="toolbarBusy || continuation.active" :aria-label="t('cfgPresetDelete')" @click="deleteCurrentPreset" />
+        </template>
       </template>
       <template #task>
-        <v-select :model-value="isAnima ? continuation.selected : undefined" :items="isAnima ? trainingTaskItems : []"
+        <!-- Continuation reads Anima checkpoints; a typed line has no candidate list. -->
+        <v-select v-if="isAnima" :model-value="isAnima ? continuation.selected : undefined" :items="isAnima ? trainingTaskItems : []"
           :label="t('cfgTrainingTask')" :placeholder="t(isAnima ? 'cfgTrainingTaskEmpty' : 'cfgNewTrainingOnly')"
           :loading="isAnima && (continuation.loading || continuation.listLoading)"
           :disabled="!isAnima || !workspaceReady || toolbarBusy || configStore.loading"
@@ -227,7 +233,8 @@
     </v-alert>
 
     <ConfigWorkspaceLayout v-if="selectedVariant" v-model:search="fieldSearch" v-model:show-guide="showGuide"
-      :field-count="visibleFieldCount" :filterable="Boolean(selectedVariant && configStore.fields.length)">
+      :field-count="visibleFieldCount" :filterable="Boolean(selectedVariant && configStore.fields.length)"
+      search-test-id="anima-field-search" help-test-id="anima-help-toggle">
         <v-card v-if="filteredBasic.length > 0" class="mb-4 config-section" variant="flat">
           <v-card-title class="text-subtitle-1">
             <v-icon icon="mdi-tune" class="mr-2" />

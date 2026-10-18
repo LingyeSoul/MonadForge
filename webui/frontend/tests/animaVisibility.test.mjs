@@ -15,7 +15,7 @@ function setup() {
   new Function('require', 'exports', code)(name => dependencies[name], exports)
   return exports.useConfigStore()
 }
-const field = (key, value, visible_when, group = 'Architecture') => ({ key, value, visible_when, group })
+const field = (key, value, visible_when, group = 'Architecture', is_basic = false) => ({ key, value, visible_when, group, is_basic })
 const visibleKeys = store => Object.values(store.groupedAdvanced).flat().map(field => field.key)
 
 test('Anima algorithm edits immediately hide inactive controls while retaining their values', () => {
@@ -39,9 +39,9 @@ test('Anima algorithm edits immediately hide inactive controls while retaining t
 
 test('the same visibility conditions apply to basic fields and remove empty advanced groups', () => {
   const store = setup()
-  store.fields = [field('use_repa', false, null, 'basic'),
+  store.fields = [field('use_repa', false, null, 'Architecture', true),
     field('repa_weight', 0.05, [{ use_repa: [true] }], 'Alignment'),
-    field('repa_layer', 8, [{ use_repa: [true] }], 'basic')]
+    field('repa_layer', 8, [{ use_repa: [true] }], 'Architecture', true)]
   assert.deepEqual(store.basicFields.map(field => field.key), ['use_repa'])
   assert.deepEqual(store.groupedAdvanced, {})
   store.setFieldValue('use_repa', true)

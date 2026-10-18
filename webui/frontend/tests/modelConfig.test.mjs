@@ -1,52 +1,88 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { groupModelConfigFields, modelAlgorithmItems, modelActionValues, modelFieldActive } from '../src/utils/modelConfig.ts'
+import { BASIC_GROUP_ID, groupModelConfigFields, modelAlgorithmItems, modelActionValues, modelFieldActive } from '../src/utils/modelConfig.ts'
 
-function field(name, value = '', choices = []) {
-  return { name, value, choices, kind: 'str', nullable: false, help: name, advanced: false, multiline: false }
+// Mirrors one field of the backend schema: `group` comes from
+// `library.lines.requests.field_group`, `advanced` from the request metadata.
+function field(name, value = '', choices = [], options = {}) {
+  return { name, value, choices, kind: 'str', nullable: false, help: name, advanced: false, multiline: false, group: null, ...options }
 }
-const names = values => values.split(' ').map(name => field(name))
+const names = (values, options = {}) => values.split(' ').map(name => field(name, '', [], options))
 const entries = groups => groups.flatMap(group => group.sections.flatMap(({ section, fields }) =>
   fields.map(field => ({ group: group.id, section, field }))))
 
-test('model fields use the Anima group order while preserving each form section', () => {
+test('basic fields open the page while advanced fields use the backend section', () => {
   const schema = {
     train: [
-      ...names('model_dir dit text_encoder vae processor scheduler cache output'),
-      ...names('epochs max_steps rank alpha lr warmup_ratio save_every_epochs max_grad_norm lora_dtype seed logit_mean logit_std caption_dropout sigma_mu sigma_s sigma_cutoff sigma_uniform log_every'),
-      ...names('blocks_to_swap activation_reserve_gb activation_memory_budget grad_checkpointing compile compile_seq compile_mode'),
-      ...names('model targets factor down_init'),
-      field('algo', 'lokr', ['lora', 'lokr', 'loha']),
+      ...names('model_dir dit text_encoder vae processor scheduler', { group: 'Paths', advanced: true }),
+      ...names('cache output', { group: 'Paths' }),
+      ...names('epochs max_steps lr warmup_ratio', { group: 'Training' }),
+      ...names('rank alpha', { group: 'Architecture' }),
+      field('logit_mean', 0, [], { group: 'Training', advanced: true }),
+      ...names('targets factor down_init', { group: 'Architecture', advanced: true }),
+      ...names('blocks_to_swap grad_checkpointing compile', { group: 'Performance', advanced: true }),
+      field('algo', 'lokr', ['lora', 'lokr', 'loha'], { group: 'Architecture' }),
     ],
     cache: names('src overwrite'),
-    generate: names('model_dir dit text_encoder vae processor scheduler prompt model seed compile blocks_to_swap'),
+    generate: [
+      ...names('prompt steps seed out_dir', { group: 'Other' }),
+      field('example', '', [], { group: 'Other', advanced: true }),
+      ...names('spectrum spectrum_w', { group: 'Performance', advanced: true }),
+    ],
   }
   const groups = groupModelConfigFields(schema, { train: { algo: 'lokr', compile: true, grad_checkpointing: false, blocks_to_swap: null } })
-  assert.deepEqual(groups.map(group => group.id), ['training', 'performance', 'paths', 'architecture', 'generate'])
+  // Panels follow the Anima order; `basic` always leads.
+  assert.deepEqual(groups.map(group => group.id), [BASIC_GROUP_ID, 'training', 'performance', 'paths', 'architecture', 'other'])
   const grouped = Object.fromEntries(groups.map(group => [group.id, group.sections.map(({ section, fields }) =>
     [section, fields.map(field => field.name)])]))
-  assert.deepEqual(grouped.training, [['train', 'epochs max_steps rank alpha lr warmup_ratio save_every_epochs max_grad_norm lora_dtype seed logit_mean logit_std caption_dropout sigma_mu sigma_s sigma_cutoff sigma_uniform log_every'.split(' ')]])
-  assert.deepEqual(grouped.performance, [['train', 'blocks_to_swap activation_reserve_gb activation_memory_budget grad_checkpointing compile compile_seq compile_mode'.split(' ')]])
+  // Everything not marked advanced — whatever section it belongs to — opens the page.
+  assert.deepEqual(grouped.basic, [
+    ['train', ['cache', 'output', 'epochs', 'max_steps', 'lr', 'warmup_ratio', 'rank', 'alpha']],
+    ['generate', ['prompt', 'steps', 'seed', 'out_dir']],
+  ])
+  assert.deepEqual(grouped.training, [['train', ['logit_mean']]])
+  assert.deepEqual(grouped.performance, [['train', ['blocks_to_swap', 'grad_checkpointing', 'compile']], ['generate', ['spectrum', 'spectrum_w']]])
+  // `down_init` is lora-only and the draft selects lokr, so it stays stored but unrendered.
+  assert.deepEqual(grouped.architecture, [['train', ['targets', 'factor']]])
+  assert.deepEqual(grouped.other, [['generate', ['example']]])
+  // Model paths stay in their own panel even though the section is advanced.
   assert.deepEqual(grouped.paths, [
     ['models', ['model_dir', 'dit', 'text_encoder', 'vae', 'processor', 'scheduler']],
-    ['train', ['cache', 'output']],
   ])
-  assert.deepEqual(grouped.architecture, [['train', ['model', 'targets', 'factor']]])
-  assert.deepEqual(grouped.generate, [['generate', ['prompt', 'model', 'seed', 'compile', 'blocks_to_swap']]])
-  assert.equal(entries(groups).length, schema.train.length - 2 + schema.generate.length - 6)
+  assert.equal(entries(groups).length, 12 + 1 + 5 + 6 + 2 + 1)
+})
+
+test('a section the backend adds later renders under its own name', () => {
+  const schema = {
+    train: [field('weird', 1, [], { group: 'Preview Sampling', advanced: true })],
+    cache: [],
+    generate: [],
+  }
+  const groups = groupModelConfigFields(schema)
+  assert.deepEqual(groups.map(group => group.id), ['preview-sampling'])
+  assert.equal(groups[0].titleKey, 'Preview Sampling')
+})
+
+test('advanced fields without a backend section fall back to the trailing panel', () => {
+  const schema = { train: [field('orphan', 1, [], { advanced: true })], cache: [], generate: [] }
+  const groups = groupModelConfigFields(schema)
+  assert.deepEqual(groups.map(group => group.id), ['other'])
+  assert.equal(groups[0].titleKey, 'cfgGroupOther')
 })
 
 test('future fields remain visible while irrelevant algorithm fields stay stored but unrendered', () => {
   const future = field('future_training_parameter', 'original')
-  const factor = { ...field('factor', -1), kind: 'int', advanced: true }
-  const downInit = field('down_init', 'weight_svd', ['kaiming', 'weight_svd'])
-  const generate = field('future_generator_parameter', 'generation value')
-  const schema = { train: [future, factor, downInit, field('algo', 'loha')], cache: [], generate: [generate] }
+  const factor = field('factor', -1, [], { kind: 'int', advanced: true, group: 'Architecture' })
+  const downInit = field('down_init', 'weight_svd', ['kaiming', 'weight_svd'], { group: 'Architecture' })
+  const generate = field('future_generator_parameter', 'generation value', [], { group: 'Other' })
+  const schema = { train: [future, factor, downInit, field('algo', 'loha', [], { group: 'Architecture' })], cache: [], generate: [generate] }
   const before = structuredClone(schema)
   const groups = groupModelConfigFields(schema)
   const rows = entries(groups)
-  assert.deepEqual(groups.map(group => group.id), ['generate', 'other'])
-  assert.equal(rows.find(row => row.group === 'other').field, future)
+  // Only the future fields render: `factor` is gated on the lokr algorithm and
+  // `down_init` on lora, so neither earns a panel in the loha fixture.
+  assert.deepEqual(groups.map(group => group.id), [BASIC_GROUP_ID])
+  assert.equal(rows.find(row => row.group === BASIC_GROUP_ID).field, future)
   assert.equal(rows.find(row => row.section === 'generate').field, generate)
   assert.equal(rows.some(row => row.field.name === 'factor'), false)
   assert.equal(rows.some(row => row.field.name === 'down_init'), false)
@@ -57,7 +93,7 @@ test('future fields remain visible while irrelevant algorithm fields stay stored
 for (const family of ['qwen21', 'moss']) {
   for (const algo of ['lora', 'lokr', 'loha']) {
     test(`${family}/${algo} exposes only consumed adapter parameters and retains hidden values`, () => {
-      const schema = { train: [field('algo', 'lora'), field('factor', -1), field('down_init', 'kaiming'), ...names('rank alpha targets lora_dtype')], cache: [], generate: [] }
+      const schema = { train: [field('algo', 'lora', [], { group: 'Architecture' }), field('factor', -1, [], { group: 'Architecture' }), field('down_init', 'kaiming', [], { group: 'Architecture' }), ...names('rank alpha targets lora_dtype', { group: 'Architecture' })], cache: [], generate: [] }
       const draft = { train: { algo, factor: 7, down_init: 'weight_svd' } }
       const before = structuredClone(draft)
       const visible = entries(groupModelConfigFields(schema, draft, family)).map(row => row.field.name)
@@ -133,9 +169,9 @@ test('prompt sources, explicit dimensions and cache passes gate only their depen
 })
 
 test('same-name training and generation settings retain independent values and identities', () => {
-  const trainSeed = field('seed', 1), generationSeed = field('seed', 42)
-  const trainModel = field('model', 'base'), generationModel = field('model', 'sft')
-  const trainCompile = field('compile', false), generationCompile = field('compile', true)
+  const trainSeed = field('seed', 1, [], { group: 'Training' }), generationSeed = field('seed', 42, [], { group: 'Other' })
+  const trainModel = field('model', 'base', [], { group: 'Architecture' }), generationModel = field('model', 'sft', [], { group: 'Architecture' })
+  const trainCompile = field('compile', false, [], { group: 'Performance', advanced: true }), generationCompile = field('compile', true, [], { group: 'Performance', advanced: true })
   const schema = { train: [trainSeed, trainModel, trainCompile], cache: [], generate: [generationSeed, generationModel, generationCompile] }
   const rows = entries(groupModelConfigFields(schema))
   const keyed = new Map(rows.map(row => [`${row.section}.${row.field.name}`, row.field]))
@@ -150,7 +186,7 @@ test('same-name training and generation settings retain independent values and i
 
 test('method choices come from the schema without replacing or normalizing API values', () => {
   const choices = ['loha', 'lora', 'lokr', 'custom_adapter', 'LoRA']
-  const schema = { train: [field('algo', 'lora', choices)], cache: [], generate: [] }
+  const schema = { train: [field('algo', 'lora', choices, { group: 'Architecture' })], cache: [], generate: [] }
   assert.deepEqual(modelAlgorithmItems(schema), [
     { title: 'LoHa', value: 'loha' }, { title: 'LoRA', value: 'lora' }, { title: 'LoKr', value: 'lokr' },
     { title: 'custom_adapter', value: 'custom_adapter' }, { title: 'LoRA', value: 'LoRA' },

@@ -17,6 +17,7 @@ export interface FieldMeta {
   description_en?: string
   origin: string
   group: string
+  is_basic?: boolean
   is_virtual: boolean
   read_only: boolean
   options?: string[]
@@ -63,6 +64,23 @@ const _GROUP_I18N_KEYS: Record<string, string> = {
   'Resume & Warm-start': 'cfgGroupResume',
 }
 
+// Panel order, mirroring the backend's `_GROUPS` declaration order
+// (webui/services/config_service.py) with `Other` last. A group a future backend
+// adds still renders — after these, in the order the field list introduces it.
+const _GROUP_ORDER = [
+  'Architecture',
+  'Training',
+  'Performance',
+  'Paths',
+  'Preview Sampling',
+  'Resume & Warm-start',
+]
+
+function _groupRank(raw: string): number {
+  const index = _GROUP_ORDER.indexOf(raw)
+  return index < 0 ? _GROUP_ORDER.length : index
+}
+
 function _t(key: string, lang: string): string {
   const msgs = getFrontendTranslations(lang)
   return msgs[key] ?? key
@@ -107,22 +125,29 @@ export const useConfigStore = defineStore('config', () => {
     }))
   }
 
-  const basicFields = computed(() => fields.value.filter(f => f.group === 'basic' && isFieldVisible(f)))
-  const advancedFields = computed(() => fields.value.filter(f => f.group !== 'basic' && isFieldVisible(f)))
+  // The 「基本设置」 card and the named panels partition the form: the backend
+  // flags the everyday knobs (`is_basic`, webui/services/config_service.py::_BASIC)
+  // and everything else keeps its named section.
+  const basicFields = computed(() => fields.value.filter(f => f.is_basic === true && isFieldVisible(f)))
+  const advancedFields = computed(() => fields.value.filter(f => f.is_basic !== true && isFieldVisible(f)))
 
   const groupedAdvanced = computed(() => {
     const lang = appStore.language
     const labels = _GROUP_LABELS[lang] ?? _GROUP_LABELS.en
-    const groups: Record<string, FieldMeta[]> = {}
+    const byGroup = new Map<string, FieldMeta[]>()
     for (const f of advancedFields.value) {
       const raw = f.group || 'Other'
+      const bucket = byGroup.get(raw)
+      if (bucket) bucket.push(f)
+      else byGroup.set(raw, [f])
+    }
+    const groups: Record<string, FieldMeta[]> = {}
+    for (const raw of [...byGroup.keys()].sort((a, b) => _groupRank(a) - _groupRank(b))) {
       // Prefer the i18n catalog (cfgGroup*) for groups that have a message key
       // (Other, Resume & Warm-start); fall back to the language label table,
       // then the raw backend group name.
       const i18nKey = _GROUP_I18N_KEYS[raw]
-      const g = i18nKey ? _t(i18nKey, lang) : (labels[raw] ?? raw)
-      if (!groups[g]) groups[g] = []
-      groups[g].push(f)
+      groups[i18nKey ? _t(i18nKey, lang) : (labels[raw] ?? raw)] = byGroup.get(raw)!
     }
     return groups
   })

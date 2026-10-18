@@ -13,6 +13,8 @@ export interface QwenField {
   help: string
   advanced: boolean
   multiline: boolean
+  /** Form section, owned by the backend (`library.lines.requests.field_group`). */
+  group: string | null
 }
 export interface QwenSchema {
   cache: QwenField[]
@@ -68,6 +70,7 @@ function field(value: Json): QwenField {
     choices: row.choices.map(item => string(item, 'field.choice')),
     help: string(row.help, 'field.help'), advanced: bool(row.advanced, 'field.advanced'),
     multiline: bool(row.multiline, 'field.multiline'),
+    group: row.group == null ? null : string(row.group, 'field.group'),
   }
 }
 export function parseSchema(value: Json): QwenSchema {

@@ -7,20 +7,29 @@ export interface ModelConfigGroup {
   sections: { section: ModelConfigSection; fields: QwenField[] }[]
 }
 
-const trainingFields = new Set([
-  'epochs', 'max_steps', 'rank', 'alpha', 'lr', 'warmup_ratio',
-  'save_every_epochs', 'max_grad_norm', 'lora_dtype', 'seed',
-  'logit_mean', 'logit_std', 'caption_dropout', 'sigma_mu', 'sigma_s',
-  'sigma_cutoff', 'sigma_uniform', 'log_every',
-])
-const performanceFields = new Set([
-  'blocks_to_swap', 'activation_reserve_gb', 'activation_memory_budget',
-  'grad_checkpointing', 'compile', 'compile_seq', 'compile_mode',
-])
-const architectureFields = new Set(['model', 'targets', 'factor', 'down_init'])
-const trainingPathFields = new Set(['cache', 'output'])
-
 export type TypedModelFamily = 'qwen21' | 'moss'
+
+/**
+ * The everyday-knob card every model page opens with, mirroring Anima's
+ * 「基本设置」. A field lands here when it is NOT advanced (Anima's `is_basic`,
+ * the model lines' `advanced=False`), so the browser card, the desktop GUI's
+ * Advanced fold and the request defaults all describe the same split.
+ */
+export const BASIC_GROUP_ID = 'basic'
+
+// Panel order for the advanced knobs. The section of a field comes from the
+// backend (`library.lines.requests.field_group`, shared with the desktop GUI);
+// only the heading and the order are the browser's business. A section added
+// later still renders — after these, under its own name.
+const PANEL_ORDER = ['training', 'performance', 'paths', 'architecture', 'generate', 'other'] as const
+const PANEL_TITLE_KEYS: Record<string, string> = {
+  training: 'cfgGroupTraining',
+  performance: 'cfgGroupPerformance',
+  paths: 'cfgGroupPaths',
+  architecture: 'cfgGroupArchitecture',
+  generate: 'qwTestParameters',
+  other: 'cfgGroupOther',
+}
 
 /** Match the actual request consumers, not whether a field happens to be in the schema. */
 export function modelFieldActive(family: TypedModelFamily, section: string, name: string, values: Values): boolean {
@@ -78,16 +87,19 @@ export function modelActionValues(family: TypedModelFamily, phase: Phase, fields
 export function groupModelConfigFields(schema: QwenSchema | null, draft: Partial<QwenDraft> | null = null, family: TypedModelFamily = 'qwen21'): ModelConfigGroup[] {
   if (!schema) return []
   const groups: ModelConfigGroup[] = [
-    { id: 'training', titleKey: 'cfgGroupTraining', sections: [] },
-    { id: 'performance', titleKey: 'cfgGroupPerformance', sections: [] },
-    { id: 'paths', titleKey: 'cfgGroupPaths', sections: [] },
-    { id: 'architecture', titleKey: 'cfgGroupArchitecture', sections: [] },
-    { id: 'generate', titleKey: 'qwTestParameters', sections: [] },
-    { id: 'other', titleKey: 'cfgGroupOther', sections: [] },
+    { id: BASIC_GROUP_ID, titleKey: 'cfgBasicSettings', sections: [] },
+    ...PANEL_ORDER.map(id => ({ id, titleKey: PANEL_TITLE_KEYS[id], sections: [] })),
   ]
   const byId = new Map(groups.map(group => [group.id, group]))
   function append(id: string, section: ModelConfigSection, field: QwenField): void {
-    const group = byId.get(id)!
+    let group = byId.get(id)
+    if (!group) {
+      // A section the backend introduced after this list was written: keep it,
+      // under its own name until a translation key exists for it.
+      group = { id, titleKey: field.group ?? id, sections: [] }
+      byId.set(id, group)
+      groups.push(group)
+    }
     let entry = group.sections.find(entry => entry.section === section)
     if (!entry) {
       entry = { section, fields: [] }
@@ -95,21 +107,23 @@ export function groupModelConfigFields(schema: QwenSchema | null, draft: Partial
     }
     entry.fields.push(field)
   }
+  /** Basic fields open the page; advanced ones go to the section the backend named. */
+  function target(field: QwenField): string {
+    if (!field.advanced) return BASIC_GROUP_ID
+    const name = (field.group ?? '').trim()
+    return name ? name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : 'other'
+  }
   for (const field of schema.train) {
     if (modelFields.has(field.name)) {
-      append('paths', 'models', field)
+      append(target(field), 'models', field)
       continue
     }
     // The selector owns algo; irrelevant knobs must not reappear through search/help.
     if (field.name === 'algo' || !modelFieldActive(family, 'train', field.name, modelSectionValues(schema, draft, 'train'))) continue
-    const id = trainingFields.has(field.name) ? 'training'
-      : performanceFields.has(field.name) ? 'performance'
-        : trainingPathFields.has(field.name) ? 'paths'
-          : architectureFields.has(field.name) ? 'architecture' : 'other'
-    append(id, 'train', field)
+    append(target(field), 'train', field)
   }
   for (const field of schema.generate) {
-    if (!modelFields.has(field.name) && modelFieldActive(family, 'generate', field.name, modelSectionValues(schema, draft, 'generate'))) append('generate', 'generate', field)
+    if (!modelFields.has(field.name) && modelFieldActive(family, 'generate', field.name, modelSectionValues(schema, draft, 'generate'))) append(target(field), 'generate', field)
   }
   return groups.filter(group => group.sections.length > 0)
 }

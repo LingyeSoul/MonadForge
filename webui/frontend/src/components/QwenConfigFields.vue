@@ -3,9 +3,19 @@
   <v-progress-linear v-if="qwen.loading" indeterminate />
   <ConfigWorkspaceLayout v-if="qwen.draft && qwen.schema" v-model:search="search" v-model:show-guide="showHelp"
     :field-count="fieldCount" filterable search-test-id="qwen-field-search" help-test-id="qwen-help-toggle">
-    <v-expansion-panels v-if="groups.length" :model-value="searching ? groups.map(group => group.id) : expandedGroups"
+    <v-card v-if="basicGroup" class="mb-4 config-section" variant="flat">
+      <v-card-title class="text-subtitle-1">
+        <v-icon icon="mdi-tune" class="mr-2" />
+        {{ t(basicGroup.titleKey) }}
+        <v-chip size="x-small" class="ml-2" variant="outlined">{{ basicFieldCount }}</v-chip>
+      </v-card-title>
+      <v-card-text>
+        <QwenFields v-for="section in basicGroup.sections" :key="`basic-${section.section}`" :section="section.section" :fields="section.fields" @help="openHelp" />
+      </v-card-text>
+    </v-card>
+    <v-expansion-panels v-if="panelGroups.length" :model-value="searching ? panelGroups.map(group => group.id) : expandedGroups"
       multiple variant="accordion" @update:model-value="onExpandedGroups">
-      <v-expansion-panel v-for="group in groups" :key="group.id" :value="group.id" :data-testid="`model-config-group-${group.id}`">
+      <v-expansion-panel v-for="group in panelGroups" :key="group.id" :value="group.id" :data-testid="`model-config-group-${group.id}`">
         <v-expansion-panel-title>
           <v-icon icon="mdi-cog-outline" class="mr-2" size="small" />
           {{ t(group.titleKey) }}
@@ -20,7 +30,7 @@
         </v-expansion-panel-text>
       </v-expansion-panel>
     </v-expansion-panels>
-    <div v-else class="workspace-empty" role="status">
+    <div v-if="!groups.length" class="workspace-empty" role="status">
       <v-icon icon="mdi-magnify" size="32" />
       <h2>{{ t('cfgNoMatchingFields') }}</h2>
       <v-btn variant="outlined" @click="search = ''">{{ t('cfgClearSearch') }}</v-btn>
@@ -44,7 +54,8 @@ import { useActiveModelWorkspace } from '../stores/qwenWorkspace'
 import { useAppStore } from '../stores/app'
 import { modelFieldLabel, mossText } from '../i18n/modelWorkspace'
 import { requestJson, resolvedPaths } from '../utils/qwen21'
-import { groupModelConfigFields } from '../utils/modelConfig'
+import { matchesConfigSearch } from '../utils/configSearch'
+import { BASIC_GROUP_ID, groupModelConfigFields } from '../utils/modelConfig'
 import ConfigWorkspaceLayout from './ConfigWorkspaceLayout.vue'
 import HelpPanel from './HelpPanel.vue'
 import QwenFields from './QwenFields.vue'
@@ -60,12 +71,12 @@ const helpPanel = ref<InstanceType<typeof HelpPanel> | null>(null)
 const paths = ref<Record<string, string> | null>(null)
 const allGroups = computed(() => groupModelConfigFields(qwen.value.schema, qwen.value.draft, qwen.value.family))
 const fieldLabel = (name: string) => modelFieldLabel(qwen.value.family, app.language, name, t(`qwenField_${name}`))
-const groups = computed(() => {
-  const terms = (search.value ?? '').toLowerCase().split(/\s+/).filter(Boolean)
-  return allGroups.value.map(group => ({ ...group, sections: group.sections.map(section => ({ ...section,
-    fields: section.fields.filter(field => terms.every(term => `${field.name} ${fieldLabel(field.name)} ${field.help}`.toLowerCase().includes(term))),
-  })).filter(section => section.fields.length) })).filter(group => group.sections.length)
-})
+const groups = computed(() => allGroups.value.map(group => ({ ...group, sections: group.sections.map(section => ({ ...section,
+  fields: section.fields.filter(field => matchesConfigSearch({ key: field.name, description: field.help }, search.value, [fieldLabel(field.name)])),
+})).filter(section => section.fields.length) })).filter(group => group.sections.length))
+const basicGroup = computed(() => groups.value.find(group => group.id === BASIC_GROUP_ID))
+const panelGroups = computed(() => groups.value.filter(group => group.id !== BASIC_GROUP_ID))
+const basicFieldCount = computed(() => basicGroup.value?.sections.reduce((n, section) => n + section.fields.length, 0) ?? 0)
 const fieldCount = computed(() => groups.value.reduce((total, group) => total + group.sections.reduce((n, section) => n + section.fields.length, 0), 0))
 const help = computed(() => Object.fromEntries(allGroups.value.flatMap(group => group.sections.flatMap(section => section.fields.map(field => [`${section.section}.${field.name}`, `${fieldLabel(field.name)}\n${field.help}`])))))
 const guide = computed(() => (qwen.value.family === 'moss' ? [mossText(app.language, 'sourcesHint'), mossText(app.language, 'autoHint'), mossText(app.language, 'generateHint'), mossText(app.language, 'unsupported'), t('qwResultIsolation')] : [t('qwenSourcesHint'), t('qwenAutoHint'), t('qwenGenerateHint'), t('qwUnsupported'), t('qwResultIsolation')]).map(text => `<p>${text}</p>`).join(''))

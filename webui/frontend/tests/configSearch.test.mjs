@@ -39,3 +39,13 @@ test('localized descriptions remain searchable', () => {
   const localized = { key: 'learning_rate', description: '\u5b66\u4e60\u7387' }
   assert.equal(matchesConfigSearch(localized, '\u5b66\u4e60'), true)
 })
+
+test('extra text lets a typed model form match its localized label', () => {
+  const typed = { key: 'blocks_to_swap', description: 'transformer blocks kept in host memory' }
+  assert.equal(matchesConfigSearch(typed, 'blocks_to_swap'), true)
+  assert.equal(matchesConfigSearch(typed, '\u4ea4\u6362\u5757\u6570'), false)
+  assert.equal(matchesConfigSearch(typed, '\u4ea4\u6362\u5757\u6570', ['\u4ea4\u6362\u5757\u6570', '\u4ea4\u6362\u5230\u5185\u5b58\u7684\u5757\u6570']), true)
+  // Every term must match somewhere in the combined text.
+  assert.equal(matchesConfigSearch(typed, 'swap \u4ea4\u6362', ['\u4ea4\u6362\u5757\u6570']), true)
+  assert.equal(matchesConfigSearch(typed, 'swap \u4e0d\u5b58\u5728', ['\u4ea4\u6362\u5757\u6570']), false)
+})
