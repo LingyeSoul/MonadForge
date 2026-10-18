@@ -21,8 +21,8 @@ window is too wide.
 
 Surface: `GenerateRequest.dave` (`'' | auto | lo-hi | npz`), `dave_strength` (0.3),
 `dave_tau` (0.10, advanced); part of the latent fingerprint. `auto` reads
-`library/moss/calibration/dave_alpha.npz`, which does not exist until the probe below
-has been run and a mask derived.
+`dave_alpha.npz` in `library/moss/calibration/`, which does not exist until the probe
+below has been run and a mask derived.
 
 ## Phases
 
@@ -30,9 +30,9 @@ has been run and a mask derived.
    30 steps, cond forward). Gate: early-step DC sim ≫ AC sim on the DC-heavy blocks
    (`premise_holds`). If it fails, stop.
 2. **Mask** — `bench/dave/derive_alpha_mask.py --probe <run>/per_block.npz --block_cap N
-   --out library/moss/calibration/dave_alpha.npz`. Open: the cap on 42 blocks (Anima's
-   ≤ 18 was the patch-grid dot artifact; re-eyeball here), and whether block 22 belongs in
-   the pool.
+   --out …`, writing `dave_alpha.npz` into `library/moss/calibration/`. Open: the cap
+   on 42 blocks (Anima's ≤ 18 was the patch-grid dot artifact; re-eyeball here), and
+   whether block 22 belongs in the pool.
 3. **Dose / window sweep** — τ {0.06, 0.10, 0.15} × strength {0.3, 0.5, 0.8}, Base and SFT,
    prompts with quoted CJK text and hands. Read per grid.
 4. **Ship** — mask committed, `docs/experimental/moss_lora.md` section, bench

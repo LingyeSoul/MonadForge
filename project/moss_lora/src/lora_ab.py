@@ -72,7 +72,7 @@ def main() -> None:
         default="er_sde:1.0,er_sde:0.0",
         help="<euler|er_sde|cns>:<multiplier>, comma-separated",
     )
-    ap.add_argument("--cns_gamma", default="output/moss/cns_gamma.npz")
+    ap.add_argument("--cns_gamma", default="networks/calibration/moss_cns_gamma.npz")
     ap.add_argument(
         "--spectrum",
         action=argparse.BooleanOptionalAction,
@@ -109,7 +109,7 @@ def main() -> None:
     ]
 
     embeds = _cached_embeds(
-        "", [*prompts, ""], resolve_under_home("output/moss/te_cache")
+        "", [*prompts, ""], resolve_under_home("post_image_dataset/moss_prompt_te")
     )
     uncond, uncond_mask = pad_embeds([embeds[""]], device)
     sigmas = snapped_sigmas(args.steps)

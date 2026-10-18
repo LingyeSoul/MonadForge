@@ -11,7 +11,7 @@ nothing to reallocate).
     make daemon-run ARGS="bench/moss_spectrum/cns_calibrate.py --compile"
 
 Writes the npz ``library.moss.cns.MossCNS.from_npz`` reads (default
-``output/moss/cns_gamma.npz``) plus a copy and ``result.json`` in the run dir.
+``networks/calibration/moss_cns_gamma.npz``) plus a copy and ``result.json`` in the run dir.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def main() -> None:
     ap.add_argument("--size", type=int, default=1024)
     ap.add_argument("--cfg", type=float, default=3.0)
     ap.add_argument("--n_bins", type=int, default=32)
-    ap.add_argument("--out", default="output/moss/cns_gamma.npz")
+    ap.add_argument("--out", default="networks/calibration/moss_cns_gamma.npz")
     ap.add_argument("--model_dir", default="")
     ap.add_argument(
         "--te_cache", default="/media/sorryhyun/data/moss_image/bench/_te_cache"

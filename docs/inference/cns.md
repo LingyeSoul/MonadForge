@@ -138,3 +138,4 @@ One implementation divergence worth noting: Alg. 1 renormalizes by a single glob
 | `scripts/calibration/gamma_probe.py` | Phase-0 read-only staircase check (one config). |
 | `_archive/bench/cns/plan.md` | Precondition, phase log, composition tensions. |
 | `networks/calibration/cns_gamma.npz` | Shipped completion matrix (`--cns auto`). |
+| `networks/calibration/moss_cns_gamma.npz` | MOSS-Image γ (`library.moss.cns.MossCNS`, `bench/moss_spectrum/cns_calibrate.py`). |

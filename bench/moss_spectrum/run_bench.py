@@ -156,7 +156,7 @@ def main() -> None:
     ap.add_argument("--model_dir", default="")
     ap.add_argument(
         "--cns_gamma",
-        default="output/moss/cns_gamma.npz",
+        default="networks/calibration/moss_cns_gamma.npz",
         help="γ for cns=1 arms (cns_calibrate.py)",
     )
     ap.add_argument("--image_root", default="/media/sorryhyun/data/moss_image/bench")

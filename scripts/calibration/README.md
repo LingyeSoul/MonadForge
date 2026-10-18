@@ -18,6 +18,11 @@ python scripts/calibration/cns_calibrate.py --cfg 4.0 --n_aspects 3   # compiled
   `cns_calibrate` imports. `--out_dir` for its standalone npz/heatmaps.
 
 Phase log / precondition / composition tensions: `_archive/bench/cns/plan.md`
+
+MOSS-Image has its own γ, `networks/calibration/moss_cns_gamma.npz` (base DiT, 1024²,
+cfg 3), from `bench/moss_spectrum/cns_calibrate.py`. The ComfyUI Spectrum node bundles
+a copy (`moss_cns_gamma.npz` in its repo root); copy a regenerated one over it before
+publishing the node.
 (premise corroborated by `project_sigma_signal_resolves_by_045`).
 
 Consumer + math: `library/inference/corrections/cns.py`. User doc:

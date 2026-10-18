@@ -23,7 +23,13 @@ import torch
 
 from library.env import resolve_under_home
 from library.moss.generate import denoise, initial_noise
-from library.moss.loader import empty_cache, encode_prompt, load_text_encoder, load_transformer, pad_embeds
+from library.moss.loader import (
+    empty_cache,
+    encode_prompt,
+    load_text_encoder,
+    load_transformer,
+    pad_embeds,
+)
 from library.moss.model import snapped_sigmas
 from library.moss.requests import variant_dir
 
@@ -31,7 +37,7 @@ PROMPTS = [
     "An anime illustration of a girl with long silver hair and red eyes, wearing a black "
     "school uniform, sitting on a classroom windowsill at sunset, cherry blossom petals drifting "
     "outside the window, detailed cel shading, soft rim light.",
-    'A black-and-white manga panel of a boy with messy hair shouting toward the reader, speed '
+    "A black-and-white manga panel of a boy with messy hair shouting toward the reader, speed "
     'lines in the background, with a large speech bubble that reads "待ってくれ！" in Japanese.',
 ]
 
@@ -64,7 +70,7 @@ def main():
     ap.add_argument("--steps", type=int, default=50)
     ap.add_argument("--size", default="1024x1024")
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--out", default="output/moss/parity")
+    ap.add_argument("--out", default="output/ckpt_moss/parity")
     args = ap.parse_args()
     w, h = map(int, args.size.split("x"))
     out = resolve_under_home(args.out)
@@ -91,19 +97,36 @@ def main():
     neg, neg_mask = pad_embeds([embeds[""]], device=dev)
 
     # --- reference pipeline, its own transformer class
-    tr = ref.MOSSImageTransformer.from_pretrained(
-        variant_dir(args.model_dir, args.model) / "transformer", torch_dtype=torch.bfloat16
-    ).eval().to(dev)
+    tr = (
+        ref.MOSSImageTransformer.from_pretrained(
+            variant_dir(args.model_dir, args.model) / "transformer",
+            torch_dtype=torch.bfloat16,
+        )
+        .eval()
+        .to(dev)
+    )
     pipe = ref.MOSSImagePipeline(tr, ref.MOSSImageScheduler())
     pipe.set_progress_bar_config(disable=True)
     ref_lat = []
     for p in PROMPTS:
         e, m = pad_embeds([embeds[p]], device=dev)
-        lat, sec = _timed(lambda: pipe(
-            prompt_embeds=e, prompt_attention_mask=m, negative_prompt_embeds=neg,
-            negative_prompt_attention_mask=neg_mask, height=h, width=w,
-            num_inference_steps=args.steps, latents=noise.clone(), output_type="latent",
-        ).images.float().cpu())
+        lat, sec = _timed(
+            lambda: (
+                pipe(
+                    prompt_embeds=e,
+                    prompt_attention_mask=m,
+                    negative_prompt_embeds=neg,
+                    negative_prompt_attention_mask=neg_mask,
+                    height=h,
+                    width=w,
+                    num_inference_steps=args.steps,
+                    latents=noise.clone(),
+                    output_type="latent",
+                )
+                .images.float()
+                .cpu()
+            )
+        )
         ref_lat.append(lat)
         report["images"].append(dict(tokens=int(e.shape[1]), reference_s=round(sec, 2)))
         print(f"[ref] {sec:.1f}s", flush=True)
@@ -117,9 +140,20 @@ def main():
         rec = report["images"][i]
         for batched in (False, True):
             torch.cuda.reset_peak_memory_stats()
-            lat, sec = _timed(lambda: denoise(
-                tr, noise.to(dev), e, m, neg, neg_mask, sigmas, cfg=3.0, uncond_skip=(22,),
-                batched=batched).cpu())
+            lat, sec = _timed(
+                lambda: denoise(
+                    tr,
+                    noise.to(dev),
+                    e,
+                    m,
+                    neg,
+                    neg_mask,
+                    sigmas,
+                    cfg=3.0,
+                    uncond_skip=(22,),
+                    batched=batched,
+                ).cpu()
+            )
             key = "batched" if batched else "unbatched"
             rec[f"{key}_s"] = round(sec, 2)
             rec[f"{key}_peak_gib"] = round(torch.cuda.max_memory_allocated() / 2**30, 2)

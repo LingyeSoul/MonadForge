@@ -23,7 +23,7 @@ about as close to its own p50 as under Euler: rel-L2 0.42 / 0.61 / 0.58 vs Euler
 
 γ is calibrated from 10 Euler trajectories (5 bench prompts × seeds 0, 1), with the FFT
 on the un-patchified 32 ch /8 grid (`bench/moss_spectrum/cns_calibrate.py` →
-`output/moss/cns_gamma.npz`). **The precondition holds**: σ at γ = 0.5 falls
+`networks/calibration/moss_cns_gamma.npz`). **The precondition holds**: σ at γ = 0.5 falls
 monotonically from 0.94 for the lowest band to 0.41 for the highest. Spread +0.53,
 aggregate σ50 0.61 (Anima: +0.41…+0.52, ≈0.45–0.49).
 

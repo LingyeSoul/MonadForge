@@ -404,7 +404,7 @@ class TuneSwapRequest(Request):
     warmup: int = _f(2, "untimed steps per arm (compile lands here)", advanced=True)
     steps: int = _f(5, "timed steps per arm", advanced=True)
     output: str = _f(
-        "output/moss/tune/tune_swap.json", "JSON report path", advanced=True
+        "output/ckpt_moss/tune/tune_swap.json", "JSON report path", advanced=True
     )
     seed: int = _f(0, "RNG seed", advanced=True)
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
