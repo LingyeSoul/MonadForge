@@ -30,7 +30,9 @@ Per (block, target):
 
 Writes ``channel_stats.safetensors`` (``mean|x|`` per target, keyed
 ``layers.N.proj.{q,k,v,o,ffn_up_gate,ffn_down}`` — the calibration a port would
-read), ``stats.npz``, ``dominance.png`` and ``result.json``.
+read), ``channel_mean.safetensors`` (the signed token mean ``x̄`` per target, same
+keys — the DC direction ``dc_isolate`` reads), ``stats.npz``, ``dominance.png`` and
+``result.json``.
 """
 
 from __future__ import annotations
@@ -62,7 +64,7 @@ class Stats:
 
     def __init__(self, dim, device):
         z = lambda: torch.zeros(dim, device=device, dtype=torch.float64)  # noqa: E731
-        self.abs_all, self.abs_img, self.sum_img = z(), z(), z()
+        self.abs_all, self.abs_img, self.sum_img, self.sum_all = z(), z(), z(), z()
         self.max_all = torch.zeros(dim, device=device)
         self.n_all = self.n_img = 0
 
@@ -71,6 +73,7 @@ class Stats:
         a = x.abs()
         self.abs_all += a.sum(0, dtype=torch.float64)
         self.abs_img += a[:n_img].sum(0, dtype=torch.float64)
+        self.sum_all += x.sum(0, dtype=torch.float64)
         self.sum_img += x[:n_img].sum(0, dtype=torch.float64)
         self.max_all = torch.maximum(self.max_all, a.amax(0))
         self.n_all += x.shape[0]
@@ -187,7 +190,7 @@ def main() -> None:
         attached.detach()
 
     run_dir = make_run_dir("moss_channel_stats", args.label)
-    dump, dom, lev, p2m = {}, {}, {}, {}
+    dump, dump_mean, dom, lev, p2m = {}, {}, {}, {}, {}
     arrays = {}
     massive_rows = {}
     for name in HOOKED:
@@ -209,10 +212,13 @@ def main() -> None:
                 lev[name][a][i] = leverage_dominance(m, a)
             p2m[name][i] = mx[top] / m[top]
             t = torch.from_numpy(m.copy())
+            t_mean = (st.sum_all / st.n_all).float().cpu()
             dump[f"layers.{i}.proj.{name}"] = t
+            dump_mean[f"layers.{i}.proj.{name}"] = t_mean
             if name == "q":
                 for share in SHARES_Q:
                     dump[f"layers.{i}.proj.{share}"] = t.clone()
+                    dump_mean[f"layers.{i}.proj.{share}"] = t_mean.clone()
             if name in RESIDUAL_INPUTS:
                 rank = (-m).argsort().argsort()
                 med_img = float(np.median(m_img))
@@ -235,6 +241,7 @@ def main() -> None:
     from safetensors.torch import save_file
 
     save_file(dump, str(run_dir / "channel_stats.safetensors"))
+    save_file(dump_mean, str(run_dir / "channel_mean.safetensors"))
     np.savez(run_dir / "stats.npz", massive=massive, **arrays)
     plot(run_dir / "dominance.png", dom, lev, num_blocks)
 
@@ -275,7 +282,12 @@ def main() -> None:
         args=args,
         metrics=metrics,
         label=args.label,
-        artifacts=["channel_stats.safetensors", "stats.npz", "dominance.png"],
+        artifacts=[
+            "channel_stats.safetensors",
+            "channel_mean.safetensors",
+            "stats.npz",
+            "dominance.png",
+        ],
         device=device,
         extra={"massive_channels": massive_rows, "samples": [it.stem for it in items]},
     )

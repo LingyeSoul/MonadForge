@@ -79,6 +79,12 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
         "仅 lora：按 mean|x[c]|^α 重新平衡各输入通道的 AdamW 步长（Anima 的 channel scaling）；"
         "输出不变，保存为普通 LoRA。0 = 关闭，0.5 = Anima 默认",
     ),
+    "dc_isolate": (
+        "DC 隔离",
+        "仅 lora：把校准得到的输入直流方向（各目标的 token 均值 x̄）放进 down 的一行，"
+        "其余行保持与它正交，使只有一列 up 学习与 token 无关的偏置。初始输出不变，"
+        "保存为普通 LoRA。实验性",
+    ),
     "lr": ("学习率", "AdamW 学习率"),
     "warmup_ratio": ("预热比例", "线性预热占总步数的比例"),
     "save_every_epochs": ("每 N 轮保存", "每 N 轮额外保存一次（0 = 只保存最终结果）"),

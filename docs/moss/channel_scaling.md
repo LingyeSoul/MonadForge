@@ -1,113 +1,140 @@
 # Channel scaling on MOSS-Image
 
-Anima's channel scaling (`docs/optimizations/channel_scaling.md`) ported to the MOSS LoRA:
-each target's input channel `c` is rebalanced by `s[c] = mean|x[c]|^α` inside the down
-projection, so AdamW's per-step change to `down[:, c]` is weighted by `1/s[c]`. The forward
-output is unchanged and the saved file is a plain LoRA. **On by default** (`α = 0.5`,
-since 2026-10-18, together with lr 1e-4 at rank 32 / alpha 128); `--channel_scaling_alpha 0`
-turns it off.
+A training-time fix for one quirk of the MOSS LoRA: a single input channel is 10–25× louder
+than every other channel at the FFN input, and AdamW turns it into a bias knob the adapter
+reaches for first. Channel scaling rebalances the optimizer's step per input channel. The
+forward output is unchanged, the saved file is a plain LoRA, and inference never knows it
+was there.
 
-GUI: Train step → `channel_scaling_alpha`. `lora` only; the trainer skips it for `lokr` /
-`loha` (`LoRANetwork` itself refuses the combination).
+**On by default** (`channel_scaling_alpha = 0.5`, since 2026-10-18, together with lr 1e-4 at
+rank 32 / alpha 128). `--channel_scaling_alpha 0` turns it off. GUI: Train step →
+`channel_scaling_alpha`. `lora` only; the trainer skips it for `lokr` / `loha`.
 
-## Why MOSS has something to rebalance
-
-MOSS's residual stream carries massive-activation channels (1356, 42, …; ~99 % of the
-image tokens' DC, identical across seeds and prompts — `project/moss_lora/dave.md`). The
-LoRA targets read the residual through RMSNorm + adaLN, which damp them: `norm1.weight[1356]`
-≈ 0 on blocks 5–20, and the shared FFN modulation has `1+scale` ≈ 0.22 with a −6.8 / −4.3
-shift on 1356 / 42. Measured at the Linear inputs (Base, 16 samples × 5 σ):
-
-| input | what arrives |
+| α | effect on the loudest channel's step |
 |---|---|
-| `q/k/v` | 1356 below median on blocks 1–17 (0.3–0.9×), up to 6.7× from block 24 on |
-| `ffn_up_gate` | **ch 42 is the top channel on blocks 11–41**, 11→26× median; top-channel peak-to-mean 2.7, so it is on every token (DC bias, not a sink) |
-| `o` | mild (leverage 2.6–6.2×) |
-| `ffn_down` | 4.5–35× leverage, worst at block 41; peak-to-mean 9.5 (partly sink-like) |
+| `0` | off; a plain LoRA |
+| `0.5` | shrunk by √(its loudness): 25× → 5× (the default) |
+| `1.0` | fully flattened: every channel moves the output the same amount |
 
-Leverage dominance (max/mean of `mean|x|^(1−α)`), MOSS against Anima's shipped calibration:
+## The problem: one channel, 25× louder, on every token
 
-| | α = 0 | α = 0.5 |
-|---|---|---|
-| MOSS `ffn_up_gate` | 9.3–22.8 (med 14.6) | 3.1–4.9 |
-| Anima `mlp.layer1` | 11–80 (med 30) | 3.5–9.3 |
-| MOSS `q` | 4.0–18.7 (med 5.8) | 2.0–4.4 |
-| Anima `self_attn.qkv` | 7.6–37.9 (med 13.6) | 2.8–7.5 |
+MOSS's residual stream carries a handful of massive-activation channels (1356, 42, …) that
+hold almost all of the image tokens' DC offset, the same on every prompt and seed
+(`project/moss_lora/dave.md`). RMSNorm and the adaLN modulation damp them before the LoRA
+targets see them, but not away: at the FFN input, channel 42 is the loudest of 3072 channels
+on blocks 11–41, 11 to 26× the median, and its peak-to-mean is only 2.7, so it is loud on
+every token rather than on a few. It behaves like a constant input: a bias line.
 
-About half of Anima's imbalance, concentrated in one place: ch 42 into the FFN.
+![ch 42 and ch 1356 at the FFN input per block; block 35's loudest channels](assets/channel_scaling_loud_channel.png)
 
-## What it does to a LoRA (caststation, r32 / α128, 20 epochs, seed 0)
+Why a constant loud input is a problem for a LoRA trained with AdamW: Adam moves every
+weight by roughly the same amount per step, whatever its gradient's size. How much that
+moves the output depends on what the weight multiplies. Moving `down[:, c]` by one step
+changes the adapter output by about `|x[c]|` × step, so through channel 42 one step moves
+the output 25× further than through a typical channel, and does so for every token at
+once. The optimizer's cheapest way to lower the loss is to turn that knob: a global shift of
+the FFN input on every prompt, before the adapter has learned anything specific to the
+style.
 
-Twin runs, identical except `channel_scaling_alpha`. **lr 2e-5:**
+![per-channel output leverage of one Adam step, α 0 vs α 0.5](assets/channel_scaling_adam_step.png)
 
-- The mechanism lands as designed: the `down` update on ch 42 of `ffn_up_gate` falls from
-  0.6–1.0× to 0.15–0.25× of an average column (≈ 1/s, s ≈ 3.7–4.8). Loss curves match to
-  three decimals.
-- `down` moves only 6–9 % from its `weight_svd` init and `up` (from zero, untouched by the
-  rescale) carries most of the learning, so ΔW's size and channel structure barely change.
-- Images: the same style strength by eye, but the channel-scaled LoRA stays closer to the
-  no-LoRA image in **9 / 12** cells (mean pixel distance 49.4 → 43.7; 32-px composition
-  39.2 → 33.6). Reading: an update on a constant input channel acts as a global FFN bias,
-  shifting composition and palette on every prompt; rebalancing it leaves more of what the
-  style does not need. One seed pair per cell, no repeat-run noise floor yet.
+## What channel scaling does
 
-**lr 1e-4:**
+Give each input channel a scale `s[c] = mean|x[c]|^α` (normalised to mean 1, from a
+calibration file) and fold it into the down projection:
 
-- `down` drifts 23–30 % from init (vs 6–9 % at 2e-5) and the ch-42 column is still held to
-  0.13–0.19× of an average column (vs 0.45–0.80× without), so the mechanism is intact.
-- Distance to the no-LoRA image is even (cs05 closer in 5 / 12, mean 50.7 vs 51.2): both
-  move the image away from the base model by the same amount.
-- **By eye the channel-scaled LoRA is clearly better.** The α 0 run adds things the prompt
-  does not ask for — glasses and a garbled-text sign (Base p2 s1), garbled signage (SFT p2
-  s1), a street with a car in place of the park (SFT p2 s2), a broken hand pose (Base p0
-  s1) — the detail loss that already ruled lr 1e-4 out (`docs/experimental/moss_lora.md`).
-  The cs05 cells stay on-prompt at the same style strength.
+- stored: `down · s`, so the trainable weight on channel `c` is `s[c]` times larger;
+- forward: `down · s⁻¹`, so the product is exactly `down · x` as before.
+
+The output is bit-for-bit unchanged, and so is the gradient on `up`. The only thing that
+moves is Adam's geometry: a uniform step on the stored weight is a step of `1 / s[c]` on
+the effective one, so one step now moves the output by `|x[c]|^(1−α)` instead of `|x[c]|`.
+At α 0.5 the loudest channel's lead over the average channel drops from 9–23× to 3–5× on
+every block (right panel above). Nothing else changes: same peak memory, same s/step, same loss
+curve to three decimals. At save time the file holds `down · s⁻¹`, a plain LoRA; the
+metadata stamps `channel_scaling_alpha` as provenance.
+
+The scale sits on the `(rank, in)` weight, not the `(tokens, in)` activation, so there is
+no activation-sized op (`library/lines/adapters.py`: `absorb_channel_scale`,
+`down_weight`, `channel_scale`).
+
+## What it does in practice
+
+Twin runs on the caststation set (r32 / α128, 20 epochs, `weight_svd`, seed 0), identical
+except `channel_scaling_alpha`. The mechanism lands as designed in both: the `down` update
+on channel 42 falls from 0.5–1.0× an average column to 0.13–0.25× (≈ 1/s, s ≈ 3.7–4.8),
+and the loss curves match.
+
+- **lr 2e-5**: same style strength by eye; the channel-scaled LoRA stays closer to the
+  no-LoRA image in 9 / 12 cells (mean pixel distance 49.4 → 43.7). It touches less of what
+  the style does not need.
+- **lr 1e-4**: by eye clearly better. Plain LoRA at this lr adds things the prompt never
+  asked for (glasses and a garbled-text sign, a street with a car in place of the park, a
+  broken hand pose); the channel-scaled twin stays on-prompt at the same style strength.
+  That is the result the defaults moved on, from lr 2e-5 + α 0 to lr 1e-4 + α 0.5.
 
 ![lr 1e-4 twins on the four cells named above: no LoRA | α 0 | α 0.5](assets/channel_scaling_lr1e4_ab.webp)
 
-The cells cited above, ER-SDE + Spectrum 50 steps, CFG 3, layout_json. The no-LoRA column
-is the lr 2e-5 grid's ×0.0 (same prompts, seeds and sampler); full grids in
-`output/tests/ab_caststation_layout_at_r32a128_lr1e4_svd{,_cs05}_50st`.
-
 Distance to the no-LoRA image measures how much a LoRA changes, not whether the change is
-right, so it misses this. One seed pair per cell. On this result the defaults moved to
-lr 1e-4 + α 0.5 (from lr 2e-5 + α 0). Open items: `project/moss_lora/channel_scaling.md`.
+right, so it does not see the lr 1e-4 difference. One seed per cell so far; open items in
+`project/moss_lora/channel_scaling.md`.
 
-## Mechanism
+## What it does not fix: the `up` gradient
 
-`library/lines/adapters.py`: `LoRAAdapter.absorb_channel_scale(s)` stores `down · s` and the
-forward uses `down_weight() = down · s⁻¹`. The scale sits on the `(rank, in)` weight, not
-the `(T, in)` activation — the same product and the same gradient (`∂L/∂down[:, c] · s⁻¹[c]`),
-with no activation-sized op (peak and s/step unchanged). `s = clamp(mean|x|, 1e-6)^α`,
-normalized to mean 1 (`channel_scale`). `save` writes `down · s⁻¹` and stamps
-`channel_scaling_alpha` in the metadata as provenance; loading never needs the calibration.
-`inv_scale` is a non-persistent buffer.
+Channel scaling only reaches the `down` side. The `up` gradient is `Σ_t g_t · h_tᵀ`, built
+from the adapter latent `h = down · x`, and the reparameterisation leaves `h` as it was. That
+side has its own version of the same problem, and a bigger one. Because every token carries
+the same DC offset, `h` carries a constant component on every token, so a large part of
+each step's `up` gradient is "shift every token's output the same way", a bias learner,
+spread over all 32 rank directions. Measured with the trainer's loss
+(`bench/moss_channel_stats/probe_up_gradient.py`): that bias share is 80–90 % of the `up`
+gradient at the FFN and attention inputs, against 40–50 % in the full-fine-tune gradient,
+so about half of it is the loss's own and the rank-32 projection concentrates the rest.
+Per step the `up` gradient is ~0.8 rank-1, and channel 42's share of it is 3–6× its share
+of the full gradient. This is the entanglement GraLoRA (arXiv:2505.20355) describes, and
+α does nothing to it.
+
+![bias share of the up gradient: plain LoRA, full fine-tune, dc_isolate](assets/channel_scaling_up_gradient.png)
+
+`--dc_isolate` (experimental, off by default) is the up-side counterpart: the calibrated DC
+direction of the input becomes one rank row of `down`, the other 31 rows are kept orthogonal
+to it (re-projected after every optimizer step), so one `up` column learns the bias and the
+rest get a centered gradient. It does what it says: the bias share on the other 31 columns
+drops to 5–12 % (green line). Its one image A/B so far was not better than α 0.5 alone,
+with the artist tag rendered as text in 3 / 12 cells, so it stays opt-in. Log and next
+steps: `project/moss_lora/channel_scaling.md`.
 
 ## Calibration
 
-`library/moss/calibration/channel_stats.safetensors` (3.9 MB): `mean|x|` per target over all
-tokens (image + text, what the LoRA gradient sees), keyed `layers.N.proj.{q,k,v,o,ffn_up_gate,ffn_down}`
-(k / v share q's input). Derived on **Base** from `_calib_mixed`, 16 samples × σ
-{0.1, 0.3, 0.5, 0.7, 0.9}, the training forward. Regenerate:
+Two files under `library/moss/calibration/`, both from
+`bench/moss_channel_stats/probe_lora_inputs.py` on Base (`_calib_mixed`, 16 samples ×
+σ {0.1, 0.3, 0.5, 0.7, 0.9}, the training forward), keyed
+`layers.N.proj.{q,k,v,o,ffn_up_gate,ffn_down}` (k / v share q's input):
+
+- `channel_stats.safetensors` (3.9 MB): `mean|x|` per channel, for `channel_scaling_alpha`.
+- `channel_mean.safetensors`: the signed token mean `x̄`, for `dc_isolate`.
 
 ```bash
 make daemon-run ARGS="bench/moss_channel_stats/probe_lora_inputs.py --label <name>"
-cp bench/moss_channel_stats/results/<run>/channel_stats.safetensors library/moss/calibration/
+cp bench/moss_channel_stats/results/<run>/channel_{stats,mean}.safetensors library/moss/calibration/
 ```
 
-The probe also writes `stats.npz` (per-block dominance, leverage, peak-to-mean), `dominance.png`
-and the massive channels' rank at each input. `--model sft` profiles SFT; `--channel_stats`
-on the trainer points at another file.
-
-Precision matters little: `s` is a square root, so a 10 % error in `mean|x|` is 5 % in `s`,
-and the adaLN modulation is near-constant over σ 0.1–0.95, so the calibration's σ grid
-need not match the training σ distribution.
+The probe also writes `stats.npz` (per-block dominance, leverage, peak-to-mean),
+`dominance.png` and the massive channels' rank at each input; `--model sft` profiles SFT,
+and `--channel_stats` / `--channel_mean` on the trainer point at other files. Precision
+matters little: `s` is a square root, so a 10 % error in `mean|x|` is 5 % in `s`, and the
+adaLN modulation is near-constant over σ 0.1–0.95, so the σ grid need not match training.
+Regenerate only if the base DiT changes.
 
 ## Code
 
 - `library/lines/adapters.py` — `absorb_channel_scale`, `down_weight`, `channel_scale`,
-  `load_channel_stats`; `LoRANetwork(channel_stats=, channel_scaling_alpha=)`.
-- `library/moss/requests.py` — `TrainRequest.channel_scaling_alpha` / `channel_stats`.
-- `bench/moss_channel_stats/probe_lora_inputs.py` — the calibration probe.
-- `tests/test_moss_lora.py::test_channel_scaling_is_output_neutral_and_saves_plain` — output
-  equality, gradient `= g · s⁻¹`, plain-LoRA save round trip.
+  `isolate_dc`, `reproject_dc`, `load_channel_stats`;
+  `LoRANetwork(channel_stats=, channel_scaling_alpha=, channel_mean=, dc_isolate=)`.
+- `library/moss/requests.py` — `TrainRequest.channel_scaling_alpha` / `channel_stats` /
+  `dc_isolate` / `channel_mean`.
+- `bench/moss_channel_stats/probe_lora_inputs.py` — the calibration probe (both files).
+- `bench/moss_channel_stats/probe_up_gradient.py` — the `up`-gradient decomposition
+  (`--dc_isolate` to measure the isolated init).
+- `tests/test_moss_lora.py` — output equality, gradient `= g · s⁻¹`, plain-LoRA round
+  trip; the `dc_isolate` orthogonality / re-projection / round-trip test.

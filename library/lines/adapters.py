@@ -38,6 +38,14 @@ the ``(rank, in)`` weight instead of the ``(T, in)`` activation — same product
 gradient, no activation-sized op. ``save`` writes ``down · s⁻¹``: the file is a plain
 LoRA. ``mean|x|`` comes from a calibration file keyed by target name
 (``load_channel_stats``).
+
+``dc_isolate`` (``lora`` only) is the up-side counterpart: the calibrated input DC
+direction ``u = x̄ / ‖x̄‖`` becomes row 0 of ``down`` and is taken out of the other
+r−1 rows, so only ``up[:, 0]`` sees the token-mean latent (the bias learner) and the
+rest of ``∂L/∂up`` is centered — the GraLoRA entanglement, localised to one rank
+direction instead of k² blocks. Output-neutral at init (``up`` is zero);
+``reproject_dc`` after each optimizer step keeps rows 1.. orthogonal to ``u``. The
+file stays a plain LoRA.
 """
 
 from __future__ import annotations
@@ -78,6 +86,7 @@ class LoRAAdapter(nn.Module):
         self.scale = alpha / rank
         self.multiplier = 1.0
         self.register_buffer("inv_scale", None, persistent=False)
+        self.register_buffer("dc_dir", None, persistent=False)
 
     @torch.no_grad()
     def absorb_channel_scale(self, scale: torch.Tensor) -> None:
@@ -91,6 +100,42 @@ class LoRAAdapter(nn.Module):
         """The down projection the forward applies (what a plain LoRA file holds)."""
         w = self.down.weight
         return w if self.inv_scale is None else w * self.inv_scale.to(w.dtype)
+
+    @torch.no_grad()
+    def isolate_dc(self, mean: torch.Tensor) -> None:
+        """Row 0 of ``down`` := the input DC direction ``u``; rows 1.. := the
+        current rows with ``u`` projected out, re-orthonormalised (the row most
+        aligned with ``u`` is the one dropped). Row norms keep the init's mean
+        row norm. Call after the down init and before ``absorb_channel_scale``."""
+        w = self.down.weight.float()
+        u = mean.to(w.device, torch.float32)
+        u = u / u.norm().clamp_min(1e-12)
+        rest = w - torch.outer(w @ u, u)
+        keep = torch.argsort(rest.norm(dim=1), descending=True)[: w.shape[0] - 1]
+        q, _ = torch.linalg.qr(rest[keep].T)  # (N, r-1), columns ⊥ u
+        row_norm = w.norm(dim=1).mean()
+        new = torch.cat([u[None], q.T]) * row_norm
+        self.down.weight.copy_(new.to(self.down.weight.dtype))
+        self.dc_dir = u
+
+    def _dc_dir_stored(self) -> torch.Tensor:
+        """``u`` in the stored coordinates: the forward applies ``down · s⁻¹``, so
+        row ⊥ u in the effective space is row ⊥ (s⁻¹ ⊙ u) in the stored one."""
+        u = self.dc_dir
+        if self.inv_scale is not None:
+            u = u * self.inv_scale
+            u = u / u.norm().clamp_min(1e-12)
+        return u
+
+    @torch.no_grad()
+    def reproject_dc(self) -> None:
+        """Take the DC direction back out of rows 1.. (the optimizer step put a
+        little of it back in)."""
+        if self.dc_dir is None:
+            return
+        w = self.down.weight
+        u = self._dc_dir_stored().to(w.dtype)
+        w[1:] -= torch.outer(w[1:] @ u, u)
 
     @torch.no_grad()
     def init_down_weight_svd(self, base: nn.Linear) -> None:
@@ -238,6 +283,8 @@ class LoRANetwork(nn.Module):
         factor: int = -1,
         channel_stats: dict[str, torch.Tensor] | None = None,
         channel_scaling_alpha: float = 0.0,
+        channel_mean: dict[str, torch.Tensor] | None = None,
+        dc_isolate: bool = False,
     ):
         super().__init__()
         if down_init not in DOWN_INITS:
@@ -250,6 +297,10 @@ class LoRANetwork(nn.Module):
             raise ValueError("channel scaling applies to algo='lora' only")
         if channel_scaling_alpha > 0 and channel_stats is None:
             raise ValueError("channel_scaling_alpha > 0 needs channel_stats")
+        if dc_isolate and algo != "lora":
+            raise ValueError("dc_isolate applies to algo='lora' only")
+        if dc_isolate and channel_mean is None:
+            raise ValueError("dc_isolate needs channel_mean")
         targets = targets or self.DEFAULT_TARGETS
         pattern = re.compile(targets)
         self.algo = algo
@@ -259,6 +310,7 @@ class LoRANetwork(nn.Module):
         self.targets = targets
         self.down_init = down_init
         self.channel_scaling_alpha = float(channel_scaling_alpha)
+        self.dc_isolate = bool(dc_isolate)
         self.num_blocks = self._num_blocks(model)
         self.adapters = nn.ModuleDict()
         self._targets: list[tuple[str, nn.Linear]] = []
@@ -275,6 +327,10 @@ class LoRANetwork(nn.Module):
                 )
                 if down_init == "weight_svd":
                     adapter.init_down_weight_svd(module)
+                if self.dc_isolate:
+                    if name not in channel_mean:
+                        raise ValueError(f"no channel mean for {name}")
+                    adapter.isolate_dc(channel_mean[name])
                 if self.channel_scaling_alpha > 0:
                     if name not in channel_stats:
                         raise ValueError(f"no channel stats for {name}")
@@ -295,6 +351,13 @@ class LoRANetwork(nn.Module):
     @property
     def target_names(self) -> list[str]:
         return [name for name, _ in self._targets]
+
+    @torch.no_grad()
+    def reproject_dc(self) -> None:
+        """After each optimizer step under ``dc_isolate``."""
+        if self.dc_isolate:
+            for adapter in self.adapters.values():
+                adapter.reproject_dc()
 
     @property
     def num_parameters(self) -> int:
@@ -339,6 +402,8 @@ class LoRANetwork(nn.Module):
             if self.channel_scaling_alpha > 0:
                 # Provenance only: the saved down is already ``down · s⁻¹``.
                 meta["channel_scaling_alpha"] = str(self.channel_scaling_alpha)
+            if self.dc_isolate:
+                meta["dc_isolate"] = "1"
         if self.algo == "lokr":
             meta["factor"] = str(self.factor)
         meta.update({k: str(v) for k, v in extra.items()})
@@ -411,7 +476,8 @@ class LoRANetwork(nn.Module):
 
 
 def load_channel_stats(path) -> dict[str, torch.Tensor]:
-    """Per-target ``mean|x|`` input vectors, keyed by qualified module name."""
+    """Per-target input vectors keyed by qualified module name: ``mean|x|``
+    (channel scaling) or the signed token mean ``x̄`` (``dc_isolate``)."""
     from safetensors.torch import load_file
 
     return load_file(str(path))

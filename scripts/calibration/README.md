@@ -42,8 +42,10 @@ python scripts/calibration/cond_stream_profile.py --per_artist \
 - `cond_stream_profile.py` — the cond-stream counterpart (reuses the collector's
   dataset/dump helpers); cond calib does **not** transfer from the main file.
 
-The DC-bias-vs-attention-sink decomposition and the GraLoRA alternative weighed
-against: `_archive/bench/channel_stats/channel_dominance_analysis.md`.
+The DC-bias-vs-attention-sink decomposition: `_archive/bench/channel_stats/channel_dominance_analysis.md`
+(its claim that pre-scaling targets GraLoRA's mechanism is wrong — that mechanism is the
+`up` gradient, which the scale does not reach; `docs/optimizations/channel_scaling.md`
+§ "What it does not touch").
 
 Consumer: `networks/lora_anima/factory.py` (`_CHANNEL_STATS_PATH`) and
 `networks/methods/easycontrol.py`. Regime analysis: memory

@@ -268,6 +268,21 @@ class TrainRequest(Request):
         "bench/moss_channel_stats/probe_lora_inputs.py on Base)",
         advanced=True,
     )
+    dc_isolate: bool = _f(
+        False,
+        "lora only: put the calibrated input DC direction (token-mean x̄ per target) "
+        "into one rank row of down and keep the other rows orthogonal to it, so only "
+        "one up column learns the token-independent bias and the rest of the up "
+        "gradient is centered (the GraLoRA up-side entanglement, localised). Same "
+        "output at init, plain LoRA on disk, composes with channel scaling. "
+        "Experimental (2026-10-18)",
+    )
+    channel_mean: str = _f(
+        "library/moss/calibration/channel_mean.safetensors",
+        "per-target signed token-mean x̄ for dc_isolate (from "
+        "bench/moss_channel_stats/probe_lora_inputs.py on Base)",
+        advanced=True,
+    )
     lr: float = _f(
         1e-4,
         "AdamW learning rate (rank 32 / alpha 128: 1e-4 with channel scaling keeps "

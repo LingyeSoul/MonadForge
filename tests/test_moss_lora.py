@@ -343,3 +343,82 @@ def test_lokr_full_w2_scale_is_one():
         assert adapter.alpha.item() == 16.0
     with pytest.raises(ValueError, match="algo"):
         LoRANetwork(_tiny(), algo="glora")
+
+
+def _dc_means(model):
+    """A signed token mean per target with one dominant channel, like MOSS's x̄."""
+    g = torch.Generator().manual_seed(4)
+    means = {}
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear) and re.fullmatch(DEFAULT_TARGETS, name):
+            m = torch.randn(module.in_features, generator=g) * 0.1
+            m[1] = -5.0
+            means[name] = m
+    return means
+
+
+def test_dc_isolate_localises_the_dc_direction_and_saves_plain(tmp_path):
+    model = _tiny()
+    x, e = _inputs()
+    means = _dc_means(model)
+    stats = _skewed_stats(model)
+    base_out = _out(model, x, e)
+
+    def rows_vs_u(adapter, mean):
+        u = mean / mean.norm()
+        w = adapter.down_weight()
+        return (w @ u) / w.norm(dim=1)  # cosine of every row with u
+
+    for alpha in (0.0, 0.5):
+        torch.manual_seed(5)
+        net = LoRANetwork(
+            model,
+            rank=4,
+            alpha=2.0,
+            down_init="weight_svd",
+            channel_mean=means,
+            dc_isolate=True,
+            channel_stats=stats if alpha > 0 else None,
+            channel_scaling_alpha=alpha,
+        )
+        for name, adapter in net.adapters.items():
+            cos = rows_vs_u(adapter, means[adapter_name(net, name)])
+            assert torch.allclose(cos[0].abs(), torch.tensor(1.0), atol=1e-5)
+            assert cos[1:].abs().max() < 1e-5
+            norms = adapter.down_weight().norm(dim=1)
+            assert torch.allclose(norms, norms[0].expand_as(norms), rtol=1e-4)
+        # up is zero: the base model exactly
+        assert torch.allclose(_out_with(model, net, x, e), base_out, atol=1e-6)
+        # an optimizer step puts a little u back into rows 1..; reproject removes it
+        with torch.no_grad():
+            for adapter in net.adapters.values():
+                adapter.down.weight.add_(torch.randn_like(adapter.down.weight) * 0.05)
+        assert any(
+            rows_vs_u(a, means[adapter_name(net, n)])[1:].abs().max() > 1e-3
+            for n, a in net.adapters.items()
+        )
+        net.reproject_dc()
+        for name, adapter in net.adapters.items():
+            assert (
+                rows_vs_u(adapter, means[adapter_name(net, name)])[1:].abs().max()
+                < 1e-5
+            )
+
+    # plain LoRA on disk, dc_isolate stamped as provenance
+    for adapter in net.adapters.values():
+        torch.nn.init.normal_(adapter.up.weight, std=0.1)
+    want = _out_with(model, net, x, e)
+    path = tmp_path / "dc.safetensors"
+    net.save(path, "fp32")
+    fresh = _tiny()
+    loaded = load_for_inference(fresh, path)
+    assert all(
+        a.dc_dir is None and a.inv_scale is None for a in loaded.adapters.values()
+    )
+    assert torch.allclose(_out(fresh, x, e), want, atol=1e-5)
+    assert load_network(_tiny(), path)[1]["dc_isolate"] == "1"
+
+    with pytest.raises(ValueError, match="lora'"):
+        LoRANetwork(model, rank=4, algo="lokr", channel_mean=means, dc_isolate=True)
+    with pytest.raises(ValueError, match="needs channel_mean"):
+        LoRANetwork(model, rank=4, dc_isolate=True)

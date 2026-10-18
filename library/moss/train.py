@@ -261,6 +261,7 @@ def train(
     transformer = load_transformer(req.model_dir, req.model)
     transformer.requires_grad_(False)
     channel_alpha = req.channel_scaling_alpha if req.algo == "lora" else 0.0
+    dc_isolate = req.dc_isolate and req.algo == "lora"
     network = LoRANetwork(
         transformer,
         rank=req.rank,
@@ -274,12 +275,17 @@ def train(
         if channel_alpha > 0
         else None,
         channel_scaling_alpha=channel_alpha,
+        channel_mean=load_channel_stats(resolve_under_home(req.channel_mean))
+        if dc_isolate
+        else None,
+        dc_isolate=dc_isolate,
     )
     patched = network.apply_to()
     network.to(device)
     detail = {
         "lora": f"{req.down_init} down"
-        + (f", channel scaling α={channel_alpha:g}" if channel_alpha > 0 else ""),
+        + (f", channel scaling α={channel_alpha:g}" if channel_alpha > 0 else "")
+        + (", dc isolate" if dc_isolate else ""),
         "lokr": f"factor {req.factor}",
         "loha": "hadamard",
     }[req.algo]
@@ -372,6 +378,7 @@ def train(
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(params, req.max_grad_norm)
             optimizer.step()
+            network.reproject_dc()
             lr_sched.step()
             optimizer.zero_grad(set_to_none=True)
             step += 1
