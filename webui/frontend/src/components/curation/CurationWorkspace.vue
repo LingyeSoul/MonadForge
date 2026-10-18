@@ -36,22 +36,23 @@
         <v-card v-else variant="tonal" class="pa-10 text-center"><v-icon icon="mdi-image-search-outline" size="48" class="mb-3" /><p>{{ tr('selectImage') }}</p><v-btn v-if="!api.items.length" variant="outlined" class="mt-4" @click="tab = 'settings'">{{ tr('settings') }}</v-btn></v-card>
       </div>
     </div>
-    <div v-show="tab === 'stages'">
+    <div v-show="tab === 'stages'" class="curation-processing">
       <p class="text-body-2 text-medium-emphasis mb-4">{{ tr('queueHint') }}</p>
       <div class="stage-grid mb-4"><v-btn v-for="(entry, index) in api.schema.stages" :key="entry.id" :data-testid="`curation-stage-${entry.id}`" :variant="stageId === entry.id ? 'flat' : 'outlined'" :color="stageId === entry.id ? 'primary' : undefined" :prepend-icon="entry.available ? undefined : 'mdi-alert-circle-outline'" @click="stageId = entry.id">{{ String(index + 1).padStart(2, '0') }} · {{ stageLabel(entry) }}</v-btn></div>
       <p v-if="!api.schema.stages.length" class="text-medium-emphasis">{{ tr('noStages') }}</p>
-      <v-card v-if="stage" variant="tonal">
+      <v-card v-if="stage" variant="tonal" class="curation-form-card">
         <v-card-title class="text-subtitle-1">{{ stageLabel(stage) }}</v-card-title>
         <v-card-text>
           <v-alert v-if="!stage.available" type="error" variant="tonal" class="mb-4">{{ tr('unavailable') }}: {{ stage.error }}</v-alert>
-          <p v-if="stage.doc" class="text-body-2 mb-3 stage-document">{{ stage.doc }}</p>
-          <v-alert v-if="stage.notes" type="info" variant="tonal" density="compact" class="mb-3">{{ stage.notes }}</v-alert>
+          <p class="text-body-2 mb-3 stage-summary">{{ curationStageSummary(app.language, stage) }}</p>
+          <v-alert v-if="curationStageNotes(app.language, stage)" type="info" variant="tonal" density="compact" class="mb-5">{{ curationStageNotes(app.language, stage) }}</v-alert>
           <v-alert v-if="stage.id === 'export'" type="warning" variant="tonal" class="mb-4">{{ tr('exportHint') }}</v-alert>
           <CurationFields :fields="stage.fields" :model-value="stageValues[stage.id] || {}" :disabled="api.busy || !stage.available" @update:model-value="stageValues[stage!.id] = $event" />
+          <details v-if="stage.doc" :key="stage.id" class="stage-reference"><summary>{{ tr('stageReference') }}</summary><p class="stage-document">{{ stage.doc }}</p></details>
           <div class="d-flex flex-wrap align-center ga-3 mt-3">
-            <v-checkbox v-if="stage.scoped" v-model="scoped" :label="tr('scope')" :disabled="!api.item || Boolean(api.item.excluded)" density="compact" hide-details />
+            <v-checkbox v-if="stage.scoped" v-model="scoped" :label="tr('scope')" :disabled="api.busy || !api.item || Boolean(api.item.excluded)" density="compact" hide-details />
             <span v-if="scoped && api.item" class="text-caption path-label">{{ api.item.rel }}</span>
-            <v-switch v-if="stage.apply && stage.id !== 'export'" v-model="runApply" :label="tr('runMode')" density="compact" hide-details color="warning" />
+            <v-switch v-if="stage.apply && stage.id !== 'export'" v-model="runApply" :disabled="api.busy" :label="tr('runMode')" density="compact" hide-details color="warning" />
           </div>
           <p v-if="!stage.apply" class="text-caption text-medium-emphasis mt-3">{{ tr('stageWrites') }}</p>
         </v-card-text>
@@ -59,23 +60,27 @@
       </v-card>
     </div>
     <div v-show="tab === 'jobs'" class="jobs-layout">
-      <v-list class="job-list" density="compact" bg-color="transparent"><v-list-item v-for="job in api.jobs" :key="job.id" :active="jobId === job.id" :title="`${job.stage} · ${job.state}`" :subtitle="`${job.apply ? tr('applied') : tr(api.schema.stages.find(stage => stage.id === job.stage)?.apply === false ? 'workspaceRun' : 'dryRun')} · ${job.created_at || job.id}`" @click="jobId = job.id"><template #prepend><v-icon :icon="['running', 'queued', 'pending'].includes(job.state) ? 'mdi-progress-clock' : job.error ? 'mdi-alert-circle-outline' : 'mdi-file-document-outline'" /></template></v-list-item><v-list-item v-if="!api.jobs.length" :title="tr('noJobs')" /></v-list>
+      <v-list class="job-list" density="compact" bg-color="transparent"><v-list-item v-for="job in api.jobs" :key="job.id" :active="jobId === job.id" :title="`${job.stage} · ${job.state}`" :subtitle="`${job.apply ? tr('applied') : tr(api.schema.stages.find(stage => stage.id === job.stage)?.apply === false ? 'workspaceRun' : 'dryRun')} · ${job.created_at || job.id}`" @click="jobId = job.id"><template #prepend><v-icon :icon="isTaskActive(job.state) ? 'mdi-progress-clock' : job.error ? 'mdi-alert-circle-outline' : 'mdi-file-document-outline'" /></template></v-list-item><v-list-item v-if="!api.jobs.length" :title="tr('noJobs')" /></v-list>
       <div class="job-detail"><CurationReport v-if="selectedJob" :job="selectedJob" :api="api" @queued="onQueued" /><v-card v-else variant="tonal" class="pa-8 text-center">{{ tr('selectJob') }}</v-card></div>
     </div>
-    <div v-show="tab === 'settings'">
+    <div v-show="tab === 'settings'" class="curation-settings">
       <v-alert type="info" variant="tonal" class="mb-4">{{ tr('sourceHint') }} {{ tr('settingsHint') }}</v-alert>
-      <v-card variant="tonal" class="mb-4"><v-card-title class="text-subtitle-1">{{ tr('settings') }}</v-card-title><v-card-text><v-row dense><v-col v-for="name in rootNames" :key="name" cols="12" md="6"><v-text-field v-model="rootDraft[name]" :disabled="api.busy" :data-testid="`curation-root-${name}`" :label="`${name} · ${tr(name === 'src' ? 'source' : name)}`" :hint="api.roots[name].exists === false ? tr('missing') : ''" persistent-hint density="compact" /></v-col></v-row><v-btn v-if="inputDir" size="small" variant="text" @click="rootDraft.src = inputDir">{{ tr('chooseSource') }} · {{ inputDir }}</v-btn></v-card-text><v-card-actions><v-btn data-testid="curation-save-roots" variant="flat" color="primary" :disabled="!rootsDirty || api.busy" @click="saveRoots">{{ tr('saveRoots') }}</v-btn></v-card-actions></v-card>
-      <v-card variant="tonal"><v-card-title class="text-subtitle-1">{{ tr('defaults') }}</v-card-title><v-card-text><v-row dense><v-col v-for="name in defaultKeys" :key="name" cols="12" md="6"><v-text-field v-model="defaultDraft[name]" :disabled="api.busy" :label="name === 'report_root' ? tr('reportRoot') : name === 'mask_root' ? tr('maskRoot') : name" density="compact" hide-details /></v-col></v-row><div v-if="resizeStage" class="mt-5"><h3 class="text-subtitle-2 mb-3">{{ tr('resizeDefaults') }}</h3><CurationFields v-model="preprocessDraft" :fields="resizeStage.fields" :disabled="api.busy" /></div></v-card-text><v-card-actions><v-btn color="primary" :disabled="api.busy" @click="saveSettings">{{ tr('saveSettings') }}</v-btn></v-card-actions></v-card>
+      <v-card variant="tonal" class="mb-4"><v-card-title class="text-subtitle-1">{{ tr('settings') }}</v-card-title><v-card-text><v-row density="comfortable"><v-col v-for="name in rootNames" :key="name" cols="12" md="6"><v-text-field v-model="rootDraft[name]" :disabled="api.busy" :data-testid="`curation-root-${name}`" :label="tr(name === 'src' ? 'source' : name)" :title="rootDraft[name]" :hint="api.roots[name].exists === false ? tr('missing') : ''" persistent-hint density="compact" /></v-col></v-row><v-btn v-if="inputDir" size="small" variant="text" class="source-directory-action" :title="inputDir" :disabled="api.busy" @click="rootDraft.src = inputDir">{{ tr('chooseSource') }} · {{ inputDir }}</v-btn></v-card-text><v-card-actions><v-btn data-testid="curation-save-roots" variant="flat" color="primary" :disabled="!rootsDirty || api.busy" :loading="api.busy" @click="saveRoots">{{ tr('saveRoots') }}</v-btn></v-card-actions></v-card>
+      <v-card variant="tonal"><v-card-title class="text-subtitle-1">{{ tr('defaults') }}</v-card-title><v-card-text><v-row density="comfortable"><v-col v-for="name in defaultKeys" :key="name" cols="12" md="6"><v-text-field v-model="defaultDraft[name]" :disabled="api.busy" :label="tr(defaultLabels[name])" :title="defaultDraft[name]" density="compact" hide-details /></v-col></v-row><div v-if="resizeStage" class="mt-5"><h3 class="text-subtitle-2 mb-3">{{ tr('resizeDefaults') }}</h3><CurationFields v-model="preprocessDraft" :fields="resizeStage.fields" :disabled="api.busy" /></div></v-card-text><v-card-actions><v-btn color="primary" variant="flat" :disabled="!defaultsDirty || api.busy" :loading="api.busy" @click="saveSettings">{{ tr('saveSettings') }}</v-btn></v-card-actions></v-card>
     </div>
     <v-expansion-panels v-if="api.result" variant="accordion" class="mt-4"><v-expansion-panel :title="tr('reportResult')"><v-expansion-panel-text><pre class="operation-result">{{ JSON.stringify(api.result, null, 2) }}</pre></v-expansion-panel-text></v-expansion-panel></v-expansion-panels>
+    <v-dialog v-model="discardSettingsOpen" max-width="480" persistent><v-card :title="t('settingsUnsavedTitle')" :text="t('settingsDiscardBody')"><v-card-actions><v-spacer /><v-btn @click="resolveSettingsDiscard(false)">{{ tr('cancel') }}</v-btn><v-btn color="warning" @click="resolveSettingsDiscard(true)">{{ tr('discard') }}</v-btn></v-card-actions></v-card></v-dialog>
   </section>
 </template>
 <script setup lang="ts">
+import { isTaskActive } from '../../utils/taskState.ts'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
+import { useI18n } from '../../composables/useI18n'
 import { useAppStore } from '../../stores/app'
-import { curationFileUrl, rootNames, useCuration } from '../../composables/useCuration'
+import { curationFileUrl, curationImageKey, rootNames, useCuration } from '../../composables/useCuration'
 import { curationEn, curationText } from '../../i18n/curation'
+import { curationStageSummary, curationStageNotes } from '../../i18n/curationSchema'
 import type { CurationStage, CurationValues, RootName } from '../../types/curation'
 import CurationFields from './CurationFields.vue'
 import CurationInspector from './CurationInspector.vue'
@@ -83,6 +88,7 @@ import CurationReport from './CurationReport.vue'
 const props = defineProps<{ inputDir?: string }>()
 const inputDir = computed(() => props.inputDir || '')
 const app = useAppStore()
+const { t } = useI18n()
 const tr = (key: Parameters<typeof curationText>[1]) => curationText(app.language, key)
 const api = reactive(useCuration())
 const tab = ref('dataset'), notice = ref(''), captionDirty = ref(false)
@@ -94,22 +100,38 @@ const groupOptions = computed(() => api.groups.groups.map(group => ({ title: `#$
 const selectedGroup = computed(() => api.groups.groups.find(group => group.id === groupId.value))
 const filteredItems = computed(() => {
   const needle = (search.value || '').toLocaleLowerCase()
-  const members = selectedGroup.value ? new Set(selectedGroup.value.members) : null
-  return api.items.filter(row => (!needle || row.rel.toLocaleLowerCase().includes(needle)) && (!folder.value || row.dir === folder.value || row.dir.startsWith(`${folder.value}/`)) && (!members || members.has(row.rel)) && (inclusion.value === 'all' || row.excluded === (inclusion.value === 'excluded')))
+  const members = selectedGroup.value ? new Set(selectedGroup.value.members.map(curationImageKey)) : null
+  return api.items.filter(row => (!needle || row.rel.toLocaleLowerCase().includes(needle)) && (!folder.value || row.dir === folder.value || row.dir.startsWith(`${folder.value}/`)) && (!members || members.has(curationImageKey(row.rel))) && (inclusion.value === 'all' || row.excluded === (inclusion.value === 'excluded')))
 })
 const pagedItems = computed(() => filteredItems.value.slice((page.value - 1) * pageSize, page.value * pageSize))
 watch([search, folder, groupId, inclusion], () => { page.value = 1 })
+watch(() => filteredItems.value.length, length => { page.value = Math.min(page.value, Math.max(1, Math.ceil(length / pageSize))) })
 function sourcePath(rel: string): string { return `${api.roots.src.path.replace(/[\\/]$/, '')}/${rel}` }
 const rootDraft = ref<Record<RootName, string>>({ src: '', master: '', dst: '', masks: '', out: '' })
 const rootsDirty = computed(() => rootNames.some(name => rootDraft.value[name] !== api.roots[name].path))
 watch(() => api.roots, () => { rootDraft.value = Object.fromEntries(rootNames.map(name => [name, api.roots[name].path])) as Record<RootName, string> }, { deep: true, immediate: true })
-const defaultKeys = ['path_pattern', 'tagger_dir', 'checkpoint', 'prompt_embed', 'report_root', 'mask_root']
+const defaultLabels = { path_pattern: 'defaultPathPattern', tagger_dir: 'defaultTaggerDir', checkpoint: 'defaultCheckpoint', prompt_embed: 'defaultPromptEmbed', report_root: 'reportRoot', mask_root: 'maskRoot' } as const
+const defaultKeys = Object.keys(defaultLabels) as (keyof typeof defaultLabels)[]
 const defaultDraft = ref<Record<string, string>>({}), preprocessDraft = ref<CurationValues>({}), stageValues = ref<Record<string, CurationValues>>({})
+const defaultsBaseline = ref('')
 watch(() => api.settings, settings => {
   defaultDraft.value = { ...settings.stage_defaults as Record<string, string> || {} }
   preprocessDraft.value = { ...settings.preprocess as CurationValues || {} }
   stageValues.value = { ...settings.values as Record<string, CurationValues> || {} }
+  defaultsBaseline.value = JSON.stringify([defaultDraft.value, preprocessDraft.value])
 }, { immediate: true })
+const defaultsDirty = computed(() => JSON.stringify([defaultDraft.value, preprocessDraft.value]) !== defaultsBaseline.value)
+const discardSettingsOpen = ref(false)
+let settingsDiscardResolve: ((value: boolean) => void) | undefined
+function resolveSettingsDiscard(value: boolean) { discardSettingsOpen.value = false; settingsDiscardResolve?.(value); settingsDiscardResolve = undefined }
+async function leaveSettings(): Promise<boolean> {
+  if (api.busy) return false
+  if (!rootsDirty.value && !defaultsDirty.value) return true
+  settingsDiscardResolve?.(false)
+  discardSettingsOpen.value = true
+  return new Promise(resolve => { settingsDiscardResolve = resolve })
+}
+watch(() => api.busy, busy => { if (busy) notice.value = '' })
 const stageId = ref('autotag'), runApply = ref(false), scoped = ref(false), jobId = ref('')
 const stage = computed(() => api.schema.stages.find(entry => entry.id === stageId.value) || api.schema.stages[0])
 const resizeStage = computed(() => api.schema.stages.find(entry => entry.id === 'resize'))
@@ -119,7 +141,7 @@ function stageLabel(entry: CurationStage): string { return entry.id in curationE
 async function leaveCaption(): Promise<boolean> { return await inspector.value?.requestLeave() ?? true }
 async function select(rel: string): Promise<void> { if (api.item?.rel === rel || !await leaveCaption()) return; await api.perform(() => api.selectItem(rel)) }
 async function refresh(): Promise<void> {
-  if (!await leaveCaption()) return
+  if (!await leaveSettings() || !await leaveCaption()) return
   const rel = api.item?.rel
   await api.initialize()
   if (rel && api.items.some(row => row.rel === rel)) await api.perform(() => api.selectItem(rel))
@@ -149,16 +171,16 @@ async function poll(): Promise<void> {
       await api.loadJobs()
       if (active.some(id => !api.activeJobs.some(job => job.id === id))) {
         await Promise.all([api.loadDataset(), api.loadGroups()])
-        if (api.item && !captionDirty.value) await api.selectItem(api.item.rel)
+        if (api.item && !captionDirty.value) await api.selectItem(api.item.rel, () => !captionDirty.value && !api.busy)
       }
     } catch (cause) { api.error = cause instanceof Error ? cause.message : String(cause) }
   }
   if (!disposed) timer = setTimeout(poll, 5000)
 }
-function beforeUnload(event: BeforeUnloadEvent): void { if (captionDirty.value) { event.preventDefault(); event.returnValue = '' } }
-onBeforeRouteLeave(() => leaveCaption())
+function beforeUnload(event: BeforeUnloadEvent): void { if (captionDirty.value || rootsDirty.value || defaultsDirty.value) { event.preventDefault(); event.returnValue = '' } }
+onBeforeRouteLeave(async () => await leaveSettings() && await leaveCaption())
 onMounted(async () => { window.addEventListener('beforeunload', beforeUnload); await api.initialize(); if (!disposed) timer = setTimeout(poll, 5000) })
-onBeforeUnmount(() => { disposed = true; clearTimeout(timer); window.removeEventListener('beforeunload', beforeUnload) })
+onBeforeUnmount(() => { disposed = true; clearTimeout(timer); settingsDiscardResolve?.(false); window.removeEventListener('beforeunload', beforeUnload) })
 </script>
 <style scoped>
 .curation-workspace { min-width: 0; }
@@ -177,8 +199,18 @@ onBeforeUnmount(() => { disposed = true; clearTimeout(timer); window.removeEvent
 .caption-dot { width: 6px; height: 6px; border: 1px solid rgba(var(--v-theme-on-surface), .35); border-radius: 50%; margin-top: 4px; }
 .caption-dot.present { background: rgb(var(--v-theme-primary)); border-color: transparent; }
 .stage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
-.stage-document { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
+.curation-processing, .curation-settings { max-width: 1500px; }
+.curation-workspace .curation-form-card, .curation-settings :deep(.v-card) { background: var(--bg-form-surface); }
+.curation-form-card :deep(.v-field), .curation-settings :deep(.v-field) { background: var(--bg-form-field); }
+.curation-form-card :deep(.v-card-text) { padding-top: 12px; }
+.curation-form-card :deep(.v-card-actions) { padding: 12px 16px 16px; }
+.stage-summary { max-width: 90ch; line-height: 1.7; }
+.stage-reference { margin-top: 16px; font-size: 13px; color: var(--text-secondary); }
+.stage-reference summary { cursor: pointer; }
+.stage-document { margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; line-height: 1.65; }
 .path-label { overflow-wrap: anywhere; }
+.source-directory-action { max-width: 100%; height: auto; min-height: 32px; }
+.source-directory-action :deep(.v-btn__content) { white-space: normal; overflow-wrap: anywhere; }
 .operation-result { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 350px; overflow: auto; }
 @media (max-width: 900px) { .dataset-layout, .jobs-layout { grid-template-columns: minmax(0, 1fr); } .dataset-list { max-height: 290px; } .job-list { max-height: 260px; overflow: auto; } }
 </style>

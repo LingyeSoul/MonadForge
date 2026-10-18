@@ -38,6 +38,10 @@ CURATION_PATHS: tuple[str, ...] = (
     # 0.6.4), shared by ``masking.py`` and the GUI's rule cards; imports only
     # ``anime_tools``.
     "library/config/sam_masks.py",
+    # The pinned model-free compatibility subset and stdlib runtime selector
+    # now live locally. Scan their dependencies too; do not exempt them.
+    "library/curation_compat/**/*.py",
+    "library/runtime/profiles.py",
 )
 
 # Anything under ``library.`` that is not itself in the manifest is trainer-only

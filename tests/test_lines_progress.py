@@ -5,11 +5,11 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from library.lines.progress import training_progress
+from library.moss.validation import validate_request
 
 
 def _read(path):
@@ -40,9 +40,20 @@ def _mock_entry(model_type, driver):
         "train": lambda req, samples, empty, *, progress: driver(req, progress),
         "resolve_under_home": Path,
         "samples_from_cache": lambda cache: ["synthetic-sample"],
+        "validate_request": validate_request,
     }
     exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
     return namespace["run_train"]
+
+
+def _request(model_type, **values):
+    if model_type == "moss":
+        from library.moss.requests import TrainRequest
+    else:
+        from library.qwen21.requests import TrainRequest
+
+        values.pop("caption_dropout", None)
+    return TrainRequest(**values)
 
 
 @pytest.mark.parametrize("model_type", ["qwen21", "moss"])
@@ -67,7 +78,7 @@ def test_public_wrapper_writes_job_lifecycle_without_model(
 
     run = _mock_entry(model_type, driver)
     assert (
-        run(SimpleNamespace(output=str(output), cache="unused", caption_dropout=0))
+        run(_request(model_type, output=str(output), cache="unused", caption_dropout=0))
         == output
     )
     events = _read(tmp_path / "progress.jsonl")
@@ -102,8 +113,8 @@ def test_wrapper_early_failure_has_terminal_event(
 
     with pytest.raises(type(exception)):
         _mock_entry(model_type, driver)(
-            SimpleNamespace(
-                output="mock.safetensors", cache="unused", caption_dropout=0
+            _request(
+                model_type, output="mock.safetensors", cache="unused", caption_dropout=0
             )
         )
     events = _read(tmp_path / "progress.jsonl")
@@ -119,3 +130,16 @@ def test_standalone_cli_has_no_job_stream(tmp_path, monkeypatch):
         progress.start(total_steps=1, total_epochs=1)
         progress.step(global_step=1, epoch=1, loss=0.1, average_loss=0.1, lr=0.01)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_moss_output_validation_failure_emits_terminal_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANIMA_DAEMON_JOB_DIR", str(tmp_path))
+
+    def driver(req, progress):
+        pytest.fail("Invalid output must not reach the training driver")
+
+    with pytest.raises(ValueError, match=".safetensors"):
+        _mock_entry("moss", driver)(_request("moss", output="invalid.json"))
+    events = _read(tmp_path / "progress.jsonl")
+    assert [event["ev"] for event in events] == ["run_start", "run_end"]
+    assert events[-1]["status"] == "error"

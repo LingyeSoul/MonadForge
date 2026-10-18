@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -60,6 +61,7 @@ METRICS_MIN_INTERVAL = 0.4
 class TaskState(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
     STOPPING = "stopping"
     SUCCESS = "success"
     FAILED = "failed"
@@ -120,6 +122,7 @@ class Task:
     loaded_attempt_ids: list[str] = field(default_factory=list, repr=False)
     # monotonic() timestamp of the last metrics snapshot broadcast.
     last_metrics_ts: float = field(default=0.0, repr=False)
+    metrics_pending: bool = field(default=False, repr=False)
 
     def info(self) -> dict:
         attempt_infos = [
@@ -130,7 +133,9 @@ class Task:
                 "started_at": TaskService._format_daemon_timestamp(
                     attempt.get("started_at") or attempt.get("submitted_at")
                 ),
-                "ended_at": TaskService._format_daemon_timestamp(attempt.get("ended_at")),
+                "ended_at": TaskService._format_daemon_timestamp(
+                    attempt.get("ended_at")
+                ),
                 "recovery_step": attempt.get("recovery_step"),
                 "exit_code": attempt.get("rc"),
                 "terminal_reason": attempt.get("terminal_reason")
@@ -224,7 +229,9 @@ class TaskService:
                 jobs = [job for job in jobs if job.get("state") in states]
             return {
                 "groups": [self._physical_job_group(job) for job in jobs],
-                "total": len(jobs) if states else int(page.get("total", len(jobs)) or 0),
+                "total": len(jobs)
+                if states
+                else int(page.get("total", len(jobs)) or 0),
                 "offset": int(page.get("offset", kwargs.get("offset", 0)) or 0),
                 "limit": int(page.get("limit", kwargs.get("limit", len(jobs))) or 0),
             }
@@ -233,7 +240,11 @@ class TaskService:
         """Merge active daemon jobs into the WebUI's in-memory task table."""
 
         for raw_info in jobs:
-            info = raw_info if raw_info.get("attempts") else self._physical_job_group(raw_info)
+            info = (
+                raw_info
+                if raw_info.get("attempts")
+                else self._physical_job_group(raw_info)
+            )
             root_id = info.get("root_job_id") or info.get("id")
             if not root_id:
                 continue
@@ -248,9 +259,15 @@ class TaskService:
     def _task_from_daemon(self, info: dict) -> Task:
         group = info if info.get("attempts") else self._physical_job_group(info)
         attempts = list(group.get("attempts") or [])
-        current_job_id = str(group.get("current_job_id") or attempts[-1].get("id") or group["id"])
+        current_job_id = str(
+            group.get("current_job_id") or attempts[-1].get("id") or group["id"]
+        )
         current = next(
-            (attempt for attempt in attempts if str(attempt.get("id")) == current_job_id),
+            (
+                attempt
+                for attempt in attempts
+                if str(attempt.get("id")) == current_job_id
+            ),
             attempts[-1] if attempts else group,
         )
         root_id = str(group.get("root_job_id") or group.get("id") or current_job_id)
@@ -265,7 +282,9 @@ class TaskService:
             id=root_id,
             command=command,
             args=args,
-            state=self._map_daemon_state(current.get("state"), stop_requested=bool(current.get("stop_requested"))),
+            state=self._map_daemon_state(
+                current.get("state"), stop_requested=bool(current.get("stop_requested"))
+            ),
             pid=current.get("pid"),
             exit_code=current.get("rc"),
             job_id=current_job_id,
@@ -276,10 +295,16 @@ class TaskService:
             ),
             attempts=attempts,
         )
-        task.is_training = current.get("kind") == "train" or self._command_runs_training(command)
+        task.is_training = current.get(
+            "kind"
+        ) == "train" or self._command_runs_training(command)
         task.recovery_step = current.get("recovery_step")
         task.resume_state = current.get("recovery_state")
-        task.terminal_reason = current.get("terminal_reason") or current.get("status_detail") or current.get("error")
+        task.terminal_reason = (
+            current.get("terminal_reason")
+            or current.get("status_detail")
+            or current.get("error")
+        )
         # A terminal status alone does not imply that a complete, signature-
         # matched state exists. Keep Continue hidden until the daemon has
         # discovered and persisted an actual recovery directory.
@@ -302,10 +327,13 @@ class TaskService:
             return None
 
     @staticmethod
-    def _map_daemon_state(state: Optional[str], *, stop_requested: bool = False) -> TaskState:
+    def _map_daemon_state(
+        state: Optional[str], *, stop_requested: bool = False
+    ) -> TaskState:
         return {
             "queued": TaskState.PENDING,
             "running": TaskState.STOPPING if stop_requested else TaskState.RUNNING,
+            "paused": TaskState.STOPPING if stop_requested else TaskState.PAUSED,
             "done": TaskState.SUCCESS,
             "stopped": TaskState.CANCELLED,
             "error": TaskState.FAILED,
@@ -319,12 +347,20 @@ class TaskService:
             or (attempts[-1].get("id") if attempts else task.job_id or task.id)
         )
         current = next(
-            (attempt for attempt in attempts if str(attempt.get("id")) == current_job_id),
+            (
+                attempt
+                for attempt in attempts
+                if str(attempt.get("id")) == current_job_id
+            ),
             attempts[-1] if attempts else group,
         )
         attempt_ids_before = [str(attempt.get("id")) for attempt in task.attempts]
         attempt_ids_after = [str(attempt.get("id")) for attempt in attempts]
         current_changed = task.job_id != current_job_id
+        poller = self._pollers.get(task.id)
+        streaming_current = (
+            not current_changed and poller is not None and not poller.done()
+        )
 
         task.state = self._map_daemon_state(
             current.get("state"), stop_requested=bool(current.get("stop_requested"))
@@ -337,12 +373,21 @@ class TaskService:
         task.stdout_path = current.get("stdout_path") or task.stdout_path
         task.recovery_step = current.get("recovery_step")
         task.resume_state = current.get("recovery_state")
-        task.terminal_reason = current.get("terminal_reason") or current.get("status_detail") or current.get("error")
+        task.terminal_reason = (
+            current.get("terminal_reason")
+            or current.get("status_detail")
+            or current.get("error")
+        )
         task.resumable = bool(current.get("recovery_state"))
         task.legacy = bool(current.get("legacy"))
         task.target_steps = current.get("target_steps")
         task.target_epochs = current.get("target_epochs")
-        if current_changed or attempt_ids_before != attempt_ids_after:
+        if streaming_current:
+            # A list refresh can attach the first attempt metadata before the
+            # poller sees its final output. Rebuilding here consumes that
+            # output's byte offset without emitting it to existing subscribers.
+            task.loaded_attempt_ids = attempt_ids_after
+        elif current_changed or attempt_ids_before != attempt_ids_after:
             task.monitored_job_id = None
             self._load_historical_output(task, group)
         elif task.loaded_attempt_ids != attempt_ids_after:
@@ -378,15 +423,14 @@ class TaskService:
             stdout_path = attempt.get("stdout_path")
             if stdout_path:
                 try:
-                    raw = Path(stdout_path).read_text(
-                        encoding="utf-8", errors="replace"
-                    )
+                    raw_bytes = Path(stdout_path).read_bytes()
+                    raw = raw_bytes.decode("utf-8", errors="replace")
                     lines = [line for line in re.split(r"\r?\n", raw) if line]
                     task.lines.extend(lines)
                     for line in lines:
                         task.parser.feed(line)
                     if attempt_id == str(task.job_id):
-                        task.stdout_offset = len(raw.encode("utf-8"))
+                        task.stdout_offset = len(raw_bytes)
                 except OSError:
                     pass
 
@@ -394,15 +438,16 @@ class TaskService:
             if not progress_path or not task.is_training:
                 continue
             try:
-                raw_events = Path(progress_path).read_text(
-                    encoding="utf-8", errors="replace"
-                ).splitlines()
+                raw_events = (
+                    Path(progress_path)
+                    .read_text(encoding="utf-8", errors="replace")
+                    .splitlines()
+                )
             except OSError:
                 continue
             for raw_event in raw_events:
-                try:
-                    ev = json.loads(raw_event)
-                except (json.JSONDecodeError, ValueError, TypeError):
+                ev = TaskService._parse_progress_event(raw_event)
+                if ev is None:
                     continue
                 kind = ev.get("ev")
                 metrics = task.parser.metrics
@@ -411,9 +456,8 @@ class TaskService:
                         metrics.total_steps = int(ev["total_steps"])
                     if ev.get("total_epochs") is not None:
                         metrics.total_epochs = int(ev["total_epochs"])
-                    metrics.sampling_enabled = (
-                        metrics.sampling_enabled
-                        or bool(ev.get("sampling_enabled", False))
+                    metrics.sampling_enabled = metrics.sampling_enabled or bool(
+                        ev.get("sampling_enabled", False)
                     )
                 elif kind == "step" and ev.get("global_step") is not None:
                     step = int(ev["global_step"])
@@ -434,9 +478,10 @@ class TaskService:
         metrics = task.parser.metrics
         # Structured JSONL is authoritative for chart points; stdout is retained
         # for speed/ETA and event parsing only.
-        metrics.step_history = []
-        metrics.loss_history = []
-        metrics.lr_history = []
+        if points:
+            metrics.step_history = []
+            metrics.loss_history = []
+            metrics.lr_history = []
         for step in sorted(points):
             loss, lr, epoch = points[step]
             metrics.upsert_step(step, loss, lr)
@@ -445,7 +490,12 @@ class TaskService:
             if epoch is not None:
                 metrics.epoch = epoch
         metrics.step = max(
-            [task.progress_last_step, *final_steps, *(points.keys() or [0])]
+            [
+                metrics.step,
+                task.progress_last_step,
+                *final_steps,
+                *(points.keys() or [0]),
+            ]
         )
         task.lines_total = len(task.lines)
         TaskService._cap_lines(task)
@@ -469,13 +519,14 @@ class TaskService:
         if task.job_id is None or task.state not in (
             TaskState.PENDING,
             TaskState.RUNNING,
+            TaskState.PAUSED,
             TaskState.STOPPING,
         ):
             return
 
         if task.monitored_job_id != task.job_id:
-            old_poller = self._pollers.get(task.id)
-            old_watcher = self._progress_watchers.get(task.id)
+            old_poller = self._pollers.pop(task.id, None)
+            old_watcher = self._progress_watchers.pop(task.id, None)
             if old_poller is not None and not old_poller.done():
                 old_poller.cancel()
             if old_watcher is not None and not old_watcher.done():
@@ -547,10 +598,13 @@ class TaskService:
         into the existing Task objects so historical logs still work.
         """
         daemon_state = {
+            "pending": "queued",
+            "running": "running",
+            "paused": "paused",
             "success": "done",
             "failed": "error",
             "cancelled": "stopped",
-            "active": "queued,running",
+            "active": "queued,running,paused",
         }.get(state or "")
         page = await self._list_job_groups_page(
             state=daemon_state,
@@ -604,7 +658,11 @@ class TaskService:
             )
             if state not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
                 return False
-        elif task.state not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+        elif task.state not in (
+            TaskState.SUCCESS,
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+        ):
             return False
         await daemon_client.delete_job_group(task_id)
         self._tasks.pop(task_id, None)
@@ -677,7 +735,9 @@ class TaskService:
         """
         return await daemon_client.start_queue()
 
-    async def shutdown_daemon(self, *, kill_jobs: bool = True, mode: str | None = None) -> dict:
+    async def shutdown_daemon(
+        self, *, kill_jobs: bool = True, mode: str | None = None
+    ) -> dict:
         """Fully stop the training daemon — a complete exit (process + worker).
 
         Posts to the daemon's ``/shutdown``; by default ``kill_jobs=True`` also
@@ -738,7 +798,9 @@ class TaskService:
 
         if command in QWEN_COMMANDS:
             if env:
-                raise ValueError("Qwen WebUI jobs require explicit form parameters; environment overrides are not supported")
+                raise ValueError(
+                    "Qwen WebUI jobs require explicit form parameters; environment overrides are not supported"
+                )
             args = prepare_job_args(command, args or [])
         from library.runtime.profiles import resolve_runtime
 
@@ -750,10 +812,15 @@ class TaskService:
         if command in QWEN_COMMANDS:
             job_context["model_type"] = "qwen21"
         elif command.startswith("moss-"):
-            from webui.services.moss_service import prepare_job_args as prepare_moss, task_context as moss_context
+            from webui.services.moss_service import (
+                prepare_job_args as prepare_moss,
+                task_context as moss_context,
+            )
 
             if env:
-                raise ValueError("MOSS WebUI jobs require explicit parameters; environment overrides are not supported")
+                raise ValueError(
+                    "MOSS WebUI jobs require explicit parameters; environment overrides are not supported"
+                )
             args = prepare_moss(command, args or [])
             job_context.update(moss_context(command, args))
             job_context["model_type"] = "moss"
@@ -799,7 +866,11 @@ class TaskService:
                 extra_env=extra_env,
                 config_snapshot=config_snapshot,
                 start=True,
-                stall_timeout=900.0 if command in QWEN_COMMANDS or command.startswith("moss-") or command == "curation-stage" else None,
+                stall_timeout=900.0
+                if command in QWEN_COMMANDS
+                or command.startswith("moss-")
+                or command == "curation-stage"
+                else None,
                 context=job_context,
                 runtime_profile=runtime.name,
                 python_executable=str(runtime.python),
@@ -846,7 +917,9 @@ class TaskService:
         command jobs do not need a synthetic snapshot.
         """
         if command == "staged-train":
-            profile = argv[2] if len(argv) >= 3 and not argv[2].startswith("-") else "default"
+            profile = (
+                argv[2] if len(argv) >= 3 and not argv[2].startswith("-") else "default"
+            )
             try:
                 import toml
                 from library.training.staged_resolution_plan import (
@@ -861,7 +934,9 @@ class TaskService:
                 snapshot["dataset_manifest"] = str(manifest_path(str(profile), ROOT))
                 return snapshot
             except (FileNotFoundError, ValueError, OSError):
-                logger.warning("Could not capture staged training snapshot for %s", profile)
+                logger.warning(
+                    "Could not capture staged training snapshot for %s", profile
+                )
                 return None
         if command != "lora-gui":
             return None
@@ -882,10 +957,9 @@ class TaskService:
         # configs, while GUI variants normally select an epoch-only budget.
         # Persisting that inherited default in a standalone snapshot would make
         # read_config_from_file treat it as an explicit step budget on resume.
-        if (
-            origin.get("max_train_steps") == "base"
-            and origin.get("max_train_epochs") in {"method", "preset"}
-        ):
+        if origin.get("max_train_steps") == "base" and origin.get(
+            "max_train_epochs"
+        ) in {"method", "preset"}:
             merged.pop("max_train_steps", None)
         for index, token in enumerate(argv):
             if token == "--preprocess_run" and index + 1 < len(argv):
@@ -905,7 +979,7 @@ class TaskService:
         if task.state == TaskState.STOPPING:
             return True
         # Allow cancel from PENDING (queued) or RUNNING.
-        if task.state not in (TaskState.RUNNING, TaskState.PENDING):
+        if task.state not in (TaskState.RUNNING, TaskState.PENDING, TaskState.PAUSED):
             return False
         try:
             await daemon_client.stop(task.job_id)
@@ -932,6 +1006,15 @@ class TaskService:
         queue: asyncio.Queue = asyncio.Queue()
         task = self._get_or_load_task(task_id)
         if task:
+            current = next(
+                (
+                    attempt
+                    for attempt in task.attempts
+                    if attempt.get("id") == task.job_id
+                ),
+                {},
+            )
+            self._ensure_monitors(task, current.get("progress_path"))
             task._subscribers.append(queue)
             # Replay existing lines
             for line in task.lines:
@@ -965,14 +1048,24 @@ class TaskService:
         state we map to ``TaskState`` and emit the ``done`` message.
         """
         assert task.job_id is not None
+        job_id = task.job_id
         poll_interval = 0.5
-        while task.state in (
-            TaskState.PENDING,
-            TaskState.RUNNING,
-            TaskState.STOPPING,
-        ):
+        while task.job_id == job_id:
             try:
-                info = await daemon_client.get_job(task.job_id)
+                # List/queue reconciliation may already have observed the
+                # terminal record during our sleep. Still drain and publish
+                # completion exactly once rather than exiting on local state.
+                info = next(
+                    (
+                        attempt
+                        for attempt in task.attempts
+                        if attempt.get("id") == job_id
+                        and attempt.get("state") in ("done", "error", "stopped")
+                    ),
+                    None,
+                )
+                if info is None:
+                    info = await daemon_client.get_job(job_id)
             except asyncio.CancelledError:
                 raise
             except DaemonError:
@@ -984,14 +1077,18 @@ class TaskService:
                 await asyncio.sleep(poll_interval)
                 continue
 
+            if task.job_id != job_id:
+                return
             stdout_path = info.get("stdout_path")
             if stdout_path:
                 task.stdout_path = stdout_path
 
             dstate = info.get("state")
-            if dstate == "running":
+            if dstate in ("running", "paused"):
                 if task.state != TaskState.STOPPING:
-                    task.state = TaskState.RUNNING
+                    task.state = self._map_daemon_state(
+                        dstate, stop_requested=bool(info.get("stop_requested"))
+                    )
                 task.pid = info.get("pid")
             elif dstate == "queued":
                 if task.state != TaskState.STOPPING:
@@ -1018,7 +1115,11 @@ class TaskService:
         dstate = info.get("state")
         task.recovery_step = info.get("recovery_step")
         task.resume_state = info.get("recovery_state")
-        task.terminal_reason = info.get("terminal_reason") or info.get("status_detail") or info.get("error")
+        task.terminal_reason = (
+            info.get("terminal_reason")
+            or info.get("status_detail")
+            or info.get("error")
+        )
         task.resumable = bool(info.get("recovery_state"))
         if task.state == TaskState.CANCELLED:
             pass  # cancel_task already set it
@@ -1039,6 +1140,12 @@ class TaskService:
                     task, {"type": "log", "line": f"[error] {err}"}
                 )
 
+        # The last progress write can race the daemon's terminal poll. Let the
+        # watcher drain that write before closing subscribers with ``done``.
+        watcher = self._progress_watchers.get(task.id)
+        if watcher is not None and watcher is not asyncio.current_task():
+            await watcher
+        await self._flush_metrics_emit(task)
         ckpt = info.get("ckpt_path")
         msg = {
             "type": "done",
@@ -1201,7 +1308,10 @@ class TaskService:
         from scripts.tasks._common import command_runs_training
 
         return command_runs_training(command) or command in {
-            "qwen21-train", "qwen21-cache-train", "moss-train", "moss-cache-train",
+            "qwen21-train",
+            "qwen21-cache-train",
+            "moss-train",
+            "moss-cache-train",
         }
 
     def _config_path_overrides(
@@ -1252,6 +1362,51 @@ class TaskService:
             )
             return {}
 
+    @staticmethod
+    def _parse_progress_event(raw_line: str) -> Optional[dict]:
+        """Ignore damaged telemetry records without losing later valid events."""
+        try:
+            event = json.loads(raw_line)
+            if not isinstance(event, dict):
+                raise ValueError("progress event must be an object")
+            for name in (
+                "global_step",
+                "epoch",
+                "final_step",
+                "total_steps",
+                "total_epochs",
+                "ts",
+                "loss/average",
+                "avr_loss",
+                "lr/d*lr/unet",
+                "lr/unet",
+                "lr",
+            ):
+                if name not in event:
+                    continue
+                value = event[name]
+                if value is None:
+                    event.pop(name)
+                    continue
+                if isinstance(value, bool) or not math.isfinite(float(value)):
+                    raise ValueError(f"invalid numeric field {name}")
+                event[name] = (
+                    int(value)
+                    if name
+                    in {
+                        "global_step",
+                        "epoch",
+                        "final_step",
+                        "total_steps",
+                        "total_epochs",
+                    }
+                    else float(value)
+                )
+            return event
+        except (json.JSONDecodeError, TypeError, ValueError, OverflowError):
+            logger.warning("Ignoring malformed progress event")
+            return None
+
     async def _watch_progress_jsonl(self, task: Task, jsonl_path: str) -> None:
         """Tail the structured progress JSONL and push metrics to subscribers.
 
@@ -1262,15 +1417,9 @@ class TaskService:
         to WebSocket subscribers — the same message format the stdout parser
         produces, so the frontend code is unchanged.
 
-        Each ``step`` event is forwarded as a single metrics message. The
-        earlier debounce (a 0.3 s coalescing window) stacked every emit on
-        the same window — and a subsequent event arriving just as the
-        timer was about to fire reset it, so the dashboard never saw a
-        metrics message until the ``finally`` flush at training end. The
-        trainer only emits one ``step`` event per ``log_every_n_steps``
-        (every 2 by default), so WS load is bounded; the loss / step
-        history is already deduped by ``global_step`` so direct emits
-        can't double-append.
+        Every step updates the full histories. Cumulative snapshots are
+        rate-limited, with an idle/terminal flush so the latest point cannot
+        remain hidden when no more events arrive.
 
         The ``run_start`` event carries ``total_steps`` / ``total_epochs`` —
         captured here so the dashboard shows ``step / total`` from step 1
@@ -1289,27 +1438,43 @@ class TaskService:
         # and the dashboard never sees any step events.
         while task.state == TaskState.PENDING:
             await asyncio.sleep(0.5)
-        if task.state != TaskState.RUNNING:
-            return
-
         # Wait for the file to appear (training subprocess creates it on
         # first ``run_start``). Keep waiting for as long as the daemon says the
         # job is running; model load/compile time has no reliable upper bound.
-        while task.state == TaskState.RUNNING and not os.path.isfile(jsonl_path):
+        active_states = (
+            TaskState.PENDING,
+            TaskState.RUNNING,
+            TaskState.PAUSED,
+            TaskState.STOPPING,
+        )
+        while task.state in active_states and not os.path.isfile(jsonl_path):
             await asyncio.sleep(0.5)
-        if task.state != TaskState.RUNNING:
+        if not os.path.isfile(jsonl_path):
             return
 
         logger.info("Tailing progress JSONL: %s", jsonl_path)
         offset = 0
         try:
-            while task.state == TaskState.RUNNING:
+            while True:
+                terminal = task.state not in active_states
                 try:
                     size = os.path.getsize(jsonl_path)
                 except OSError:
+                    if terminal:
+                        break
                     await asyncio.sleep(0.5)
                     continue
+                if size < offset:
+                    offset = 0
                 if size <= offset:
+                    if terminal:
+                        break
+                    if (
+                        task.metrics_pending
+                        and time.monotonic() - task.last_metrics_ts
+                        >= METRICS_MIN_INTERVAL
+                    ):
+                        await self._flush_metrics_emit(task)
                     await asyncio.sleep(0.3)
                     continue
                 # Read new bytes in a thread so we don't block the event loop.
@@ -1320,9 +1485,8 @@ class TaskService:
                     new_lines, new_offset = result
                     offset = new_offset
                     for raw_line in new_lines:
-                        try:
-                            ev = json.loads(raw_line)
-                        except (json.JSONDecodeError, ValueError):
+                        ev = self._parse_progress_event(raw_line)
+                        if ev is None:
                             continue
                         ev_type = ev.get("ev")
                         if ev_type == "run_start":
@@ -1418,23 +1582,8 @@ class TaskService:
                                     int(s), metrics.avr_loss, metrics.lr
                                 )
                             self._update_jsonl_timing_metrics(task, ev)
-                            # Emit a fresh snapshot per step event. The
-                            # earlier debounce was meant to coalesce a
-                            # burst of step events into one WS message,
-                            # but in practice it stacked every emit on
-                            # the same 0.3 s window — and a subsequent
-                            # event arrived just as the timer was about
-                            # to fire, so the dashboard never saw a
-                            # metrics message until the ``finally``
-                            # flush. Emit directly per event instead:
-                            # the loss / step history are already
-                            # deduped by ``global_step`` so duplicate
-                            # appends are impossible, and the trainer
-                            # only emits one ``step`` per
-                            # ``log_every_n_steps`` (every 2 by
-                            # default) so the WS load is bounded.
-                            # ``_metrics_due`` rate-limits the full
-                            # snapshot copies on top of that.
+                            # Every point is retained; limit only cumulative
+                            # snapshot copies sent to the browser.
                             if self._metrics_due(task):
                                 await self._notify_subscribers(
                                     task,
@@ -1472,7 +1621,8 @@ class TaskService:
                             # schedule a fresh snapshot so the final_step
                             # value (which may differ from the last logged
                             # step) is also visible to subscribers.
-                            await self._flush_metrics_emit(task)
+                            task.metrics_pending = False
+                            task.last_metrics_ts = time.monotonic()
                             await self._notify_subscribers(
                                 task,
                                 {"type": "metrics", "data": metrics.snapshot()},
@@ -1480,6 +1630,8 @@ class TaskService:
                 else:
                     # File may have been rotated; reset.
                     offset = 0
+                if terminal:
+                    break
                 await asyncio.sleep(0.3)
         except asyncio.CancelledError:
             pass
@@ -1551,21 +1703,20 @@ class TaskService:
         """
         now = time.monotonic()
         if now - task.last_metrics_ts < METRICS_MIN_INTERVAL:
+            task.metrics_pending = True
             return False
         task.last_metrics_ts = now
+        task.metrics_pending = False
         return True
 
     async def _flush_metrics_emit(self, task: Task) -> None:
-        """No-op now that the watcher emits per step event directly.
-
-        Kept for callers (the ``run_end`` handler and the watcher's
-        ``finally`` clause) that previously relied on the debounced
-        flush to surface the last step. Direct emits make it redundant
-        but harmless — both call sites still want a deterministic
-        "send whatever is pending" hook in case future code adds
-        async-side bookkeeping that must fire on terminal state.
-        """
-        return None
+        """Publish the latest cumulative snapshot withheld by rate limiting."""
+        if task.metrics_pending:
+            task.metrics_pending = False
+            task.last_metrics_ts = time.monotonic()
+            await self._notify_subscribers(
+                task, {"type": "metrics", "data": task.parser.metrics.snapshot()}
+            )
 
     @staticmethod
     def _read_jsonl_bytes(path: str, offset: int) -> Optional[tuple[list[str], int]]:
@@ -1575,25 +1726,18 @@ class TaskService:
         otherwise ``(lines, new_offset)`` where *lines* may be empty.
         """
         try:
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(path, "rb") as fh:
+                if os.fstat(fh.fileno()).st_size < offset:
+                    return None
                 fh.seek(offset)
                 raw = fh.read()
-                end = fh.tell()
         except FileNotFoundError:
             return None
-        if not raw:
-            return [], offset
-        # The last line may be incomplete (no trailing \n yet); don't
-        # consume it — the next poll will pick it up.
-        lines = raw.split("\n")
-        if not raw.endswith("\n"):
-            incomplete = lines.pop()
-            # Adjust offset back by the length of the incomplete tail.
-            end -= len(incomplete.encode("utf-8")) + 1  # +1 for the \n split
-        else:
-            # Strip trailing empty string from split on final \n.
-            if lines and lines[-1] == "":
-                lines.pop()
+        # Only advance across complete UTF-8 records. A partial first line
+        # leaves offset at zero, and a multibyte tail is retained verbatim.
+        complete = raw[: raw.rfind(b"\n") + 1]
+        end = offset + len(complete)
+        lines = complete.decode("utf-8", errors="replace").splitlines()
         return [ln for ln in lines if ln.strip()], end
 
     async def _emit_line(self, task: Task, line: str, *, replace: bool) -> None:

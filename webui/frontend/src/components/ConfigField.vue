@@ -1,8 +1,8 @@
 <template>
-  <div :data-testid="`config-field-${field.key}`">
+  <div class="config-field" :data-testid="`config-field-${field.key}`">
     <ModelPathField v-if="field.field_type === 'path'" :field="field" :model-value="String(currentValue ?? '')" @update="emit('update', $event)" @help-click="emit('help-click', field.key)" />
-    <v-textarea v-else-if="field.multiline" :model-value="String(currentValue ?? '')" :label="field.label ?? field.key" variant="outlined" density="compact" auto-grow rows="3" hide-details="auto" @update:model-value="emit('update', field.nullable && $event === '' ? null : $event)">
-      <template #append><FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" /></template>
+    <v-textarea v-else-if="field.multiline" :readonly="field.read_only" :model-value="String(currentValue ?? '')" :label="field.label ?? field.key" variant="outlined" density="compact" auto-grow rows="3" hide-details="auto" @update:model-value="emit('update', field.nullable && $event === '' ? null : $event)">
+      <template #append-inner><FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" /></template>
     </v-textarea>
     <v-switch
       v-else-if="field.field_type === 'bool'"
@@ -42,7 +42,7 @@
       hide-details="auto"
       @update:model-value="emit('update', field.nullable && $event === '' ? null : $event)"
     >
-      <template #append>
+      <template #append-inner>
         <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" class="ml-2" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
@@ -216,8 +216,11 @@ function validateFloat(val: string): true | string {
   return parseFloatInput(val) !== null ? true : t('cfInvalidNumber')
 }
 
-// Reset editing buffer when the underlying value changes externally
-watch(currentValue, () => { if (floatRaw.value !== null) floatRaw.value = null })
+// Keep the editing text when the parent echoes our numeric update: formatting
+// "0." as "0" here would remove the decimal point before the next keystroke.
+watch(currentValue, (value) => {
+  if (floatRaw.value !== null && value !== parseFloatInput(floatRaw.value)) floatRaw.value = null
+})
 
 // --- End float field ---
 
@@ -236,6 +239,22 @@ function tryParse(val: string) {
 </script>
 
 <style scoped>
+.config-field { min-width: 0; }
+.config-field :deep(.v-field) {
+  background: var(--bg-form-field, var(--bg-surface));
+}
+.config-field :deep(.v-input__control),
+.config-field :deep(.v-field__input) { min-width: 0; }
+.config-field :deep(.v-switch) {
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-form-field, var(--bg-surface));
+}
+.config-field :deep(.v-switch .v-input__append) { margin-inline-start: 8px; }
+.config-field :deep(.v-switch .v-selection-control) { min-height: 38px; }
+
 :deep(.v-switch .v-label) {
   white-space: normal;
   overflow-wrap: anywhere;

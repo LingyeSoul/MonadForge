@@ -20,6 +20,7 @@ class DistillMethodSummary(BaseModel):
     label: str
     config_path: str
     task_command: str
+    experimental: bool = False
 
 
 class DistillField(BaseModel):
@@ -57,8 +58,14 @@ def get_config(method: str = Query(...)):
     """Read a distill method's sectioned TOML config."""
     try:
         return svc.read_distill_config(method)
+    except (svc.UnknownDistillMethod, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Cannot read distill configuration: {exc}"
+        ) from exc
 
 
 @router.put("/config")
@@ -66,13 +73,26 @@ def save_config(body: DistillSaveRequest, method: str = Query(...)):
     """Save field values to a distill method's TOML config."""
     try:
         svc.save_distill_config(method, body.updates)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Cannot save distill configuration: {exc}"
+        ) from exc
     return {"ok": True}
 
 
 @router.get("/guide")
 def get_guide(method: str = Query(...), lang: str = Query("cn")):
     """Return guide HTML for a distill method."""
-    html = svc.load_guide(method, lang)
+    try:
+        html = svc.load_guide(method, lang)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Cannot read distill guide: {exc}"
+        ) from exc
     return {"html": html}

@@ -8,16 +8,33 @@ def isolated_task_environment(monkeypatch, tmp_path):
     """No test may launch a worker or create a run in the checkout."""
     import library.runtime.profiles as profiles
     from scripts.tasks import _common, _legacy_preprocess, preprocess
+
     monkeypatch.setattr(profiles, "is_v100_runtime", lambda: False)
     monkeypatch.setattr(_common, "_PATH_OVERRIDES_CACHE", {})
     monkeypatch.setattr(_legacy_preprocess, "_ACTIVE_PREPROCESS_RUN", None)
-    for key in ("PREPROCESS_RUN", "ANIMA_PREPROCESS_RUN", "ANIMA_DAEMON_JOB_DIR", "TARGET_RES",
-                "MULTIRES_PER_IMAGE", "DROP_LOWRES_IMAGES", "MIN_PIXELS", "PREPROCESS_STAGES_JSON",
-                "PREPROCESS_PATH_PATTERN", "CAPTION_AUTOTAG", "CAPTION_POSITION_CLAUSES"):
+    for key in (
+        "PREPROCESS_RUN",
+        "ANIMA_PREPROCESS_RUN",
+        "ANIMA_DAEMON_JOB_DIR",
+        "TARGET_RES",
+        "MULTIRES_PER_IMAGE",
+        "DROP_LOWRES_IMAGES",
+        "MIN_PIXELS",
+        "PREPROCESS_STAGES_JSON",
+        "PREPROCESS_PATH_PATTERN",
+        "CAPTION_AUTOTAG",
+        "CAPTION_POSITION_CLAUSES",
+        "CAPTION_AUTOTAG_MODE",
+        "CAPTION_AUTOTAG_MIN_CONFIDENCE",
+    ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(preprocess, "_ensure_danbooru_tags", lambda: None)
     monkeypatch.setattr(_legacy_preprocess, "_curation_decisions_args", lambda: [])
-    monkeypatch.setattr(preprocess, "_curation_decisions_path", lambda: tmp_path / "absent-decisions.json")
+    monkeypatch.setattr(
+        preprocess,
+        "_curation_decisions_path",
+        lambda: tmp_path / "absent-decisions.json",
+    )
     monkeypatch.setenv("ANIMA_HOME", str(tmp_path))
 
     def forbidden(*args, **kwargs):
@@ -29,9 +46,14 @@ def isolated_task_environment(monkeypatch, tmp_path):
 
     def guarded(source, config, **kwargs):
         from pathlib import Path
+
         if kwargs.get("create", True):
-            post = Path(kwargs.get("post_image_dataset", "post_image_dataset")).resolve()
-            assert post.is_relative_to(tmp_path), "Test attempted to create a real preprocessing run"
+            post = Path(
+                kwargs.get("post_image_dataset", "post_image_dataset")
+            ).resolve()
+            assert post.is_relative_to(tmp_path), (
+                "Test attempted to create a real preprocessing run"
+            )
         return original(source, config, **kwargs)
 
     monkeypatch.setattr(_legacy_preprocess, "resolve_preprocess_run", guarded)
@@ -258,7 +280,7 @@ def test_multires_resize_and_vae_commands_cover_every_tier(monkeypatch):
     )
     monkeypatch.delenv("TARGET_RES", raising=False)
     monkeypatch.delenv("MULTIRES_PER_IMAGE", raising=False)
-    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+    _patch_run(monkeypatch, lambda command: calls.append(command))
     monkeypatch.setattr(
         preprocess, "_path", lambda key, default: values.get(key, default)
     )
@@ -300,7 +322,7 @@ def test_explicit_multires_dir_is_shared_by_resize_and_vae(monkeypatch):
     )
     monkeypatch.delenv("TARGET_RES", raising=False)
     monkeypatch.delenv("MULTIRES_PER_IMAGE", raising=False)
-    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+    _patch_run(monkeypatch, lambda command: calls.append(command))
     monkeypatch.setattr(
         preprocess, "_path", lambda key, default: values.get(key, default)
     )
@@ -380,7 +402,7 @@ def test_preprocess_vae_strips_resize_lowres_arguments(monkeypatch):
     )
     monkeypatch.delenv("TARGET_RES", raising=False)
     monkeypatch.delenv("MULTIRES_PER_IMAGE", raising=False)
-    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+    _patch_run(monkeypatch, lambda command: calls.append(command))
 
     preprocess.cmd_preprocess_vae(
         ["--min_pixels", "250000", "--no_drop_lowres", "--overwrite"]
@@ -419,7 +441,7 @@ def test_caption_position_clauses_is_not_a_correction_flag():
     not turn the correction pass on or add an argv flag it doesn't know.
     """
     from scripts.tasks.preprocess import (
-        _caption_correction_args,
+        _caption_correction_fields,
         _caption_correction_config,
         _caption_correction_enabled,
     )
@@ -431,7 +453,7 @@ def test_caption_position_clauses_is_not_a_correction_flag():
     assert config["position_clauses"] is True
     assert cleaned == ["--other"]
     assert _caption_correction_enabled(config) is False
-    assert _caption_correction_args(config) == []
+    assert _caption_correction_fields(config) == {}
 
     off, _ = _caption_correction_config(["--no_caption_position_clauses"])
     assert off["position_clauses"] is False
@@ -469,14 +491,19 @@ def test_preprocess_chains_position_clauses_before_the_caption_step(monkeypatch)
         calls.append(cmd)
         order.append("position")
 
-    monkeypatch.setattr(preprocess, "run", fake_run)
+    _patch_run(monkeypatch, fake_run)
     monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
 
+    monkeypatch.setattr(
+        preprocess,
+        "_resolve_stage_run",
+        lambda extra, create=False: (None, list(extra)),
+    )
     preprocess.cmd_preprocess([])
 
     assert order == ["resize", "vae", "position", "te"]
     (cmd,) = calls
-    assert cmd[:2] == [preprocess.PY, "scripts/preprocess/position_captions.py"]
+    assert cmd[:3] == [preprocess.PY, "-m", "anime_tools.stages.cli.position_captions"]
     assert cmd[-1] == "--apply"
 
 
@@ -491,10 +518,15 @@ def test_preprocess_skips_position_clauses_when_unset(monkeypatch):
     monkeypatch.setattr(preprocess.os.path, "exists", lambda _p: True)
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    _patch_run(monkeypatch, lambda cmd, **_k: calls.append(cmd))
     monkeypatch.delenv("CAPTION_POSITION_CLAUSES", raising=False)
     monkeypatch.delenv("CAPTION_AUTOTAG", raising=False)
 
+    monkeypatch.setattr(
+        preprocess,
+        "_resolve_stage_run",
+        lambda extra, create=False: (None, list(extra)),
+    )
     preprocess.cmd_preprocess([])
 
     assert calls == []
@@ -514,17 +546,17 @@ def test_preprocess_captions_runs_the_master_stages_when_configured(monkeypatch)
     monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("4", "0.1", "0.0"))
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    _patch_run(monkeypatch, lambda cmd, **_k: calls.append(cmd))
     monkeypatch.setenv("CAPTION_AUTOTAG", "1")
     monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
 
     preprocess.cmd_preprocess_captions([])
 
-    scripts = [cmd[1] for cmd in calls]
+    scripts = [_entry(cmd) for cmd in calls]
     assert scripts == [
-        "scripts/preprocess/autotag_captions.py",
-        "scripts/preprocess/position_captions.py",
-        "scripts/preprocess/correct_captions.py",
+        "anime_tools.stages.cli.autotag_captions",
+        "anime_tools.stages.cli.position_captions",
+        "anime_tools.stages.cli.correct_captions",
     ]
     # In-pipeline stages write for real — a dry run here would leave the mirror
     # encoding the un-rewritten caption.
@@ -548,7 +580,7 @@ def test_master_stages_inherit_an_explicit_path_pattern(monkeypatch):
     monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("0", "0.0", "0.0"))
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    _patch_run(monkeypatch, lambda cmd, **_k: calls.append(cmd))
     monkeypatch.setenv("CAPTION_AUTOTAG", "1")
     monkeypatch.setenv("CAPTION_AUTOTAG_MODE", "merge")
     monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
@@ -556,12 +588,12 @@ def test_master_stages_inherit_an_explicit_path_pattern(monkeypatch):
 
     preprocess.cmd_preprocess_captions(["--path_pattern", "artistA/*"])
 
-    assert [cmd[1] for cmd in calls] == [
-        "scripts/preprocess/autotag_captions.py",
-        "scripts/preprocess/position_captions.py",
+    assert [_entry(cmd) for cmd in calls] == [
+        "anime_tools.stages.cli.autotag_captions",
+        "anime_tools.stages.cli.position_captions",
         # The mirror rides along whenever position clauses are on — they land in
         # `resized/`, so every other caption has to be mirrored there too.
-        "scripts/preprocess/correct_captions.py",
+        "anime_tools.stages.cli.correct_captions",
     ]
     for cmd in calls:
         # Present, and emitted exactly once — the argv builder resolves the
@@ -574,7 +606,9 @@ def test_standalone_caption_target_does_not_duplicate_the_path_pattern():
     """`make caption-position ARGS="--path_pattern x"` passes it through once."""
     from scripts.tasks import preprocess
 
-    argv = preprocess._caption_position_argv(["--path_pattern", "artistA/*", "--apply"])
+    argv = preprocess._caption_position_request(
+        ["--path_pattern", "artistA/*", "--apply"]
+    ).to_argv()
     assert argv.count("--path_pattern") == 1
     assert argv[argv.index("--path_pattern") + 1] == "artistA/*"
     assert argv[-1] == "--apply"
@@ -595,15 +629,15 @@ def test_preprocess_captions_runs_the_stages_even_with_correction_off(monkeypatc
     monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("0", "0.0", "0.0"))
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    _patch_run(monkeypatch, lambda cmd, **_k: calls.append(cmd))
     monkeypatch.delenv("CAPTION_AUTOTAG", raising=False)
     monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
 
     preprocess.cmd_preprocess_captions([])
 
-    assert [cmd[1] for cmd in calls] == [
-        "scripts/preprocess/position_captions.py",
-        "scripts/preprocess/correct_captions.py",
+    assert [_entry(cmd) for cmd in calls] == [
+        "anime_tools.stages.cli.position_captions",
+        "anime_tools.stages.cli.correct_captions",
     ]
     # Nothing to correct and no variants — the mirror runs in passthrough.
     assert "--no_correct" in calls[1]
@@ -623,15 +657,15 @@ def test_preprocess_te_reads_resized_when_position_clauses_are_on(monkeypatch):
     monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("0", "0.0", "0.0"))
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    _patch_run(monkeypatch, lambda cmd, **_k: calls.append(cmd))
     monkeypatch.delenv("CAPTION_AUTOTAG", raising=False)
     monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
 
     preprocess.cmd_preprocess_te([])
 
-    assert [cmd[1] for cmd in calls] == [
-        "scripts/preprocess/position_captions.py",
-        "scripts/preprocess/correct_captions.py",
+    assert [_entry(cmd) for cmd in calls] == [
+        "anime_tools.stages.cli.position_captions",
+        "anime_tools.stages.cli.correct_captions",
         "scripts/preprocess/cache_text_embeddings.py",
     ]
     te_cmd = calls[-1]
@@ -658,20 +692,25 @@ def test_preprocess_chain_runs_each_master_stage_once(monkeypatch):
     monkeypatch.setattr(preprocess.os.path, "exists", lambda _p: True)
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    _patch_run(monkeypatch, lambda cmd, **_k: calls.append(cmd))
     monkeypatch.setenv("CAPTION_AUTOTAG", "1")
     monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
 
+    monkeypatch.setattr(
+        preprocess,
+        "_resolve_stage_run",
+        lambda extra, create=False: (None, list(extra)),
+    )
     preprocess.cmd_preprocess([])
 
-    scripts = [cmd[1] for cmd in calls]
-    assert scripts.count("scripts/preprocess/autotag_captions.py") == 1
-    assert scripts.count("scripts/preprocess/position_captions.py") == 1
+    scripts = [_entry(cmd) for cmd in calls]
+    assert scripts.count("anime_tools.stages.cli.autotag_captions") == 1
+    assert scripts.count("anime_tools.stages.cli.position_captions") == 1
     # Order is unchanged: the caption rewrites, then the mirror, then the encode.
     assert scripts == [
-        "scripts/preprocess/autotag_captions.py",
-        "scripts/preprocess/position_captions.py",
-        "scripts/preprocess/correct_captions.py",
+        "anime_tools.stages.cli.autotag_captions",
+        "anime_tools.stages.cli.position_captions",
+        "anime_tools.stages.cli.correct_captions",
         "scripts/preprocess/cache_text_embeddings.py",
     ]
 
@@ -679,7 +718,7 @@ def test_preprocess_chain_runs_each_master_stage_once(monkeypatch):
 def test_caption_autotag_is_not_a_correction_flag():
     """Like ``position_clauses``: own stage, must never reach correct_captions.py."""
     from scripts.tasks.preprocess import (
-        _caption_correction_args,
+        _caption_correction_fields,
         _caption_correction_config,
         _caption_correction_enabled,
     )
@@ -692,7 +731,7 @@ def test_caption_autotag_is_not_a_correction_flag():
     assert config["autotag_mode"] == "merge"
     assert cleaned == ["--other"]
     assert _caption_correction_enabled(config) is False
-    assert _caption_correction_args(config) == []
+    assert _caption_correction_fields(config) == {}
 
     off, _ = _caption_correction_config(["--no_caption_autotag"])
     assert off["autotag"] is False
@@ -711,21 +750,19 @@ def test_caption_autotag_rejects_an_unknown_mode():
 
 
 def test_caption_autotag_args_always_apply():
-    """In-pipeline the user already opted in; a dry run there writes nothing."""
-    from scripts.tasks.preprocess import _caption_autotag_args
+    """Typed stage requests preserve the apply and threshold contract."""
+    from scripts.tasks.preprocess import _autotag_request
 
-    assert _caption_autotag_args({"autotag_mode": "missing"}) == [
-        "--mode",
-        "missing",
-        "--apply",
-    ]
-    # A zero floor is left off entirely so the tagger's own thresholds rule.
-    assert "--min_confidence" not in _caption_autotag_args(
-        {"autotag_mode": "merge", "autotag_min_confidence": 0.0}
-    )
-    assert _caption_autotag_args(
+    request = _autotag_request({"autotag_mode": "missing"})
+    assert request.mode == "missing" and request.apply is True
+    assert "--min_confidence" not in request.to_argv()
+    request = _autotag_request(
         {"autotag_mode": "merge", "autotag_min_confidence": 0.35}
-    ) == ["--mode", "merge", "--min_confidence", "0.35", "--apply"]
+    )
+    assert request.mode == "merge" and request.apply is True
+    assert request.min_confidence == 0.35
+    argv = request.to_argv()
+    assert argv[argv.index("--min_confidence") + 1] == "0.35"
 
 
 def test_preprocess_chains_autotag_first(monkeypatch):
@@ -757,22 +794,29 @@ def test_preprocess_chains_autotag_first(monkeypatch):
 
     def fake_run(cmd, **_kwargs):
         calls.append(cmd)
-        order.append("autotag" if "autotag_captions.py" in cmd[1] else "position")
+        order.append("autotag" if "autotag_captions" in _entry(cmd) else "position")
 
-    monkeypatch.setattr(preprocess, "run", fake_run)
+    _patch_run(monkeypatch, fake_run)
     monkeypatch.setenv("CAPTION_AUTOTAG", "1")
     monkeypatch.setenv("CAPTION_AUTOTAG_MODE", "merge")
     monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
 
+    monkeypatch.setattr(
+        preprocess,
+        "_resolve_stage_run",
+        lambda extra, create=False: (None, list(extra)),
+    )
     preprocess.cmd_preprocess([])
 
     assert order == ["resize", "autotag", "vae", "position", "te"]
     autotag_cmd = calls[0]
-    assert autotag_cmd[:2] == [
+    assert autotag_cmd[:3] == [
         preprocess.PY,
-        "scripts/preprocess/autotag_captions.py",
+        "-m",
+        "anime_tools.stages.cli.autotag_captions",
     ]
-    assert autotag_cmd[-3:] == ["--mode", "merge", "--apply"]
+    assert "--apply" in autotag_cmd
+    assert autotag_cmd[autotag_cmd.index("--mode") + 1] == "merge"
 
 
 def test_preprocess_autotag_blank_env_confidence_is_zero(monkeypatch):
@@ -952,7 +996,7 @@ def test_preprocess_pe_routes_centroid_into_selected_run(tmp_path, monkeypatch):
 
     run = _make_preprocess_run(tmp_path)
     calls: list[list[str]] = []
-    monkeypatch.setattr(preprocess, "run", lambda cmd: calls.append(cmd))
+    _patch_run(monkeypatch, lambda cmd: calls.append(cmd))
     monkeypatch.setattr(
         preprocess,
         "_resolve_stage_run",
@@ -970,7 +1014,7 @@ def test_preprocess_pe_without_run_keeps_legacy_centroid(monkeypatch):
     from scripts.tasks import preprocess
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(preprocess, "run", lambda cmd: calls.append(cmd))
+    _patch_run(monkeypatch, lambda cmd: calls.append(cmd))
     monkeypatch.setattr(
         preprocess,
         "_resolve_stage_run",
@@ -987,7 +1031,7 @@ def test_preprocess_pe_respects_explicit_centroid_out(tmp_path, monkeypatch):
 
     run = _make_preprocess_run(tmp_path)
     calls: list[list[str]] = []
-    monkeypatch.setattr(preprocess, "run", lambda cmd: calls.append(cmd))
+    _patch_run(monkeypatch, lambda cmd: calls.append(cmd))
     monkeypatch.setattr(
         preprocess,
         "_resolve_stage_run",
@@ -1003,14 +1047,17 @@ def test_preprocess_pe_respects_explicit_centroid_out(tmp_path, monkeypatch):
 
 def test_stage_wrapper_restores_legacy_hooks_and_scopes_reports(tmp_path, monkeypatch):
     from scripts.tasks import _common, _legacy_preprocess, preprocess
+
     run = _make_preprocess_run(tmp_path)
     previous_run = _legacy_preprocess.run
     previous_path = _legacy_preprocess._path
     previous_config = _legacy_preprocess._preprocess_config
     previous_overrides = _common._PATH_OVERRIDES_CACHE
-    monkeypatch.setattr(preprocess, "_resolve_stage_run", lambda extra, create=False: (run, list(extra)))
+    monkeypatch.setattr(
+        preprocess, "_resolve_stage_run", lambda extra, create=False: (run, list(extra))
+    )
     calls = []
-    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+    _patch_run(monkeypatch, lambda command: calls.append(command))
     monkeypatch.setattr(_common, "run", lambda command, **kwargs: calls.append(command))
     monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("1", "0", "0"))
     preprocess.cmd_preprocess_captions([], caption_config={"correct_order": False})
@@ -1023,21 +1070,46 @@ def test_stage_wrapper_restores_legacy_hooks_and_scopes_reports(tmp_path, monkey
 
 
 def test_selected_run_caption_index_is_not_shared(tmp_path, monkeypatch):
-    from scripts.tasks import _common, preprocess
+    from scripts.tasks import preprocess
+
     run = _make_preprocess_run(tmp_path)
-    monkeypatch.setattr(preprocess, "_resolve_stage_run", lambda extra, create=False: (run, list(extra)))
+    monkeypatch.setattr(
+        preprocess, "_resolve_stage_run", lambda extra, create=False: (run, list(extra))
+    )
     calls = []
-    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+    _patch_run(monkeypatch, lambda command: calls.append(command))
     preprocess.cmd_caption_index([])
     assert calls[0][calls[0].index("--out") + 1] == str(run.caption_index_path)
 
 
 def test_explicit_lowres_filter_is_preserved_for_resize_only(monkeypatch):
     from scripts.tasks import preprocess
+
     calls = []
-    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+    _patch_run(monkeypatch, lambda command: calls.append(command))
     preprocess.cmd_preprocess_resize(["--min_pixels", "250000", "--overwrite"])
     assert calls[0][1] == "scripts/preprocess/resize_images.py"
     assert calls[0][calls[0].index("--min_pixels") + 1] == "250000"
     preprocess.cmd_preprocess_vae(["--min_pixels", "250000", "--target_res", "1024"])
     assert "--min_pixels" not in calls[1] and "--target_res" not in calls[1]
+
+
+def test_autotag_environment_values_reach_typed_request_and_cli_wins(monkeypatch):
+    from scripts.tasks import preprocess
+
+    monkeypatch.setenv("CAPTION_AUTOTAG_MODE", "merge")
+    monkeypatch.setenv("CAPTION_AUTOTAG_MIN_CONFIDENCE", "0.35")
+    config, _ = preprocess._caption_correction_config([])
+    request = preprocess._autotag_request(config)
+    assert request.mode == "merge" and request.min_confidence == 0.35
+
+    config, _ = preprocess._caption_correction_config(
+        [
+            "--caption_autotag_mode",
+            "missing",
+            "--caption_autotag_min_confidence",
+            "0.5",
+        ]
+    )
+    request = preprocess._autotag_request(config)
+    assert request.mode == "missing" and request.min_confidence == 0.5

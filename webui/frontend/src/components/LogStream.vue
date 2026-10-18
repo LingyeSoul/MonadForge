@@ -1,10 +1,10 @@
 <template>
-  <div ref="logContainer" class="log-stream pa-2" style="flex: 1 1 0; min-height: 0; overflow-y: auto; font-family: var(--font-mono); font-size: 12px; background: var(--bg-deep); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);">
+  <div ref="logContainer" class="log-stream pa-2" tabindex="0" :aria-label="t('dashLiveLog')" @scroll="trackScroll" style="flex: 1 1 0; min-height: 0; overflow-y: auto; font-family: var(--font-mono); font-size: 12px; background: var(--bg-deep); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);">
     <div v-if="truncatedNote" class="log-truncate-note">
       {{ t('taskLogTruncated', { total: historyTotal, kept: lines.length }) }}
     </div>
-    <div v-if="!connected && lines.length === 0" class="text-medium-emphasis">
-      {{ t('taskConnecting') }}
+    <div v-if="lines.length === 0" class="text-medium-emphasis">
+      {{ t(done ? 'taskNoLogs' : 'taskConnecting') }}
     </div>
     <div
       v-for="ln in lines"
@@ -22,6 +22,7 @@ import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{
   taskId: string
+  attemptId?: string | null
   /** Existing stream handle (e.g. the dashboard's useTrainingStream) —
    * when provided, no second WebSocket is opened for the same task. */
   external?: LogStreamHandle | null
@@ -30,23 +31,28 @@ const emit = defineEmits<{ done: [] }>()
 const logContainer = ref<HTMLElement>()
 const { t } = useI18n()
 
-const own = props.external ? null : useTaskStream(() => props.taskId)
+const own = props.external ? null : useTaskStream(() => props.taskId, () => props.attemptId ?? '')
 
 const stream = computed<LogStreamHandle | null>(() => props.external ?? own)
 const lines = computed(() => stream.value?.lines.value ?? [])
-const connected = computed(() => stream.value?.connected.value ?? false)
+const done = computed(() => stream.value?.done.value ?? false)
 const historyTotal = computed(() => stream.value?.historyTotal.value ?? 0)
 const truncatedNote = computed(() => historyTotal.value > lines.value.length && lines.value.length > 0)
 
 // Autoscroll per coalesced flush — but only while the user is pinned to the
 // bottom, so reading up through a busy log isn't a losing fight with the
 // scroll position.
+const followTail = ref(true)
+function trackScroll() {
+  const el = logContainer.value
+  if (el) followTail.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+}
+watch([() => props.taskId, () => props.attemptId], () => { followTail.value = true })
 watch(() => stream.value?.activity.value ?? 0, async () => {
   await nextTick()
   const el = logContainer.value
   if (!el) return
-  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
-  if (nearBottom) el.scrollTop = el.scrollHeight
+  if (followTail.value) el.scrollTop = el.scrollHeight
 }, { immediate: true })
 
 watch(() => stream.value?.done.value ?? false, (val) => {

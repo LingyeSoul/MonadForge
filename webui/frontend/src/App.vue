@@ -111,7 +111,7 @@
         <span>{{ t(currentPage) }}</span>
       </div>
       <v-spacer />
-      <span v-if="!['/tasks', '/dashboard'].includes(route.path)" class="workspace-engine">{{ modelLabel(modelWorkspace.family) }} <span>DiT</span></span>
+      <span v-if="pageModelLabel" class="workspace-engine">{{ pageModelLabel }} <span v-if="pageModelLabel !== 'ResShift / RSD'">DiT</span></span>
       <v-btn icon="mdi-book-open-page-variant-outline" variant="text" size="small" class="mx-3" :aria-label="t('guidebook')" @click="showGuidebook = true">
         <v-icon icon="mdi-book-open-page-variant-outline" />
         <v-tooltip activator="parent" location="bottom">{{ t('guidebook') }}</v-tooltip>
@@ -271,6 +271,11 @@ const navGroups = [
 ]
 const currentGroup = computed(() => navGroups.find(group => group.items.some(item => item.to === route.path))?.label ?? 'navSystem')
 const currentPage = computed(() => navGroups.flatMap(group => group.items).find(item => item.to === route.path)?.titleKey ?? 'navSystem')
+const pageModelLabel = computed(() => {
+  if (['/config', '/preprocess'].includes(route.path)) return modelLabel(modelWorkspace.family)
+  if (['/adapter', '/distill', '/merge', '/staged-resolution', '/models'].includes(route.path)) return 'Anima'
+  return route.path === '/sr' ? 'ResShift / RSD' : ''
+})
 const languageOptions = [
   { value: 'en', label: 'English' },
   { value: 'cn', label: '简体中文' },

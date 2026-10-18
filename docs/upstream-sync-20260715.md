@@ -155,7 +155,7 @@ train.py
 - `0235f17e` + `c098384d` 将 `scripts/daemon/` 迁到 `anima_daemon/` 并删除兼容 shim。fork 的 daemon、WebUI sidecar、自愈和 Windows 进程环境都围绕现目录继续演进，迁包收益不足以覆盖冲突成本。
 - `6bf12220` 的 Qt GUI preset 收敛，以及 `79a3f57b`、`8c70e891`、`14a9b861` 等 Qt GUI 重构。fork 已切到 FastAPI + Vue，代码路径不同。
 - SCFM 的加入/删除序列（`12f372bc` 到 `7e2e93f4`）和 foveated 的加入/删除序列（`28dd9ca7` 到 `b0e67fe2`）。上游最终净结果已删除，不需要重演中间提交。
-- `ec573acd`、`cdf67c84`、`63250da4`、`438c3b09`、`6a9bdd3b`、`220b133c`、`a29453ba`、`dc5982af`、`43e43195` 等 bench/archive 整理。它们是上游研究历史管理，不改善 fork 运行时。
+- `ec573acd`、`cdf67c84`、`63250da4`、`438c3b09`、`6a9bdd3b`、`220b133c`、`a29453ba`、`dc5982af`、`43e43195` 等 bench 与 archive 整理。它们是上游研究历史管理，不改善 fork 运行时。
 - `336b92c7`、`b160a979`、`d14532de` 等 proposal 归档/删除。除非对应功能也完整移植，否则只会制造文档噪音。
 
 ## 为什么不能全量 merge

@@ -350,7 +350,7 @@ def _write_test_image(path: Path, size: tuple[int, int] = (1024, 1024)) -> None:
 
 def test_resize_images_nested_output(tmp_path: Path) -> None:
     """process_image writes under out_dir/<rel>/ when rel_dir is set."""
-    from library.preprocess.images import ResizeOptions, process_image
+    from library.preprocess.images import process_image
 
     src = tmp_path / "image_dataset" / "charA"
     img_path = src / "cover.png"
@@ -359,7 +359,7 @@ def test_resize_images_nested_output(tmp_path: Path) -> None:
     dst = tmp_path / "post_image_dataset" / "resized"
     # Default options → the canonical 1024 tier; free-fit resize.
     name, _reso, _skipped = process_image(
-        img_path, dst, ResizeOptions(), rel_dir="charA"
+        img_path, dst, ((1024, 1024), 512, 2048, 64, [1024]), rel_dir="charA"
     )
 
     assert name == "cover.png"
@@ -371,13 +371,13 @@ def test_resize_images_nested_output(tmp_path: Path) -> None:
 
 def test_resize_images_flat_output(tmp_path: Path) -> None:
     """Empty rel_dir collapses back to the legacy flat layout (no breakage)."""
-    from library.preprocess.images import ResizeOptions, process_image
+    from library.preprocess.images import process_image
 
     img_path = tmp_path / "image_dataset" / "cover.png"
     _write_test_image(img_path)
 
     dst = tmp_path / "post_image_dataset" / "resized"
-    process_image(img_path, dst, ResizeOptions(), rel_dir="")
+    process_image(img_path, dst, ((1024, 1024), 512, 2048, 64, [1024]), rel_dir="")
     assert (dst / "cover.png").exists()
     # No phantom subdir was created.
     assert not any(p.is_dir() for p in dst.iterdir())

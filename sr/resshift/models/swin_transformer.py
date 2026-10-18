@@ -544,16 +544,11 @@ class PatchUnEmbed(nn.Module):
         return flops
 
 if __name__ == '__main__':
-    upscale = 4
-    window_size = 8
-    height = (1024 // upscale // window_size + 1) * window_size
-    width = (720 // upscale // window_size + 1) * window_size
-    model = SwinIR(upscale=2, img_size=(height, width),
-                   window_size=window_size, img_range=1., depths=[6, 6, 6, 6],
-                   embed_dim=60, num_heads=[6, 6, 6, 6], mlp_ratio=2, upsampler='pixelshuffledirect')
-    print(model)
-    print(height, width, model.flops() / 1e9)
-
-    x = torch.randn((1, 3, height, width))
-    x = model(x)
-    print(x.shape)
+    # This vendored module contains attention blocks, not the full SwinIR model.
+    # Run with: python -m sr.resshift.models.swin_transformer
+    model = WindowAttention(dim=8, window_size=(2, 2), num_heads=2).eval()
+    x = torch.randn(1, 4, 8)
+    with torch.no_grad():
+        output = model(x)
+    assert output.shape == x.shape and torch.isfinite(output).all()
+    print(f'WindowAttention CPU self-check passed: {tuple(output.shape)}')

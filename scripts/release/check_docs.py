@@ -240,7 +240,7 @@ def _check_path(
         return None
     first = tok.split("/", 1)[0]
     if first == "_archive":  # historical pointers — files were deleted/renamed;
-        return None            # the doc is the record, the path never resolves
+        return None  # the doc is the record, the path never resolves
     # Experiment run-output dirs (`bench/<exp>/results/<run>/…`) only exist
     # after someone ran the experiment; they never resolve on a clean checkout.
     if first == "bench" and "/results" in tok:
@@ -260,7 +260,11 @@ def _check_path(
             rel = (root / tok).resolve().relative_to(REPO_ROOT)
         except ValueError:
             continue  # base outside the repo (tests' tmp_path)
-        if _is_ignored(str(rel)):
+        # Path normalization removes a directory token's trailing slash. Git
+        # needs that marker to match directory-only ignore rules when the
+        # generated directory does not exist in this checkout yet.
+        ignored_path = str(rel) + ("/" if tok.endswith("/") else "")
+        if _is_ignored(ignored_path):
             return None
     return tok
 

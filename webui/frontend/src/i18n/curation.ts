@@ -36,6 +36,11 @@ export const curationEn = {
   acknowledgeExport: 'I have reviewed the export destinations, source-caption writeback, and stale sidecars scheduled for removal.',
   stageWrites: 'This stage writes workspace artifacts when run; it does not support a dry-run mode.',
   workspaceRun: 'Workspace run',
+  stageReference: 'Technical stage reference',
+  defaultPathPattern: 'Default image path filter', defaultTaggerDir: 'Default tagger model directory', defaultCheckpoint: 'Default SAM3 model file', defaultPromptEmbed: 'Default subject soft prompt',
+  parameterReference: 'Technical parameter reference', parameterReferenceHint: 'Original parameter names and upstream descriptions for troubleshooting. Some command-line flags describe disabling a switch.',
+  maskRole: 'Region use', maskKind: 'Prompt type', maskKeep: 'Keep for training', maskIgnore: 'Ignore region',
+  maskText: 'Text prompt', maskSoft: 'Learned prompt', maskPromptText: 'Prompt text', maskPromptFile: 'Soft prompt file',
   resize: 'Resize', autotag: 'Autotag', position: 'Position captions', correct: 'Correct captions', drop_groups: 'Remove tag groups',
   audit: 'Multiview review', groups: 'Group images', masks_sam: 'SAM masks', masks_merge: 'Merge masks', export: 'Export',
 } as const
@@ -66,6 +71,11 @@ export const curationCn: Record<CurationTextKey, string> = {
   acknowledgeReport: '我已审阅报告及拟修改文件。', acknowledgeExport: '我已审阅导出目标、源标注回写及拟删除的过期附属文件。',
   stageWrites: '此阶段运行时会写入工作区产物，不支持仅预览模式。',
   workspaceRun: '写入工作区',
+  stageReference: '阶段技术说明',
+  defaultPathPattern: '默认图片路径筛选', defaultTaggerDir: '默认打标模型目录', defaultCheckpoint: '默认 SAM3 模型文件', defaultPromptEmbed: '默认主体软提示文件',
+  parameterReference: '参数技术说明', parameterReferenceHint: '原始参数名与上游说明，供排查时参考。部分命令行开关描述的是关闭该选项的行为。',
+  maskRole: '区域用途', maskKind: '提示类型', maskKeep: '保留训练', maskIgnore: '忽略区域',
+  maskText: '文本提示', maskSoft: '软提示文件', maskPromptText: '提示词', maskPromptFile: '软提示文件路径',
   resize: '缩放图片', autotag: '自动打标', position: '位置标注', correct: '标注校正', drop_groups: '移除标签组', audit: '多视图审阅', groups: '图片分组', masks_sam: 'SAM 遮罩', masks_merge: '合并遮罩', export: '导出',
 }
 export function curationText(language: string, key: CurationTextKey): string {

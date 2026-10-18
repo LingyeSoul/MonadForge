@@ -113,6 +113,8 @@ def get_caption(path: str, directory: str | None = Query(None)):
         return svc.get_caption(directory or _default_directory(), path)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.put("/caption/{path:path}")
@@ -122,6 +124,8 @@ def update_caption(path: str, body: CaptionUpdate, directory: str | None = Query
         return svc.save_caption(directory or _default_directory(), path, body.content)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ── version history ────────────────────────────────────────────
@@ -134,6 +138,8 @@ def get_versions(path: str, directory: str | None = Query(None)):
         return svc.get_versions(directory or _default_directory(), path)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/tag-index")
@@ -145,15 +151,18 @@ def get_tag_index(directory: str | None = Query(None)):
 @router.put("/batch-caption")
 def batch_caption(body: BatchCaptionRequest):
     """Batch update captions for multiple images."""
-    return svc.batch_update_captions(
-        directory=body.directory,
-        paths=body.paths,
-        action=body.action,
-        tag=body.tag,
-        find=body.find,
-        replace=body.replace,
-        use_regex=body.use_regex,
-    )
+    try:
+        return svc.batch_update_captions(
+            directory=body.directory,
+            paths=body.paths,
+            action=body.action,
+            tag=body.tag,
+            find=body.find,
+            replace=body.replace,
+            use_regex=body.use_regex,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ── dataset upload ─────────────────────────────────────────────
@@ -162,7 +171,9 @@ def batch_caption(body: BatchCaptionRequest):
 @router.post("/upload-archive", status_code=202)
 async def upload_archive(
     file: UploadFile = File(...),
-    target: str = Form(..., description="Extraction directory (relative to project root or absolute)"),
+    target: str = Form(
+        ..., description="Extraction directory (relative to project root or absolute)"
+    ),
 ):
     """Upload a dataset archive (zip / tar.*) and start extracting into *target*.
 
@@ -178,6 +189,7 @@ async def upload_archive(
             detail="Unsupported archive format: expected .zip, .tar, .tar.gz, .tgz, .tar.bz2 or .tar.xz",
         )
     tmp = tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False)
+    transferred = False
     try:
         while chunk := await file.read(1 << 20):
             tmp.write(chunk)
@@ -186,10 +198,15 @@ async def upload_archive(
         # the task starts, the worker owns the temp file's cleanup.
         # The original filename is passed for format detection: the temp
         # file's suffix is truncated (pack.tar.gz → .gz).
-        return svc.start_extract_task(Path(tmp.name), target, archive_name=filename)
+        task = svc.start_extract_task(Path(tmp.name), target, archive_name=filename)
+        transferred = True
+        return task
     except ValueError as e:
-        Path(tmp.name).unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        tmp.close()
+        if not transferred:
+            Path(tmp.name).unlink(missing_ok=True)
 
 
 @router.get("/upload-archive/{task_id}")
@@ -197,7 +214,9 @@ def get_upload_task(task_id: str):
     """Poll a background extraction task started by POST /upload-archive."""
     task = svc.get_extract_task(task_id)
     if task is None:
-        raise HTTPException(status_code=404, detail=f"Unknown extraction task: {task_id}")
+        raise HTTPException(
+            status_code=404, detail=f"Unknown extraction task: {task_id}"
+        )
     return task
 
 

@@ -152,6 +152,21 @@ def default_checkpoints() -> DefaultCheckpoints:
     except OSError:
         configured = {}
 
+    # vocab_pack allows an empty string (disabled), unlike the three required
+    # model paths, so it is intentionally outside load_model_config's schema.
+    # Read its config chain separately instead of silently dropping this key.
+    import tomllib
+
+    for name in ("model.toml", "base.toml", "custom/model.toml"):
+        path = anima_home() / "configs" / name
+        if path.is_file():
+            with path.open("rb") as stream:
+                value = tomllib.load(stream).get("vocab_pack")
+            if value is not None:
+                if not isinstance(value, str):
+                    raise ValueError(f"{path}: vocab_pack must be a string")
+                configured["vocab_pack"] = value
+
     def pick(kind: str) -> str:
         return (
             os.environ.get(_CKPT_ENV[kind])

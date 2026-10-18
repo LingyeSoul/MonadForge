@@ -34,23 +34,41 @@ def isolate_contract_artifacts(monkeypatch, tmp_path):
     """Request/argv tests never launch a worker or touch a real dataset."""
     import library.runtime.profiles as profiles
     from scripts.tasks import _common, _legacy_preprocess, masking, preprocess
+
     monkeypatch.setattr(profiles, "is_v100_runtime", lambda: False)
     monkeypatch.setattr(_common, "_PATH_OVERRIDES_CACHE", {})
     monkeypatch.setattr(_legacy_preprocess, "_ACTIVE_PREPROCESS_RUN", None)
-    for key in ("PREPROCESS_RUN", "ANIMA_PREPROCESS_RUN", "ANIMA_DAEMON_JOB_DIR", "TARGET_RES",
-                "MULTIRES_PER_IMAGE", "MIN_PIXELS", "DROP_LOWRES_IMAGES", "PREPROCESS_STAGES_JSON"):
+    for key in (
+        "PREPROCESS_RUN",
+        "ANIMA_PREPROCESS_RUN",
+        "ANIMA_DAEMON_JOB_DIR",
+        "TARGET_RES",
+        "MULTIRES_PER_IMAGE",
+        "MIN_PIXELS",
+        "DROP_LOWRES_IMAGES",
+        "PREPROCESS_STAGES_JSON",
+    ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("ANIMA_HOME", str(tmp_path))
     monkeypatch.setattr(masking, "_mask_output_dir", lambda: tmp_path / "masks")
     monkeypatch.setattr(preprocess, "_ensure_danbooru_tags", lambda: None)
-    monkeypatch.setattr(preprocess, "_curation_decisions_path", lambda: tmp_path / "absent-decisions.json")
-    monkeypatch.setattr(preprocess, "_resolve_stage_run", lambda extra, create=False: (None, list(extra)))
+    monkeypatch.setattr(
+        preprocess,
+        "_curation_decisions_path",
+        lambda: tmp_path / "absent-decisions.json",
+    )
+    monkeypatch.setattr(
+        preprocess,
+        "_resolve_stage_run",
+        lambda extra, create=False: (None, list(extra)),
+    )
 
     def forbidden(*args, **kwargs):
         raise AssertionError("CLI contract tests must stub worker launches")
 
     for module in (_common, masking, preprocess):
         monkeypatch.setattr(module, "run", forbidden)
+
 
 _TRAINER_PATHS = {
     "source_image_dir": "image_dataset",
@@ -644,7 +662,7 @@ def test_caption_index_argv_keeps_the_trainer_output_path(monkeypatch):
 
 def test_no_hand_copied_contract_constants():
     """The copies the API-first audit found are now the package's own."""
-    from anime_tools import contract
+    from library.curation_compat import contract
 
     from scripts.tasks import preprocess
 

@@ -11,6 +11,7 @@ export function getCmpSel() { return cmpSel; }
 
 export function renderComparePicker() {
   const box = $('#cmp-list');
+  const focusedId = box.contains(document.activeElement) ? document.activeElement.closest('.cmp-run')?.dataset.id : null;
   box.innerHTML = cmpCache.map(r => {
     const st = ST[r.state] || { label: r.state };
     const checked = cmpSel.has(r.id);
@@ -30,6 +31,7 @@ export function renderComparePicker() {
   $$('.cmp-run').forEach(el => el.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); }
   }));
+  if (focusedId) $$('.cmp-run').find(el => el.dataset.id === focusedId)?.focus({ preventScroll: true });
   $('#cmp-count').textContent = cmpSel.size;
   $('#cmp-go').disabled = cmpSel.size < 1;
 }
@@ -68,7 +70,7 @@ export function renderCompareChart(d) {
   const labelSeries = [];
 
   /* 全局 y 域（显式锁定：custom 色带数据会污染 y 轴自动取值） */
-  let globalMin = Infinity, globalMax = 1;
+  let globalMin = Infinity, globalMax = -Infinity;
   runs.forEach(r => {
     (r.loss_average || []).forEach(p => {
       if (p[1] > globalMax) globalMax = p[1];
@@ -76,6 +78,7 @@ export function renderCompareChart(d) {
     });
   });
   if (!isFinite(globalMin)) globalMin = 0.01;
+  if (!isFinite(globalMax) || globalMax <= 0) globalMax = 1;
   opt.yAxis.min = globalMin * 0.5;
   opt.yAxis.max = showSpans ? globalMax * 1.18 : globalMax * 1.08;
 
@@ -110,6 +113,7 @@ export function renderCompareChart(d) {
       const labelY = globalMax * (1.06 + 0.035 * (i % 2));
       labelSeries.push({
         id: `labels-${r.id}`, name: `${runLabel(r)} · E#`, type: 'scatter', z: 8, symbol: 'none', silent: true,
+        labelLayout: { hideOverlap: true },
         tooltip: { show: false },
         data: eps.map(ep => ({
           value: [(spans[ep][0] + spans[ep][1]) / 2, labelY],
@@ -124,19 +128,14 @@ export function renderCompareChart(d) {
     const lineStyle = { width: 1.6, color: palette[i % palette.length] };
     const out = {
       id: r.id, name: runLabel(r), type: 'line', data: r.loss_average || [], z: 4,
-      symbol: 'none', lineStyle,
+      symbol: 'none', lineStyle, itemStyle: { color: palette[i % palette.length] },
       emphasis: { lineStyle: { width: 2.4, color: C.volt } },
     };
     if (showEpAvg && (r.epoch_average || []).length) {
       out.markPoint = {
         symbol: 'rect', symbolSize: 5,
         itemStyle: { color: palette[i % palette.length] },
-        label: {
-          show: true,
-          formatter: p => `E${p.dataIndex + 1}`,
-          color: palette[i % palette.length], fontSize: 10, fontFamily: MONO,
-          position: 'top',
-        },
+        label: { show: false },
         data: (r.epoch_average || []).map(pt => ({ coord: pt })),
       };
     }

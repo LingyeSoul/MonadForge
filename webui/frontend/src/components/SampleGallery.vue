@@ -14,14 +14,16 @@
     </div>
 
     <div v-else class="sample-grid">
-      <div
+      <button
         v-for="(s, i) in samples"
-        :key="s.path"
+        :key="`${s.attempt_id ?? ''}:${s.path}`"
+        type="button"
         :data-testid="`sample-${i}`"
         class="sample-card"
         :class="{ 'sample-card-latest': i === samples.length - 1 }"
-        @click="open(i)"
+        @click="open(i, $event)"
         :title="t('dashSampleEnlarge')"
+        :aria-label="`${t('dashSampleEnlarge')}: ${labelFor(s)}`"
       >
         <img
           :src="thumbUrl(s)"
@@ -36,13 +38,13 @@
           </div>
         </div>
         <div class="sample-badge">{{ labelFor(s) }}</div>
-      </div>
+      </button>
     </div>
 
     <!-- Click-to-enlarge dialog -->
-    <v-dialog v-model="dialogOpen" max-width="90vw" max-height="90vh">
+    <v-dialog v-model="dialogOpen" max-width="90vw" max-height="90vh" @after-leave="restoreFocus">
       <v-card v-if="active" color="surface" class="sample-dialog">
-        <v-card-title class="d-flex align-center pa-3 pb-2">
+        <v-card-title class="sample-dialog-heading d-flex align-center pa-3 pb-2">
           <v-icon icon="mdi-image" size="small" class="mr-2" />
           <div class="text-subtitle-2">{{ t('dashSampleDialogTitle') }}</div>
           <v-spacer />
@@ -54,6 +56,7 @@
             size="small"
             variant="text"
             class="ml-2"
+            :aria-label="t('dsClose')"
             @click="dialogOpen = false"
           />
         </v-card-title>
@@ -76,7 +79,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useI18n } from '../composables/useI18n'
 import type { SampleInfo } from '../stores/training'
 
@@ -86,16 +89,20 @@ const props = defineProps<{ samples: SampleInfo[]; taskId: string; imageRoot?: s
 
 const dialogOpen = ref(false)
 const activeIndex = ref<number | null>(null)
+let trigger: HTMLElement | null = null
+watch(() => props.taskId, () => { dialogOpen.value = false; activeIndex.value = null })
 
 const active = computed<SampleInfo | null>(() => {
   if (activeIndex.value === null) return null
   return props.samples[activeIndex.value] ?? null
 })
 
-function open(i: number) {
+function open(i: number, event: MouseEvent) {
+  trigger = event.currentTarget as HTMLElement
   activeIndex.value = i
   dialogOpen.value = true
 }
+function restoreFocus() { if (trigger?.isConnected) trigger.focus() }
 
 function fileUrl(s: SampleInfo): string {
   // filename is the basename the server uses for its whitelist check.
@@ -131,12 +138,14 @@ function labelFor(s: SampleInfo): string {
 <style scoped>
 .sample-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 140px), 1fr));
   gap: 10px;
 }
 
 .sample-card {
   position: relative;
+  padding: 0;
+  text-align: start;
   aspect-ratio: 1 / 1;
   border-radius: 8px;
   overflow: hidden;
@@ -146,10 +155,11 @@ function labelFor(s: SampleInfo): string {
   transition: transform 0.12s ease, border-color 0.12s ease;
 }
 
-.sample-card:hover {
+.sample-card:hover, .sample-card:focus-visible {
   transform: translateY(-2px);
   border-color: var(--forge-amber);
 }
+.sample-card:focus-visible { outline: 2px solid var(--forge-amber); outline-offset: 2px; }
 
 .sample-card-latest {
   border-color: var(--forge-amber);
@@ -167,6 +177,8 @@ function labelFor(s: SampleInfo): string {
   position: absolute;
   bottom: 4px;
   left: 4px;
+  right: 4px;
+  overflow-wrap: anywhere;
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 10px;
@@ -213,6 +225,9 @@ function labelFor(s: SampleInfo): string {
   object-fit: contain;
   display: block;
 }
+.sample-dialog-heading { white-space: normal; gap: 8px; flex-wrap: wrap; }
+.sample-dialog-heading > .text-caption { min-width: 0; overflow-wrap: anywhere; flex: 1 1 180px; }
+.sample-dialog-heading :deep(.v-btn) { flex-shrink: 0; }
 
 .prompt-text {
   white-space: pre-wrap;

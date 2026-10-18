@@ -11,6 +11,8 @@
             :icon="expanded ? 'mdi-chevron-up' : 'mdi-chevron-down'"
             size="x-small"
             variant="text"
+            :aria-label="expanded ? t('taskHideAttempts') : t('taskShowAttempts')"
+            :aria-expanded="expanded"
             @click="expanded = !expanded"
           />
         </template>
@@ -30,7 +32,7 @@
             </span>
             <v-chip size="x-small" variant="outlined">{{ attempt.state }}</v-chip>
             <span class="text-caption text-medium-emphasis text-truncate">
-              {{ attempt.job_id.slice(0, 8) }}
+              {{ attempt.job_id }}
             </span>
           </div>
           <div class="attempt-meta text-caption text-medium-emphasis mt-1">

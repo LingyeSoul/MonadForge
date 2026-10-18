@@ -57,6 +57,12 @@ def make_warmup_cosine_scheduler(
         SequentialLR,
     )
 
+    if total_steps < 1:
+        raise ValueError("total_steps must be at least 1")
+    # Tiny runs still need a nonempty cosine interval. A one-step run skips
+    # warmup; otherwise SequentialLR switches into a T_max=0 cosine and raises
+    # immediately after the first optimizer update.
+    warmup_steps = min(warmup_steps, total_steps - 1)
     if warmup_steps and warmup_steps > 0:
         warmup = LinearLR(optimizer, start_factor=1e-6 / lr, total_iters=warmup_steps)
         cosine = CosineAnnealingLR(

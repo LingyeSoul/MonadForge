@@ -13,6 +13,8 @@ guard can't silently pass because the detector itself broke.
 
 from __future__ import annotations
 
+import subprocess
+
 from scripts.release.check_docs import (
     REPO_ROOT,
     _anchor_family_ref,
@@ -83,6 +85,24 @@ def test_check_path_resolves_relative_to_the_referencing_doc(tmp_path):
     # under neither root is still flagged.
     missing = "bench/this_bench_does_not_exist.py"
     assert _check_path(missing, top, base=line_home) == missing
+
+
+def test_missing_ignored_directory_keeps_git_directory_semantics(tmp_path, monkeypatch):
+    from scripts.release import check_docs
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("bench/local-artifacts/\n")
+    monkeypatch.setattr(check_docs, "REPO_ROOT", tmp_path)
+    check_docs._is_ignored.cache_clear()
+    try:
+        assert _check_path("bench/local-artifacts/", {"bench"}) is None
+        assert _check_path("bench/local-artifacts/result.json", {"bench"}) is None
+        assert (
+            _check_path("bench/missing_source.py", {"bench"})
+            == "bench/missing_source.py"
+        )
+    finally:
+        check_docs._is_ignored.cache_clear()
 
 
 def test_line_root_resolves_line_relative_refs_from_subfolders(tmp_path):

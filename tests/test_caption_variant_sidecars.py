@@ -21,6 +21,7 @@ from anime_tools.captions.correction import (
     load_tag_knowledge_base,
 )
 from anime_tools.stages.captions import write_corrected_preprocess_captions
+from library.captioning import preprocess as legacy_captions
 from library.preprocess import text as te
 from anime_tools.captions.variants import (
     read_variants_sidecar,
@@ -239,7 +240,7 @@ def test_caption_step_passthrough_accepts_none_kb(tmp_path):
     (dst / "a.png").write_bytes(b"")
 
     random.seed(0)
-    stats = write_corrected_preprocess_captions(
+    stats = legacy_captions.write_corrected_preprocess_captions(
         src,
         dst,
         None,  # no tag KB — passthrough path must not need it
@@ -266,7 +267,7 @@ def test_caption_step_correct_without_kb_raises(tmp_path):
     import pytest
 
     with pytest.raises(ValueError, match="knowledge base"):
-        write_corrected_preprocess_captions(
+        legacy_captions.write_corrected_preprocess_captions(
             src,
             dst,
             None,
@@ -412,7 +413,9 @@ def test_reconcile_lists_and_deletes_orphan_variant_sidecars(tmp_path):
     assert (resized / "kept.variants.txt").exists()
 
 
-# ----- position clauses survive the mirror --------------------------------
+# ----- local legacy mirror: master edits and derived clauses compose -------
+# The standard anime_tools pipeline is revised-first; the local/V100 mirror
+# remains master-first. Exercise its public implementation for these contracts.
 
 
 def _clause_corpus(tmp_path, master, derived):
@@ -425,6 +428,26 @@ def _clause_corpus(tmp_path, master, derived):
     return src, dst
 
 
+def test_curation_revised_caption_keeps_autotags_when_master_changes(tmp_path):
+    """The standard package pipeline owns the derived caption after mirroring."""
+    src, dst = _clause_corpus(
+        tmp_path,
+        "1girl, solo, @sincos",
+        "1girl, smile, @sincos. On the left, blue hair.",
+    )
+    before = (src / "a.txt").read_text(encoding="utf-8")
+
+    result = write_corrected_preprocess_captions(
+        src, dst, _kb(tmp_path), options=CaptionCorrectionOptions(), recursive=False
+    )
+
+    revised = (dst / "a.txt").read_text(encoding="utf-8")
+    assert "smile" in revised and "solo" not in revised
+    assert "On the left, blue hair." in revised
+    assert result.stats.clauses_preserved == 1
+    assert (src / "a.txt").read_text(encoding="utf-8") == before
+
+
 def test_mirror_keeps_clauses_the_master_does_not_have(tmp_path):
     """`caption-position` writes only ``resized/`` — a plain mirror would undo it."""
     src, dst = _clause_corpus(
@@ -433,7 +456,7 @@ def test_mirror_keeps_clauses_the_master_does_not_have(tmp_path):
         "1girl, smile, @sincos. On the left, blue hair.",
     )
 
-    stats = write_corrected_preprocess_captions(
+    stats = legacy_captions.write_corrected_preprocess_captions(
         src,
         dst,
         _kb(tmp_path),
@@ -457,12 +480,12 @@ def test_mirror_reruns_are_stable_on_a_clause_caption(tmp_path):
         "1girl, smile, @sincos. On the left, blue hair.",
     )
     opts = CaptionCorrectionOptions()
-    write_corrected_preprocess_captions(
+    legacy_captions.write_corrected_preprocess_captions(
         src, dst, _kb(tmp_path), options=opts, recursive=False
     )
     first = (dst / "a.txt").read_text(encoding="utf-8")
 
-    stats = write_corrected_preprocess_captions(
+    stats = legacy_captions.write_corrected_preprocess_captions(
         src, dst, _kb(tmp_path), options=opts, recursive=False
     )
 
@@ -478,7 +501,7 @@ def test_mirror_picks_up_a_master_edit_around_the_clauses(tmp_path):
         "1girl, smile, @sincos. On the left, blue hair.",
     )
 
-    write_corrected_preprocess_captions(
+    legacy_captions.write_corrected_preprocess_captions(
         src, dst, _kb(tmp_path), options=CaptionCorrectionOptions(), recursive=False
     )
 
@@ -496,7 +519,7 @@ def test_mirror_regenerates_the_sidecar_around_restored_clauses(tmp_path):
     )
     random.seed(0)
 
-    write_corrected_preprocess_captions(
+    legacy_captions.write_corrected_preprocess_captions(
         src,
         dst,
         _kb(tmp_path),
@@ -519,7 +542,7 @@ def test_a_hand_written_master_clause_wins_over_the_derived_one(tmp_path):
         "1girl, smile, @sincos. On the left, blue hair.",
     )
 
-    stats = write_corrected_preprocess_captions(
+    stats = legacy_captions.write_corrected_preprocess_captions(
         src, dst, _kb(tmp_path), options=CaptionCorrectionOptions(), recursive=False
     )
 

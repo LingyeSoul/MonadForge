@@ -270,17 +270,8 @@ def test_run_start_populates_total_steps(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_step_events_emit_metrics_immediately(tmp_path: Path):
-    """A burst of step events produces one metrics message per event.
-
-    The earlier debounce stacked every emit on the same 0.3 s window and
-    kept getting reset by the next event, so the dashboard never saw
-    a metrics message until the watcher's ``finally`` flush. We now
-    forward each ``step`` event directly — the trainer's
-    ``log_every_n_steps`` cadence (default 2) bounds the WS load, and
-    the loss / step history is deduped by ``global_step`` so the
-    direct emit can't double-append.
-    """
+def test_step_burst_emits_bounded_complete_metrics(tmp_path: Path):
+    """Rate limiting bounds snapshots, while every event remains in history."""
     svc, Task, TaskState = _make_service()
     jsonl = tmp_path / "run.progress.jsonl"
     task = Task(id="deb", command="lora", args=[], state=TaskState.RUNNING)
@@ -323,18 +314,18 @@ def test_step_events_emit_metrics_immediately(tmp_path: Path):
     msgs = _drive(_drain_queue(sub, timeout=0.2))
     metrics_msgs = [m for m in msgs if m.get("type") == "metrics"]
 
-    # Each step event must produce its own metrics message — 50 events
-    # in the file means 50 messages to the frontend. The dashboard
-    # receives them as the watcher reads them, not all at the end.
-    assert len(metrics_msgs) == 50, (
-        f"expected 50 per-step metrics messages, got {len(metrics_msgs)}: "
-        "regression — step events aren't reaching the dashboard live"
-    )
+    # An immediate first snapshot and a final flush cover the entire burst
+    # without copying the growing histories once per event.
+    assert 2 <= len(metrics_msgs) < 50
     # The last message carries the freshest step; the history grew
     # monotonically across the batch.
     assert metrics_msgs[-1]["data"]["step"] == 50
     assert len(metrics_msgs[-1]["data"]["step_history"]) == 50
     assert len(metrics_msgs[-1]["data"]["loss_history"]) == 50
+    assert metrics_msgs[-1]["data"]["step_history"] == list(range(1, 51))
+    assert metrics_msgs[-1]["data"]["loss_history"] == [
+        1.0 / (i + 1) for i in range(1, 51)
+    ]
 
 
 # ---------------------------------------------------------------------------

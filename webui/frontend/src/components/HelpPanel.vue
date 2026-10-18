@@ -1,5 +1,5 @@
 <template>
-  <v-card class="help-panel" variant="flat" :height="height">
+  <v-card ref="panel" class="help-panel" variant="flat" :height="height" :max-height="maxHeight">
     <v-card-title class="d-flex align-center text-subtitle-1 pa-3 pb-1">
       <v-icon :icon="showField ? 'mdi-information-outline' : 'mdi-book-open-page-variant-outline'" class="mr-2" size="small" />
       {{ showField ? t('cfgFieldHelp') : t('cfgMethodGuide') }}
@@ -54,7 +54,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, nextTick } from 'vue'
 import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{
@@ -62,10 +62,12 @@ const props = defineProps<{
   fieldHelp: Record<string, string>
   guideHtml: string
   height?: string | number
+  maxHeight?: string | number
 }>()
 
 const { t } = useI18n()
 
+const panel = ref<{ $el: HTMLElement } | null>(null)
 const activeFieldKey = ref('')
 const activeFieldOrigin = ref('')
 const showField = ref(false)
@@ -81,6 +83,7 @@ function showFieldHelp(key: string, origin: string) {
   activeFieldKey.value = key
   activeFieldOrigin.value = origin
   showField.value = true
+  void nextTick(() => { panel.value?.$el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }) })
 }
 
 function backToGuide() {
@@ -114,9 +117,11 @@ defineExpose({ showFieldHelp })
 
 .help-content {
   overflow-y: auto;
-  flex: 1;
+  min-height: 0;
+  flex: 1 1 auto;
   color: var(--text-secondary);
   font-size: 13px;
+  line-height: 1.65;
   overflow-wrap: anywhere;
 }
 
@@ -212,9 +217,10 @@ defineExpose({ showFieldHelp })
 }
 
 /* Brand: active topic indicator */
-.help-panel {
-  background: transparent;
-  border-radius: 0 !important;
+.v-card.help-panel {
+  background: var(--bg-form-surface, var(--bg-surface));
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md) !important;
 }
 
 /* Code blocks: bg-deep terminal style */

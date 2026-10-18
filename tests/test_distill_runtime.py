@@ -139,3 +139,25 @@ def test_make_scheduler_cosine_anneals_to_a_tenth_of_peak():
         opt.step()
         cosine.step()
     assert cosine.get_last_lr()[0] == pytest.approx(0.1 * lr, rel=1e-3)
+
+
+@pytest.mark.training_step
+@pytest.mark.parametrize(("total_steps", "warmup_steps"), [(1, 1), (2, 500)])
+def test_warmup_cosine_handles_minimal_training(total_steps, warmup_steps):
+    import torch
+
+    from library.training.schedulers import make_warmup_cosine_scheduler
+
+    param = torch.nn.Parameter(torch.ones(1))
+    lr = 1e-3
+    optimizer = torch.optim.AdamW([param], lr=lr)
+    scheduler = make_warmup_cosine_scheduler(
+        optimizer, total_steps, lr, warmup_steps=warmup_steps
+    )
+    for _ in range(total_steps):
+        param.square().mean().backward()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        scheduler.step()
+    assert param.item() < 1
+    assert scheduler.get_last_lr()[0] == pytest.approx(0.1 * lr)

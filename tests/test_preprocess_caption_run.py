@@ -22,6 +22,6 @@ def test_caption_index_stage_writes_into_active_run(monkeypatch, tmp_path: Path)
         preprocess.cmd_caption_index([])
 
     command = calls[0]
-    assert command[1] == "scripts/preprocess/build_caption_index.py"
+    assert command[1:3] == ["-m", "anime_tools.captions.index"]
     assert command[command.index("--src") + 1] == str(run.source_dir)
     assert command[command.index("--out") + 1] == str(run.caption_index_path)

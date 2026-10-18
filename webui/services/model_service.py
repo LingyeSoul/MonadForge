@@ -161,9 +161,7 @@ def read_model_metadata(path: str) -> dict | None:
         "spec": spec,
         "type_label": type_label(spec),
         "network_args": network_args,
-        "metadata": {
-            k: v for k, v in metadata.items() if k not in _SKIP_METADATA_KEYS
-        },
+        "metadata": {k: v for k, v in metadata.items() if k not in _SKIP_METADATA_KEYS},
     }
 
 
@@ -175,6 +173,7 @@ def delete_model(path: str) -> tuple[bool, str]:
     """
     from library.io.output_layout import (
         OUTPUT_WEIGHT_EXTENSIONS,
+        _is_managed_nonfinal_path,
         is_checkpoint_weight,
         remove_path_with_retry,
     )
@@ -182,7 +181,11 @@ def delete_model(path: str) -> tuple[bool, str]:
     p = resolve_path(path, expect_file=True)
     if p is None:
         return False, f"File not found: {path}"
-    if p.suffix.lower() not in OUTPUT_WEIGHT_EXTENSIONS or not is_checkpoint_weight(p):
+    if (
+        p.suffix.lower() not in OUTPUT_WEIGHT_EXTENSIONS
+        or not is_checkpoint_weight(p)
+        or _is_managed_nonfinal_path(p.resolve(), Path(p.resolve().anchor))
+    ):
         return False, (
             "Refusing to delete: not a final adapter weight. "
             "Checkpoint trajectories and resume states are managed by the trainer."

@@ -97,9 +97,7 @@ class JobManager:
         self._lock = threading.RLock()
         self._jobs: dict[str, Job] = {}
         self._resuming_roots: set[str] = set()
-        from .continuation import Continuations
-
-        self.continuations = Continuations(self)
+        self._continuations = None
         self._queue = queue.PriorityQueue()
         self._seq = itertools.count()
         self._popens: dict[str, object] = {}  # job_id -> Popen (spawned only)
@@ -125,6 +123,18 @@ class JobManager:
         self._worker = threading.Thread(
             target=self._run, name="anima-job-worker", daemon=True
         )
+
+    @property
+    def continuations(self):
+        # Importing the continuation helpers initializes library.training and
+        # its ML dependencies. Ordinary daemon startup/queue control needs
+        # none of those; initialize the service only for continuation calls.
+        with self._lock:
+            if self._continuations is None:
+                from .continuation import Continuations
+
+                self._continuations = Continuations(self)
+            return self._continuations
 
     def start(self) -> None:
         config.ensure_state_dirs()
@@ -333,7 +343,12 @@ class JobManager:
             layout = resolve_output_layout(
                 snapshot.get("output_dir"), snapshot.get("output_name"), cwd=config.ROOT
             )
-            assert_fresh_output_root(layout.root)
+            try:
+                assert_fresh_output_root(layout.root)
+            except ValueError as exc:
+                from .jobs import JobConflictError
+
+                raise JobConflictError(str(exc)) from exc
         # ``start`` controls the run gate atomically with enqueue, so there's no
         # window where a "hold this one" job could slip past the worker:
         #   False → "add to queue". Hold this job for a later Start Queue ONLY
@@ -398,15 +413,17 @@ class JobManager:
     def pause(self) -> None:
         """Hold the queue: queued jobs stay ``queued`` until :meth:`resume`. A
         job already running is left alone — only the next launch waits."""
-        if self._run_gate.is_set():
-            self._run_gate.clear()
-            self._broadcast({"ev": "queue_state", "paused": True})
+        with self._lock:
+            if self._run_gate.is_set():
+                self._run_gate.clear()
+                self._broadcast({"ev": "queue_state", "paused": True})
 
     def resume(self) -> None:
         """Release a paused queue so the worker launches queued jobs in order."""
-        if not self._run_gate.is_set():
-            self._run_gate.set()
-            self._broadcast({"ev": "queue_state", "paused": False})
+        with self._lock:
+            if not self._run_gate.is_set():
+                self._run_gate.set()
+                self._broadcast({"ev": "queue_state", "paused": False})
 
     def is_paused(self) -> bool:
         return not self._run_gate.is_set()
@@ -421,11 +438,15 @@ class JobManager:
             job = self._jobs.get(job_id)
             if job is None or job.state not in TERMINAL_STATES:
                 return False
+            if (job.root_job_id or job.id) in self._resuming_roots:
+                return False
             path = job.dir
+            # Do not hide history when a filesystem lock/permission error
+            # prevents deletion. Serialize removal with continuation creation.
+            shutil.rmtree(path, ignore_errors=False)
             self._jobs.pop(job_id, None)
         # The job directory contains metadata/logs/progress/sample only.  State
         # and model outputs live elsewhere and are intentionally untouched.
-        shutil.rmtree(path, ignore_errors=False)
         self._broadcast({"ev": "deleted", "job_id": job_id})
         return True
 
@@ -437,6 +458,18 @@ class JobManager:
         """Return one logical task's physical attempts in execution order."""
         with self._lock:
             job = job_or_id if isinstance(job_or_id, Job) else self._jobs.get(job_or_id)
+            if job is None:
+                # The root record may have been deleted independently (or in
+                # a partially failed group delete). Surviving attempts still
+                # belong to that logical task and must remain discoverable.
+                job = next(
+                    (
+                        candidate
+                        for candidate in self._jobs.values()
+                        if candidate.root_job_id == job_or_id
+                    ),
+                    None,
+                )
             if job is None:
                 return []
             root_id = job.root_job_id or job.id
@@ -517,24 +550,26 @@ class JobManager:
 
     def delete_group(self, job_id: str) -> list[str] | None:
         """Delete all terminal attempt records for one logical task."""
-        attempts = self.lineage(job_id)
-        if not attempts or any(job.state not in TERMINAL_STATES for job in attempts):
-            return None
-        paths = [job.dir for job in attempts]
-        ids = [job.id for job in attempts]
         with self._lock:
-            for attempt_id in ids:
-                self._jobs.pop(attempt_id, None)
-        try:
-            for path in paths:
-                shutil.rmtree(path, ignore_errors=False)
-        except OSError:
-            # Keep the in-memory table consistent with the surviving records.
-            with self._lock:
+            attempts = self.lineage(job_id)
+            if not attempts or any(
+                job.state not in TERMINAL_STATES for job in attempts
+            ):
+                return None
+            if (attempts[0].root_job_id or attempts[0].id) in self._resuming_roots:
+                return None
+            ids = [job.id for job in attempts]
+            try:
                 for job in attempts:
-                    if job.dir.exists():
-                        self._jobs[job.id] = job
-            raise
+                    shutil.rmtree(job.dir, ignore_errors=False)
+                    self._jobs.pop(job.id, None)
+            except OSError:
+                # A failed delete may already have removed some directories;
+                # retain every surviving record and its lineage.
+                for job in attempts:
+                    if not job.dir.exists():
+                        self._jobs.pop(job.id, None)
+                raise
         self._broadcast(
             {
                 "ev": "deleted_group",
@@ -1036,7 +1071,9 @@ class JobManager:
         return not self._stopping
 
     def _launch_and_monitor(self, job: Job) -> None:
-        job.release_requested = False
+        with self._lock:
+            if self._stopping or job.state != STATE_QUEUED or job.stop_requested:
+                return
         d = config.job_dir(job.id)
         try:
             self._validate_job_runtime(job)
@@ -1044,38 +1081,56 @@ class JobManager:
             # train jobs; keep it INSIDE the guard so a bad config / import error
             # fails just this job instead of crashing the worker.
             cmd, env = self._build_cmd(job)
-            self._begin_progress_run(job)
             # Job identity is common telemetry, not the Anima stop/resume
             # protocol. Independent model trainers use it for their JSONL.
             env["ANIMA_DAEMON_JOB_DIR"] = str(d)
             env["ANIMA_DAEMON_JOB_ID"] = job.id
             env["ANIMA_DAEMON_ROOT_JOB_ID"] = job.root_job_id or job.id
-            if self._job_runs_train(job):
-                stop_path = self._stop_request_path(job)
-                try:
-                    stop_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                env["ANIMA_DAEMON_STOP_FILE"] = str(stop_path)
-            popen = proc.spawn_detached(
-                cmd,
-                cwd=config.ROOT,
-                stdout_path=d / "stdout.log",
-                env=env,
-            )
+            # GPU checks and config preparation may take seconds. Serialize
+            # the final eligibility check, spawn and PID publication with
+            # stop/pause/shutdown so a cancelled queued job cannot start later.
+            while self._await_run_gate(job):
+                with self._lock:
+                    if (
+                        self._stopping
+                        or job.state != STATE_QUEUED
+                        or job.stop_requested
+                    ):
+                        return
+                    if not self._run_gate.is_set():
+                        continue
+                    job.release_requested = False
+                    self._begin_progress_run(job)
+                    if self._job_runs_train(job):
+                        stop_path = self._stop_request_path(job)
+                        try:
+                            stop_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        env["ANIMA_DAEMON_STOP_FILE"] = str(stop_path)
+                    popen = proc.spawn_detached(
+                        cmd,
+                        cwd=config.ROOT,
+                        stdout_path=d / "stdout.log",
+                        env=env,
+                    )
+                    job.state = STATE_RUNNING
+                    job.started_at = time.time()
+                    job.accelerate_launched = any(
+                        "accelerate.commands.accelerate_cli" in str(a) for a in cmd
+                    )
+                    job.pid = popen.pid
+                    job.create_time = proc.create_time(popen.pid)
+                    job.persist()
+                    self._popens[job.id] = popen
+                    break
+            else:
+                return
         except Exception as exc:  # noqa: BLE001
-            self._finalize(job, STATE_ERROR, error=f"launch failed: {exc}")
+            with self._lock:
+                if job.state not in TERMINAL_STATES:
+                    self._finalize(job, STATE_ERROR, error=f"launch failed: {exc}")
             return
-        with self._lock:
-            job.state = STATE_RUNNING
-            job.started_at = time.time()
-            job.accelerate_launched = any(
-                "accelerate.commands.accelerate_cli" in str(a) for a in cmd
-            )
-            job.pid = popen.pid
-            job.create_time = proc.create_time(popen.pid)
-            job.persist()
-            self._popens[job.id] = popen
         self._broadcast({"ev": "started", "job_id": job.id, "pid": job.pid})
         self._monitor(job, popen=popen)
 
@@ -1221,6 +1276,11 @@ class JobManager:
             return None
         where = JobManager._last_output_line(job)
         detail = f" last output: {where!r}" if where else " (no output captured)"
+        if busy:
+            detail = (
+                f" still burning CPU, but exceeded the {_STALL_CPU_GRACE:g}x "
+                f"silence limit; raise or disable stall_timeout.{detail}"
+            )
         return (
             f"stalled: no output for {int(idle)}s (limit {int(timeout)}s); daemon "
             f"killed the job so the queue can advance.{detail}"
@@ -1473,6 +1533,8 @@ class JobManager:
                         owner.id,
                         pid,
                     )
+                    continue
+                if not proc.is_alive(pid, owner.create_time):
                     continue
                 logger.warning(
                     "gpu_guard: reaping leaked VRAM from job %s (pid %s)", owner.id, pid

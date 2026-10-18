@@ -1,11 +1,16 @@
 <template>
   <v-container fluid class="pa-4 preprocess-page">
-    <div class="text-h5 mb-1">{{ t('ppTitle') }}</div>
-    <div class="text-body-2 text-medium-emphasis mb-4">{{ t('ppSubtitle') }}</div>
+    <WorkspaceHeading :title="t('ppTitle')" :subtitle="subtitle">
+      <v-btn data-testid="preprocess-guide" variant="text" size="small" prepend-icon="mdi-book-open-page-variant-outline" @click="openPreprocessHelp()">{{ t('cfgOpenGuide') }}</v-btn>
+    </WorkspaceHeading>
     <div class="mb-4" style="max-width: 480px"><RuntimeSelector :disabled="taskStore.loading" /></div>
 
-    <QwenPreprocessContent v-if="workspace.family !== 'anima'" :key="workspace.family" />
+    <QwenPreprocessContent v-if="workspace.family !== 'anima'" ref="modelPreprocess" :key="workspace.family" />
     <template v-else>
+    <v-alert v-if="loadError" type="error" variant="tonal" class="mb-4" data-testid="preprocess-load-error">
+      {{ loadError }}
+      <template #append><v-btn data-testid="preprocess-retry" variant="text" size="small" :loading="refreshing" @click="refresh">{{ t('cfgReload') }}</v-btn></template>
+    </v-alert>
     <!-- Isolated preprocess run -->
     <v-card variant="tonal" class="mb-4">
       <v-card-title class="text-subtitle-1 d-flex align-center">
@@ -17,13 +22,14 @@
           size="small"
           variant="text"
           :loading="runsLoading"
-          :title="t('ppRefreshRuns')"
+          :aria-label="t('ppRefreshRuns')"
           @click="fetchRuns(false)"
         />
       </v-card-title>
       <v-card-text>
         <v-select
-          v-model="selectedRun"
+          :model-value="selectedRun"
+          @update:model-value="selectRun"
           :items="runItems"
           item-title="title"
           item-value="manifest"
@@ -66,9 +72,10 @@
 
     <!-- Status Dashboard -->
     <v-card variant="tonal" class="mb-4">
-      <v-card-title class="text-subtitle-1">
+      <v-card-title class="text-subtitle-1 d-flex align-center">
         <v-icon icon="mdi-chart-box-outline" class="mr-2" />
-        {{ t('ppStatus') }}
+        {{ t('ppStatus') }}<v-spacer />
+        <v-btn data-testid="anima-cache-refresh" icon="mdi-refresh" size="small" variant="text" :loading="refreshing" :aria-label="t('ppRefresh')" @click="refresh" />
       </v-card-title>
       <v-card-text>
         <div class="d-flex flex-wrap ga-2">
@@ -95,57 +102,31 @@
     </v-card>
 
     <!-- Dataset Paths -->
-    <v-card variant="tonal" class="mb-4">
+    <v-card variant="tonal" class="mb-4 preprocess-path-card">
       <v-card-title class="text-subtitle-1">
         <v-icon icon="mdi-folder-outline" class="mr-2" />
         {{ t('ppDatasetPaths') }}
       </v-card-title>
       <v-card-text>
-        <v-text-field
-          v-model="paths.source"
-          :label="t('ppPathSource')"
-          :loading="pathsLoading"
-          :readonly="Boolean(selectedRun)"
-          density="compact"
-          hide-details="auto"
-          class="mb-2"
-        />
-        <v-text-field
-          v-model="paths.resized"
-          :label="t('ppPathResized')"
-          :readonly="Boolean(selectedRun)"
-          density="compact"
-          hide-details="auto"
-          class="mb-2"
-        />
-        <v-text-field
-          v-model="paths.cache"
-          :label="t('ppPathCache')"
-          :readonly="Boolean(selectedRun)"
-          density="compact"
-          hide-details="auto"
-          class="mb-2"
-        />
-        <v-text-field
-          v-model="paths.condSource"
-          :label="t('ppPathCondSource')"
-          :readonly="Boolean(selectedRun)"
-          density="compact"
-          hide-details="auto"
-          class="mb-2"
-        />
-        <v-text-field
-          v-model="paths.condResized"
-          :label="t('ppPathCondResized')"
-          :readonly="Boolean(selectedRun)"
-          density="compact"
-          hide-details="auto"
-        />
+        <template v-if="selectedRun">
+          <p class="text-caption text-medium-emphasis mb-3">{{ t('ppRunSelection') }} · {{ t('cfReadOnly') }}</p>
+          <dl class="preprocess-run-paths">
+            <div v-for="entry in pathEntries" :key="entry.label" :class="{ 'preprocess-path-wide': entry.source }">
+              <dt>{{ entry.label }}</dt>
+              <dd>{{ entry.value || '—' }}</dd>
+            </div>
+          </dl>
+        </template>
+        <div v-else class="preprocess-path-fields">
+          <ConfigField v-for="entry in pathEntries" :key="entry.key" :field="pathField(entry)" :model-value="paths[entry.key]"
+            :class="{ 'preprocess-path-wide': entry.source }" @update="paths[entry.key] = String($event ?? '')" @help-click="openPreprocessHelp(entry.key)" />
+        </div>
       </v-card-text>
-      <v-card-actions>
-        <v-btn color="primary" size="small" prepend-icon="mdi-content-save" :loading="pathsSaving" :disabled="Boolean(selectedRun)" @click="savePaths">
+      <v-card-actions v-if="!selectedRun" class="flex-wrap ga-2">
+        <v-btn data-testid="anima-paths-save" color="primary" size="small" prepend-icon="mdi-content-save" :loading="pathsSaving" :disabled="!pathsDirty || pathsLoading || Boolean(submitting)" @click="savePaths">
           {{ t('ppSavePaths') }}
         </v-btn>
+        <v-btn data-testid="anima-paths-cancel" size="small" :disabled="!pathsDirty || pathsSaving || Boolean(submitting)" @click="discardPaths">{{ t('cfCancel') }}</v-btn>
       </v-card-actions>
     </v-card>
 
@@ -157,7 +138,7 @@
           {{ t('ppSettings') }}
         </v-expansion-panel-title>
         <v-expansion-panel-text>
-          <v-row>
+          <v-row class="preprocess-settings-grid">
             <!-- Resize Settings -->
             <v-col cols="12" md="3">
               <div class="text-subtitle-2 mb-2">
@@ -287,17 +268,18 @@
             </v-col>
           </v-row>
 
-          <div class="mt-3">
-            <v-btn color="primary" size="small" prepend-icon="mdi-content-save" @click="saveSettings">
+          <div class="d-flex flex-wrap ga-2 mt-3">
+            <v-btn data-testid="anima-settings-save" color="primary" size="small" prepend-icon="mdi-content-save" :loading="settingsSaving" :disabled="!settingsDirty || Boolean(submitting)" @click="saveSettings">
               {{ t('ppSaveSettings') }}
             </v-btn>
+            <v-btn data-testid="anima-settings-cancel" size="small" variant="text" :disabled="!settingsDirty || settingsSaving || Boolean(submitting)" @click="discardSettings">{{ t('cfCancel') }}</v-btn>
           </div>
         </v-expansion-panel-text>
       </v-expansion-panel>
     </v-expansion-panels>
 
     <!-- Task Cards -->
-    <v-row>
+    <v-row class="preprocess-task-grid">
       <v-col cols="12" md="4">
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
@@ -310,7 +292,7 @@
           <v-card-actions>
             <v-btn
               color="primary"
-              :disabled="settings.target_res.length === 0"
+              :disabled="settings.target_res.length === 0 || Boolean(submitting && submitting !== 'preprocess-resize')"
               :loading="isRunning('preprocess-resize')"
               @click="runTask('preprocess-resize')"
             >
@@ -330,7 +312,7 @@
             <div class="text-body-2 mb-2" v-html="t('ppCacheVaeDesc')" />
           </v-card-text>
           <v-card-actions>
-            <v-btn color="primary" :loading="isRunning('preprocess-vae')" @click="runTask('preprocess-vae')">
+            <v-btn color="primary" :loading="isRunning('preprocess-vae')" :disabled="Boolean(submitting && submitting !== 'preprocess-vae')" @click="runTask('preprocess-vae')">
               {{ t('ppRunVae') }}
             </v-btn>
           </v-card-actions>
@@ -347,7 +329,7 @@
             <div class="text-body-2 mb-2" v-html="t('ppCacheTeDesc')" />
           </v-card-text>
           <v-card-actions>
-            <v-btn color="primary" :loading="isRunning('preprocess-te')" @click="runTask('preprocess-te')">
+            <v-btn color="primary" :loading="isRunning('preprocess-te')" :disabled="Boolean(submitting && submitting !== 'preprocess-te')" @click="runTask('preprocess-te')">
               {{ t('ppRunTe') }}
             </v-btn>
           </v-card-actions>
@@ -364,7 +346,7 @@
             <div class="text-body-2 mb-2" v-html="t('ppCachePeDesc')" />
           </v-card-text>
           <v-card-actions>
-            <v-btn color="primary" :loading="isRunning('preprocess-pe')" @click="runTask('preprocess-pe')">
+            <v-btn color="primary" :loading="isRunning('preprocess-pe')" :disabled="Boolean(submitting && submitting !== 'preprocess-pe')" @click="runTask('preprocess-pe')">
               {{ t('ppRunPe') }}
             </v-btn>
           </v-card-actions>
@@ -381,10 +363,10 @@
             <div class="text-body-2 mb-2" v-html="t('ppMaskDesc')" />
           </v-card-text>
           <v-card-actions>
-            <v-btn color="primary" :loading="isRunning('mask')" @click="runTask('mask')">
+            <v-btn color="primary" :loading="isRunning('mask')" :disabled="Boolean(submitting && submitting !== 'mask')" @click="runTask('mask')">
               {{ t('ppRunMask') }}
             </v-btn>
-            <v-btn color="error" variant="text" size="small" :loading="isRunning('mask-clean')" @click="runTask('mask-clean')">
+            <v-btn color="error" variant="text" size="small" :loading="isRunning('mask-clean')" :disabled="Boolean(submitting && submitting !== 'mask-clean')" @click="runTask('mask-clean')">
               {{ t('ppClean') }}
             </v-btn>
           </v-card-actions>
@@ -401,7 +383,7 @@
             <div class="text-body-2 mb-2" v-html="t('ppPipelineDesc')" />
           </v-card-text>
           <v-card-actions>
-            <v-btn color="primary" :loading="isRunning('preprocess')" @click="runTask('preprocess')">
+            <v-btn color="primary" :loading="isRunning('preprocess')" :disabled="Boolean(submitting && submitting !== 'preprocess')" @click="runTask('preprocess')">
               {{ t('ppRunAll') }}
             </v-btn>
           </v-card-actions>
@@ -415,7 +397,7 @@
       <v-icon icon="mdi-image-multiple-outline" class="mr-1" />
       {{ t('ppCondTitle') }}
     </div>
-    <v-row>
+    <v-row class="preprocess-task-grid">
       <v-col cols="12" md="4">
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
@@ -426,7 +408,7 @@
             <div class="text-body-2 mb-2" v-html="t('ppCondResizeDesc')" />
           </v-card-text>
           <v-card-actions>
-            <v-btn color="primary" :loading="isRunning('preprocess-cond-resize')" @click="runTask('preprocess-cond-resize')">
+            <v-btn color="primary" :loading="isRunning('preprocess-cond-resize')" :disabled="Boolean(submitting && submitting !== 'preprocess-cond-resize')" @click="runTask('preprocess-cond-resize')">
               {{ t('ppCondRunResize') }}
             </v-btn>
           </v-card-actions>
@@ -443,7 +425,7 @@
             <div class="text-body-2 mb-2" v-html="t('ppCondCacheVaeDesc')" />
           </v-card-text>
           <v-card-actions>
-            <v-btn color="primary" :loading="isRunning('preprocess-cond-vae')" @click="runTask('preprocess-cond-vae')">
+            <v-btn color="primary" :loading="isRunning('preprocess-cond-vae')" :disabled="Boolean(submitting && submitting !== 'preprocess-cond-vae')" @click="runTask('preprocess-cond-vae')">
               {{ t('ppCondRunCacheVae') }}
             </v-btn>
           </v-card-actions>
@@ -451,53 +433,38 @@
       </v-col>
     </v-row>
 
-    <v-divider class="my-4" />
-
-    <div class="d-flex align-center mb-2">
-      <div class="text-subtitle-1">{{ t('ppActiveTasks') }}</div>
-      <v-spacer />
-      <v-btn variant="text" size="small" prepend-icon="mdi-refresh" @click="refresh">
-        {{ t('ppRefresh') }}
-      </v-btn>
-    </div>
-
-    <v-list v-if="preprocessTasks.length > 0" density="compact">
-      <v-list-item
-        v-for="task in visibleTasks"
-        :key="task.task_id"
-        :title="task.command"
-        :subtitle="`${t('taskState')}: ${task.state} | PID: ${task.pid ?? '—'}`"
-      >
-        <template #append>
-          <v-chip size="small" :color="stateColor(task.state)" variant="tonal">{{ task.state }}</v-chip>
-          <v-btn v-if="task.state === 'running' || task.state === 'pending'" icon="mdi-stop" size="small" variant="text" color="error" @click="taskStore.cancelTask(task.task_id)" />
-        </template>
-      </v-list-item>
-    </v-list>
-    <div v-else class="text-medium-emphasis text-body-2">{{ t('ppNoTasks') }}</div>
-    <v-btn
-      v-if="hasHiddenTasks"
-      variant="text"
-      size="small"
-      class="mt-1"
-      :prepend-icon="showAllTasks ? 'mdi-chevron-up' : 'mdi-chevron-down'"
-      @click="showAllTasks = !showAllTasks"
-    >
-      {{ showAllTasks ? t('taskShowLess') : t('taskShowAll', { count: preprocessTasks.length }) }}
-    </v-btn>
+    <PreprocessTaskList :tasks="preprocessTasks" :refreshing="refreshing" @refresh="refresh" />
     </template>
+    <UnsavedChangesDialog :model-value="Boolean(leaveResolve)" :busy="leaveBusy" :error="leaveError"
+      @cancel="finishLeave(false)" @discard="discardAndLeave" @save="saveAndLeave" />
+    <v-dialog v-model="showHelp" max-width="640" scrollable>
+      <v-card>
+        <HelpPanel :key="helpSession" ref="helpPanel" :field-help="pathHelp" :guide-html="guideHtml" max-height="70dvh" />
+        <v-card-actions><v-spacer /><v-btn @click="showHelp = false">{{ t('guidebookClose') }}</v-btn></v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { isTaskActive } from '../utils/taskState.ts'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { useModelWorkspace } from '../stores/modelWorkspace'
 import QwenPreprocessContent from '../components/QwenPreprocessContent.vue'
 import RuntimeSelector from '../components/RuntimeSelector.vue'
+import WorkspaceHeading from '../components/WorkspaceHeading.vue'
+import PreprocessTaskList from '../components/PreprocessTaskList.vue'
+import ConfigField from '../components/ConfigField.vue'
+import HelpPanel from '../components/HelpPanel.vue'
+import UnsavedChangesDialog from '../components/UnsavedChangesDialog.vue'
+import { useActiveModelWorkspace } from '../stores/qwenWorkspace'
+import { useAppStore } from '../stores/app'
+import { mossText } from '../i18n/modelWorkspace'
 const workspace = useModelWorkspace()
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
-import { useConfigStore } from '../stores/config'
+import { useConfigStore, type FieldMeta } from '../stores/config'
 import { useI18n } from '../composables/useI18n'
 import { readPreprocessRun, writePreprocessRun } from '../composables/usePreprocessRunStorage'
 
@@ -505,7 +472,30 @@ const taskStore = useTaskStore()
 const notify = useNotifyStore()
 const configStore = useConfigStore()
 const { t } = useI18n()
-taskStore.fetchTasks()
+const app = useAppStore()
+const modelPreprocess = ref<InstanceType<typeof QwenPreprocessContent> | null>(null)
+const helpPanel = ref<InstanceType<typeof HelpPanel> | null>(null)
+const showHelp = ref(false)
+const helpSession = ref(0)
+const subtitle = computed(() => workspace.family === 'anima' ? t('ppSubtitle') : workspace.family === 'moss' ? mossText(app.language, 'cacheHint') : t('qwenCacheHint'))
+const guideHtml = computed(() => ['ppResizeDesc', 'ppCacheVaeDesc', 'ppCacheTeDesc', 'ppCachePeDesc', 'ppMaskDesc', 'ppPipelineDesc'].map(key => `<p>${t(key)}</p>`).join(''))
+const loadError = ref('')
+const refreshing = ref(false)
+const submitting = ref('')
+async function openPreprocessHelp(key?: string): Promise<void> {
+  if (workspace.family !== 'anima') return modelPreprocess.value?.openHelp(key)
+  helpSession.value++
+  showHelp.value = true
+  await nextTick()
+  if (key) helpPanel.value?.showFieldHelp(key, 'method')
+}
+async function responseError(response: Response): Promise<Error> {
+  let detail = `HTTP ${response.status}`
+  try { const body = await response.json(); if (body.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail) } catch { /* Use status when the response is not JSON. */ }
+  return new Error(detail)
+}
+function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+
 
 const preprocessCommands = [
   'preprocess', 'preprocess-resize', 'preprocess-vae', 'preprocess-te',
@@ -567,7 +557,7 @@ async function fetchStatus() {
     }
     const url = '/api/preprocess/status' + (qs.toString() ? '?' + qs : '')
     const res = await fetch(url)
-    if (!res.ok) return
+    if (!res.ok) throw await responseError(res)
     const data = await res.json()
     status.resized = data.resized ?? 0
     status.masks = data.masks ?? 0
@@ -575,17 +565,16 @@ async function fetchStatus() {
     status.cache.te = data.cache?.te ?? 0
     status.cache.pe = data.cache?.pe ?? 0
     status.cond_resized = data.cond_resized ?? 0
-  } catch { /* ignore */ }
+  } catch (error) { loadError.value = errorMessage(error) }
 }
 
-onMounted(() => { if (workspace.family === 'anima') return fetchStatus() })
 
 // Refresh status when tasks finish
 const runningCount = computed(() =>
-  taskStore.tasks.filter(tp => preprocessCommands.includes(tp.command) && tp.state === 'running').length
+  taskStore.tasks.filter(tp => preprocessCommands.includes(tp.command) && isTaskActive(tp.state)).length
 )
 watch(runningCount, (newVal, oldVal) => {
-  if (oldVal > newVal) {
+  if (workspace.family === 'anima' && oldVal > newVal) {
     fetchRuns(true)
     fetchStatus()
   }
@@ -610,6 +599,12 @@ const defaultSettings = () => ({
 })
 
 const settings = reactive(defaultSettings())
+const savedSettings = ref('')
+const settingsSaving = ref(false)
+const settingsDirty = computed(() => Boolean(savedSettings.value) && JSON.stringify(settings) !== savedSettings.value)
+function discardSettings(): void {
+  if (savedSettings.value) Object.assign(settings, JSON.parse(savedSettings.value))
+}
 let settingsHydrating = false
 
 // Allowed free-fit tier edges (mirror of ALLOWED_TARGET_RES in the backend).
@@ -631,7 +626,7 @@ async function fetchSettings() {
   settingsHydrating = true
   try {
     const res = await fetch('/api/preprocess/settings')
-    if (!res.ok) return
+    if (!res.ok) throw await responseError(res)
     const data = await res.json()
     Object.assign(settings.sam, data.sam ?? {})
     settings.run_sam_mask = data.run_sam_mask ?? true
@@ -646,11 +641,11 @@ async function fetchSettings() {
       ? data.target_res
       : [1024]
     settings.multires_per_image = data.multires_per_image ?? false
-  } catch { /* ignore */ }
+    savedSettings.value = JSON.stringify(settings)
+  } catch (error) { loadError.value = errorMessage(error) }
   finally { settingsHydrating = false }
 }
 
-onMounted(() => { if (workspace.family === 'anima') return fetchSettings() })
 
 watch(settings, () => {
   if (!settingsHydrating && selectedRun.value) selectedRun.value = null
@@ -659,8 +654,25 @@ watch(settings, () => {
 // ── Dataset paths ──────────────────────────────────────────────
 
 const paths = reactive({ source: '', resized: '', cache: '', condSource: '', condResized: '' })
+const pathEntries = computed(() => [
+  { key: 'source' as const, label: t('ppPathSource'), value: paths.source, source: true },
+  { key: 'resized' as const, label: t('ppPathResized'), value: paths.resized },
+  { key: 'cache' as const, label: t('ppPathCache'), value: paths.cache },
+  { key: 'condSource' as const, label: t('ppPathCondSource'), value: paths.condSource },
+  { key: 'condResized' as const, label: t('ppPathCondResized'), value: paths.condResized },
+])
 const pathsLoading = ref(false)
 const pathsSaving = ref(false)
+const savedPaths = ref('')
+const pathsDirty = computed(() => Boolean(savedPaths.value) && JSON.stringify(paths) !== savedPaths.value)
+const pathHelp = computed(() => Object.fromEntries(pathEntries.value.map(entry => [entry.key, entry.source ? t('ppResizeDesc') : entry.key.startsWith('cond') ? t('ppCondResizeDesc') : entry.key === 'cache' ? t('ppCacheVaeDesc') : t('ppResizeDesc')])))
+function pathField(entry: typeof pathEntries.value[number]): FieldMeta {
+  return { key: `preprocess.${entry.key}`, label: entry.label, value: entry.value, default_value: '', field_type: 'path',
+    description: '', origin: 'method', group: 'paths', is_virtual: false, read_only: pathsLoading.value || pathsSaving.value || Boolean(submitting.value), path_kind: 'directory' }
+}
+function discardPaths(): void {
+  if (savedPaths.value) Object.assign(paths, JSON.parse(savedPaths.value))
+}
 
 async function ensureVariant() {
   if (configStore.variant) return
@@ -684,25 +696,27 @@ async function fetchPaths() {
     }
     const url = '/api/preprocess/paths' + (qs.toString() ? '?' + qs : '')
     const res = await fetch(url)
-    if (!res.ok) return
+    if (!res.ok) throw await responseError(res)
     const data = await res.json()
     paths.source = data.source_image_dir ?? ''
     paths.resized = data.resized_image_dir ?? ''
     paths.cache = data.lora_cache_dir ?? ''
     paths.condSource = data.conditioning_data_dir ?? ''
     paths.condResized = data.conditioning_resized_dir ?? ''
-  } catch { /* ignore */ }
+    savedPaths.value = JSON.stringify(paths)
+  } catch (error) { loadError.value = errorMessage(error) }
   finally { pathsLoading.value = false }
 }
 
-async function savePaths() {
-  if (selectedRun.value) return
+async function savePaths(): Promise<boolean> {
+  if (selectedRun.value) return true
+  if (pathsSaving.value) return false
   pathsSaving.value = true
   try {
     await ensureVariant()
     if (!configStore.variant) {
       notify.show(t('notifyConfigSaveFailed'), 'error')
-      return
+      return false
     }
     const qs = new URLSearchParams()
     qs.set('variant', configStore.variant)
@@ -725,13 +739,15 @@ async function savePaths() {
       paths.cache = data.lora_cache_dir ?? paths.cache
       paths.condSource = data.conditioning_data_dir ?? paths.condSource
       paths.condResized = data.conditioning_resized_dir ?? paths.condResized
+      savedPaths.value = JSON.stringify(paths)
       notify.show(t('ppPathsSaved'), 'success')
-      fetchStatus()
-    } else {
-      notify.show(t('notifyConfigSaveFailed'), 'error')
+      void fetchStatus()
+      return true
     }
-  } catch {
-    notify.show(t('notifyConfigSaveFailed'), 'error')
+    throw await responseError(res)
+  } catch (error) {
+    notify.show(`${t('notifyConfigSaveFailed')}: ${errorMessage(error)}`, 'error')
+    return false
   }
   finally { pathsSaving.value = false }
 }
@@ -744,14 +760,14 @@ async function fetchRuns(selectNewest: boolean) {
     // belong to an older dataset, and filtering by it would hide a newly
     // completed run until the user manually cleared browser storage.
     const res = await fetch('/api/preprocess/runs')
-    if (!res.ok) return
+    if (!res.ok) throw await responseError(res)
     const data = await res.json()
     runs.value = Array.isArray(data) ? data : []
     const currentExists = runs.value.some(run => run.manifest === selectedRun.value)
-    if (!currentExists || selectNewest) {
+    if (!pathsDirty.value && !settingsDirty.value && (!currentExists || selectNewest)) {
       selectedRun.value = runs.value.find(run => run.complete && run.status === 'ready')?.manifest ?? null
     }
-  } catch { /* ignore */ }
+  } catch (error) { loadError.value = errorMessage(error) }
   finally { runsLoading.value = false }
 }
 
@@ -768,28 +784,26 @@ watch([() => configStore.variant, () => configStore.preset], async () => {
   await fetchRuns(false)
 })
 
-onMounted(async () => {
-  if (workspace.family !== 'anima') return
-  await fetchPaths()
-  await fetchRuns(false)
-})
 
 async function saveSettings(): Promise<boolean> {
+  if (settingsSaving.value) return false
+  settingsSaving.value = true
+  const payload = JSON.stringify(settings)
   try {
     const res = await fetch('/api/preprocess/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings),
+      body: payload,
     })
     if (res.ok) {
+      savedSettings.value = payload
       notify.show(t('ppSettingsSaved'), 'success')
       return true
-    } else {
-      notify.show(t('notifyConfigSaveFailed'), 'error')
     }
-  } catch {
-    notify.show(t('notifyConfigSaveFailed'), 'error')
-  }
+    throw await responseError(res)
+  } catch (error) {
+    notify.show(`${t('notifyConfigSaveFailed')}: ${errorMessage(error)}`, 'error')
+  } finally { settingsSaving.value = false }
   return false
 }
 
@@ -799,26 +813,20 @@ const preprocessTasks = computed(() =>
   taskStore.tasks.filter(tp => preprocessCommands.includes(tp.command))
 )
 
-// Collapse long task lists: show the first few, expand on demand
-const TASK_PREVIEW_LIMIT = 4
-const showAllTasks = ref(false)
-const visibleTasks = computed(() =>
-  showAllTasks.value ? preprocessTasks.value : preprocessTasks.value.slice(0, TASK_PREVIEW_LIMIT)
-)
-const hasHiddenTasks = computed(() => preprocessTasks.value.length > TASK_PREVIEW_LIMIT)
-
 function isRunning(command: string) {
-  return taskStore.tasks.some(tp => tp.command === command && tp.state === 'running')
-}
-
-function stateColor(state: string) {
-  if (state === 'running' || state === 'stopping') return 'info'
-  if (state === 'success') return 'success'
-  if (state === 'failed') return 'error'
-  return undefined
+  return submitting.value === command || taskStore.tasks.some(tp => tp.command === command && isTaskActive(tp.state))
 }
 
 async function runTask(command: string) {
+  if (submitting.value || pathsSaving.value || settingsSaving.value || isRunning(command)) return
+  submitting.value = command
+  try {
+    if (!selectedRun.value && pathsDirty.value && !(await savePaths())) return
+    await submitTask(command)
+  } finally { submitting.value = '' }
+}
+
+async function submitTask(command: string) {
   // Save settings before running tasks that consume them, so the on-disk
   // config / env vars are current. resize writes target_res to
   // configs/preprocess.toml; mask/te forward their knobs as env vars.
@@ -888,23 +896,129 @@ async function runTask(command: string) {
   }
 }
 
-function refresh() {
-  taskStore.fetchTasks()
-  fetchStatus()
-  fetchRuns(false)
+async function refresh(): Promise<void> {
+  refreshing.value = true
+  loadError.value = ''
+  try {
+    await Promise.all([taskStore.fetchTasks(), fetchStatus(), fetchRuns(false),
+      ...(!pathsDirty.value ? [fetchPaths()] : []), ...(!settingsDirty.value ? [fetchSettings()] : []),
+    ])
+  }
+  finally { refreshing.value = false }
 }
+
+const activeModel = useActiveModelWorkspace()
+const pageDirty = computed(() => workspace.family === 'anima' ? pathsDirty.value || settingsDirty.value : activeModel.value.dirty)
+const leaveResolve = ref<((allowed: boolean) => void) | null>(null)
+const leaveBusy = ref(false)
+const leaveError = ref('')
+function confirmLeave(): Promise<boolean> {
+  if (!pageDirty.value) return Promise.resolve(true)
+  leaveResolve.value?.(false)
+  leaveError.value = ''
+  return new Promise(resolve => { leaveResolve.value = resolve })
+}
+function finishLeave(allowed: boolean): void {
+  leaveResolve.value?.(allowed)
+  leaveResolve.value = null
+}
+function discardAndLeave(): void {
+  if (workspace.family === 'anima') { discardPaths(); discardSettings() }
+  else activeModel.value.discard()
+  finishLeave(true)
+}
+async function saveAndLeave(): Promise<void> {
+  leaveBusy.value = true
+  leaveError.value = ''
+  try {
+    if (workspace.family === 'anima') {
+      if ((pathsDirty.value && !(await savePaths())) || (settingsDirty.value && !(await saveSettings()))) {
+        leaveError.value = t('notifyConfigSaveFailed')
+        return
+      }
+    } else {
+      const selected = activeModel.value
+      if (selected.busy) return
+      await selected.perform(selected.save)
+      if (selected.error) { leaveError.value = selected.error; return }
+    }
+    finishLeave(true)
+  } finally { leaveBusy.value = false }
+}
+async function selectRun(manifest: string | null): Promise<void> {
+  if (await confirmLeave()) selectedRun.value = manifest
+}
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (pageDirty.value) { event.preventDefault(); event.returnValue = '' }
+}
+onBeforeRouteLeave(confirmLeave)
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => { finishLeave(false); window.removeEventListener('beforeunload', beforeUnload) })
+
+watch(() => workspace.family, async (family) => {
+  if (family !== 'anima') return
+  loadError.value = ''
+  await Promise.all([taskStore.fetchTasks(), fetchStatus(), fetchSettings(), fetchPaths()])
+  await fetchRuns(false)
+}, { immediate: true })
 </script>
 
 <style scoped>
 .preprocess-page {
   flex: 1 1 0;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
+  container-type: inline-size;
 }
 
 .run-manifest-path {
   overflow-wrap: anywhere;
 }
+
+.preprocess-path-fields, .preprocess-run-paths {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 20px;
+  min-width: 0;
+}
+.preprocess-path-wide { grid-column: 1 / -1; }
+.preprocess-run-paths > div { min-width: 0; }
+.preprocess-run-paths dt { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.preprocess-run-paths dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.preprocess-path-card :deep(.v-card-text) { padding-top: 12px; }
+.preprocess-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 20px;
+  margin: 0;
+}
+.preprocess-settings-grid > .v-col { width: auto; max-width: none; padding: 0; min-width: 0; }
+:deep(.preprocess-task-grid) {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0;
+}
+:deep(.preprocess-task-grid > .v-col) { width: auto; max-width: none; padding: 0; min-width: 0; }
+:deep(.preprocess-task-grid .v-card) { display: flex; flex-direction: column; height: 100%; }
+:deep(.preprocess-task-grid .v-card-text) { flex: 1; line-height: 1.65; }
+:deep(.preprocess-task-grid .v-card-title) { white-space: normal; line-height: 1.5; }
+:deep(.preprocess-task-grid .v-card-actions) { padding: 8px 12px 12px; flex-wrap: wrap; gap: 4px; }
+.preprocess-page :deep(.v-card), .preprocess-page :deep(.v-expansion-panel) {
+  background: var(--bg-form-surface, var(--bg-surface));
+}
+.preprocess-page :deep(.v-field) { background: var(--bg-form-field, var(--bg-surface)); }
+@container (max-width: 960px) { :deep(.preprocess-task-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (max-width: 700px) { .preprocess-path-fields, .preprocess-run-paths { grid-template-columns: minmax(0, 1fr); } }
+@container (max-width: 620px) { :deep(.preprocess-task-grid) { grid-template-columns: minmax(0, 1fr); } }
 
 /* Pipeline action cards: hover transition */
 :deep(.v-card) {

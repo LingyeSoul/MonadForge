@@ -13,10 +13,12 @@ import { renderEvents } from './events.js';
 let detail = null;
 let detailTimer = null;
 let detailObserver = null;
+let detailGeneration = 0;
 
 export function getDetail() { return detail; }
 
 export function stopDetailPolling() {
+  detailGeneration++;
   if (detailTimer) clearInterval(detailTimer);
   detailTimer = null;
 }
@@ -146,12 +148,17 @@ function renderOverview() {
 /* ── 加载与实时刷新 ── */
 export async function loadDetail(id) {
   stopDetailPolling();
+  const generation = detailGeneration;
+  detail = null;
   const root = $('#detail-root');
   root.innerHTML = loadingHtml();
   startTyping($('#loading-type'), 'LOADING…');
   try {
-    detail = await api(`/api/runs/${encodeURIComponent(id)}`);
+    const loaded = await api(`/api/runs/${encodeURIComponent(id)}`);
+    if (generation !== detailGeneration) return;
+    detail = loaded;
   } catch (e) {
+    if (generation !== detailGeneration) return;
     root.innerHTML = emptyHtml(esc(String(e.message || e)));
     return;
   }
@@ -161,9 +168,13 @@ export async function loadDetail(id) {
   $('#rail-status').textContent = running ? 'LIVE' : 'IDLE';
   if (running) {
     const polledId = detail.id;
+    let polling = false;
     detailTimer = setInterval(async () => {
+      if (polling || generation !== detailGeneration) return;
+      polling = true;
       try {
         const fresh = await api(`/api/runs/${encodeURIComponent(polledId)}`);
+        if (generation !== detailGeneration) return;
         const previous = JSON.stringify({
           steps: detail.kpis && detail.kpis.steps,
           state: detail.state,
@@ -189,6 +200,7 @@ export async function loadDetail(id) {
           $('#rail-status').textContent = 'IDLE';
         }
       } catch (e) { /* transient */ }
+      finally { polling = false; }
     }, 2000);
   }
 }

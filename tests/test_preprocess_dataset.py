@@ -19,6 +19,28 @@ from PIL import Image
 from library.datasets.buckets import freefit_band_for_edge
 
 
+def _tag_csv(path: Path) -> Path:
+    path.write_text(
+        "\n".join(
+            [
+                "name,category,post_count,description",
+                '1girl,0,10,"[인물 > 인원수] count"',
+                'solo,0,10,"[인물 > 인원수] count"',
+                'hatsune_miku,4,10,"[캐릭터 > vocaloid] character"',
+                'vocaloid,3,10,"[작품 > series] copyright"',
+                'sincos,1,10,"[작가 > illustrator] artist"',
+                'best_quality,5,10,"[메타 > 화질] quality"',
+                'highres,5,10,"[메타 > 화질] resolution meta"',
+                'commentary,5,10,"[메타 > 정보_요청] artist commentary"',
+                'long_hair,0,10,"[머리카락 > 머리 길이] general"',
+                'copyright_notice,0,10,"[메타 > 정보_요청] misleading description"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def _tokens(reso: tuple[int, int]) -> int:
     return (reso[0] // 16) * (reso[1] // 16)
 
@@ -386,7 +408,10 @@ def test_count_preprocess_caches_is_pe_encoder_aware(tmp_path: Path) -> None:
     assert count_preprocess_caches(tmp_path, pe_encoder="pe")["pe"] == 0
 
 
-def test_resize_to_buckets_writes_and_mirrors_layout(tmp_path: Path) -> None:
+@pytest.mark.parametrize("copy_captions", [False, True])
+def test_resize_to_buckets_writes_and_mirrors_layout(
+    tmp_path: Path, copy_captions: bool
+) -> None:
     from library.preprocess import resize_to_buckets
 
     src = tmp_path / "src"
@@ -397,7 +422,7 @@ def test_resize_to_buckets_writes_and_mirrors_layout(tmp_path: Path) -> None:
     _write_image(src / "charB" / "b.png", (900, 900))
 
     stats, bucket_counts = resize_to_buckets(
-        src, dst, recursive=True, workers=1, verbose=False
+        src, dst, recursive=True, workers=1, verbose=False, copy_captions=copy_captions
     )
     assert stats.seen == 2
     assert stats.written == 2
@@ -406,9 +431,8 @@ def test_resize_to_buckets_writes_and_mirrors_layout(tmp_path: Path) -> None:
     out_a = dst / "a.png"
     out_b = dst / "charB" / "b.png"
     assert out_a.exists() and out_b.exists()  # nested layout mirrored
-    # anime_tools >= 0.6: resize moves images only; captions are the caption
-    # stages' file, so the master sidecar must NOT be mirrored here.
-    assert not (dst / "a.txt").exists()
+    # The local compatibility resize exposes an explicit caption-copy switch.
+    assert (dst / "a.txt").exists() is copy_captions
     # Output matches a real bucket resolution.
     with Image.open(out_a) as im:
         assert (im.width, im.height) in bucket_counts
@@ -486,6 +510,7 @@ def test_resize_to_buckets_skips_decisions_and_keeps_small_images(
         src,
         dst,
         workers=1,
+        min_pixels=0,
         verbose=False,
         curation_decisions={"decision_skip.png": {"action": "skip"}},
     )

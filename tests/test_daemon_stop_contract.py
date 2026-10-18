@@ -7,9 +7,48 @@ import os
 import threading
 import time
 
+import pytest
+
 from scripts.daemon import config, proc
 from scripts.daemon.jobs import STATE_RUNNING, Job
 from scripts.daemon.manager import JobManager
+
+
+@pytest.mark.parametrize("cooperative", [False, True])
+def test_tree_cleanup_continues_after_access_denied_wait(monkeypatch, cooperative):
+    class Process:
+        def __init__(self, pid):
+            self.pid = pid
+            self.killed = False
+
+        def create_time(self):
+            return 42.0
+
+        def children(self, recursive=True):
+            return [child] if self.pid == 123 else []
+
+        def send_signal(self, _signal):
+            pass
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            self.killed = True
+
+    parent, child = Process(123), Process(456)
+    monkeypatch.setattr(
+        proc.psutil, "Process", lambda pid: {123: parent, 456: child}[pid]
+    )
+    monkeypatch.setattr(proc.sys, "platform", "win32")
+
+    def denied_wait(*_args, **_kwargs):
+        raise proc.psutil.AccessDenied(pid=123)
+
+    monkeypatch.setattr(proc.psutil, "wait_procs", denied_wait)
+    cleanup = proc.stop_tree_gracefully if cooperative else proc.kill_tree
+    cleanup(123, expected_create_time=42.0, grace_seconds=0.01)
+    assert parent.killed and child.killed
 
 
 def test_stop_tree_gracefully_force_kills_after_cooperative_deadline(monkeypatch):
@@ -45,9 +84,7 @@ def test_stop_tree_gracefully_force_kills_after_cooperative_deadline(monkeypatch
     monkeypatch.setattr(proc.sys, "platform", "win32")
 
     assert (
-        proc.stop_tree_gracefully(
-            123, expected_create_time=42.0, grace_seconds=0.01
-        )
+        proc.stop_tree_gracefully(123, expected_create_time=42.0, grace_seconds=0.01)
         is False
     )
     assert parent.terminated is True
@@ -59,7 +96,9 @@ def test_stop_tree_gracefully_ignores_zombie_after_wait(monkeypatch):
 
     class Zombie:
         pid = 123
-        status = lambda self: proc.psutil.STATUS_ZOMBIE
+
+        def status(self):
+            return proc.psutil.STATUS_ZOMBIE
 
         def create_time(self):
             return 42.0
@@ -82,9 +121,7 @@ def test_stop_tree_gracefully_ignores_zombie_after_wait(monkeypatch):
     monkeypatch.setattr(proc.psutil, "wait_procs", lambda *_a, **_k: ([], [zombie]))
 
     assert (
-        proc.stop_tree_gracefully(
-            123, expected_create_time=42.0, grace_seconds=0.01
-        )
+        proc.stop_tree_gracefully(123, expected_create_time=42.0, grace_seconds=0.01)
         is True
     )
 
@@ -122,9 +159,7 @@ def test_stop_tree_gracefully_refuses_reused_pid_before_signal(monkeypatch):
     monkeypatch.setattr(proc.sys, "platform", "linux")
 
     assert (
-        proc.stop_tree_gracefully(
-            123, expected_create_time=100.0, grace_seconds=0.01
-        )
+        proc.stop_tree_gracefully(123, expected_create_time=100.0, grace_seconds=0.01)
         is True
     )
 
@@ -167,9 +202,7 @@ def test_stop_tree_gracefully_rechecks_identity_before_force_kill(monkeypatch):
     monkeypatch.setattr(proc.sys, "platform", "win32")
 
     assert (
-        proc.stop_tree_gracefully(
-            123, expected_create_time=42.0, grace_seconds=0.01
-        )
+        proc.stop_tree_gracefully(123, expected_create_time=42.0, grace_seconds=0.01)
         is True
     )
 
@@ -224,9 +257,7 @@ def test_stop_tree_gracefully_refreshes_descendants_before_force_kill(monkeypatc
     monkeypatch.setattr(proc.sys, "platform", "win32")
 
     assert (
-        proc.stop_tree_gracefully(
-            123, expected_create_time=42.0, grace_seconds=0.01
-        )
+        proc.stop_tree_gracefully(123, expected_create_time=42.0, grace_seconds=0.01)
         is False
     )
     assert child.terminated is True
@@ -256,7 +287,9 @@ def test_kill_tree_refuses_reused_pid(monkeypatch):
     proc.kill_tree(123, expected_create_time=100.0, grace_seconds=0.01)
 
 
-def test_manager_writes_windows_stop_file_and_marks_forced_timeout(tmp_path, monkeypatch):
+def test_manager_writes_windows_stop_file_and_marks_forced_timeout(
+    tmp_path, monkeypatch
+):
     """The Windows path has no reliable console signal, so the manager writes
     the per-job stop-file first. A timeout is persisted as ``forced_stop``."""
 

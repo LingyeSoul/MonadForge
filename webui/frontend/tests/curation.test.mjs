@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { effectScope } from 'vue'
-import { captionDiff, curationFileUrl, curationFieldValue, normalizeCurationRoots, parseMaskSource, spellMaskSource, useCuration, visibleCurationFields } from '../src/composables/useCuration.ts'
+import { captionDiff, curationFileUrl, curationImageKey, curationFieldValue, normalizeCurationRoots, parseMaskSource, spellMaskSource, useCuration, visibleCurationFields } from '../src/composables/useCuration.ts'
 import { curationCn, curationEn } from '../src/i18n/curation.ts'
 
 const json = value => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
@@ -39,6 +39,36 @@ test('file URLs preserve filesystem punctuation and Chinese paths', () => {
   assert.equal(curationFileUrl(null), '')
   assert.deepEqual(normalizeCurationRoots({ src: '/data', dst: { path: '/work', exists: false } }).dst, { path: '/work', exists: false })
 })
+
+test('resized group members match source formats without merging directories or dotted stems', () => {
+  const members = new Set(['artist.v1/photo.pose.png', 'other/photo.png'].map(curationImageKey))
+  for (const rel of ['artist.v1/photo.pose.jpg', 'artist.v1/photo.pose.WEBP', 'artist.v1/photo.pose.png']) {
+    assert.equal(members.has(curationImageKey(rel)), true, rel)
+  }
+  for (const rel of ['artist.v1/photo.jpg', 'different/photo.pose.jpg', 'artist.v1/nested/photo.pose.jpg']) {
+    assert.equal(members.has(curationImageKey(rel)), false, rel)
+  }
+})
+
+for (const action of ['edit', 'save', 'none']) {
+  test(`background refresh rechecks editor state after a pending ${action}`, async t => {
+    let complete
+    t.mock.method(globalThis, 'fetch', () => new Promise(resolve => { complete = resolve }))
+    const scope = effectScope()
+    t.after(() => scope.stop())
+    const api = scope.run(useCuration)
+    api.item.value = { rel: 'photo.jpg', versions: [{ kind: 'master', text: 'original caption' }] }
+    const original = api.item.value
+    let dirty = false
+    const refresh = api.selectItem('photo.jpg', () => !dirty && !api.busy.value)
+    if (action === 'edit') dirty = true
+    if (action === 'save') api.busy.value = true
+    complete(json({ rel: 'photo.jpg', versions: [{ kind: 'master', text: 'server caption' }] }))
+    await refresh
+    if (action === 'none') assert.equal(api.item.value.versions[0].text, 'server caption')
+    else assert.equal(api.item.value, original)
+  })
+}
 
 test('older image requests cannot replace the newer selection', async t => {
   const pending = new Map()

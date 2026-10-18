@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.applications import Starlette
-from starlette.requests import Request
+from starlette.requests import HTTPConnection, Request
 from starlette.routing import Route
 
 from webui.api import config as config_api
@@ -59,7 +59,7 @@ def _extra_allowed_origins() -> list[str]:
     return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
 
 
-def _peer_may_forward(request: Request) -> bool:
+def _peer_may_forward(request: HTTPConnection) -> bool:
     """Whether the direct peer is allowed to set ``X-Forwarded-*`` headers.
 
     Only loopback/private peers are trusted: a cloud-mirror gateway connects
@@ -76,7 +76,7 @@ def _peer_may_forward(request: Request) -> bool:
     return ip.is_loopback or ip.is_private
 
 
-def _serving_origin(request: Request) -> str | None:
+def _serving_origin(request: HTTPConnection) -> str | None:
     """The origin the browser actually sees, honoring proxy rewrite headers.
 
     TLS-terminating gateways (cloud port forwarding, local reverse proxies)
@@ -88,7 +88,7 @@ def _serving_origin(request: Request) -> str | None:
     host = request.headers.get("host")
     if not host:
         return None
-    scheme = request.url.scheme
+    scheme = {"ws": "http", "wss": "https"}.get(request.url.scheme, request.url.scheme)
     if _peer_may_forward(request):
         # First entry wins: the outermost hop is the one the browser used.
         proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
@@ -100,9 +100,31 @@ def _serving_origin(request: Request) -> str | None:
     return f"{scheme}://{host}"
 
 
-def _origin_is_allowed(request: Request, origin: str, allowed: list[str]) -> bool:
+def _origin_is_allowed(
+    request: HTTPConnection, origin: str, allowed: list[str]
+) -> bool:
     """Accept configured origins and the WebUI's actual serving origin."""
     return origin in allowed or origin == _serving_origin(request)
+
+
+class _WebSocketOriginMiddleware:
+    """Apply the HTTP origin policy before a browser can subscribe to task data."""
+
+    def __init__(self, app, allowed_origins: list[str]):
+        self.app = app
+        self.allowed_origins = allowed_origins
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            connection = HTTPConnection(scope)
+            origin = connection.headers.get("origin")
+            if connection.headers.get("sec-fetch-site", "").lower() == "cross-site" or (
+                origin is not None
+                and not _origin_is_allowed(connection, origin, self.allowed_origins)
+            ):
+                await send({"type": "websocket.close", "code": 1008})
+                return
+        await self.app(scope, receive, send)
 
 
 @asynccontextmanager
@@ -118,9 +140,13 @@ def _spa_fallback(request: Request):
     """Serve real files from dist/ first; fall back to index.html for SPA routes."""
     # Strip leading slash and resolve against dist root
     rel = request.url.path.lstrip("/")
+    if rel == "api" or rel.startswith("api/"):
+        return JSONResponse(status_code=404, content={"detail": "API route not found"})
     candidate = (_DIST_DIR / rel).resolve()
     # Only serve if the resolved path is inside dist/ (prevent path traversal)
-    if candidate.is_file() and str(candidate).startswith(str(_DIST_DIR.resolve())):
+    if not candidate.is_relative_to(_DIST_DIR.resolve()):
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    if candidate.is_file():
         return FileResponse(candidate)
     return FileResponse(_INDEX_HTML, media_type="text/html")
 
@@ -134,6 +160,7 @@ def create_app(dev: bool = False) -> FastAPI:
     app = FastAPI(title="MonadForge WebUI", version="0.1.0", lifespan=_lifespan)
 
     allowed_origins = _ALLOWED_ORIGINS + _extra_allowed_origins()
+    app.add_middleware(_WebSocketOriginMiddleware, allowed_origins=allowed_origins)
 
     origins = ["*"] if dev else allowed_origins
     app.add_middleware(

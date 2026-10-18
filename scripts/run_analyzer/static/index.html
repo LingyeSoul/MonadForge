@@ -128,10 +128,12 @@
         </div>
       </div>
       <div id="cmp-chart" class="chart chart-h-lg"></div>
-      <table class="cmp-table" id="cmp-table">
-        <thead><tr><th>运行</th><th>最终 avg loss</th><th>步数</th><th>轮数</th><th>状态</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="cmp-table-wrap" tabindex="0" role="region" aria-label="运行对比结果，可横向滚动">
+        <table class="cmp-table" id="cmp-table">
+          <thead><tr><th>运行</th><th>最终 avg loss</th><th>步数</th><th>轮数</th><th>状态</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </section>
 

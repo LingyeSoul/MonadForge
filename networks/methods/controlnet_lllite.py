@@ -3,7 +3,7 @@
 Architecture (adapter-only — DiT frozen):
 
   conditioning image (pre-cached VAE latent, 4D [B, C, H/8, W/8])
-      -> zero_conv_in (C → hidden_size, init weight=0)          [B, hidden, H/8, W/8]
+      -> zero_conv_in (C → hidden_size, learned projection)    [B, hidden, H/8, W/8]
       -> expand to 5D + patchify to match DiT token layout       [B, T, H', W', D]
 
   Per Anima Block (patched ``Block.forward``):
@@ -17,7 +17,7 @@ Architecture (adapter-only — DiT frozen):
 
 Key properties:
 
-  - Step-0 baseline equivalence: all zero_conv weights initialized to 0,
+  - Step-0 baseline equivalence: per-block injection weights initialized to 0,
     so injection contributes nothing at init → identical to base DiT.
   - Zero convolutions are the trainable parameters; the DiT stays frozen.
   - Conditioning latent is pre-cached on disk via the standard
@@ -109,7 +109,12 @@ class ControlNetLLLiteNetwork(AdapterNetworkBase):
 
         # Input projection: VAE latent channels → hidden_size
         # Operates on 2D spatial features (C, H, W)
-        self.zero_conv_in = _zero_conv(cond_channels, hidden_size)
+        # The input encoder must carry conditioning signal at initialization.
+        # Zeroing both this projection and the output projections makes every
+        # weight gradient zero forever; only an unconditional output bias learns.
+        # Keep the checkpoint key while zeroing only the injection boundary.
+        self.zero_conv_in = nn.Conv2d(cond_channels, hidden_size, kernel_size=1)
+        nn.init.zeros_(self.zero_conv_in.bias)
 
         # Per-block zero-conv injection: hidden_size → hidden_size
         self.zero_conv_blocks = nn.ModuleList(

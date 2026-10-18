@@ -87,12 +87,14 @@
         <v-text-field
           v-model="urlDraft"
           :label="t('appearanceWallpaperUrl')"
+          :loading="loadingImage"
+          :title="urlDraft"
           hide-details
           class="mt-2"
           @change="applyUrl"
         />
-        <div class="d-flex align-center gap-2 mt-3">
-          <v-btn variant="tonal" size="small" prepend-icon="mdi-upload" @click="fileInput?.click()">
+        <div class="d-flex align-center flex-wrap ga-2 mt-3">
+          <v-btn variant="tonal" size="small" prepend-icon="mdi-upload" :loading="loadingImage" @click="fileInput?.click()">
             {{ t('appearanceWallpaperUpload') }}
           </v-btn>
           <v-btn
@@ -118,7 +120,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
@@ -129,13 +131,16 @@ const notifyStore = useNotifyStore()
 const { t } = useI18n()
 
 const fileInput = ref<HTMLInputElement | null>(null)
-const urlDraft = ref('')
+const urlDraft = ref(''), loadingImage = ref(false)
+let imageRequest = 0
+watch(() => appStore.wallpaper.src, src => { urlDraft.value = src.startsWith('data:') ? '' : src }, { immediate: true })
 
 function onToggleGlass(value: unknown) {
   appStore.setGlass(value === true)
 }
 
 function onToggleWallpaper(value: unknown) {
+  if (value !== true) { imageRequest++; loadingImage.value = false }
   appStore.setWallpaper({ ...appStore.wallpaper, enabled: value === true })
 }
 
@@ -154,12 +159,15 @@ function onVeilOpacity(value: unknown) {
 async function applyUrl() {
   const src = urlDraft.value.trim()
   if (!src) return
+  const request = ++imageRequest
+  loadingImage.value = true
   try {
     await verifyImageSrc(src)
+    if (request !== imageRequest) return
     appStore.setWallpaper({ enabled: true, src, blur: appStore.wallpaper.blur })
   } catch {
-    notifyStore.show(t('appearanceWallpaperLoadError'), 'error')
-  }
+    if (request === imageRequest) notifyStore.show(t('appearanceWallpaperLoadError'), 'error')
+  } finally { if (request === imageRequest) loadingImage.value = false }
 }
 
 async function onFileChange(event: Event) {
@@ -168,16 +176,21 @@ async function onFileChange(event: Event) {
   // Reset so selecting the same file again still fires a change event
   input.value = ''
   if (!file) return
+  const request = ++imageRequest
+  loadingImage.value = true
   try {
     const dataUrl = await fileToWallpaperDataUrl(file)
+    if (request !== imageRequest) return
     urlDraft.value = ''
     appStore.setWallpaper({ enabled: true, src: dataUrl, blur: appStore.wallpaper.blur })
   } catch {
-    notifyStore.show(t('appearanceWallpaperLoadError'), 'error')
-  }
+    if (request === imageRequest) notifyStore.show(t('appearanceWallpaperLoadError'), 'error')
+  } finally { if (request === imageRequest) loadingImage.value = false }
 }
 
 function clearWallpaper() {
+  imageRequest++
+  loadingImage.value = false
   urlDraft.value = ''
   appStore.setWallpaper({ enabled: false, src: '', blur: appStore.wallpaper.blur })
 }

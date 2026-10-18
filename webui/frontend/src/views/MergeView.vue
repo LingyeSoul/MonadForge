@@ -1,8 +1,8 @@
 <template>
   <v-container fluid class="pa-4 d-flex flex-column merge-page">
-    <div class="text-h5 mb-1">{{ t('mgTitle') }}</div>
-    <div class="text-body-2 text-medium-emphasis mb-4">{{ t('mgSubtitle') }}</div>
+    <WorkspaceHeading :title="t('mgTitle')" :subtitle="t('mgSubtitle')" />
 
+    <v-alert v-if="mergeError" type="error" variant="tonal" class="mb-4" closable @click:close="mergeError = ''">{{ mergeError }}</v-alert>
     <!-- Mode toggle: DiT-bake vs LoRA⊕LoRA fusion -->
     <div class="d-flex align-center mb-4">
       <span class="text-body-2 text-medium-emphasis mr-3">{{ t('merge_mode') }}</span>
@@ -25,6 +25,7 @@
             <v-select
               v-model="selectedDir"
               :items="adapterDirs"
+              :loading="filesLoading"
               item-title="name"
               item-value="path"
               :label="t('mgAdapterDir')"
@@ -78,6 +79,7 @@
               {{ t('merge_lora_select_hint') }}
             </div>
 
+            <v-progress-linear v-if="filesLoading" indeterminate class="mt-3" />
             <v-list v-if="adapterFiles.length > 0" density="compact" class="mt-3" max-height="400" style="overflow-y: auto">
               <v-list-item
                 v-for="file in adapterFiles"
@@ -92,7 +94,7 @@
                 <v-list-item-subtitle>{{ file.size_human }} | {{ formatDate(file.mtime) }}</v-list-item-subtitle>
               </v-list-item>
             </v-list>
-            <div v-else-if="selectedDir" class="text-medium-emphasis text-body-2 mt-3">
+            <div v-else-if="selectedDir && !filesLoading && !mergeError" class="text-medium-emphasis text-body-2 mt-3">
               {{ t('mgNoFiles') }}
             </div>
 
@@ -220,8 +222,8 @@
             <v-btn
               color="primary"
               prepend-icon="mdi-merge"
-              :loading="isRunning('merge')"
-              :disabled="!selectedFile"
+              :loading="isRunning('merge') || taskStore.loading || scanLoading"
+              :disabled="!canMerge || taskStore.loading || scanLoading"
               @click="runMerge"
             >
               {{ t('mgMergeBtn') }}
@@ -288,7 +290,7 @@
               color="primary"
               prepend-icon="mdi-merge"
               :loading="isRunning('merge-loras')"
-              :disabled="selectedFiles.length < 2 || weightsError !== null"
+              :disabled="selectedFiles.length < 2 || weightsError !== null || taskStore.loading || analyzing"
               @click="runMergeLoras"
             >
               {{ t('merge_lora_button') }}
@@ -297,7 +299,7 @@
               variant="outlined"
               prepend-icon="mdi-magnify-scan"
               :loading="analyzing"
-              :disabled="selectedFiles.length < 2"
+              :disabled="selectedFiles.length < 2 || taskStore.loading || analyzing"
               @click="runAnalyze"
             >
               {{ t('merge_analyze_button') }}
@@ -311,16 +313,19 @@
     <v-divider class="my-4" />
 
     <div class="text-subtitle-1 mb-2">{{ t('mgActiveTasks') }}</div>
-    <v-list v-if="mergeTasks.length > 0" density="compact">
+    <v-alert v-if="taskStore.taskListError" type="error" variant="tonal" density="compact">
+      {{ t('taskLoadFailed') }}<template #append><v-btn variant="text" size="small" @click="taskStore.fetchTasks()">{{ t('ppRefresh') }}</v-btn></template>
+    </v-alert>
+    <v-list v-else-if="mergeTasks.length > 0" density="compact">
       <v-list-item
         v-for="task in visibleTasks"
-        :key="task.task_id"
+        :key="task.task_id" :to="{ path: '/tasks', query: { task: task.task_id } }"
         :title="task.command"
         :subtitle="`${task.task_id.slice(0, 8)} | ${t('taskState')}: ${task.state} | PID: ${task.pid ?? '—'}`"
       >
         <template #append>
           <v-chip size="small" :color="stateColor(task.state)" variant="tonal">{{ task.state }}</v-chip>
-          <v-btn v-if="task.state === 'running' || task.state === 'pending'" icon="mdi-stop" size="small" variant="text" color="error" @click="taskStore.cancelTask(task.task_id)" />
+          <TaskStopButton v-if="isTaskStoppable(task.state)" :task-id="task.task_id" />
         </template>
       </v-list-item>
     </v-list>
@@ -340,6 +345,9 @@
 </template>
 
 <script setup lang="ts">
+import { isTaskActive, isTaskStoppable } from '../utils/taskState.ts'
+import WorkspaceHeading from '../components/WorkspaceHeading.vue'
+import TaskStopButton from '../components/TaskStopButton.vue'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
@@ -391,6 +399,11 @@ const customDirs = ref<CustomDir[]>([])
 const customDirInput = ref('')
 const selectedDir = ref('')
 const adapterFiles = ref<AdapterFile[]>([])
+const filesLoading = ref(false)
+const scanLoading = ref(false)
+const mergeError = ref('')
+let filesSequence = 0
+let scanSequence = 0
 
 const adapterDirs = computed<AdapterDir[]>(() => {
   const merged: AdapterDir[] = [...serverDirs.value]
@@ -476,6 +489,7 @@ const dtype = ref('bf16')
 const multiplier = ref(1.0)
 const allowPartial = ref(false)
 const outputPath = ref('')
+const canMerge = computed(() => Boolean(selectedFile.value && scanResult.value && (scanResult.value.verdict === 'ok' || (scanResult.value.verdict === 'partial' && allowPartial.value))))
 
 // LoRA-fusion mode
 const selectedFiles = ref<AdapterFile[]>([])
@@ -492,14 +506,14 @@ let analyzeTimer: ReturnType<typeof setInterval> | null = null
 async function fetchDirs() {
   try {
     const res = await fetch('/api/merge/dirs')
-    if (!res.ok) return
     const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
     serverDirs.value = data.dirs || []
     if (adapterDirs.value.length > 0 && !selectedDir.value) {
       selectedDir.value = adapterDirs.value[0].path
       await onDirChange(selectedDir.value)
     }
-  } catch { /* ignore */ }
+  } catch (cause) { mergeError.value = String(cause) }
 }
 
 onMounted(() => {
@@ -507,7 +521,7 @@ onMounted(() => {
   fetchDirs()
 })
 
-onUnmounted(clearAnalyzeTimer)
+onUnmounted(() => { ++filesSequence; ++scanSequence; clearAnalyzeTimer() })
 
 // Leaving LoRA-fusion mode (or unmounting) must stop the analyze poller and
 // drop its banner so no stale state carries over.
@@ -522,18 +536,25 @@ watch(mode, () => {
 })
 
 async function onDirChange(dirPath: string) {
+  const sequence = ++filesSequence
+  ++scanSequence
   selectedFile.value = null
   selectedFiles.value = []
+  adapterFiles.value = []
   scanResult.value = null
+  scanLoading.value = false
+  mergeError.value = ''
   analyzeBanner.value = null
   clearAnalyzeTimer()
-  if (!dirPath) { adapterFiles.value = []; return }
+  if (!dirPath) { filesLoading.value = false; return }
+  filesLoading.value = true
   try {
     const res = await fetch(`/api/merge/files?dir=${encodeURIComponent(dirPath)}`)
-    if (!res.ok) return
     const data = await res.json()
-    adapterFiles.value = data.files || []
-  } catch { adapterFiles.value = [] }
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+    if (sequence === filesSequence) adapterFiles.value = data.files || []
+  } catch (cause) { if (sequence === filesSequence) mergeError.value = String(cause) }
+  finally { if (sequence === filesSequence) filesLoading.value = false }
 }
 
 // ── File selection ─────────────────────────────────────────────
@@ -560,16 +581,20 @@ async function onFileClick(file: AdapterFile) {
 }
 
 async function selectFile(file: AdapterFile) {
+  const sequence = ++scanSequence
   selectedFile.value = file
   scanResult.value = null
+  scanLoading.value = true
+  mergeError.value = ''
   try {
     const res = await fetch('/api/merge/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_path: file.path }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_path: file.path }),
     })
-    if (res.ok) scanResult.value = await res.json()
-  } catch { /* ignore */ }
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+    if (sequence === scanSequence && selectedFile.value?.path === file.path) scanResult.value = data
+  } catch (cause) { if (sequence === scanSequence) mergeError.value = String(cause) }
+  finally { if (sequence === scanSequence) scanLoading.value = false }
 }
 
 // ── DiT verdict display ───────────────────────────────────────
@@ -636,7 +661,7 @@ function buildSharedArgs(withAnalyze: boolean): string[] | null {
 // ── DiT merge ─────────────────────────────────────────────────
 
 async function runMerge() {
-  if (!selectedFile.value) return
+  if (!selectedFile.value || !canMerge.value || scanLoading.value || taskStore.loading || isRunning('merge')) return
   const args = ['--adapter', selectedFile.value.path]
   if (baseDit.value) args.push('--base_dit', baseDit.value)
   if (multiplier.value !== 1.0) args.push('--multiplier', String(multiplier.value))
@@ -654,7 +679,7 @@ async function runMerge() {
 // ── LoRA fusion ───────────────────────────────────────────────
 
 async function runMergeLoras() {
-  if (selectedFiles.value.length < 2 || weightsError.value) return
+  if (selectedFiles.value.length < 2 || weightsError.value || taskStore.loading || analyzing.value || isRunning('merge-loras')) return
   const args = buildSharedArgs(false)
   if (!args) return
   const taskId = await taskStore.startTask('merge-loras', args)
@@ -666,7 +691,7 @@ async function runMergeLoras() {
 }
 
 async function runAnalyze() {
-  if (selectedFiles.value.length < 2) return
+  if (selectedFiles.value.length < 2 || taskStore.loading || analyzing.value || isRunning('merge-loras')) return
   const args = buildSharedArgs(true)
   if (!args) return
   analyzing.value = true
@@ -694,7 +719,7 @@ async function pollAnalyze(taskId: string): Promise<boolean> {
     if (!res.ok) return false
     const info = await res.json()
     const state: string = info.state
-    if (state === 'running' || state === 'pending') return false
+    if (isTaskActive(state)) return false
     const outRes = await fetch(`/api/tasks/${taskId}/output`)
     if (!outRes.ok) {
       analyzeBanner.value = null
@@ -800,7 +825,7 @@ function formatDate(iso: string) {
 }
 
 function isRunning(command: string) {
-  return taskStore.tasks.some(tp => tp.command === command && tp.state === 'running')
+  return taskStore.tasks.some(tp => tp.command === command && isTaskActive(tp.state))
 }
 
 const mergeTasks = computed(() =>
@@ -817,6 +842,7 @@ const visibleTasks = computed(() =>
 const hasHiddenTasks = computed(() => mergeTasks.value.length > TASK_PREVIEW_LIMIT)
 
 function stateColor(state: string) {
+  if (state === 'paused') return 'warning'
   if (state === 'running' || state === 'stopping') return 'info'
   if (state === 'success') return 'success'
   if (state === 'failed') return 'error'

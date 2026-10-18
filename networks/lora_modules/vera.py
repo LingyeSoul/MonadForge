@@ -108,8 +108,10 @@ class VeRAModule(BaseLoRAModule):
                 lx = torch.mm(h, self.B.T.to(work)) * self.vera_b.to(work)
                 lx = lx.reshape(B_s, H, W, self.out_dim).permute(0, 3, 1, 2)
             else:
-                h = torch.mm(x_r, self.A.T.to(work)) * self.vera_d.to(work)
-                lx = torch.mm(h, self.B.T.to(work)) * self.vera_b.to(work)
+                # DiT projections receive both sequence (B, L, D) and
+                # native patch-grid (B, T, H, W, D) activations.
+                h = torch.matmul(x_r, self.A.T.to(work)) * self.vera_d.to(work)
+                lx = torch.matmul(h, self.B.T.to(work)) * self.vera_b.to(work)
 
             if self.dropout is not None:
                 lx = torch.nn.functional.dropout(lx, p=self.dropout)
@@ -126,8 +128,8 @@ class VeRAModule(BaseLoRAModule):
             lx = torch.mm(h, self.B.T) * self.vera_b
             lx = lx.reshape(B_s, H, W, self.out_dim).permute(0, 3, 1, 2)
         else:
-            h = torch.mm(x_r, self.A.T) * self.vera_d
-            lx = torch.mm(h, self.B.T) * self.vera_b
+            h = torch.matmul(x_r, self.A.T) * self.vera_d
+            lx = torch.matmul(h, self.B.T) * self.vera_b
 
         return lx * self.multiplier * self.scale
 

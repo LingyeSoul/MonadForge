@@ -1,11 +1,7 @@
 <template>
   <v-container fluid class="pa-4 d-flex flex-column" style="flex: 1 1 0; min-height: 0; overflow: hidden;">
     <!-- Header -->
-    <div class="workspace-heading dashboard-heading">
-      <div>
-        <h1>{{ t('dashTitle') }}</h1>
-        <p>{{ selectedTaskModel }} / {{ t('dashMetrics') }}</p>
-      </div>
+    <WorkspaceHeading class="dashboard-heading" :title="t('dashTitle')" :subtitle="`${selectedTaskModel} / ${t('dashMetrics')}`">
       <v-spacer />
       <v-btn
         v-if="wandbRunUrl"
@@ -27,10 +23,11 @@
         density="compact"
         variant="outlined"
         hide-details
-        style="max-width: 260px;"
+        style="max-width: 380px;"
+        :list-props="{ class: 'training-task-options' }"
         :label="t('dashSelectTask')"
       />
-    </div>
+    </WorkspaceHeading>
 
     <!-- No training task state -->
     <div v-if="trainingTasks.length === 0" class="dashboard-idle">
@@ -246,6 +243,7 @@
 </template>
 
 <script setup lang="ts">
+import { isTaskActive } from '../utils/taskState.ts'
 import { ref, computed, watch, shallowRef, onMounted, onUnmounted } from 'vue'
 import { useTrainingStore } from '../stores/training'
 import { useTaskStore } from '../stores/task'
@@ -254,6 +252,7 @@ import { useI18n } from '../composables/useI18n'
 import LossChart from '../components/LossChart.vue'
 import LogStream from '../components/LogStream.vue'
 import SampleGallery from '../components/SampleGallery.vue'
+import WorkspaceHeading from '../components/WorkspaceHeading.vue'
 
 const { t } = useI18n()
 const trainingStore = useTrainingStore()
@@ -285,7 +284,7 @@ const trainingTasks = computed(() =>
 const trainingTaskItems = computed(() =>
   trainingTasks.value.map((t) => ({
     task_id: t.task_id,
-    label: `${t.command} (${t.task_id.slice(0, 8)})`,
+    label: `${t.command} · ${t.task_id} · ${t.state}`,
   }))
 )
 
@@ -358,15 +357,17 @@ onMounted(async () => {
   autoSelect()
 })
 
+watch(trainingTasks, autoSelect)
+
 function autoSelect() {
   if (!trainingTasks.value.some(task => task.task_id === selectedTaskId.value)) {
-    const preferred = trainingTasks.value.find(task => task.state === 'running') ?? trainingTasks.value[0]
+    const preferred = trainingTasks.value.find(task => task.state === 'running') ?? trainingTasks.value.find(task => isTaskActive(task.state)) ?? trainingTasks.value[0]
     selectedTaskId.value = preferred?.task_id ?? ''
   }
 }
 
-// Connect/disconnect WS when selected task changes
-watch(selectedTaskId, (id) => {
+// A resumed attempt keeps the logical task ID but has a new progress stream.
+watch([selectedTaskId, () => taskStore.tasks.find(task => task.task_id === selectedTaskId.value)?.current_job_id], ([id]) => {
   streamHandle.value?.disconnect()
   trainingStore.reset()
   streamHandle.value = id ? useTrainingStream(id) : null
@@ -393,6 +394,7 @@ onUnmounted(() => {
 
 <style scoped>
 .dashboard-heading { flex-shrink: 0; }
+:global(.training-task-options .v-list-item-title) { white-space: normal; overflow-wrap: anywhere; }
 .dashboard-content { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden; gap: 24px; }
 .dashboard-idle { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; }
 .dashboard-empty { flex: 1; min-height: 280px; }

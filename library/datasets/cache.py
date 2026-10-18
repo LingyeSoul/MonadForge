@@ -24,6 +24,7 @@ from library.io.cache import (
     load_cached_latents,
     load_cached_text_features,
 )
+from library.io.cache_names import DEFAULT_PE_ENCODER, pe_cache_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,15 @@ def _cached_collate_impl(batch):
         out["pooled_text"] = torch.stack([b["pooled_text"] for b in batch])
     if "mask" in keys:
         out["mask"] = torch.stack([b["mask"] for b in batch])  # [B, 1, H, W]
+    if "repa_pe" in keys:
+        features = [b.get("repa_pe") for b in batch]
+        first = features[0]
+        out["repa_pe"] = (
+            torch.stack(features)
+            if first is not None
+            and all(f is not None and f.shape == first.shape for f in features)
+            else None
+        )
     return out
 
 
@@ -124,6 +134,8 @@ class CachedDataset(torch.utils.data.Dataset):
         mask_dir: str | None = None,
         keep_list: set[str] | None = None,
         need_pooled: bool = True,
+        load_repa_pe: bool = False,
+        repa_pe_encoder: str = DEFAULT_PE_ENCODER,
     ):
         assert split in ("train", "val")
         self.data_dir = data_dir
@@ -132,6 +144,8 @@ class CachedDataset(torch.utils.data.Dataset):
         # so consumers select features at construction time.
         self.need_pooled = need_pooled  # emit `pooled_text` (mod-guidance needs it)
         self.mask_dir = mask_dir  # emit `mask`; see _resolve_mask_path
+        self.load_repa_pe = load_repa_pe
+        self.repa_pe_encoder = repa_pe_encoder
         cached = discover_cached_pairs(data_dir)
 
         # Drop every cached pair whose stem isn't in keep_list, BEFORE bucketing.
@@ -291,6 +305,18 @@ class CachedDataset(torch.utils.data.Dataset):
             out["pooled_text"] = pooled_text
         if self.mask_dir is not None:
             out["mask"] = self._load_mask(te_path, latents.shape[-2], latents.shape[-1])
+        if self.load_repa_pe:
+            from safetensors.torch import load_file
+
+            pe_path = te_path.removesuffix(TE_CACHE_SUFFIX) + pe_cache_suffix(
+                self.repa_pe_encoder
+            )
+            features = (
+                load_file(pe_path).get("image_features")
+                if os.path.isfile(pe_path)
+                else None
+            )
+            out["repa_pe"] = features.float() if features is not None else None
         return out
 
     def _resolve_mask_path(self, te_path: str) -> str | None:

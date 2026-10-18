@@ -15,6 +15,12 @@ import toml
 import yaml
 
 from webui.services.config_service import ROOT, get_path_overrides
+from webui.services.config_storage import (
+    CONFIG_WRITE_LOCK,
+    atomic_write_many,
+    atomic_write_text,
+    read_json_object,
+)
 from library.preprocess.runs import run_from_manifest
 
 # ── Paths ─────────────────────────────────────────────────────────
@@ -262,31 +268,27 @@ def save_target_res(edges: list[int]) -> list[int]:
     save.
     """
     normalized = _normalize_target_res(edges)
-    if PREPROCESS_TOML.exists():
-        # Corrupt file → raise; do not fall back to {} and clobber the other
-        # user-owned keys the docstring promises to preserve.
-        data = toml.loads(PREPROCESS_TOML.read_text(encoding="utf-8"))
-    else:
-        data = {}
-    data["target_res"] = normalized
-    PREPROCESS_TOML.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PREPROCESS_TOML.parent / (PREPROCESS_TOML.name + ".tmp")
-    tmp.write_text(toml.dumps(data), encoding="utf-8")
-    os.replace(tmp, PREPROCESS_TOML)
+    with CONFIG_WRITE_LOCK:
+        data = (
+            toml.loads(PREPROCESS_TOML.read_text(encoding="utf-8"))
+            if PREPROCESS_TOML.exists()
+            else {}
+        )
+        data["target_res"] = normalized
+        atomic_write_text(PREPROCESS_TOML, toml.dumps(data))
     return normalized
 
 
 def save_multires_per_image(enabled: bool) -> bool:
     value = bool(enabled)
-    if PREPROCESS_TOML.exists():
-        data = toml.loads(PREPROCESS_TOML.read_text(encoding="utf-8"))
-    else:
-        data = {}
-    data["multires_per_image"] = value
-    PREPROCESS_TOML.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PREPROCESS_TOML.parent / (PREPROCESS_TOML.name + ".tmp")
-    tmp.write_text(toml.dumps(data), encoding="utf-8")
-    os.replace(tmp, PREPROCESS_TOML)
+    with CONFIG_WRITE_LOCK:
+        data = (
+            toml.loads(PREPROCESS_TOML.read_text(encoding="utf-8"))
+            if PREPROCESS_TOML.exists()
+            else {}
+        )
+        data["multires_per_image"] = value
+        atomic_write_text(PREPROCESS_TOML, toml.dumps(data))
     return value
 
 
@@ -327,14 +329,39 @@ def save_settings(data: dict) -> dict:
 
     Returns the saved settings (round-tripped through get_settings).
     """
-    # ── SAM yaml ──
+    with CONFIG_WRITE_LOCK:
+        return _save_settings(data)
+
+
+def _save_settings(data: dict) -> dict:
+    # Resolve and validate all settings before modifying any config file.
+    current_target_res = get_target_res()
+    current_multires = get_multires_per_image()
+    target_res = (
+        _normalize_target_res(data["target_res"])
+        if "target_res" in data
+        else current_target_res
+    )
+    multires_per_image = (
+        bool(data["multires_per_image"])
+        if "multires_per_image" in data
+        else current_multires
+    )
+    if multires_per_image and len(target_res) < 2:
+        raise ValueError("multires_per_image requires at least two target_res tiers")
+
     sam = data.get("sam", {})
-    sam_yaml = {
-        "prompts": sam.get("prompts", DEFAULTS["sam_prompts"]),
-        "threshold": sam.get("threshold", DEFAULTS["sam_threshold"]),
-        "dilate": sam.get("dilate", DEFAULTS["sam_dilate"]),
-    }
-    SAM_YAML.parent.mkdir(parents=True, exist_ok=True)
+    sam_yaml = (
+        yaml.safe_load(SAM_YAML.read_text(encoding="utf-8"))
+        if SAM_YAML.exists()
+        else {}
+    )
+    if sam_yaml is None:
+        sam_yaml = {}
+    if not isinstance(sam_yaml, dict):
+        raise ValueError("SAM settings must be a YAML object")
+    for key in ("prompts", "threshold", "dilate"):
+        sam_yaml[key] = sam.get(key, sam_yaml.get(key, DEFAULTS[f"sam_{key}"]))
     text = yaml.dump(
         sam_yaml,
         Dumper=_IndentedListDumper,
@@ -343,10 +370,8 @@ def save_settings(data: dict) -> dict:
     )
     # Match canonical layout: blank line between prompts list and threshold
     text = text.replace("\nthreshold:", "\n\nthreshold:", 1)
-    SAM_YAML.write_text(text, encoding="utf-8")
-
     # ── GUI settings json ──
-    gui = _load_gui_settings()
+    gui = read_json_object(SETTINGS_FILE)
     for key in (
         "run_sam_mask",
         "run_mit_mask",
@@ -358,28 +383,19 @@ def save_settings(data: dict) -> dict:
     ):
         if key in data:
             gui[key] = data[key]
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(gui, indent=2), encoding="utf-8")
-
-    target_res = (
-        _normalize_target_res(data["target_res"])
-        if "target_res" in data
-        else get_target_res()
-    )
-    multires_per_image = (
-        bool(data["multires_per_image"])
-        if "multires_per_image" in data
-        else get_multires_per_image()
-    )
-    if multires_per_image and len(target_res) < 2:
-        raise ValueError("multires_per_image requires at least two target_res tiers")
-
-    # ── target_res → configs/custom/preprocess.toml ──
-    if "target_res" in data:
-        save_target_res(target_res)
-    if "multires_per_image" in data:
-        save_multires_per_image(multires_per_image)
-
+    contents = {SAM_YAML: text, SETTINGS_FILE: json.dumps(gui, indent=2)}
+    if "target_res" in data or "multires_per_image" in data:
+        preprocess = (
+            toml.loads(PREPROCESS_TOML.read_text(encoding="utf-8"))
+            if PREPROCESS_TOML.exists()
+            else {}
+        )
+        if "target_res" in data:
+            preprocess["target_res"] = target_res
+        if "multires_per_image" in data:
+            preprocess["multires_per_image"] = multires_per_image
+        contents[PREPROCESS_TOML] = toml.dumps(preprocess)
+    atomic_write_many(contents)
     return get_settings()
 
 
@@ -519,9 +535,7 @@ def get_status(
     }
 
 
-def _run_roots(
-    variant: str | None = None, preset: str | None = None
-) -> list[Path]:
+def _run_roots(variant: str | None = None, preset: str | None = None) -> list[Path]:
     """Resolve canonical run roots independently of training context.
 
     ``variant`` and ``preset`` remain accepted for API compatibility with older

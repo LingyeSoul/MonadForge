@@ -123,3 +123,193 @@ test('unavailable saved V100 runtime blocks submission without falling back', as
   assert.equal(workspace.runtimeProfile, 'v100')
   assert.deepEqual(calls, ['/api/system/runtimes'])
 })
+
+function configWorkspace(t) {
+  const storage = setup(t)
+  const schemas = Object.fromEntries(['qwen21', 'moss'].map(family => {
+    const value = schema(family)
+    value.train.push({ ...field('algo', 'lora'), choices: ['lora', 'lokr', 'loha'] })
+    return [family, value]
+  }))
+  const documents = Object.fromEntries(Object.entries(schemas).map(([family, value]) => {
+    const defaultDraft = initialDraft(parseSchema(value))
+    const kr = structuredClone(defaultDraft)
+    kr.train.algo = 'lokr'
+    kr.train.rank = 48
+    return [family, { default: defaultDraft, kr }]
+  }))
+  const calls = []
+  const failures = new Set()
+  t.mock.method(globalThis, 'fetch', async (url, init = {}) => {
+    calls.push({ url, init })
+    if (failures.has(`${init.method ?? 'GET'} ${url}`)) return new Response(JSON.stringify({ detail: 'profile unavailable' }), { status: 503 })
+    const [, , family, resource, name] = url.split('/')
+    if (resource === 'schema') return response(schemas[family])
+    if (resource === 'profiles' && !name) return response(Object.keys(documents[family]))
+    if (resource === 'profiles' && name) {
+      if (init.method === 'PUT') documents[family][name] = JSON.parse(init.body)
+      return response(documents[family][name])
+    }
+    throw new Error(`Unexpected URL ${url}`)
+  })
+  return { storage, documents, calls, failures, qwen: useQwenWorkspace(), moss: useMossWorkspace() }
+}
+
+test('configuration catalog reads method ownership without selecting or replacing the working draft', async t => {
+  const { qwen, calls } = configWorkspace(t)
+  await qwen.ensureLoaded()
+  qwen.update('train', 'rank', 99)
+  const currentDraft = qwen.draft
+  await qwen.loadProfileCatalog()
+  assert.deepEqual(qwen.profileAlgorithms, { default: 'lora', kr: 'lokr' })
+  assert.equal(qwen.configMethod, '')
+  assert.equal(qwen.configProfile, '')
+  assert.equal(qwen.draft, currentDraft)
+  assert.equal(qwen.draft.train.rank, 99)
+  assert.equal(qwen.dirty, true)
+  qwen.selectConfigMethod('lokr')
+  assert.equal(qwen.configMethod, 'lokr')
+  assert.equal(qwen.configProfile, '')
+  assert.equal(qwen.draft, currentDraft)
+  assert.equal(calls.some(call => call.init.method === 'PUT'), false)
+  assert.throws(() => qwen.selectConfigMethod('unknown'), /Unsupported/)
+})
+
+test('method selection accepts only matching profiles and isolates each model workspace', async t => {
+  const { qwen, moss, calls } = configWorkspace(t)
+  await Promise.all([qwen.loadProfileCatalog(), moss.loadProfileCatalog()])
+  qwen.selectConfigMethod('lokr')
+  const beforeMismatch = calls.length
+  await assert.rejects(qwen.selectConfigProfile('default'), /does not belong/)
+  assert.equal(calls.length, beforeMismatch)
+  assert.equal(qwen.configProfile, '')
+  await qwen.selectConfigProfile('kr')
+  assert.equal(qwen.configProfile, 'kr')
+  assert.equal(qwen.profile, 'kr')
+  assert.equal(qwen.draft.train.algo, 'lokr')
+  assert.equal(qwen.dirty, false)
+  assert.equal(moss.configMethod, '')
+  assert.equal(moss.configProfile, '')
+  assert.equal(moss.draft.train.algo, 'lora')
+  assert.throws(() => qwen.update('train', 'algo', 'lora'), /Choose a method/)
+})
+
+test('a profile changed on disk cannot silently replace the selected method or draft', async t => {
+  const { qwen, documents, storage, failures } = configWorkspace(t)
+  await qwen.loadProfileCatalog()
+  qwen.selectConfigMethod('lokr')
+  const previous = qwen.draft
+  documents.qwen21.kr.train.algo = 'lora'
+  await assert.rejects(qwen.selectConfigProfile('kr'), /does not match/)
+  assert.equal(qwen.draft, previous)
+  assert.equal(qwen.profile, 'default')
+  assert.equal(qwen.configMethod, 'lokr')
+  assert.equal(qwen.configProfile, '')
+  assert.equal(storage.get('monadforge-qwen-profile'), 'default')
+  documents.qwen21.kr.train.algo = 'lokr'
+  failures.add('GET /api/qwen21/profiles/kr')
+  await assert.rejects(qwen.selectConfigProfile('kr'), /profile unavailable/)
+  assert.equal(qwen.draft, previous)
+  assert.equal(qwen.configProfile, '')
+})
+
+test('reset and discard preserve the selected method for saved and new configurations', async t => {
+  const { qwen } = configWorkspace(t)
+  await qwen.loadProfileCatalog()
+  qwen.selectConfigMethod('lokr')
+  await qwen.selectConfigProfile('kr')
+  qwen.resetDefaults()
+  assert.equal(qwen.draft.train.algo, 'lokr')
+  assert.equal(qwen.draft.train.rank, 32)
+  assert.equal(qwen.dirty, true)
+  qwen.discard()
+  assert.equal(qwen.draft.train.algo, 'lokr')
+  assert.equal(qwen.draft.train.rank, 48)
+  assert.equal(qwen.dirty, false)
+  qwen.selectConfigMethod('loha')
+  qwen.beginConfigProfile('new-ha')
+  qwen.update('train', 'rank', 72)
+  qwen.discard()
+  assert.equal(qwen.draft.train.algo, 'loha')
+  assert.equal(qwen.draft.train.rank, 32)
+  assert.equal(qwen.configProfile, 'new-ha')
+})
+
+test('creating a profile uses chosen method defaults or copies an explicitly selected configuration', async t => {
+  const { qwen, documents, calls } = configWorkspace(t)
+  await qwen.loadProfileCatalog()
+  qwen.update('train', 'rank', 99)
+  qwen.selectConfigMethod('lokr')
+  await qwen.createConfigProfile('new-kr')
+  assert.equal(qwen.draft.train.rank, 32)
+  assert.equal(qwen.draft.train.algo, 'lokr')
+  assert.equal(qwen.configProfile, 'new-kr')
+  assert.equal(qwen.profileAlgorithms['new-kr'], 'lokr')
+  assert.equal(qwen.dirty, false)
+  assert.equal(documents.qwen21.default.train.algo, 'lora')
+  assert.equal(documents.qwen21.default.train.rank, 32)
+  qwen.update('train', 'rank', 61)
+  await qwen.createConfigProfile('copy-kr')
+  assert.equal(documents.qwen21['copy-kr'].train.rank, 61)
+  assert.equal(documents.qwen21['copy-kr'].train.algo, 'lokr')
+  assert.equal(calls.filter(call => call.init.method === 'PUT').length, 2)
+  await assert.rejects(qwen.createConfigProfile('default'), /already exists/)
+  assert.equal(qwen.profile, 'copy-kr')
+  await qwen.createConfigProfile('fresh-kr', false)
+  assert.equal(documents.qwen21['fresh-kr'].train.rank, 32)
+  assert.equal(documents.qwen21['fresh-kr'].train.algo, 'lokr')
+})
+
+test('failed new-profile saves restore unsaved edits and all prior selection state', async t => {
+  const { qwen, failures, storage } = configWorkspace(t)
+  await qwen.loadProfileCatalog()
+  qwen.selectConfigMethod('lokr')
+  await qwen.selectConfigProfile('kr')
+  qwen.update('train', 'rank', 71)
+  const previousDraft = qwen.draft
+  const previousSaved = qwen.saved
+  failures.add('PUT /api/qwen21/profiles/copy-kr')
+  await assert.rejects(qwen.createConfigProfile('copy-kr'), /profile unavailable/)
+  assert.equal(qwen.draft, previousDraft)
+  assert.equal(qwen.draft.train.rank, 71)
+  assert.equal(qwen.saved, previousSaved)
+  assert.equal(qwen.profile, 'kr')
+  assert.equal(qwen.configMethod, 'lokr')
+  assert.equal(qwen.configProfile, 'kr')
+  assert.equal(qwen.dirty, true)
+  assert.equal(qwen.profiles.includes('copy-kr'), false)
+  assert.equal(qwen.profileAlgorithms['copy-kr'], undefined)
+  assert.equal(storage.get('monadforge-qwen-profile'), 'kr')
+})
+
+test('catalog failures remain visible and preserve the previous usable catalog and draft', async t => {
+  const { qwen, failures } = configWorkspace(t)
+  await qwen.loadProfileCatalog()
+  const previousCatalog = qwen.profileAlgorithms
+  const previousDraft = qwen.draft
+  failures.add('GET /api/qwen21/profiles/kr')
+  await assert.rejects(qwen.loadProfileCatalog(), /profile unavailable/)
+  assert.equal(qwen.profileAlgorithms, previousCatalog)
+  assert.equal(qwen.draft, previousDraft)
+})
+
+test('switching methods while a profile loads prevents stale selection and draft replacement', async t => {
+  const { qwen, documents } = configWorkspace(t)
+  await qwen.loadProfileCatalog()
+  qwen.selectConfigMethod('lokr')
+  const previousDraft = qwen.draft
+  const originalFetch = globalThis.fetch
+  let finishLoad
+  t.mock.method(globalThis, 'fetch', (url, init) => {
+    if (url === '/api/qwen21/profiles/kr') return new Promise(resolve => { finishLoad = resolve })
+    return originalFetch(url, init)
+  })
+  const loading = qwen.selectConfigProfile('kr')
+  qwen.selectConfigMethod('loha')
+  finishLoad(response(documents.qwen21.kr))
+  await loading
+  assert.equal(qwen.configMethod, 'loha')
+  assert.equal(qwen.configProfile, '')
+  assert.equal(qwen.draft, previousDraft)
+  assert.equal(qwen.profile, 'default')
+})

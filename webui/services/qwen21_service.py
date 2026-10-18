@@ -115,7 +115,9 @@ def read_schema() -> FormSchema:
 def request_from_values(
     request_type: type[RequestT], values: dict[str, Scalar]
 ) -> RequestT:
-    req = TypeAdapter(request_type).validate_json(json.dumps(values), strict=True)
+    req = TypeAdapter(request_type).validate_json(
+        json.dumps(values), strict=True, extra="forbid"
+    )
     validate_request(req)
     return req
 
@@ -286,7 +288,10 @@ def result_image_path(directory: str, file: str) -> Path:
 
 
 def read_results(directory: str) -> ResultManifest:
-    path = output_path(str(output_path(directory) / "manifest.json"))
+    root = output_path(directory)
+    path = root / "manifest.json"
+    if path.resolve().parent != root:
+        raise ValueError("Qwen manifest must stay inside the result directory")
     manifest = ResultManifest.model_validate_json(
         path.read_text(encoding="utf-8"), strict=True
     )

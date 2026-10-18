@@ -152,22 +152,22 @@ def test_load_is_memoised_and_carries_identity(synthetic_pack: Path):
     assert vp.load_vocab_pack(a) is a
 
 
-def test_default_pack_reads_env_then_base_toml(monkeypatch):
+def test_default_pack_reads_env_then_model_config(monkeypatch, tmp_path):
     from library.env import default_checkpoints
+
+    monkeypatch.setenv("ANIMA_HOME", str(tmp_path))
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "model.toml").write_text('vocab_pack = "fixture/pack"\n')
 
     monkeypatch.setenv("ANIMA_VOCAB_PACK", "some/pack")
     assert default_checkpoints().vocab_pack == "some/pack"
     assert vp.default_vocab_pack() == "some/pack"
     monkeypatch.delenv("ANIMA_VOCAB_PACK")
-    # v2: base.toml ships the CJK pack enabled — the value is the catalog's
-    # default prefix, so `make download-models` and the loader agree on it.
-    from library import downloads as DL
-
-    assert (
-        default_checkpoints().vocab_pack
-        == f"models/{DL.VOCAB_PACK_DIR}/{DL.VOCAB_PACK_STEM}"
-    )
-    assert vp.default_vocab_pack() == vp.DEFAULT_PACK_PREFIX
+    assert default_checkpoints().vocab_pack == "fixture/pack"
+    assert vp.default_vocab_pack() == "fixture/pack"
+    (configs / "model.toml").write_text('vocab_pack = ""\n')
+    assert default_checkpoints().vocab_pack == ""
 
 
 def test_resolve_active_pack_precedence(synthetic_pack: Path, monkeypatch):

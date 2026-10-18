@@ -8,19 +8,34 @@ from __future__ import annotations
 import json
 import re
 import tarfile
+import tempfile
 import threading
 import time
 import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any, BinaryIO, Callable
 
+from library.captioning.position_clauses import (
+    PositionClause,
+    compose_caption,
+    parse_caption,
+)
 from webui.services.config_service import ROOT, get_path_overrides
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
-ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
+ARCHIVE_SUFFIXES = (
+    ".zip",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz2",
+    ".tar.xz",
+    ".txz",
+)
 
 # Reject only the path-traversal vectors: NUL/control bytes and a ``..``
 # segment. We deliberately do NOT use a positive character whitelist here:
@@ -31,7 +46,8 @@ ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".ta
 # Relative paths MAY contain ``/`` (subdirectories, via ``rglob`` in
 # ``list_images``), so separators are allowed; containment is enforced by the
 # ``resolve() / relative_to(base)`` check in :func:`resolve_image_path`.
-_UNSAFE_REL = re.compile(r"[\x00-\x1f]|\.\.")
+_UNSAFE_REL = re.compile(r"[\x00-\x1f]")
+_caption_lock = threading.RLock()
 
 _MASK_SEARCH_ROOTS_FALLBACK = [
     ROOT / "post_image_dataset" / "masks",
@@ -108,7 +124,7 @@ def resolve_directory(name: str) -> Path | None:
 
     if name in candidates:
         p = candidates[name]
-        return p if p.exists() else None
+        return p.resolve() if p.is_dir() else None
     # Absolute path fallback (user-added directory); relative names are
     # anchored to ROOT so uploaded/extracted dataset paths stay browsable.
     p = Path(name)
@@ -116,7 +132,7 @@ def resolve_directory(name: str) -> Path | None:
         if ".." in p.parts:
             return None
         p = ROOT / p
-    return p if p.exists() and p.is_dir() else None
+    return p.resolve() if p.is_dir() else None
 
 
 # ── image scanning ──────────────────────────────────────────────
@@ -207,7 +223,8 @@ def resolve_image_path(directory: str, rel_path: str) -> Path | None:
     base = resolve_directory(directory)
     if base is None:
         return None
-    if _UNSAFE_REL.search(rel_path):
+    relative = Path(rel_path)
+    if _UNSAFE_REL.search(rel_path) or relative.is_absolute() or ".." in relative.parts:
         return None
     candidate = (base / rel_path).resolve()
     # Ensure the resolved path is still under base. This is the real
@@ -216,10 +233,27 @@ def resolve_image_path(directory: str, rel_path: str) -> Path | None:
         candidate.relative_to(base)
     except ValueError:
         return None
-    return candidate if candidate.is_file() else None
+    return (
+        candidate
+        if candidate.is_file() and candidate.suffix.lower() in IMAGE_EXTS
+        else None
+    )
 
 
 # ── caption CRUD ───────────────────────────────────────────────
+
+
+def _caption_path(image: Path, directory: str) -> Path:
+    base = resolve_directory(directory)
+    caption = image.with_suffix(".txt").resolve()
+    history = _history_path(caption).resolve()
+    if (
+        base is None
+        or not caption.is_relative_to(base)
+        or not history.is_relative_to(base)
+    ):
+        raise ValueError("Caption or history points outside the dataset directory")
+    return caption
 
 
 def get_caption(directory: str, rel_path: str) -> dict[str, Any]:
@@ -227,7 +261,7 @@ def get_caption(directory: str, rel_path: str) -> dict[str, Any]:
     img = resolve_image_path(directory, rel_path)
     if img is None:
         raise FileNotFoundError(f"Image not found: {rel_path}")
-    cp = img.with_suffix(".txt")
+    cp = _caption_path(img, directory)
     content = cp.read_text(encoding="utf-8") if cp.exists() else ""
     return {"path": rel_path, "content": content}
 
@@ -237,15 +271,31 @@ def save_caption(directory: str, rel_path: str, content: str) -> dict[str, Any]:
     img = resolve_image_path(directory, rel_path)
     if img is None:
         raise FileNotFoundError(f"Image not found: {rel_path}")
-    cp = img.with_suffix(".txt")
-
-    # Snapshot current disk text before overwriting
-    if cp.exists():
-        prev = cp.read_text(encoding="utf-8")
-        if prev != content:
-            _append_history(cp, prev)
-    cp.write_text(content, encoding="utf-8")
+    cp = _caption_path(img, directory)
+    with _caption_lock:
+        _save_caption_file(cp, content)
     return {"path": rel_path, "content": content}
+
+
+def _save_caption_file(caption: Path, content: str) -> None:
+    """Stage the complete caption before replacing it; preserve its old version."""
+    previous = caption.read_text(encoding="utf-8") if caption.exists() else None
+    if previous == content:
+        return
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=caption.parent, suffix=".tmp", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+        if previous is not None:
+            temporary.chmod(caption.stat().st_mode)
+            _append_history(caption, previous)
+        temporary.replace(caption)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 # ── version history (JSONL) ────────────────────────────────────
@@ -285,7 +335,7 @@ def get_versions(directory: str, rel_path: str) -> list[dict]:
     img = resolve_image_path(directory, rel_path)
     if img is None:
         raise FileNotFoundError(f"Image not found: {rel_path}")
-    cp = img.with_suffix(".txt")
+    cp = _caption_path(img, directory)
     history = _read_history(cp)
     history.reverse()  # newest first
     return history
@@ -313,10 +363,12 @@ def build_tag_index(directory: str) -> dict[str, Any]:
         if not text:
             continue
         total += 1
-        for tag in text.split(","):
-            tag = tag.strip()
-            if tag:
-                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        parsed = parse_caption(text)
+        for tag in (
+            *parsed.flat_tags,
+            *(tag for clause in parsed.clauses for tag in clause.tags),
+        ):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
     sorted_tags = dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True))
     return {"tags": sorted_tags, "total_images": total}
@@ -336,43 +388,58 @@ def batch_update_captions(
     *action* is one of ``"append"``, ``"remove"``, or ``"replace"``.
     Returns ``{"updated": N, "failed": M, "errors": [...]}``.
     """
-    import re as _re
+    if action not in {"append", "remove", "replace"}:
+        raise ValueError(f"Unknown action: {action}")
+    pattern = None
+    if action == "replace":
+        if not find:
+            raise ValueError("Replacement search text must not be empty")
+        if use_regex:
+            try:
+                pattern = re.compile(find)
+                pattern.sub(replace or "", "")
+            except re.error as exc:
+                raise ValueError(f"Invalid replacement expression: {exc}") from exc
 
     updated = 0
     failed = 0
     errors: list[str] = []
 
-    for rel_path in paths:
+    for rel_path in dict.fromkeys(paths):
         try:
             img = resolve_image_path(directory, rel_path)
             if img is None:
                 raise FileNotFoundError(f"Image not found: {rel_path}")
-            cp = img.with_suffix(".txt")
-            current = cp.read_text(encoding="utf-8") if cp.exists() else ""
-
-            if action == "append":
-                parts = [t.strip() for t in current.split(",") if t.strip()]
-                new_tags = [t.strip() for t in (tag or "").split(",") if t.strip()]
-                parts.extend(new_tags)
-                new_content = ", ".join(parts)
-
-            elif action == "remove":
-                remove_set = {t.strip() for t in (tag or "").split(",") if t.strip()}
-                parts = [t.strip() for t in current.split(",") if t.strip()]
-                parts = [t for t in parts if t not in remove_set]
-                new_content = ", ".join(parts)
-
-            elif action == "replace":
-                if use_regex:
-                    new_content = _re.sub(find or "", replace or "", current)
+            cp = _caption_path(img, directory)
+            with _caption_lock:
+                current = cp.read_text(encoding="utf-8") if cp.exists() else ""
+                parsed = parse_caption(current)
+                if action == "append":
+                    added = parse_caption(tag or "")
+                    new_content = compose_caption(
+                        (*parsed.flat_tags, *added.flat_tags),
+                        (*parsed.clauses, *added.clauses),
+                    )
+                elif action == "remove":
+                    remove_set = set(parse_caption(tag or "").flat_tags)
+                    clauses = [
+                        PositionClause(
+                            clause.position,
+                            tuple(t for t in clause.tags if t not in remove_set),
+                            clause.prefix,
+                        )
+                        for clause in parsed.clauses
+                    ]
+                    new_content = compose_caption(
+                        (t for t in parsed.flat_tags if t not in remove_set), clauses
+                    )
                 else:
-                    new_content = current.replace(find or "", replace or "")
-            else:
-                raise ValueError(f"Unknown action: {action}")
-
-            if new_content != current:
-                _append_history(cp, current)
-                cp.write_text(new_content, encoding="utf-8")
+                    new_content = (
+                        pattern.sub(replace or "", current)
+                        if pattern
+                        else current.replace(find, replace or "")
+                    )
+                _save_caption_file(cp, new_content)
             updated += 1
         except Exception as e:
             failed += 1
@@ -471,7 +538,11 @@ def extract_archive(
             "Unsupported archive format: expected .zip, .tar, .tar.gz, .tgz, .tar.bz2 or .tar.xz"
         )
 
-    return {"target": _archive_display(target_dir), "extracted": extracted, "skipped": skipped}
+    return {
+        "target": _archive_display(target_dir),
+        "extracted": extracted,
+        "skipped": skipped,
+    }
 
 
 def _extract_zip(
@@ -498,13 +569,30 @@ def _extract_zip(
                         final.mkdir(parents=True, exist_ok=True)
                     else:
                         final.parent.mkdir(parents=True, exist_ok=True)
-                        with zf.open(member) as src, open(final, "wb") as dst:
-                            while chunk := src.read(1 << 20):
-                                dst.write(chunk)
+                        with zf.open(member) as src:
+                            _extract_file(src, final)
                         extracted += 1
             if progress is not None:
                 progress(extracted, skipped)
     return extracted, skipped
+
+
+def _extract_file(source: BinaryIO, destination: Path) -> None:
+    """Do not publish partial archive members or truncate an existing file."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=destination.parent, suffix=".tmp", delete=False
+        ) as output:
+            temporary = Path(output.name)
+            while chunk := source.read(1 << 20):
+                output.write(chunk)
+        if destination.is_file():
+            temporary.chmod(destination.stat().st_mode)
+        temporary.replace(destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _extract_tar(
@@ -522,7 +610,14 @@ def _extract_tar(
             # sanitized to land inside the target.
             try:
                 if member.isfile():
-                    tf.extract(member, target_dir, filter="data")
+                    safe_member = tarfile.data_filter(member, target_dir)
+                    if safe_member is None:
+                        skipped += 1
+                        continue
+                    destination = (target_dir / safe_member.name).resolve()
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with tf.extractfile(member) as source:
+                        _extract_file(source, destination)
                     extracted += 1
                 elif member.isdir():
                     tf.extract(member, target_dir, filter="data")
@@ -614,7 +709,9 @@ def _extract_task_worker(
                 task["skipped"] = skipped
 
     try:
-        result = extract_archive(archive_path, target, progress=progress, archive_name=archive_name)
+        result = extract_archive(
+            archive_path, target, progress=progress, archive_name=archive_name
+        )
         with _extract_tasks_lock:
             task = _extract_tasks.get(task_id)
             if task is not None:

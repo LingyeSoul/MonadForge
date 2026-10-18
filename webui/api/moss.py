@@ -183,7 +183,7 @@ async def task_report(task_id: str) -> dict:
         req = await task_request(task_id, command)
         path = svc.output_path(req.output)
         if command == "moss-train":
-            path = path.with_suffix(".json")
+            path = svc.output_path(str(path.with_suffix(".json")))
         report = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(report, dict):
             raise ValueError("Invalid MOSS task report")

@@ -62,6 +62,16 @@ def _live_after_wait(processes) -> list:
     return [process for process in processes if _effectively_alive(process)]
 
 
+def _wait_procs(processes, *, timeout: float) -> None:
+    """A denied wait must not prevent the caller from reaping other members."""
+    try:
+        psutil.wait_procs(processes, timeout=timeout)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        # Every caller takes a fresh liveness/identity snapshot next. A single
+        # inaccessible member must not abort that independent cleanup pass.
+        logger.debug("process became unavailable while waiting for its tree")
+
+
 def create_time(pid: int) -> Optional[float]:
     """``psutil.Process(pid).create_time()`` or ``None`` if the PID is gone."""
     try:
@@ -304,13 +314,16 @@ def kill_tree(
             return
     targets = _verified_targets(family, snapshots, verify_identity=verify_identity)
 
+    denied = set()
     for p in targets:
         try:
             p.terminate()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except psutil.AccessDenied:
+            denied.add(p.pid)
+        except psutil.NoSuchProcess:
             pass
 
-    psutil.wait_procs(targets, timeout=grace_seconds)
+    _wait_procs([p for p in targets if p.pid not in denied], timeout=grace_seconds)
     alive = _refresh_live_family(
         pid,
         family,
@@ -319,6 +332,8 @@ def kill_tree(
         verify_identity=verify_identity,
     )
     for p in alive:
+        if p.pid in denied:
+            continue
         try:
             p.kill()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -417,7 +432,7 @@ def stop_tree_gracefully(
 
     alive = family
     if interrupted:
-        psutil.wait_procs(family, timeout=max(0.0, grace_seconds))
+        _wait_procs(family, timeout=max(0.0, grace_seconds))
         alive = _refresh_live_family(
             pid,
             family,
@@ -433,7 +448,7 @@ def stop_tree_gracefully(
             process.terminate()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
-    psutil.wait_procs(alive, timeout=5.0)
+    _wait_procs(alive, timeout=5.0)
     alive = _refresh_live_family(
         pid,
         family,

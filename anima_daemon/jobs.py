@@ -29,6 +29,10 @@ ACTIVE_STATES = frozenset({STATE_RUNNING, STATE_PAUSED})
 TERMINAL_STATES = frozenset({STATE_DONE, STATE_ERROR, STATE_STOPPED})
 
 
+class JobConflictError(ValueError):
+    """A valid job request conflicts with existing persisted training state."""
+
+
 def new_job_id() -> str:
     """Sortable, collision-resistant id: ``YYYYmmdd-HHMMSS-<6hex>``."""
     import secrets

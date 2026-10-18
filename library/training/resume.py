@@ -5,6 +5,37 @@ from __future__ import annotations
 import math
 
 
+def normalize_stage_resume_state(
+    plan, max_train_steps: int, state: dict, *, global_step: int | None = None
+) -> dict:
+    """Accept old boundary snapshots without applying the old stage's cursor."""
+    saved_step = int(state.get("global_step", state.get("current_step", 0)))
+    step = saved_step if global_step is None else global_step
+    expected = plan.index_for_step(step, max_train_steps)
+    saved = state.get("stage_index")
+    if saved is None or int(saved) == expected:
+        return state
+    previous = plan.index_for_step(max(0, step - 1), max_train_steps)
+    if step == saved_step and step > 0 and int(saved) == previous and previous != expected:
+        # Older snapshots persisted the completed stage at the transition.
+        # Its loader cursor and pre-permutation RNG belong to that old stage.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Normalizing legacy stage-boundary checkpoint at step %s; "
+            "starting stage %s with a fresh loader permutation",
+            step,
+            expected,
+        )
+        normalized = dict(state, stage_index=expected, stage_batch_cursor=0)
+        normalized.pop("stage_loader_generator_state", None)
+        return normalized
+    raise ValueError(
+        "resume stage does not match the active stage_schedule: "
+        f"state={saved}, expected={expected}"
+    )
+
+
 def resolve_resume_position(
     global_step: int,
     batches_per_epoch: int,

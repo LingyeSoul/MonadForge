@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import re
 import tempfile
@@ -128,14 +129,35 @@ class SafeHeader(BaseModel):
     metadata: dict[str, str]
 
 
+_DTYPE_BYTES = {
+    "BOOL": 1,
+    "U8": 1,
+    "I8": 1,
+    "F8_E4M3": 1,
+    "F8_E5M2": 1,
+    "F8_E8M0": 1,
+    "I16": 2,
+    "U16": 2,
+    "F16": 2,
+    "BF16": 2,
+    "I32": 4,
+    "U32": 4,
+    "F32": 4,
+    "F64": 8,
+    "I64": 8,
+    "U64": 8,
+}
+
+
 def read_header(path: Path) -> SafeHeader:
     """Read at most 16 MiB of header, never mmap or materialize tensor data."""
     with path.open("rb") as handle:
+        file_size = os.fstat(handle.fileno()).st_size
         prefix = handle.read(8)
         if len(prefix) != 8:
             raise ValueError(f"Truncated safetensors prefix: {path}")
         length = int.from_bytes(prefix, "little")
-        if not 2 <= length <= 16 * 1024 * 1024 or 8 + length > path.stat().st_size:
+        if not 2 <= length <= 16 * 1024 * 1024 or 8 + length > file_size:
             raise ValueError(f"Invalid safetensors header length {length}: {path}")
         raw = TypeAdapter(dict[str, JsonValue]).validate_json(
             handle.read(length), strict=True
@@ -144,7 +166,7 @@ def read_header(path: Path) -> SafeHeader:
         raw.pop("__metadata__", {}), strict=True
     )
     tensors = TypeAdapter(dict[str, TensorHeader]).validate_python(raw, strict=True)
-    payload_size = path.stat().st_size - 8 - length
+    payload_size = file_size - 8 - length
     for key, tensor in tensors.items():
         offsets = tensor.data_offsets
         if (
@@ -153,6 +175,21 @@ def read_header(path: Path) -> SafeHeader:
             or any(dim < 0 for dim in tensor.shape)
         ):
             raise ValueError(f"Invalid tensor header in {path}: {key}")
+        item_size = _DTYPE_BYTES.get(tensor.dtype)
+        if item_size is None:
+            raise ValueError(f"Unsupported tensor dtype in {path}: {tensor.dtype}")
+        if offsets[1] - offsets[0] != math.prod(tensor.shape) * item_size:
+            raise ValueError(f"Tensor payload size differs from shape in {path}: {key}")
+    # A readable safetensors file covers the payload exactly once. Bounds alone
+    # miss truncated tensor storage, overlapping tensors and unused trailing data.
+    cursor = 0
+    for tensor in sorted(tensors.values(), key=lambda item: item.data_offsets):
+        start, end = tensor.data_offsets
+        if start != cursor:
+            raise ValueError(f"Tensor payload has overlapping ranges or gaps: {path}")
+        cursor = end
+    if cursor != payload_size:
+        raise ValueError(f"Tensor payload has trailing data: {path}")
     return SafeHeader(tensors=tensors, metadata=metadata)
 
 
@@ -231,6 +268,11 @@ def inspect_cache(directory: str) -> CacheStatus:
     errors: list[str] = []
     for stem in sorted(latent_files.keys() & text_files.keys()):
         try:
+            if (
+                latent_files[stem].resolve().parent != root
+                or text_files[stem].resolve().parent != root
+            ):
+                raise ValueError("cache files must stay inside the selected directory")
             latent = read_header(latent_files[stem])
             text = read_header(text_files[stem])
             grid = (int(latent.metadata["latent_h"]), int(latent.metadata["latent_w"]))

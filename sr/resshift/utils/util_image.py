@@ -247,6 +247,8 @@ def tensor2img(tensor, rgb2bgr=True, out_type=np.uint8, min_max=(0, 1)):
 
         n_dim = _tensor.dim()
         if n_dim == 4:
+            from torchvision.utils import make_grid
+
             img_np = make_grid(_tensor, nrow=int(math.sqrt(_tensor.size(0))), normalize=False).numpy()
             img_np = img_np.transpose(1, 2, 0)
             if rgb2bgr:
@@ -714,6 +716,26 @@ def convfft(im, weight):
     out = fft.ifft2(fft.fft2(im, axes=axes) * otf, axes=axes).real
     return out
 
+def zero_pad(image, shape, position='corner'):
+    """Zero-pad a 2D kernel at the corner or at an exactly aligned center."""
+    image = np.asarray(image)
+    shape = np.asarray(shape, dtype=int)
+    if image.ndim != 2 or shape.shape != (2,):
+        raise ValueError('zero_pad expects a 2D image and target shape')
+    difference = shape - image.shape
+    if np.any(shape <= 0) or np.any(difference < 0):
+        raise ValueError('zero_pad target must be positive and at least the image shape')
+    if position not in ('corner', 'center'):
+        raise ValueError('zero_pad position must be corner or center')
+    if position == 'center' and np.any(difference % 2):
+        raise ValueError('zero_pad center padding needs even size differences')
+    offset = difference // 2 if position == 'center' else (0, 0)
+    padded = np.zeros(tuple(shape), dtype=image.dtype)
+    row, column = offset
+    padded[row:row + image.shape[0], column:column + image.shape[1]] = image
+    return padded
+
+
 def psf2otf(psf, shape):
     """
     MATLAB psf2otf function.
@@ -724,12 +746,11 @@ def psf2otf(psf, shape):
     Output:
         otf : OTF array with the desirable shape
     """
-    if np.all(psf == 0):
-        return np.zeros_like(psf)
-
     inshape = psf.shape
     # Pad the PSF to outsize
     psf = zero_pad(psf, shape, position='corner')
+    if np.all(psf == 0):
+        return np.zeros_like(psf)
 
     # Circularly shift OTF so that the 'center' of the PSF is [0,0] element of the array
     for axis, axis_size in enumerate(inshape):

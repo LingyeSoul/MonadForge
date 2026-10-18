@@ -21,7 +21,7 @@ export interface TaskInfo {
   attempt_count: number
   attempts: TaskAttempt[]
   command: string
-  state: 'pending' | 'running' | 'stopping' | 'success' | 'failed' | 'cancelled'
+  state: 'pending' | 'running' | 'paused' | 'stopping' | 'success' | 'failed' | 'cancelled'
   pid: number | null
   started_at: string | null
   output_lines: number
@@ -202,25 +202,24 @@ export const useTaskStore = defineStore('task', () => {
     const mode = typeof modeOrKill === 'boolean'
       ? (modeOrKill ? 'force' : 'detach')
       : modeOrKill
+    let response: Response | null = null
     try {
-      await fetch('/api/tasks/daemon/shutdown', {
+      response = await fetch('/api/tasks/daemon/shutdown', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ kill_jobs: mode === 'force', mode }),
       })
-      // A clean response is best-case — but the daemon may host the WebUI as a
-      // sidecar and tree-kill this server on shutdown, so a network error here
-      // is also an expected outcome. Treat both as success.
-      notify.show(t('notifyDaemonShutdown'), 'info')
-      daemonUp.value = false
-      return true
     } catch {
       // Connection reset = the daemon (and possibly this server) went down —
       // the shutdown did fire.
-      notify.show(t('notifyDaemonShutdown'), 'info')
-      daemonUp.value = false
-      return true
     }
+    if (response && !response.ok) {
+      notify.show(`${t('notifyDaemonShutdownFailed')}: HTTP ${response.status}`, 'error')
+      return false
+    }
+    notify.show(t('notifyDaemonShutdown'), 'info')
+    daemonUp.value = false
+    return true
   }
 
   async function startTask(command: string, args: string[] = [], env?: Record<string, string>, throwOnError = false): Promise<string | null> {
@@ -273,9 +272,9 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function resumeTask(taskId: string, sourceTask?: TaskInfo): Promise<boolean> {
+  async function resumeTask(taskId: string, sourceTask?: TaskInfo, confirmed = false): Promise<boolean> {
     const source = sourceTask ?? tasks.value.find((task) => task.task_id === taskId)
-    if (source?.legacy && !window.confirm(t('taskLegacyResumeConfirm'))) return false
+    if (source?.legacy && source.state !== 'paused' && !confirmed && !window.confirm(t('taskLegacyResumeConfirm'))) return false
     let failureDetail = ''
     try {
       const res = await fetch(`/api/tasks/${taskId}/resume`, { method: 'POST' })
@@ -290,7 +289,7 @@ export const useTaskStore = defineStore('task', () => {
         throw new Error(failureDetail)
       }
       await poll()
-      notify.show(t('notifyTaskResumed'), 'success')
+      notify.show(t(source?.state === 'paused' ? 'notifyTaskUnpaused' : 'notifyTaskResumed'), 'success')
       return true
     } catch {
       notify.show(
@@ -302,8 +301,8 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function deleteHistory(taskId: string): Promise<boolean> {
-    if (!window.confirm(t('taskDeleteHistoryConfirm'))) return false
+  async function deleteHistory(taskId: string, confirmed = false): Promise<boolean> {
+    if (!confirmed && !window.confirm(t('taskDeleteHistoryConfirm'))) return false
     try {
       const res = await fetch(`/api/tasks/${taskId}/history`, { method: 'DELETE' })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)

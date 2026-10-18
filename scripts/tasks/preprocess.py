@@ -21,6 +21,8 @@ from pathlib import Path
 
 from library.curation_compat.contract import AUTOTAG_MODES
 
+from . import _common as _shared
+from . import _legacy_preprocess as _legacy
 from ._common import (
     PY,
     ROOT,
@@ -262,9 +264,17 @@ def _caption_correction_config(extra) -> tuple[dict[str, object], list[str]]:
             os.environ.get("CAPTION_AUTOTAG"),
             _boolish(overrides.get("caption_autotag"), False),
         ),
-        "autotag_mode": str(overrides.get("caption_autotag_mode") or "missing").strip(),
+        "autotag_mode": str(
+            os.environ.get("CAPTION_AUTOTAG_MODE")
+            or overrides.get("caption_autotag_mode")
+            or "missing"
+        ).strip(),
         "autotag_min_confidence": _floatish(
-            overrides.get("caption_autotag_min_confidence"), default=0.0
+            os.environ.get(
+                "CAPTION_AUTOTAG_MIN_CONFIDENCE",
+                overrides.get("caption_autotag_min_confidence"),
+            ),
+            default=0.0,
         ),
         # The caption-MASTER stages are driven from this dict alone (the
         # caller's `extra` never reaches them), so the subset scope must ride
@@ -1092,22 +1102,26 @@ def cmd_preprocess_pe(extra):
     ``--centroid`` so IP-Adapter mean-centering needs no separate pass.
     """
     command = [
-            PY,
-            "scripts/preprocess/cache_pe_encoder.py",
-            "--dir",
-            _path("resized_image_dir", "post_image_dataset/resized"),
-            "--cache_dir",
-            _path("lora_cache_dir", "post_image_dataset/lora"),
-            "--encoder",
-            "pe",
-            "--recursive",
-            "--centroid",
-            *extra,
-        ]
+        PY,
+        "scripts/preprocess/cache_pe_encoder.py",
+        "--dir",
+        _path("resized_image_dir", "post_image_dataset/resized"),
+        "--cache_dir",
+        _path("lora_cache_dir", "post_image_dataset/lora"),
+        "--encoder",
+        "pe",
+        "--recursive",
+        "--centroid",
+        *extra,
+    ]
     active = _legacy._ACTIVE_PREPROCESS_RUN
     from ._common import explicit_option_value
+
     if active is not None and explicit_option_value(extra, "--centroid_out") is None:
-        command += ["--centroid_out", str(active.lora_cache_dir / "anima_pe_centroid_pe.safetensors")]
+        command += [
+            "--centroid_out",
+            str(active.lora_cache_dir / "anima_pe_centroid_pe.safetensors"),
+        ]
     run(command)
 
 
@@ -1176,6 +1190,7 @@ def _execute(stage_id: str, req) -> None:
     active = _legacy._ACTIVE_PREPROCESS_RUN
     if active is not None and hasattr(req, "report_dir"):
         from dataclasses import replace
+
         req = replace(req, report_dir=str(active.root / "reports" / stage_id))
     execute_stage(_stage(stage_id), req)
     if stage_id in _GPU_STAGES and in_daemon_job():
@@ -1737,9 +1752,6 @@ def cmd_preprocess_config(extra):
 
 # MonadForge's immutable preprocessing runs remain the artifact owner. The
 # upstream stages operate inside that run rather than the mutable shared tree.
-from . import _legacy_preprocess as _legacy
-from . import _common as _shared
-
 _consume_preprocess_run = _legacy._consume_preprocess_run
 _use_preprocess_run = _legacy._use_preprocess_run
 _preprocess_path = _legacy._preprocess_path
@@ -1773,11 +1785,13 @@ def _resolve_stage_run(extra, *, create=False):
     with _legacy_bindings():
         return _legacy._resolve_stage_run(extra, create=create)
 
+
 def _preprocess_config(extra):
     config = _preprocess_config_legacy_base(extra)
     config["caption"], _ = _caption_correction_config(extra)
     config["cache_schema_version"] = 2
     return config
+
 
 _preprocess_config_legacy_base = _legacy._preprocess_config
 
@@ -1785,6 +1799,7 @@ _preprocess_config_legacy_base = _legacy._preprocess_config
 def _run_scoped_preprocess(action, extra, *, full=False, legacy_action=None):
     global _path
     from library.runtime.profiles import is_v100_runtime
+
     run_obj, cleaned = _resolve_stage_run(list(extra), create=full)
     old_path = _path
     old_overrides = _shared._PATH_OVERRIDES_CACHE
@@ -1792,25 +1807,38 @@ def _run_scoped_preprocess(action, extra, *, full=False, legacy_action=None):
     if run_obj is not None:
         run_paths = run_obj.path_overrides()
         overrides.update(run_paths)
-        _path = lambda key, default: run_paths[key] if key in run_paths else old_path(key, default)
+
+        def selected_run_path(key, default):
+            return run_paths[key] if key in run_paths else old_path(key, default)
+
+        _path = selected_run_path
     _shared._PATH_OVERRIDES_CACHE = overrides
     try:
         with _legacy_bindings(), _legacy._use_preprocess_run(run_obj):
             if full and run_obj is not None:
                 _legacy._publish_run_status(run_obj, "running", started_at=time.time())
             try:
-                selected = legacy_action if legacy_action and is_v100_runtime() else action
+                selected = (
+                    legacy_action if legacy_action and is_v100_runtime() else action
+                )
                 selected(cleaned)
             except BaseException as exc:
                 if full and run_obj is not None:
                     try:
-                        _legacy._publish_run_status(run_obj, "failed", error=f"{type(exc).__name__}: {exc}", failed_at=time.time())
+                        _legacy._publish_run_status(
+                            run_obj,
+                            "failed",
+                            error=f"{type(exc).__name__}: {exc}",
+                            failed_at=time.time(),
+                        )
                     except OSError:
                         pass  # Preserve the worker error when the disk also fails.
                 raise
             else:
                 if full and run_obj is not None:
-                    _legacy._publish_run_status(run_obj, "ready", completed_at=time.time())
+                    _legacy._publish_run_status(
+                        run_obj, "ready", completed_at=time.time()
+                    )
     finally:
         _path = old_path
         _shared._PATH_OVERRIDES_CACHE = old_overrides
@@ -1819,17 +1847,37 @@ def _run_scoped_preprocess(action, extra, *, full=False, legacy_action=None):
 def _wrap_stage(name, *, full=False):
     canonical = globals()[name]
     legacy = getattr(_legacy, name, None)
+
     @wraps(canonical)
     def wrapped(extra, **kwargs):
         action = (lambda args: canonical(args, **kwargs)) if kwargs else canonical
-        legacy_kwargs = {key: value for key, value in kwargs.items() if key != "chained"}
-        fallback = (lambda args: legacy(args, **legacy_kwargs)) if legacy_kwargs and legacy else legacy
+        legacy_kwargs = {
+            key: value for key, value in kwargs.items() if key != "chained"
+        }
+        fallback = (
+            (lambda args: legacy(args, **legacy_kwargs))
+            if legacy_kwargs and legacy
+            else legacy
+        )
         # Retain the fork's explicit low-resolution filtering, fixed buckets
         # and per-image multires contract; these were retired upstream.
         if name == "cmd_preprocess_resize" and (
             _legacy._multires_per_image_enabled(extra)
-            or _boolish(os.environ.get("DROP_LOWRES_IMAGES"), bool(_shared._path_overrides().get("drop_lowres_images", False)))
-            or any(str(arg).split("=", 1)[0] in {"--min_pixels", "--drop_lowres", "--no_drop_lowres", "--resize_bucket_resos", "--resize-bucket-resos"} for arg in extra)
+            or _boolish(
+                os.environ.get("DROP_LOWRES_IMAGES"),
+                bool(_shared._path_overrides().get("drop_lowres_images", False)),
+            )
+            or any(
+                str(arg).split("=", 1)[0]
+                in {
+                    "--min_pixels",
+                    "--drop_lowres",
+                    "--no_drop_lowres",
+                    "--resize_bucket_resos",
+                    "--resize-bucket-resos",
+                }
+                for arg in extra
+            )
             or "MIN_PIXELS" in os.environ
             or _shared._path_overrides().get("resize_bucket_resos")
         ):
@@ -1837,10 +1885,20 @@ def _wrap_stage(name, *, full=False):
         if name == "cmd_preprocess_vae" and _legacy._multires_per_image_enabled(extra):
             action = fallback
         return _run_scoped_preprocess(action, extra, full=full, legacy_action=fallback)
+
     return wrapped
 
-for _name in ("cmd_preprocess_resize", "cmd_preprocess_reconcile", "cmd_preprocess_vae",
-              "cmd_preprocess_captions", "cmd_preprocess_te", "cmd_preprocess_pe", "cmd_preprocess_pe_spatial", "cmd_caption_index"):
+
+for _name in (
+    "cmd_preprocess_resize",
+    "cmd_preprocess_reconcile",
+    "cmd_preprocess_vae",
+    "cmd_preprocess_captions",
+    "cmd_preprocess_te",
+    "cmd_preprocess_pe",
+    "cmd_preprocess_pe_spatial",
+    "cmd_caption_index",
+):
     globals()[_name] = _wrap_stage(_name)
 cmd_preprocess = _wrap_stage("cmd_preprocess", full=True)  # noqa: F811 — preserve the stage inside the run owner
 

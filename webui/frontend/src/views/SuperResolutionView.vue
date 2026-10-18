@@ -1,11 +1,6 @@
 <template>
   <v-container fluid class="pa-4 sr-page">
-    <div class="page-heading mb-4">
-      <div>
-        <h1 class="text-h5">{{ t('superResTitle') }}</h1>
-        <div class="text-body-2 text-medium-emphasis mt-1">{{ t('superResSubtitle') }}</div>
-      </div>
-    </div>
+    <WorkspaceHeading :title="t('superResTitle')" :subtitle="t('superResSubtitle')" />
 
     <v-alert type="info" variant="tonal" density="compact" class="mb-4" role="status">
       <template #prepend><v-icon icon="mdi-source-branch" /></template>
@@ -29,7 +24,7 @@
             <h2>{{ t('superResInference') }}</h2>
           </div>
 
-          <v-row dense>
+          <v-row density="comfortable">
             <v-col cols="12" md="6">
               <v-text-field
                 v-model="infer.input"
@@ -100,7 +95,7 @@
             <v-icon icon="mdi-lightning-bolt-outline" size="20" />
             <h2>{{ t('superResRsdInference') }}</h2>
           </div>
-          <v-row dense>
+          <v-row density="comfortable">
             <v-col cols="12" sm="6" md="2">
               <v-select v-model="rsdInfer.version" :items="rsdVersions" :label="t('superResRsdVersion')" hide-details="auto" />
             </v-col>
@@ -150,7 +145,7 @@
             <v-icon icon="mdi-image-multiple-outline" size="20" />
             <h2>{{ t('superResPool') }}</h2>
           </div>
-          <v-row dense>
+          <v-row density="comfortable">
             <v-col cols="12" md="6">
               <v-text-field v-model="pool.src" :label="t('superResSource')" :placeholder="t('superResPoolSourceHint')" class="font-mono-field" hide-details="auto" />
             </v-col>
@@ -178,7 +173,7 @@
             <v-icon icon="mdi-format-letter-case" size="20" />
             <h2>{{ t('superResTextDetect') }}</h2>
           </div>
-          <v-row dense>
+          <v-row density="comfortable">
             <v-col cols="12" md="6">
               <v-text-field v-model="textDetect.src" :label="t('superResSource')" class="font-mono-field" hide-details="auto" />
             </v-col>
@@ -206,7 +201,7 @@
             <v-icon icon="mdi-test-tube" size="20" />
             <h2>{{ t('superResEval') }}</h2>
           </div>
-          <v-row dense>
+          <v-row density="comfortable">
             <v-col cols="12" md="4">
               <v-text-field v-model="evalSet.src" :label="t('superResSource')" class="font-mono-field" hide-details="auto" />
             </v-col>
@@ -223,7 +218,7 @@
               <v-btn block color="primary" prepend-icon="mdi-play" :loading="taskStore.loading" @click="runEvalPrep">{{ t('superResRunEvalPrep') }}</v-btn>
             </v-col>
           </v-row>
-          <v-row dense class="mt-2">
+          <v-row density="comfortable" class="mt-2">
             <v-col cols="12" sm="4">
               <v-select v-model="phase0.version" :items="['v1', 'v2', 'v3']" :label="t('superResVersion')" hide-details="auto" />
             </v-col>
@@ -243,7 +238,7 @@
             <v-icon icon="mdi-school-outline" size="20" />
             <h2>{{ t('superResTeacher') }}</h2>
           </div>
-          <v-row dense>
+          <v-row density="comfortable">
             <v-col cols="12" sm="6" md="2">
               <v-select v-model="teacher.version" :items="['x2', 'x4', 'x4s4']" :label="t('superResTeacherVersion')" hide-details="auto" />
             </v-col>
@@ -282,7 +277,7 @@
             <v-icon icon="mdi-vector-combine" size="20" />
             <h2>{{ t('superResDistill') }}</h2>
           </div>
-          <v-row dense>
+          <v-row density="comfortable">
             <v-col cols="12" sm="6" md="2">
               <v-select v-model="rsdTrain.version" :items="rsdTrainVersions" :label="t('superResRsdVersion')" hide-details="auto" />
             </v-col>
@@ -318,7 +313,7 @@
             <v-icon icon="mdi-memory" size="20" />
             <h2>{{ t('superResDryRunTitle') }}</h2>
           </div>
-          <v-row dense>
+          <v-row density="comfortable">
             <v-col cols="12" sm="4">
               <v-select v-model="dryRun.version" :items="['x4', 'x2']" :label="t('superResRsdVersion')" hide-details="auto" />
             </v-col>
@@ -342,13 +337,17 @@
         <v-icon icon="mdi-console-line" size="20" />
         <h2>{{ t('superResActiveTasks') }}</h2>
         <v-spacer />
-        <v-btn icon="mdi-refresh" variant="text" size="small" :title="t('ppRefresh')" :aria-label="t('ppRefresh')" @click="taskStore.poll" />
+        <v-btn icon="mdi-refresh" variant="text" size="small" :title="t('ppRefresh')" :aria-label="t('ppRefresh')" :loading="refreshingTasks" @click="refreshTasks" />
       </div>
-      <v-list v-if="activeTasks.length" density="compact" class="task-list">
-        <v-list-item v-for="task in visibleTasks" :key="task.task_id" :title="task.command" :subtitle="`${task.task_id.slice(0, 8)} | ${t('taskState')}: ${task.state} | PID: ${task.pid ?? '-'}`">
+      <v-alert v-if="taskStore.taskListError" data-testid="sr-tasks-error" type="error" variant="tonal" density="compact">
+        {{ t('taskLoadFailed') }}
+        <template #append><v-btn data-testid="sr-tasks-retry" variant="text" size="small" :loading="refreshingTasks" @click="refreshTasks">{{ t('cfgReload') }}</v-btn></template>
+      </v-alert>
+      <v-list v-else-if="activeTasks.length" density="compact" class="task-list">
+        <v-list-item v-for="task in visibleTasks" :key="task.task_id" :to="{ path: '/tasks', query: { task: task.task_id } }" :title="task.command" :subtitle="`${task.task_id.slice(0, 8)} | ${t('taskState')}: ${task.state} | PID: ${task.pid ?? '-'}`">
           <template #append>
             <v-chip size="small" :color="stateColor(task.state)" variant="tonal">{{ task.state }}</v-chip>
-            <v-btn v-if="task.state === 'running' || task.state === 'pending'" icon="mdi-stop" size="small" variant="text" color="error" :title="t('superResStop')" :aria-label="t('superResStop')" @click="taskStore.cancelTask(task.task_id)" />
+            <TaskStopButton v-if="isTaskStoppable(task.state)" :task-id="task.task_id" />
           </template>
         </v-list-item>
       </v-list>
@@ -368,6 +367,9 @@
 </template>
 
 <script setup lang="ts">
+import { isTaskActive, isTaskStoppable } from '../utils/taskState.ts'
+import WorkspaceHeading from '../components/WorkspaceHeading.vue'
+import TaskStopButton from '../components/TaskStopButton.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from '../composables/useI18n'
 import { useNotifyStore } from '../stores/notify'
@@ -412,6 +414,13 @@ const rsdTrain = reactive({
 })
 const dryRun = reactive({ version: 'x4', bs: 1, amp: true, amp_dtype: 'auto' as AmpDtype })
 let pollTimer: ReturnType<typeof setInterval> | null = null
+const refreshingTasks = ref(false)
+async function refreshTasks(): Promise<void> {
+  if (refreshingTasks.value) return
+  refreshingTasks.value = true
+  try { await taskStore.poll() }
+  finally { refreshingTasks.value = false }
+}
 
 const activeTasks = computed(() => taskStore.tasks.filter(task => srCommands.has(task.command)))
 
@@ -425,10 +434,11 @@ const visibleTasks = computed(() =>
 const hasHiddenTasks = computed(() => activeTasks.value.length > TASK_PREVIEW_LIMIT)
 
 function isRunning(command: string) {
-  return taskStore.tasks.some(task => task.command === command && task.state === 'running')
+  return taskStore.tasks.some(task => task.command === command && isTaskActive(task.state))
 }
 
 function stateColor(state: string) {
+  if (state === 'paused') return 'warning'
   if (state === 'running' || state === 'stopping') return 'info'
   if (state === 'success') return 'success'
   if (state === 'failed') return 'error'
@@ -441,6 +451,7 @@ function addArg(args: string[], flag: string, value: unknown) {
 }
 
 async function launch(command: string, args: string[] = [], env: Record<string, string> = {}) {
+  if (taskStore.loading || isRunning(command)) return
   const taskId = await taskStore.startTask(command, args, Object.keys(env).length ? env : undefined)
   notify.show(taskId ? t('notifyTaskStarted', { command }) : t('notifyTaskStartFailed', { command }), taskId ? 'success' : 'error')
 }
@@ -537,8 +548,8 @@ async function runDryRun() {
 }
 
 onMounted(() => {
-  taskStore.poll()
-  pollTimer = window.setInterval(() => taskStore.poll(), 5000)
+  void refreshTasks()
+  pollTimer = window.setInterval(refreshTasks, 5000)
 })
 
 onBeforeUnmount(() => {
@@ -590,7 +601,7 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 
-.control-row .v-switch { min-width: 150px; }
+.control-row .v-switch { min-width: 150px; padding-inline: 8px; }
 .numeric-field { font-family: var(--font-mono); }
 .task-list { border: 1px solid var(--border-subtle); background: transparent; }
 .active-section { padding-bottom: 10px; }

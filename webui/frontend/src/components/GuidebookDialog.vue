@@ -5,7 +5,7 @@
         <v-icon icon="mdi-book-open-page-variant-outline" class="mr-2" />
         {{ t('guidebook') }}
         <v-spacer />
-        <v-btn icon="mdi-close" variant="text" size="small" @click="visible = false" />
+        <v-btn icon="mdi-close" variant="text" size="small" :aria-label="t('guidebookClose')" @click="visible = false" />
       </v-card-title>
 
       <v-divider />
@@ -108,6 +108,7 @@ watch(visible, (val) => {
 .markdown-body {
   font-size: 0.9rem;
   line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 
 .markdown-body :deep(h1),
@@ -176,7 +177,9 @@ watch(visible, (val) => {
 }
 
 .markdown-body :deep(table) {
+  display: block;
   width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
   margin: 0.75em 0;
 }

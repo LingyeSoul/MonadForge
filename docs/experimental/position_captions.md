@@ -776,20 +776,14 @@ because `cmd_preprocess` keeps its own early call in that slot.
 | Config | `caption_position_clauses = true` in `configs/preprocess.toml` (user-owned, survives `make update`) |
 | CLI | `make preprocess ARGS="--caption_position_clauses"` / `--no_caption_position_clauses` |
 | Env | `CAPTION_POSITION_CLAUSES=1` |
-| GUI | Preprocessing tab → **캡션 편집 / Caption rewriting** → `위치 절 생성 (다중 인물)` |
+| WebUI | Dataset curation → position stage; `webui/frontend/src/components/curation/CurationWorkspace.vue` |
 
-Precedence is env → config, with the CLI flag winning over both; the GUI always
-exports the env var (persisting the checkbox to its variant's `[variant]` table),
-so it wins over `preprocess.toml` and the ConfigTab Train auto-chain honours it.
-
-Because the GUI always exports, the checkbox **initializes from the config key**
-(`_pp_default` in `gui/tabs/preprocess_tab.py`, the same rule `source_image_dir`
-already used): `caption_position_clauses = true` in `preprocess.toml` shows up
-checked, so flipping the key on the CLI side can't be silently cancelled by a GUI
-run exporting `0`. A variant's own `[variant]` value still wins over the file —
-and an unchecked box now *persists as `false`* rather than being dropped, since
-dropping it would let the file's `true` come back on the next load. Same wiring
-for `caption_autotag` / `_mode` / `_min_confidence`.
+The CLI/environment/config precedence is implemented in
+`scripts/tasks/preprocess.py`. The earlier Qt preprocessing checkbox and its
+`_pp_default` initialization are retired. The current WebUI submits explicit
+curation stages through `webui/services/curation_service.py`; its preprocessing
+page is the resize/cache workflow, so the old Qt variant-checkbox behavior
+does not describe the current interface.
 
 Two things follow from applying without a review step: it **rewrites the derived
 captions in place** (under v2 that includes taking bound tags out of the flat

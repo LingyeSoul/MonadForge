@@ -104,6 +104,9 @@ def test_full_vae_2d_matches_3d_latents():
     assert max_abs < 5e-3, f"latent max|Δ| = {max_abs:.3e}"
 
 
+@pytest.mark.skipif(
+    not VAE_PATH.exists(), reason="VAE weights not present (skip full-model check)"
+)
 def test_full_vae_2d_matches_3d_decode():
     """Whole-VAE decode (the inference path): 2D fold matches 3D within bf16 noise."""
     if os.environ.get("CUDA_VISIBLE_DEVICES") == "" or not torch.cuda.is_available():

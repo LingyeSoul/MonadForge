@@ -8,10 +8,11 @@
   --bg-deep: #111315;
   --bg-base: #141618;
   --bg-surface: #1c1f22;
+  --bg-form-surface: #1c1f22;
+  --bg-form-field: #1c1f22;
   --bg-elevated: #272b2f;
   --bg-hover: #2c3136;
-  /* Floating overlays (dialogs, menus) sit on top of page content, so their
-   * frost is clamped near-opaque — see html.forge-glass below. */
+  /* Dialogs and menus need a solid surface so underlying text cannot bleed through. */
   --bg-overlay: #1c1f22;
   --text-primary: #eef0f2;
   --text-secondary: #a8afb6;
@@ -45,6 +46,8 @@
   --bg-deep: #edf0f2;
   --bg-base: #f6f7f8;
   --bg-surface: #fff;
+  --bg-form-surface: #fff;
+  --bg-form-field: #fff;
   --bg-elevated: #fff;
   --bg-hover: #e9edf0;
   --bg-overlay: #fff;
@@ -102,6 +105,14 @@ body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
 .v-field__outline { --v-field-border-opacity: 0.28; }
 .v-field--focused { box-shadow: 0 0 0 3px var(--glow-ember); }
 .v-label { font-size: 13px; }
+.v-switch .v-selection-control:not(.v-selection-control--dirty) {
+  .v-switch__track {
+    background: var(--border-default);
+    border: 1px solid var(--text-muted);
+    opacity: 1;
+  }
+  .v-switch__thumb { background: var(--text-secondary); }
+}
 .v-input { min-width: 0; }
 .v-col, [class*='v-col-'] { min-width: 0; }
 .v-expansion-panel {
@@ -113,6 +124,7 @@ body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
 .v-expansion-panel-title--active { min-height: 54px; }
 .v-expansion-panel__shadow { display: none; }
 .v-expansion-panels--variant-accordion > .v-expansion-panel:not(:first-child) { border-top: 0; }
+.config-editor .v-expansion-panel { background: var(--bg-form-surface); }
 .v-chip { font-weight: 500; }
 .v-table { background: transparent; }
 .v-table th { color: var(--text-secondary); font-size: 12px; }
@@ -271,11 +283,14 @@ html.forge-glass {
   --bg-deep: rgb(17 19 21 / calc(74% * var(--forge-glass-strength, 1)));
   --bg-base: rgb(20 22 24 / calc(62% * var(--forge-glass-strength, 1)));
   --bg-surface: rgb(28 31 34 / calc(82% * var(--forge-glass-strength, 1)));
+  /* Dense forms need a stable reading surface even over bright wallpaper.
+   * Keep the surrounding workbench translucent without per-card blur. */
+  --bg-form-surface: rgb(28 31 34 / max(calc(82% * var(--forge-glass-strength, 1)), 84%));
+  --bg-form-field: rgb(28 31 34 / max(calc(82% * var(--forge-glass-strength, 1)), 88%));
   --bg-elevated: rgb(39 43 47 / calc(86% * var(--forge-glass-strength, 1)));
   --bg-hover: rgb(44 49 54 / calc(70% * var(--forge-glass-strength, 1)));
-  /* Overlays hover above busy page content: keep a legibility floor instead of
-   * following the surface opacity slider all the way down. */
-  --bg-overlay: rgb(28 31 34 / max(calc(82% * var(--forge-glass-strength, 1)), 90%));
+  /* Floating content must stay readable over the page at every glass opacity. */
+  --bg-overlay: #1c1f22;
 
   .workspace-nav,
   .workspace-topbar {
@@ -288,7 +303,7 @@ html.forge-glass {
   .v-card { background: var(--bg-surface); }
 
   /* Dialog cards float over the page instead of inside it — same override as
-   * the card rule above but on the clamped overlay token. v-sheet covers the
+   * the card rule above but on the opaque overlay token. v-sheet covers the
    * select/autocomplete menu panels (v-list sits inside a v-sheet there). */
   .v-overlay .v-card,
   .v-overlay .v-sheet { background: var(--bg-overlay); }
@@ -298,9 +313,11 @@ html.forge-glass .v-theme--light {
   --bg-deep: rgb(255 255 255 / calc(70% * var(--forge-glass-strength, 1)));
   --bg-base: rgb(246 247 248 / calc(62% * var(--forge-glass-strength, 1)));
   --bg-surface: rgb(255 255 255 / calc(76% * var(--forge-glass-strength, 1)));
+  --bg-form-surface: rgb(255 255 255 / max(calc(76% * var(--forge-glass-strength, 1)), 88%));
+  --bg-form-field: rgb(255 255 255 / max(calc(76% * var(--forge-glass-strength, 1)), 92%));
   --bg-elevated: rgb(255 255 255 / calc(86% * var(--forge-glass-strength, 1)));
   --bg-hover: rgb(233 237 240 / calc(70% * var(--forge-glass-strength, 1)));
-  --bg-overlay: rgb(255 255 255 / max(calc(76% * var(--forge-glass-strength, 1)), 90%));
+  --bg-overlay: #fff;
 }
 
 /* Wallpaper: painted on the <html> canvas background by App.vue — no DOM

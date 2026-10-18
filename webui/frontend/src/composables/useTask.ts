@@ -1,3 +1,4 @@
+import { isTaskTerminal } from '../utils/taskState.ts'
 import { ref, watch, onUnmounted, type Ref } from 'vue'
 import { MAX_RENDERED_LINES, makeLogLine, type LogLine } from '../utils/logLines'
 
@@ -25,7 +26,7 @@ export interface LogStreamHandle {
   historyTotal: Ref<number>
 }
 
-export function useTaskStream(taskId: string | (() => string)): LogStreamHandle & {
+export function useTaskStream(taskId: string | (() => string), attemptId: () => string = () => ''): LogStreamHandle & {
   exitCode: Ref<number | null>
   disconnect: () => void
 } {
@@ -103,6 +104,7 @@ export function useTaskStream(taskId: string | (() => string)): LogStreamHandle 
       const res = await fetch(`/api/tasks/${id}/output`)
       if (res.ok) {
         const data = await res.json()
+        if (manuallyClosed || version !== connectionVersion) return
         if (Array.isArray(data.lines)) {
           historyCount = data.lines.length
           historyTotal.value = data.total ?? historyCount
@@ -114,7 +116,7 @@ export function useTaskStream(taskId: string | (() => string)): LogStreamHandle 
           lines.value = data.lines.slice(-MAX_RENDERED_LINES).map((line: string) => makeLogLine(seq++, line))
           activity.value++
         }
-        if (data.state && data.state !== 'running' && data.state !== 'pending') {
+        if (data.state && isTaskTerminal(data.state)) {
           done.value = true
           exitCode.value = data.exit_code ?? null
         }
@@ -133,6 +135,7 @@ export function useTaskStream(taskId: string | (() => string)): LogStreamHandle 
       connected.value = true
     }
     ws.onmessage = (event) => {
+      if (manuallyClosed || version !== connectionVersion) return
       try {
         const msg: WsMessage = JSON.parse(event.data)
         if (msg.type === 'log' && msg.line) {
@@ -189,8 +192,8 @@ export function useTaskStream(taskId: string | (() => string)): LogStreamHandle 
     void open(id, version)
   }
 
-  // Reconnect whenever the task ID changes
-  watch(resolvedId, (id) => {
+  // Logical task IDs survive recovery; a new attempt needs a fresh stream.
+  watch([resolvedId, attemptId], ([id]) => {
     reconnect(id)
   }, { immediate: true })
 

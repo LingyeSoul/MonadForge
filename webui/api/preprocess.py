@@ -17,18 +17,20 @@ router = APIRouter()
 
 class SamSettings(BaseModel):
     prompts: list[str] = ["speech bubble", "text bubble"]
-    threshold: float = 0.5
-    dilate: int = 5
+    threshold: float = Field(default=0.5, ge=0, le=1, allow_inf_nan=False)
+    dilate: int = Field(default=5, ge=0)
 
 
 class PreprocessSettings(BaseModel):
     sam: SamSettings = SamSettings()
     run_sam_mask: bool = True
     run_mit_mask: bool = True
-    caption_shuffle_variants: int = 4
-    caption_tag_dropout_rate: float = 0.1
-    mit_text_threshold: float = 0.8
-    mit_dilate: int = 5
+    caption_shuffle_variants: int = Field(default=4, ge=0)
+    caption_tag_dropout_rate: float = Field(
+        default=0.1, ge=0, le=1, allow_inf_nan=False
+    )
+    mit_text_threshold: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
+    mit_dilate: int = Field(default=5, ge=0)
     # CTD text-block gate removes decorative-line false positives from the
     # Manga text segmentation mask. Keep it enabled by default.
     mit_ctd_gate: bool = True
@@ -170,7 +172,9 @@ def get_run_status(manifest: str = Query(..., min_length=1)):
     """Return completion and artifact state for one preprocessing manifest."""
     info = svc.get_run_status(manifest)
     if info.get("status") == "invalid" and not Path(manifest).exists():
-        raise HTTPException(status_code=404, detail=info.get("error") or "manifest not found")
+        raise HTTPException(
+            status_code=404, detail=info.get("error") or "manifest not found"
+        )
     return info
 
 

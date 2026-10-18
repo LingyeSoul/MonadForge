@@ -82,8 +82,8 @@ def test_vera_delta_nonzero():
     # before eval; the buffer A/B follow the module cast.
     module.eval()
     module.to(torch.bfloat16)
-    # VeRA's forward uses torch.mm (2D only), so the eval path is exercised
-    # with a 2D batch — matching how the DiT feeds an adapted Linear.
+    # Keep the simple matrix reference here; real DiT sequence/patch-grid
+    # activations are covered by test_anima_minimal_training.
     x = torch.randn(16, 32, dtype=torch.bfloat16)
     with torch.no_grad():
         org_y = module.org_forward(x)

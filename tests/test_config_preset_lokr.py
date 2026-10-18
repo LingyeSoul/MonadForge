@@ -110,7 +110,7 @@ def test_legacy_lokr_preset_does_not_change_selected_variant(lokr_preset_tree, v
     assert preset_path.read_bytes() == before
 
 
-@pytest.mark.parametrize("variant", ["lokr", "custom/my-lokr", "lora"])
+@pytest.mark.parametrize("variant", ["lokr", "custom/lokr", "custom/my-lokr", "lora"])
 def test_lokr_method_and_overlay_keep_compatible_preset_tuning(
     lokr_preset_tree, variant
 ):
@@ -133,7 +133,9 @@ def test_lokr_method_and_overlay_keep_compatible_preset_tuning(
     for merged in (ui, training):
         assert merged["use_lokr"] is True
         assert merged["lokr_allow_legacy_dim"] is True
-        assert merged["lokr_factor"] == (8 if variant == "lokr" else 16)
+        assert merged["lokr_factor"] == (
+            8 if variant in {"lokr", "custom/lokr"} else 16
+        )
         assert "use_lokr=true" not in merged.get("network_args", [])
         assert merged["gradient_accumulation_steps"] == 3
     from train import resolve_network_kwargs
@@ -180,3 +182,44 @@ def test_toggle_based_cli_method_preserves_existing_preset_contract(lokr_preset_
     assert training["use_lokr"] is True
     assert training["lokr_factor"] == 64
     assert training["network_args"][0] == "use_lokr=true"
+
+
+@pytest.mark.parametrize("seed", ["lokr", "custom/lokr"])
+def test_clone_inherits_complete_method_and_sparse_user_edits(lokr_preset_tree, seed):
+    configs, _ = lokr_preset_tree
+    overlay = configs / "custom/variants/lokr.toml"
+    overlay.write_text("learning_rate = 0.0001\n", encoding="utf-8")
+    template = configs / "gui-methods/lokr.toml"
+    before = {path: path.read_bytes() for path in (overlay, template)}
+
+    config_service.create_variant("my-copy", seed_from=seed)
+
+    source, _ = config_service.merged_gui_variant_preset(seed, "default")
+    copied, _ = config_service.merged_gui_variant_preset("custom/my-copy", "default")
+    training = load_method_preset(
+        "my-copy", "default", configs_dir=str(configs), methods_subdir="gui-methods"
+    )
+    for key in (
+        "use_lokr",
+        "lokr_factor",
+        "network_dim",
+        "network_alpha",
+        "learning_rate",
+        "max_train_epochs",
+    ):
+        assert copied[key] == training[key] == source[key]
+    assert copied["use_lokr"] is True
+    assert copied["learning_rate"] == 0.0001
+    assert config_service.variant_metadata("custom/my-copy")["family"] == "lora"
+    assert config_service.variant_metadata("custom/my-copy")["label"] == "my-copy"
+    assert all(path.read_bytes() == content for path, content in before.items())
+
+
+def test_clone_preserves_conditioning_family(lokr_preset_tree):
+    config_service.create_variant("my-control", seed_from="easycontrol")
+    assert (
+        config_service.variant_metadata("custom/my-control")["family"] == "easycontrol"
+    )
+    merged, _ = config_service.merged_gui_variant_preset("custom/my-control", "default")
+    assert merged["network_module"] == "networks.methods.easycontrol"
+    assert merged["use_easycontrol"] is True

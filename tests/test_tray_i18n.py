@@ -7,8 +7,11 @@ formatting, and the on-disk preference round-trip.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 
 from scripts.tray.i18n import (
     DEFAULT_LANGUAGE,
@@ -158,11 +161,49 @@ def test_prefs_save_ignores_unsupported_language(tmp_path: Path, monkeypatch):
     assert not prefs_file.exists()
 
 
-
 # --- TrayApp: language switch reflows the menu + updates the icon ---
 
 
-def test_set_language_reflows_menu_and_updates_icon(tmp_path, monkeypatch):
+@pytest.fixture
+def tray_backend(tmp_path, monkeypatch):
+    """Menu descriptors/state are testable without the Windows tray backend."""
+    from scripts.tray import prefs
+    from webui.services import daemon_client as daemon_module
+
+    class MenuItem:
+        def __init__(self, text, action, **options):
+            self._text = text
+            self.action = action
+            self.options = options
+
+        @property
+        def text(self):
+            return self._text(self) if callable(self._text) else self._text
+
+    class Menu:
+        SEPARATOR = MenuItem("", None)
+
+        def __init__(self, *items):
+            self.items = items
+
+    def unavailable():
+        raise daemon_module.DaemonUnreachableError("isolated tray test")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pystray",
+        SimpleNamespace(Icon=object, Menu=Menu, MenuItem=MenuItem),
+    )
+    monkeypatch.setattr(
+        daemon_module, "daemon_client", SimpleNamespace(health_sync=unavailable)
+    )
+    monkeypatch.setattr(prefs, "PREFS_DIR", tmp_path)
+    monkeypatch.setattr(prefs, "PREFS_FILE", tmp_path / "tray-prefs.json")
+
+
+def test_set_language_reflows_menu_and_updates_icon(
+    tmp_path, monkeypatch, tray_backend
+):
     """Switching language must swap the icon.menu + call update_menu() so
     the next open shows the new language (Win32 caches the displayed menu —
     update_menu rebuilds the HMENU for next-show, swapping the descriptor
@@ -197,7 +238,7 @@ def test_set_language_reflows_menu_and_updates_icon(tmp_path, monkeypatch):
     assert prefs.load_language() == "en"
 
 
-def test_set_language_is_idempotent(tmp_path, monkeypatch):
+def test_set_language_is_idempotent(tmp_path, monkeypatch, tray_backend):
     """Calling _set_language with the current lang is a no-op (no menu swap)."""
     from scripts.tray import prefs
     from scripts.tray.app import TrayApp
@@ -222,7 +263,7 @@ def test_set_language_is_idempotent(tmp_path, monkeypatch):
     assert t._icon.updates == 0
 
 
-def test_set_language_rejects_unsupported(tmp_path, monkeypatch):
+def test_set_language_rejects_unsupported(tmp_path, monkeypatch, tray_backend):
     from scripts.tray import prefs
     from scripts.tray.app import TrayApp
 
@@ -245,7 +286,9 @@ def _tray_for_tick():
     return tray
 
 
-def test_tick_ignores_stale_active_job_that_is_already_terminal(monkeypatch):
+def test_tick_ignores_stale_active_job_that_is_already_terminal(
+    monkeypatch, tray_backend
+):
     from webui.services import daemon_client as daemon_module
 
     class Client:
@@ -271,7 +314,9 @@ def test_tick_ignores_stale_active_job_that_is_already_terminal(monkeypatch):
     assert tray._active_job is None
 
 
-def test_tick_requires_live_process_identity_before_showing_running(monkeypatch):
+def test_tick_requires_live_process_identity_before_showing_running(
+    monkeypatch, tray_backend
+):
     from scripts.daemon import proc
     from webui.services import daemon_client as daemon_module
 

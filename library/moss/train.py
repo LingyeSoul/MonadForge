@@ -29,7 +29,6 @@ the recompute; ``MOSSImageTransformer.gradient_checkpointing`` is left off.
 from __future__ import annotations
 
 import functools
-import json
 import math
 import random
 import time
@@ -42,6 +41,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from library.env import resolve_under_home
+from library.io.output_layout import atomic_write_json
 from library.lines.progress import TrainingProgress, training_progress
 from library.moss.loader import (
     compile_blocks,
@@ -51,6 +51,7 @@ from library.moss.loader import (
 )
 from library.moss.lora import LoRANetwork
 from library.moss.requests import LORA_ALPHA, TrainRequest
+from library.moss.validation import training_output_paths, validate_request
 
 EMPTY_TE_NAME = "_empty.moss_te.safetensors"
 NUM_TRAIN_TIMESTEPS = 1000
@@ -234,6 +235,7 @@ def empty_prompt_embeds(req: TrainRequest, cache_dir: Path) -> torch.Tensor:
 
 def run_train(req: TrainRequest) -> Path:
     with training_progress("moss", req.output) as progress:
+        validate_request(req)
         cache_dir = resolve_under_home(req.cache)
         samples = samples_from_cache(cache_dir)
         if not samples:
@@ -251,6 +253,8 @@ def train(
 ) -> Path:
     """The loop, over already-built ``samples`` (``run_train`` reads the cache;
     a fit smoke passes synthetic ones)."""
+    validate_request(req)
+    out_path, report = training_output_paths(req.output)
     progress = progress if progress is not None else TrainingProgress()
     total = req.epochs * len(samples)
     if req.max_steps:
@@ -327,7 +331,6 @@ def train(
         f"{total} steps ({epochs} epochs x {len(samples)}), warmup {warmup}", flush=True
     )
 
-    out_path = resolve_under_home(req.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     meta = {
         "base_variant": req.model,
@@ -436,8 +439,9 @@ def train(
         "history": history,
         "losses": losses_all,
     }
-    report = out_path.with_suffix(".json")
-    report.write_text(json.dumps(summary, indent=2))
+    # Replace the report entry instead of following an existing symlink or
+    # hard link and overwriting the file it references.
+    atomic_write_json(report, summary)
     print(f"wrote {final} and {report} — {seconds / 60:.1f} min", flush=True)
     if attached is not None:
         attached.detach()

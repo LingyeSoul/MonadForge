@@ -141,14 +141,21 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
+  async function readMerged(v: string, pre: string): Promise<FieldMeta[]> {
+    const lang = appStore.language
+    const res = await fetch(`/api/config/merged?variant=${encodeURIComponent(v)}&preset=${encodeURIComponent(pre)}&lang=${encodeURIComponent(lang)}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+    if (!Array.isArray(data.fields)) throw new Error('Invalid configuration response')
+    return data.fields
+  }
+
   async function fetchMerged(v: string, pre: string) {
     loading.value = true
     error.value = ''
     try {
-      const lang = appStore.language
-      const res = await fetch(`/api/config/merged?variant=${encodeURIComponent(v)}&preset=${encodeURIComponent(pre)}&lang=${encodeURIComponent(lang)}`)
-      const data = await res.json()
-      fields.value = data.fields || []
+      const nextFields = await readMerged(v, pre)
+      fields.value = nextFields
       variant.value = v
       preset.value = pre
       editedValues.value = {}
@@ -156,6 +163,7 @@ export const useConfigStore = defineStore('config', () => {
     } catch (e) {
       const lang = appStore.language
       error.value = _t('cfgErrLoadConfig', lang).replace('{error}', String(e))
+      throw e
     } finally {
       loading.value = false
     }
@@ -176,11 +184,14 @@ export const useConfigStore = defineStore('config', () => {
     if (!dirty.value && !extraArgs) return
     loading.value = true
     error.value = ''
+    const savedVariant = variant.value
+    const savedPreset = preset.value
+    const submitted = JSON.parse(JSON.stringify(editedValues.value)) as Record<string, unknown>
     try {
       const lang = appStore.language
-      const body: Record<string, unknown> = { data: editedValues.value }
-      if (extraArgs) body.data = { ...editedValues.value, extra_args: extraArgs }
-      const res = await fetch(`/api/config/method?variant=${encodeURIComponent(variant.value)}&preset=${encodeURIComponent(preset.value)}`, {
+      const body: Record<string, unknown> = { data: submitted }
+      if (extraArgs) body.data = { ...submitted, extra_args: extraArgs }
+      const res = await fetch(`/api/config/method?variant=${encodeURIComponent(savedVariant)}&preset=${encodeURIComponent(savedPreset)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -190,7 +201,15 @@ export const useConfigStore = defineStore('config', () => {
         const detail = data.detail || _t('cfgErrSaveDetail', lang)
         throw new Error(detail)
       }
-      await fetchMerged(variant.value, preset.value)
+      const nextFields = await readMerged(savedVariant, savedPreset)
+      if (variant.value !== savedVariant || preset.value !== savedPreset) return
+      // A caller can edit the shared store while this request is pending.
+      // Only acknowledge the values actually sent to the server.
+      const pending = Object.fromEntries(Object.entries(editedValues.value)
+        .filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(submitted[key])))
+      fields.value = nextFields
+      editedValues.value = pending
+      dirty.value = Object.keys(pending).length > 0
     } catch (e) {
       const lang = appStore.language
       error.value = _t('cfgErrSave', lang).replace('{error}', String(e))

@@ -40,7 +40,7 @@ from pathlib import Path
 
 from . import config, tail
 from .manager import JobManager
-from .jobs import TERMINAL_STATES
+from .jobs import TERMINAL_STATES, JobConflictError
 
 logger = logging.getLogger("anima.daemon")
 
@@ -337,21 +337,36 @@ TOOLS.extend(
             "method": "POST",
             "path": "/jobs/{id}/pause",
             "description": "Freeze an active process or request cooperative release; release requires an Anima training entrypoint.",
-            "params": {"id": {"type": "string"}, "release_model": {"type": "boolean"}},
+            "input_schema": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "release_model": {"type": "boolean", "default": False},
+                },
+            },
         },
         {
             "name": "unpause_job",
             "method": "POST",
             "path": "/jobs/{id}/unpause",
             "description": "Thaw or relaunch the same paused attempt.",
-            "params": {"id": {"type": "string"}},
+            "input_schema": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {"id": {"type": "string"}},
+            },
         },
         {
             "name": "continue_job",
             "method": "POST",
             "path": "/jobs/{id}/continue",
             "description": "Recover a stopped/error Anima training into a new owner- and signature-checked attempt.",
-            "params": {"id": {"type": "string"}},
+            "input_schema": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {"id": {"type": "string"}},
+            },
         },
     ]
 )
@@ -386,6 +401,28 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _allow_mutation(self) -> bool:
+        """Keep the native-client API inaccessible to browser form/fetch writes.
+
+        The WebUI talks to this daemon from its backend. CLI, MCP and ComfyUI
+        clients send no Origin; browsers must use the WebUI's protected API.
+        CORS alone is insufficient because a simple POST still executes even
+        when its response cannot be read by the originating page.
+        """
+        if self.headers.get("Origin") is not None or self.headers.get(
+            "Sec-Fetch-Site", ""
+        ).lower() in {"cross-site", "same-site"}:
+            self._send_json({"error": "Browser-origin mutations are forbidden"}, 403)
+            return False
+        if (
+            self.headers.get("Content-Length", "0") != "0"
+            and self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            != "application/json"
+        ):
+            self._send_json({"error": "Request body must use application/json"}, 415)
+            return False
+        return True
+
     def _read_json(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
@@ -398,10 +435,13 @@ class _Handler(BaseHTTPRequestHandler):
         return data if isinstance(data, dict) else {}
 
     def _open_sse(self) -> None:
+        # SSE has no Content-Length/chunk framing here. Close the transport
+        # when the handler returns so terminal log streams produce real EOF.
+        self.close_connection = True
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
+        self.send_header("Connection", "close")
         self.end_headers()
 
     def _sse(self, obj) -> bool:
@@ -447,6 +487,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found", "path": path}, 404)
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._allow_mutation():
+            return
         path = self.path.split("?", 1)[0]
         if "/continuation" in path and self._handle_continuation(
             path, body=self._read_json()
@@ -507,6 +549,8 @@ class _Handler(BaseHTTPRequestHandler):
         return True
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if not self._allow_mutation():
+            return
         path = self.path.split("?", 1)[0]
         if m := _JOB_GROUP_RE.match(path):
             group = self.manager.job_group(m.group("id"))
@@ -537,6 +581,14 @@ class _Handler(BaseHTTPRequestHandler):
                         500,
                     )
                 else:
+                    if deleted is None:
+                        self._send_json(
+                            {
+                                "error": "job group became active or is preparing continuation"
+                            },
+                            409,
+                        )
+                        return
                     self._send_json(
                         {
                             "ok": True,
@@ -555,13 +607,21 @@ class _Handler(BaseHTTPRequestHandler):
                 )
             else:
                 try:
-                    self.manager.delete(job.id)
+                    deleted = self.manager.delete(job.id)
                 except OSError as exc:
                     self._send_json(
                         {"error": f"could not delete job: {exc}", "job_id": job.id}, 500
                     )
                 else:
-                    self._send_json({"ok": True, "job_id": job.id})
+                    self._send_json(
+                        {"ok": True, "job_id": job.id}
+                        if deleted
+                        else {
+                            "error": "job is preparing continuation",
+                            "job_id": job.id,
+                        },
+                        200 if deleted else 409,
+                    )
             return
         self._send_json({"error": "not found", "path": path}, 404)
 
@@ -594,7 +654,11 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_submit(self) -> None:
         try:
             self._submit_body(self._read_json())
-        except (ValueError, OSError) as exc:
+        except JobConflictError as exc:
+            self._send_json({"error": str(exc)}, 409)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, 400)
+        except OSError as exc:
             self._send_json({"error": str(exc)}, 409)
 
     def _submit_body(self, body: dict) -> None:
@@ -890,9 +954,9 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 # heartbeat tick: stop once the job is terminal and drained.
                 cur = self.manager.get(job_id)
-                if cur is not None and cur.state not in ("queued", "running"):
+                if cur is None or cur.state in TERMINAL_STATES:
                     # one more pass to flush any final lines already on disk
-                    self._sse({"ev": "eof", "state": cur.state})
+                    self._sse({"ev": "eof", "state": cur.state if cur else "deleted"})
                     return
 
     def _handle_pause(self, job_id: str) -> None:

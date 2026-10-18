@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -23,18 +24,38 @@ async def task_log_ws(websocket: WebSocket, task_id: str):
     """
     await websocket.accept()
     queue = task_service.subscribe(task_id)
-    try:
+
+    async def forward():
         while True:
             msg = await queue.get()
             await websocket.send_json(msg)
             # Stop after a terminal message
             if msg.get("type") in ("done", "cancelled", "error"):
                 break
+
+    async def wait_disconnect():
+        # A queued or paused task may emit nothing for hours. Receive the
+        # disconnect independently so its subscriber is released immediately.
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+
+    workers = [asyncio.create_task(forward()), asyncio.create_task(wait_disconnect())]
+    try:
+        done, _pending = await asyncio.wait(
+            workers, return_when=asyncio.FIRST_COMPLETED
+        )
+        for worker in done:
+            worker.result()
     except WebSocketDisconnect:
         logger.debug("Client disconnected from task %s", task_id)
     except Exception:
         logger.exception("WebSocket error for task %s", task_id)
     finally:
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
         task_service.unsubscribe(task_id, queue)
         try:
             await websocket.close()

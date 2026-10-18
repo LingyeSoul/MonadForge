@@ -10,21 +10,29 @@ export function stageBase({ yLog = false, xName = 'step' } = {}) {
   return {
     animation: false,
     backgroundColor: C.stage,
+    color: [C.paper, C.g5, C.g3, C.g7, C.g2, C.g4, C.g6, C.g1],
     textStyle: { fontFamily: MONO },
-    grid: { left: 64, right: 28, top: 44, bottom: 52 },
+    grid: { left: 64, right: 36, top: 44, bottom: 52 },
     xAxis: {
-      type: 'value', name: xName,
+      type: 'value', name: xName, nameGap: 8,
       nameTextStyle: { color: C.g5, fontSize: 10, fontFamily: MONO },
       axisLine: { lineStyle: { color: C.g8 } },
       axisTick: { lineStyle: { color: C.g8 } },
-      axisLabel: { color: C.g5, fontSize: 10, fontFamily: MONO },
+      axisLabel: { color: C.g5, fontSize: 10, fontFamily: MONO, hideOverlap: true },
       splitLine: { show: false },
     },
     yAxis: {
       type: yLog ? 'log' : 'value',
       axisLine: { show: false },
       axisTick: { show: false },
-      axisLabel: { color: C.g5, fontSize: 10, fontFamily: MONO },
+      axisLabel: {
+        color: C.g5, fontSize: 10, fontFamily: MONO,
+        formatter: value => {
+          const n = Number(value), magnitude = Math.abs(n);
+          return magnitude && (magnitude < 0.001 || magnitude >= 1e5)
+            ? n.toExponential(1) : String(Number(n.toPrecision(3)));
+        },
+      },
       splitLine: { lineStyle: { color: C.g8, width: 1 } },
     },
     tooltip: {
@@ -62,14 +70,31 @@ export function stageBase({ yLog = false, xName = 'step' } = {}) {
 
 export const chartRegistry = new Map();
 
+/* 容器宽度也会随索引轨展开、视图切换而变化，不能仅监听窗口 resize。 */
+const chartResizeObserver = new ResizeObserver(entries => {
+  for (const { target } of entries) {
+    const chart = chartRegistry.get(target.id);
+    if (!chart || chart.getDom() !== target || !target.isConnected) continue;
+    const width = target.clientWidth, height = target.clientHeight;
+    if (width > 0 && height > 0 && (chart.getWidth() !== width || chart.getHeight() !== height)) {
+      chart.resize({ width, height });
+    }
+  }
+});
+
 export function mountChart(elId, option) {
   const el = document.getElementById(elId);
   let chart = chartRegistry.get(elId);
   /* 已注册实例若绑定在已移除的 DOM 上（跨运行导航），释放重建 */
   if (!chart || !chart.getDom() || !chart.getDom().isConnected) {
-    if (chart) chart.dispose();
+    if (chart) {
+      const previousEl = chart.getDom();
+      if (previousEl) chartResizeObserver.unobserve(previousEl);
+      chart.dispose();
+    }
     chart = echarts.init(el, null, { renderer: 'canvas' });
     chartRegistry.set(elId, chart);
+    chartResizeObserver.observe(el);
   }
   chart.setOption(option, { notMerge: true });
   return chart;

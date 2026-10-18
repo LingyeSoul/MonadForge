@@ -139,6 +139,7 @@ from library.training.loop import (
     run_training_loop,
 )
 from library.training.resume import (
+    normalize_stage_resume_state,
     resolve_persisted_resume_position,
     resolve_resume_position,
 )
@@ -3612,10 +3613,11 @@ class AnimaTrainer:
             "pin_memory": args.dataloader_pin_memory,
         }
         train_dataloader_kwargs = dict(dataloader_kwargs)
+        dataloader_generator = torch.Generator()
+        dataloader_generator.manual_seed(int(args.seed or 0))
+        train_dataloader_kwargs["generator"] = dataloader_generator
         if stage_plan is not None:
-            stage_plan.loader_generator = torch.Generator()
-            stage_plan.loader_generator.manual_seed(int(args.seed or 0))
-            train_dataloader_kwargs["generator"] = stage_plan.loader_generator
+            stage_plan.loader_generator = dataloader_generator
         if n_workers > 0:
             dataloader_kwargs["prefetch_factor"] = args.dataloader_prefetch_factor
             train_dataloader_kwargs["prefetch_factor"] = args.dataloader_prefetch_factor
@@ -4118,6 +4120,7 @@ class AnimaTrainer:
         text_encoder_lr = opt.text_encoder_lr
         lr_descriptions = opt.lr_descriptions
         train_dataloader = opt.train_dataloader
+        dataloader_generator = train_dataloader.generator
         val_dataloader = opt.val_dataloader
         lr_scheduler = opt.lr_scheduler
         stage_plan = opt.stage_plan
@@ -4324,20 +4327,12 @@ class AnimaTrainer:
         initial_global_step = None
         stage_batch_cursor = 0
         stage_loader_generator_state = None
+        dataloader_generator_state = None
         if stage_plan is not None and initial_step > 0:
             initial_global_step = initial_step
-            expected_stage_index = stage_plan.index_for_step(
-                initial_step, args.max_train_steps
+            loaded_train_state = normalize_stage_resume_state(
+                stage_plan, args.max_train_steps, loaded_train_state, global_step=initial_step
             )
-            saved_stage_index = loaded_train_state.get("stage_index")
-            if (
-                saved_stage_index is not None
-                and int(saved_stage_index) != expected_stage_index
-            ):
-                raise ValueError(
-                    "resume stage does not match the active stage_schedule: "
-                    f"state={saved_stage_index}, expected={expected_stage_index}"
-                )
             if (
                 args.skip_until_initial_step
                 and "stage_batch_cursor" in loaded_train_state
@@ -4420,6 +4415,19 @@ class AnimaTrainer:
             else:
                 initial_step = 0  # do not skip
 
+        if stage_plan is None and args.resume:
+            raw_generator_state = loaded_train_state.get("dataloader_generator_state")
+            if raw_generator_state is not None and loaded_train_state.get(
+                "dataloader_generator_epoch"
+            ) == epoch_to_start:
+                dataloader_generator_state = torch.tensor(raw_generator_state, dtype=torch.uint8)
+                dataloader_generator.set_state(dataloader_generator_state)
+            elif initial_step > 0:
+                logger.warning(
+                    "Legacy resume state has no matching loader permutation; "
+                    "the old epoch sample order cannot be reconstructed exactly"
+                )
+
         # Stage schedules keep the mutable dataset group so the loop can rebuild
         # membership and its DataLoader. Ordinary runs drop the local as before.
         if stage_plan is None:
@@ -4468,6 +4476,8 @@ class AnimaTrainer:
             initial_global_step=initial_global_step,
             stage_batch_cursor=stage_batch_cursor,
             stage_loader_generator_state=stage_loader_generator_state,
+            dataloader_generator=dataloader_generator,
+            dataloader_generator_state=dataloader_generator_state,
             stop_controller=getattr(self, "_stop_controller", None),
         )
         loop_state.stage_index = (

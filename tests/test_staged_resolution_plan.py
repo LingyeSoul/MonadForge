@@ -428,7 +428,8 @@ def test_cross_origin_staged_action_is_rejected_before_handler(monkeypatch):
 
     called = 0
 
-    async def fake_start(_name: str, _command: str):
+    async def fake_start(_name: str, _command: str, runtime_profile: str):
+        assert runtime_profile == "default"
         nonlocal called
         called += 1
         return {"task_id": "test-task"}
@@ -468,7 +469,8 @@ def test_same_origin_mutation_allows_runtime_webui_port(monkeypatch):
 
     called = 0
 
-    async def fake_start(_name: str, _command: str):
+    async def fake_start(_name: str, _command: str, runtime_profile: str):
+        assert runtime_profile == "default"
         nonlocal called
         called += 1
         return {"task_id": "test-task"}

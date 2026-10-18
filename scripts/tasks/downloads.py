@@ -29,6 +29,7 @@ from pathlib import Path
 
 from library import downloads as DL
 
+from . import _legacy_downloads as _legacy
 from ._common import ROOT, run
 
 
@@ -262,6 +263,9 @@ def cmd_download_models(extra):
     (``download-sam3``), and the OCR stack is opt-in
     (``download-model ocr``). See ``DEFAULT_SET`` in ``library/downloads.py``.
     """
+    if _wants_modelscope(extra):
+        _fetch(*DL.DEFAULT_SET, extra=extra)
+        return
     failed = DL.fetch_all(DL.resolve(DL.DEFAULT_SET), force=_force(extra))
     if not failed:
         return
@@ -277,12 +281,12 @@ def cmd_download_models(extra):
     raise SystemExit(1)
 
 
-from . import _legacy_downloads as _legacy
 _wants_modelscope = _legacy._wants_modelscope
 _ms_fetch = _legacy._ms_fetch
 cmd_download_ms = _legacy.cmd_download_ms
 cmd_download_mit = _legacy.cmd_download_mit
 _catalog_fetch = _fetch
+
 
 def _fetch(*names, extra=None):
     if not _wants_modelscope(extra):
@@ -290,9 +294,12 @@ def _fetch(*names, extra=None):
     failed = []
     for asset in DL.resolve(list(names)):
         for filename in asset.files:
-            remote = f"{asset.subfolder}/{filename}" if asset.subfolder else filename
             try:
-                if not _ms_fetch(asset.id, asset.repo, remote, asset.dest, extra):
+                # fetch_file looks up a basename across the mirror and flattens
+                # the result into dest, matching Asset's installed probe.
+                if not _ms_fetch(
+                    asset.id, asset.repo, Path(filename).name, asset.dest, extra
+                ):
                     failed.append(asset.id)
                     break
             except (OSError, ValueError, RuntimeError) as exc:
@@ -300,4 +307,6 @@ def _fetch(*names, extra=None):
                 failed.append(asset.id)
                 break
     if failed:
-        raise SystemExit("ModelScope could not fetch: " + ", ".join(sorted(set(failed))))
+        raise SystemExit(
+            "ModelScope could not fetch: " + ", ".join(sorted(set(failed)))
+        )

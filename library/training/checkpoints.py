@@ -929,12 +929,9 @@ class CheckpointSaver:
 
     def cleanup_resumable(self) -> None:
         """At training end, remove the resumable checkpoint state dir + ckpt
-        file. Main-process only; no-op when ``checkpointing_epochs`` is unset,
-        unless the run was itself resumed from a release-pause state."""
+        file. Rolling recovery state is removed after every successful run;
+        optional checkpoint sidecars follow their existing save policy."""
         args = self.args
-        if not getattr(args, "checkpointing_epochs", None):
-            if not self.resumed_from_release():
-                return
         if not self.accelerator.is_main_process:
             return
         rolling_state_dir = get_rolling_state_dir(args)

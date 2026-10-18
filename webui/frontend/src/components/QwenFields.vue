@@ -1,6 +1,6 @@
 <template>
-  <v-row>
-    <v-col v-for="field in fields" :key="field.name" cols="12" :sm="field.multiline ? 12 : 6">
+  <v-row class="model-fields">
+    <v-col v-for="field in fields" :key="field.name" cols="12" :sm="field.multiline || section === 'models' ? 12 : 6">
       <ConfigField :field="metadata(field)" :model-value="qwen.draft?.[section][field.name]"
         @update="qwen.update(section, field.name, $event as Scalar)" @help-click="emit('help', `${section}.${field.name}`)" />
     </v-col>
@@ -38,3 +38,7 @@ function metadata(field: QwenField): FieldMeta {
   }
 }
 </script>
+
+<style scoped>
+.model-fields { min-width: 0; }
+</style>

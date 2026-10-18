@@ -362,8 +362,8 @@ class EMAVectorQuantizer(nn.Module):
     def __init__(self, n_embed, embedding_dim, beta, decay=0.99, eps=1e-5,
                 remap=None, unknown_index="random"):
         super().__init__()
-        self.codebook_dim = codebook_dim
-        self.num_tokens = num_tokens
+        self.codebook_dim = embedding_dim
+        self.num_tokens = n_embed
         self.beta = beta
         self.embedding = EmbeddingEMA(self.num_tokens, self.codebook_dim, decay, eps)
 
@@ -375,7 +375,7 @@ class EMAVectorQuantizer(nn.Module):
             if self.unknown_index == "extra":
                 self.unknown_index = self.re_embed
                 self.re_embed = self.re_embed+1
-            print(f"Remapping {self.n_embed} indices to {self.re_embed} indices. "
+            print(f"Remapping {self.num_tokens} indices to {self.re_embed} indices. "
                   f"Using {self.unknown_index} for unknown indices.")
         else:
             self.re_embed = n_embed

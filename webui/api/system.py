@@ -13,6 +13,7 @@ from library.config.model_paths import (
     load_model_config,
 )
 from webui.services.config_service import ROOT
+from webui.services.config_storage import CONFIG_WRITE_LOCK, atomic_write_text
 
 router = APIRouter()
 
@@ -23,6 +24,7 @@ def get_runtimes():
     from library.runtime.profiles import list_runtime_profiles
 
     return {"runtimes": list_runtime_profiles(ROOT / "configs")}
+
 
 # Model groups — the anima group reads the effective model config; others are fixed.
 _ANIMA_PATH_KEYS = [(key, default) for key, default in MODEL_CONFIG_DEFAULTS.items()]
@@ -135,16 +137,16 @@ def update_model_paths(body: list[ModelPathUpdate]):
     import toml as _toml
 
     custom_path = ROOT / "configs" / "custom" / "model.toml"
-    custom = (
-        _toml.loads(custom_path.read_text(encoding="utf-8"))
-        if custom_path.exists()
-        else {}
-    )
-    for item in body:
-        if item.key in MODEL_CONFIG_KEYS:
-            custom[item.key] = item.value
-    custom_path.parent.mkdir(parents=True, exist_ok=True)
-    custom_path.write_text(_toml.dumps(custom), encoding="utf-8")
+    with CONFIG_WRITE_LOCK:
+        custom = (
+            _toml.loads(custom_path.read_text(encoding="utf-8"))
+            if custom_path.exists()
+            else {}
+        )
+        for item in body:
+            if item.key in MODEL_CONFIG_KEYS:
+                custom[item.key] = item.value
+        atomic_write_text(custom_path, _toml.dumps(custom))
     return {"ok": True}
 
 
@@ -210,10 +212,14 @@ def get_hw_stats():
             stats.setdefault("gpu_name", torch.cuda.get_device_name(idx))
             stats.setdefault(
                 "gpu_mem_total_gb",
-                round(torch.cuda.get_device_properties(idx).total_memory / (1024**3), 1),
+                round(
+                    torch.cuda.get_device_properties(idx).total_memory / (1024**3), 1
+                ),
             )
             # Per-process allocated + reserved (useful for debugging OOM)
-            stats["gpu_mem_reserved_gb"] = round(torch.cuda.memory_reserved(idx) / (1024**3), 1)
+            stats["gpu_mem_reserved_gb"] = round(
+                torch.cuda.memory_reserved(idx) / (1024**3), 1
+            )
     except Exception:
         pass
 

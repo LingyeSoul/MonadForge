@@ -6,7 +6,7 @@ import dataclasses
 import json
 import uuid
 from pathlib import Path
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
@@ -19,7 +19,7 @@ from library.moss.requests import (
     resolve_model_dir,
     variant_dir,
 )
-from library.moss.validation import validate_request
+from library.moss.validation import training_output_paths, validate_request
 from scripts.moss.workflow import parse_workflow
 from webui.services.qwen21_service import FormField, form_fields
 from webui.services.qwen21_workspace import check_component_headers
@@ -40,13 +40,13 @@ MOSS_COMMANDS = frozenset({*REQUEST_TYPES, "moss-cache-train"})
 class ValuesRequest(BaseModel):
     model_config = ConfigDict(strict=True, extra="ignore", allow_inf_nan=False)
     values: dict[str, Scalar]
-    runtime_profile: str = "default"
+    runtime_profile: Literal["default", "curation", "v100"] = "default"
 
 
 class ChainRequest(BaseModel):
     cache: ValuesRequest
     train: ValuesRequest
-    runtime_profile: str = "default"
+    runtime_profile: Literal["default", "curation", "v100"] = "default"
 
 
 class FormSchema(BaseModel):
@@ -81,7 +81,9 @@ def read_schema() -> FormSchema:
 def request_from_values(
     request_type: type[RequestT], values: dict[str, Scalar]
 ) -> RequestT:
-    req = TypeAdapter(request_type).validate_json(json.dumps(values), strict=True)
+    req = TypeAdapter(request_type).validate_json(
+        json.dumps(values), strict=True, extra="forbid"
+    )
     validate_request(req)
     return req
 
@@ -135,6 +137,7 @@ def validate_paths(req) -> None:
         if not req.skip_latents:
             require_component(base / "vae", "MOSS VAE")
     elif isinstance(req, TrainRequest):
+        training_output_paths(req.output)
         require_component(
             variant_dir(req.model_dir, req.model) / "transformer", "MOSS transformer"
         )

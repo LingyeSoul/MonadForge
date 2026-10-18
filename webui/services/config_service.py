@@ -16,6 +16,11 @@ import re
 
 import toml
 
+from webui.services.config_storage import (
+    CONFIG_WRITE_LOCK,
+    atomic_write_text,
+    read_json_object,
+)
 from library.config.lokr import (
     LOKR_BACKENDS,
 )
@@ -331,7 +336,13 @@ _GROUPS = {
 }
 _K2G = {k: g for g, ks in _GROUPS.items() for k in ks}
 _SKIP = {"base_config", "dataset_config", "general", "datasets", "variant"}
-_VIRTUAL_KEYS = {"use_valid", "validation_split_num", "batch_size", "num_repeats", "sample_ratio"}
+_VIRTUAL_KEYS = {
+    "use_valid",
+    "validation_split_num",
+    "batch_size",
+    "num_repeats",
+    "sample_ratio",
+}
 # Most inherited fields are intentionally read-only in the WebUI. Preview decode
 # timing is safe to override per variant, and save_variant_config persists that
 # choice in the user overlay without touching base.toml.
@@ -458,8 +469,15 @@ def _load(p: Path) -> dict:
 
 
 def _save(p: Path, d: dict) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(toml.dumps(d), encoding="utf-8")
+    atomic_write_text(p, toml.dumps(d))
+
+
+def _effective_variant(variant: str) -> dict:
+    """Use the same builtin + sparse overlay layer as lora-gui training."""
+    from library.config.io import _load_gui_method_merged
+
+    _safe_variant(variant)
+    return _load_gui_method_merged(str(CONFIGS_DIR), variant.removeprefix("custom/"))[0]
 
 
 # ── Variant / preset discovery ─────────────────────────────────
@@ -494,19 +512,39 @@ def _builtin_variants_by_family() -> dict[str, list[tuple[int, str, str]]]:
     return by_family
 
 
+def _standalone_custom_variants() -> list[tuple[str | None, str, str]]:
+    """User templates, excluding sparse overlays owned by a builtin variant."""
+    entries = []
+    for path in sorted(CUSTOM_VARIANTS_DIR.glob("*.toml")):
+        if (GUI_METHODS_DIR / path.name).is_file():
+            continue
+        meta = _read_variant_metadata(path)
+        family = meta.get("family")
+        family = family if isinstance(family, str) and family else None
+        label = meta.get("label")
+        label = label if isinstance(label, str) and label else path.stem
+        entries.append((family, f"custom/{path.stem}", label))
+    return entries
+
+
 def list_methods() -> list[str]:
-    return list(_METHOD_ORDER)
+    available = set(_builtin_variants_by_family())
+    available.update(
+        family for family, _variant, _label in _standalone_custom_variants() if family
+    )
+    return [method for method in _METHOD_ORDER if method in available] + sorted(
+        available.difference(_METHOD_ORDER)
+    )
 
 
 def list_gui_variants(method: str) -> list[str]:
     by_family = _builtin_variants_by_family()
     ordered = [stem for _order, stem, _label in by_family.get(method, [])]
-    if CUSTOM_VARIANTS_DIR.exists():
-        builtin_stems = set(ordered)
-        for p in sorted(CUSTOM_VARIANTS_DIR.glob("*.toml")):
-            if p.stem in builtin_stems:
-                continue  # overlay for built-in; already listed
-            ordered.append(f"custom/{p.stem}")
+    for family, variant, _label in _standalone_custom_variants():
+        # Pre-metadata custom templates remain available without guessing their
+        # algorithm. Explicit families stay in their declared family only.
+        if family is None or family == method:
+            ordered.append(variant)
     return ordered
 
 
@@ -515,12 +553,9 @@ def variant_labels(method: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for _order, stem, label in by_family.get(method, []):
         out[stem] = label
-    if CUSTOM_VARIANTS_DIR.exists():
-        builtin_stems = set(out)
-        for p in sorted(CUSTOM_VARIANTS_DIR.glob("*.toml")):
-            if p.stem in builtin_stems:
-                continue
-            out[f"custom/{p.stem}"] = p.stem
+    for family, variant, label in _standalone_custom_variants():
+        if family is None or family == method:
+            out[variant] = label
     return out
 
 
@@ -541,20 +576,17 @@ def create_variant(name: str, seed_from: str | None = None) -> list[str]:
         raise ValueError(f"Variant already exists: {name}")
 
     seed_data: dict = {}
+    family = "lora"
     if seed_from:
-        _safe_variant(seed_from)
-        seed_path = _resolve_variant_path(seed_from)
-        if seed_path.is_file():
-            seed_data = _load(seed_path)
-            seed_data.pop("variant", None)  # strip [variant] metadata
+        seed_data = _effective_variant(seed_from)
+        meta = seed_data.get("variant")
+        if isinstance(meta, dict):
+            family = meta.get("family", family)
+            # Preserve family-based conditioning/preflight behavior while
+            # giving the independent copy its own display name.
+            meta["label"] = name
 
     _save(dest, seed_data)
-    # Return variants for the same family as seed_from (or all if no seed)
-    if seed_from:
-        meta = _read_variant_metadata(GUI_METHODS_DIR / f"{seed_from}.toml")
-        family = meta.get("family", "lora")
-    else:
-        family = "lora"
     return list_gui_variants(family)
 
 
@@ -729,21 +761,8 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
 
     base = _canonicalize_lora_fp32_compute_layer(_load(CONFIGS_DIR / "base.toml"))
     model = _canonicalize_lora_fp32_compute_layer(load_model_config(CONFIGS_DIR))
-    pset = _canonicalize_lora_fp32_compute_layer(
-        _load_all_presets().get(preset, {})
-    )
-    if variant.startswith("custom/"):
-        meth = _canonicalize_lora_fp32_compute_layer(
-            _load(_resolve_variant_path(variant))
-        )
-    else:
-        builtin = _canonicalize_lora_fp32_compute_layer(
-            _load(GUI_METHODS_DIR / f"{variant}.toml")
-        )
-        overlay = _canonicalize_lora_fp32_compute_layer(
-            _load(CUSTOM_VARIANTS_DIR / f"{variant}.toml")
-        )
-        meth = {**builtin, **overlay}
+    pset = _canonicalize_lora_fp32_compute_layer(_load_all_presets().get(preset, {}))
+    meth = _effective_variant(variant)
     merged: dict = {}
     origin: dict[str, str] = {}
 
@@ -913,10 +932,20 @@ def build_merged_config(variant: str, preset: str, lang: str = "cn") -> dict:
     """
     merged, origin = merged_gui_variant_preset(variant, preset)
     custom_preset = not is_builtin_preset(preset)
-    return describe_config(merged, origin, variant, preset, lang, custom_preset=custom_preset)
+    return describe_config(
+        merged, origin, variant, preset, lang, custom_preset=custom_preset
+    )
 
 
-def describe_config(merged: dict, origin: dict, variant: str, preset: str, lang: str, *, custom_preset: bool = False) -> dict:
+def describe_config(
+    merged: dict,
+    origin: dict,
+    variant: str,
+    preset: str,
+    lang: str,
+    *,
+    custom_preset: bool = False,
+) -> dict:
     """Describe an already pinned config without reading mutable presets."""
     fields = []
     for key, value in sorted(merged.items()):
@@ -1223,32 +1252,25 @@ def validate_config(data: dict) -> list[str]:
         validate_lokr_training_options(
             _network_options(data), int(data.get("anima_num_blocks", 28))
         )
-    except ValueError as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         errors.append(str(exc))
     if "learning_rate" in data:
         lr = data["learning_rate"]
-        if isinstance(lr, (int, float)) and lr <= 0:
-            errors.append("learning_rate must be positive")
-    if "network_dim" in data:
-        dim = data["network_dim"]
-        if isinstance(dim, int) and dim <= 0:
-            errors.append("network_dim must be positive")
-    if "max_train_epochs" in data:
-        ep = data["max_train_epochs"]
-        if isinstance(ep, int) and ep <= 0:
-            errors.append("max_train_epochs must be positive")
-    if "batch_size" in data:
-        bs = data["batch_size"]
-        if isinstance(bs, int) and bs <= 0:
-            errors.append("batch_size must be positive")
-    if "num_repeats" in data:
-        nr = data["num_repeats"]
-        if isinstance(nr, int) and nr < 1:
-            errors.append("num_repeats must be at least 1")
+        if (
+            type(lr) not in (int, float)
+            or (isinstance(lr, float) and not math.isfinite(lr))
+            or lr <= 0
+        ):
+            errors.append("learning_rate must be a finite positive number")
+    for key in ("network_dim", "max_train_epochs", "batch_size", "num_repeats"):
+        if key in data and (type(data[key]) is not int or data[key] < 1):
+            errors.append(f"{key} must be a positive integer")
     if "sample_ratio" in data:
         sr = data["sample_ratio"]
-        if isinstance(sr, (int, float)) and not (0.0 < sr <= 1.0):
-            errors.append("sample_ratio must be between 0.0 (exclusive) and 1.0 (inclusive)")
+        if type(sr) not in (int, float) or not (0.0 < sr <= 1.0):
+            errors.append(
+                "sample_ratio must be between 0.0 (exclusive) and 1.0 (inclusive)"
+            )
     if "sample_decode_inline" in data:
         value = data["sample_decode_inline"]
         valid = isinstance(value, bool) or (
@@ -1268,16 +1290,18 @@ def validate_config(data: dict) -> list[str]:
     if "base_compute" in data:
         value = str(data["base_compute"] or "").strip().lower()
         if value not in _BASE_COMPUTE_CHOICES:
-            errors.append(
-                "base_compute must be bf16, w8a16_convrot, or w8a8_convrot"
-            )
+            errors.append("base_compute must be bf16, w8a16_convrot, or w8a8_convrot")
     if "network_reg_dims" in data:
         errors.extend(
-            _validate_regex_set("network_reg_dims", data["network_reg_dims"], is_int=True)
+            _validate_regex_set(
+                "network_reg_dims", data["network_reg_dims"], is_int=True
+            )
         )
     if "network_reg_lrs" in data:
         errors.extend(
-            _validate_regex_set("network_reg_lrs", data["network_reg_lrs"], is_int=False)
+            _validate_regex_set(
+                "network_reg_lrs", data["network_reg_lrs"], is_int=False
+            )
         )
     if "convrot_group_size" in data:
         value = data["convrot_group_size"]
@@ -1295,18 +1319,16 @@ def validate_config(data: dict) -> list[str]:
         except ValueError as exc:
             errors.append(str(exc).replace("int8 linear", "ConvRot"))
     if "convrot_weight_source" in data or "convrot_prequant_path" in data:
-        source = str(
-            data.get("convrot_weight_source") or "online_from_bf16"
-        ).strip().lower()
+        source = (
+            str(data.get("convrot_weight_source") or "online_from_bf16").strip().lower()
+        )
         if source not in _CONVROT_WEIGHT_SOURCE_CHOICES:
             errors.append(
                 "convrot_weight_source must be online_from_bf16 or prequant_checkpoint"
             )
         prequant_path = str(data.get("convrot_prequant_path") or "").strip()
         if source == "prequant_checkpoint" and not prequant_path:
-            errors.append(
-                "convrot_prequant_path is required for prequant_checkpoint"
-            )
+            errors.append("convrot_prequant_path is required for prequant_checkpoint")
         if source == "online_from_bf16" and prequant_path:
             errors.append(
                 "convrot_prequant_path is only valid with prequant_checkpoint"
@@ -1315,10 +1337,7 @@ def validate_config(data: dict) -> list[str]:
         value = data["convrot_min_in_features"]
         if type(value) is not int or value < 0:
             errors.append("convrot_min_in_features must be a non-negative integer")
-    if (
-        "convrot_large_layer_mode" in data
-        or "convrot_large_min_in_features" in data
-    ):
+    if "convrot_large_layer_mode" in data or "convrot_large_min_in_features" in data:
         mode = str(data.get("convrot_large_layer_mode") or "none").strip().lower()
         threshold = data.get("convrot_large_min_in_features", 0)
         if mode not in {
@@ -1328,9 +1347,7 @@ def validate_config(data: dict) -> list[str]:
             "w8a16_convrot",
             "w8a8_convrot",
         }:
-            errors.append(
-                "convrot_large_layer_mode must be none, w8a16, or w8a8"
-            )
+            errors.append("convrot_large_layer_mode must be none, w8a16, or w8a8")
         if type(threshold) is not int or threshold < 0:
             errors.append(
                 "convrot_large_min_in_features must be a non-negative integer"
@@ -1344,9 +1361,7 @@ def validate_config(data: dict) -> list[str]:
                 "convrot_large_layer_mode requires convrot_large_min_in_features > 0"
             )
     if data.get("use_lokr") is True and data.get("use_timestep_mask") is True:
-        errors.append(
-            "use_timestep_mask is not supported by LoKr; set it to false"
-        )
+        errors.append("use_timestep_mask is not supported by LoKr; set it to false")
     return errors
 
 
@@ -1373,20 +1388,31 @@ def save_variant_config(variant: str, data: dict) -> None:
     # Handle extra_args: parse as TOML and merge as overrides
     extra_text = data.pop("extra_args", None)
     extras: dict = {}
+    if extra_text is not None and not isinstance(extra_text, str):
+        raise ValueError("extra_args must be TOML text")
     if isinstance(extra_text, str) and extra_text.strip():
         text = extra_text.strip()
         try:
             parsed = toml.loads(text)
-        except Exception:
+        except toml.TomlDecodeError as exc:
             # Windows path backslash workaround: bare backslashes break TOML
             if "\\" in text:
                 try:
                     parsed = toml.loads(text.replace("\\", "/"))
-                except Exception:
-                    parsed = {}
+                except toml.TomlDecodeError as retry:
+                    raise ValueError(f"Invalid extra_args TOML: {retry}") from retry
             else:
-                parsed = {}
+                raise ValueError(f"Invalid extra_args TOML: {exc}") from exc
         extras = {k: v for k, v in parsed.items() if not isinstance(v, dict)}
+
+    # Validate the values that will actually be saved, before virtual values
+    # are converted to dataset fields or removed from the flat config.
+    data.update(extras)
+    stem = variant.split("/", 1)[-1]
+    candidate = {**_load(GUI_METHODS_DIR / f"{stem}.toml"), **current, **data}
+    errors = validate_config(candidate)
+    if errors:
+        raise ValueError("; ".join(errors))
 
     # Handle virtual keys
     use_valid = data.pop("use_valid", None)
@@ -1446,10 +1472,6 @@ def save_variant_config(variant: str, data: dict) -> None:
             current.pop(key, None)
             continue
         current[key] = value
-
-    # Extra args override form values
-    if extras:
-        current.update(extras)
 
     # Keep an explicit auto sentinel at the method layer so it can clear a
     # custom preset's true/false. The training config loader consumes this
@@ -1550,15 +1572,23 @@ def find_resumable_checkpoint(merged: dict) -> tuple[Path, int] | None:
     for root in roots:
         for suffix in suffixes:
             state_dir = root / suffix
-            if state_dir in seen or not state_is_complete(state_dir, require_marker=True):
+            if state_dir in seen or not state_is_complete(
+                state_dir, require_marker=True
+            ):
                 continue
             seen.add(state_dir)
             data = read_train_state(state_dir) or {}
             expected_config = merged.get("config_signature")
             expected_dataset = merged.get("dataset_signature")
-            if expected_config and data.get("config_signature") not in (None, expected_config):
+            if expected_config and data.get("config_signature") not in (
+                None,
+                expected_config,
+            ):
                 continue
-            if expected_dataset and data.get("dataset_signature") not in (None, expected_dataset):
+            if expected_dataset and data.get("dataset_signature") not in (
+                None,
+                expected_dataset,
+            ):
                 continue
             try:
                 validate_resume_model_signature(
@@ -1572,12 +1602,21 @@ def find_resumable_checkpoint(merged: dict) -> tuple[Path, int] | None:
             # Legacy states predate an explicit committed-step schema; retain
             # their historical suffix order because their cursor may not match
             # the binary payload. New schema states are ordered by max step.
-            modern = int(data.get("schema_version", 1) or 1) >= 2 and "global_step" in data
-            eligible.append((step, 0 if modern else -1, suffixes.index(suffix), state_dir))
+            modern = (
+                int(data.get("schema_version", 1) or 1) >= 2 and "global_step" in data
+            )
+            eligible.append(
+                (step, 0 if modern else -1, suffixes.index(suffix), state_dir)
+            )
     if not eligible:
         return None
     step, modern, priority, state_dir = min(
-        eligible, key=lambda item: ((-item[0], item[2], str(item[3])) if item[1] >= 0 else (0, item[2], str(item[3])))
+        eligible,
+        key=lambda item: (
+            (-item[0], item[2], str(item[3]))
+            if item[1] >= 0
+            else (0, item[2], str(item[3]))
+        ),
     )
     return state_dir, step
 
@@ -1658,7 +1697,7 @@ def prelaunch_check(
     cache_counts = count_preprocess_caches(cache_dir)
 
     # Check if PE cache is required
-    meta = _read_variant_metadata(GUI_METHODS_DIR / f"{variant}.toml")
+    meta = variant_metadata(variant)
     family = meta.get("family", "")
     requires_pe = family in _PE_REQUIRED_FAMILIES
 
@@ -1717,7 +1756,12 @@ def wipe_checkpoint(output_dir: str, output_name: str) -> None:
     for root in roots:
         # Do not touch the final adapter, snapshot, or arbitrary historical
         # epoch files. These are only resumable sidecars.
-        for suffix in ("-interrupted-state", "-checkpoint-state", "-state"):
+        for suffix in (
+            "-interrupted-state",
+            "-rolling-state",
+            "-checkpoint-state",
+            "-state",
+        ):
             remove_path_with_retry(root / f"{name}{suffix}")
         for ext in OUTPUT_WEIGHT_EXTENSIONS:
             for suffix in ("-interrupted", "-checkpoint"):
@@ -1768,7 +1812,6 @@ def read_sample_prompts(path_str: str) -> list[dict]:
 def write_sample_prompts(path_str: str, entries: list[dict]) -> None:
     """Write structured prompt entries back to a .txt file."""
     path = ROOT / path_str
-    path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
     for entry in entries:
         prompt = entry.get("prompt", "").strip()
@@ -1782,7 +1825,7 @@ def write_sample_prompts(path_str: str, entries: list[dict]) -> None:
         if cn:
             parts.append(f"--cn {cn}")
         lines.append(" ".join(parts))
-    path.write_text("\n".join(lines) + "\n" if lines else "", encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines) + "\n" if lines else "")
 
 
 # ── Field help + method guide ──────────────────────────────────
@@ -1794,7 +1837,7 @@ def get_field_help_data(variant: str, lang: str = "cn") -> dict:
     Returns ``{"field_help": {key: text}, "guide_html": str}``.
     """
     _safe_variant(variant)
-    meta = _read_variant_metadata(GUI_METHODS_DIR / f"{variant}.toml")
+    meta = variant_metadata(variant)
     family = meta.get("family", variant)
 
     # Collect all field help entries for the requested language (English fallback)
@@ -1819,8 +1862,18 @@ _GUIDES_DIR = Path(__file__).resolve().parent.parent / "explanations" / "guides"
 _NOT_MERGEABLE = frozenset({"postfix", "hydralora", "reft", "fera"})
 _KNOWN_GUIDE_METHODS = frozenset(
     {
-        "lora", "tlora", "postfix", "hydralora", "reft", "fera", "chimera",
-        "soft_tokens", "easycontrol", "colorize", "turbo", "spd",
+        "lora",
+        "tlora",
+        "postfix",
+        "hydralora",
+        "reft",
+        "fera",
+        "chimera",
+        "soft_tokens",
+        "easycontrol",
+        "colorize",
+        "turbo",
+        "spd",
     }
 )
 
@@ -1884,18 +1937,14 @@ def save_wandb_settings(settings: dict) -> dict:
     allowed_keys = set(_WANDB_DEFAULTS.keys())
     filtered = {k: v for k, v in settings.items() if k in allowed_keys}
 
-    data = {}
-    if _SETTINGS_FILE.exists():
-        try:
-            data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            pass
-
-    existing_wandb = data.get("wandb", {})
-    existing_wandb.update(filtered)
-    data["wandb"] = existing_wandb
-
-    _SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    return get_wandb_settings()
+    with CONFIG_WRITE_LOCK:
+        data = read_json_object(_SETTINGS_FILE)
+        existing_wandb = data.get("wandb", {})
+        if not isinstance(existing_wandb, dict):
+            raise ValueError("Stored wandb settings must be an object")
+        existing_wandb.update(filtered)
+        data["wandb"] = existing_wandb
+        atomic_write_text(
+            _SETTINGS_FILE, json.dumps(data, indent=2, ensure_ascii=False)
+        )
+        return {**_WANDB_DEFAULTS, **existing_wandb}

@@ -1,13 +1,10 @@
 <template>
   <v-container fluid class="pa-4 staged-resolution-page">
-    <div class="d-flex align-start justify-space-between ga-4 mb-4 flex-wrap">
-      <div>
-        <h1 class="text-h5">{{ t('srTitle') }}</h1>
-        <div class="text-body-2 text-medium-emphasis mt-1">{{ t('srSubtitle') }}</div>
-      </div>
+    <WorkspaceHeading :title="t('srTitle')" :subtitle="t('srSubtitle')">
       <div class="profile-toolbar">
         <v-combobox
-          v-model="store.selectedProfileName"
+          :model-value="store.selectedProfileName"
+          @update:model-value="store.selectedProfileName = String($event ?? '')"
           :items="store.profiles"
           :label="t('srProfile')"
           density="compact"
@@ -19,7 +16,7 @@
           :title="t('srLoadProfile')"
           :aria-label="t('srLoadProfile')"
           :loading="store.loading"
-          @click="loadCurrentProfile"
+          @click="requestLoadProfile"
         />
         <v-btn
           icon="mdi-plus"
@@ -29,7 +26,7 @@
           @click="newProfileDialog = true"
         />
       </div>
-    </div>
+    </WorkspaceHeading>
 
     <v-alert
       v-if="store.error"
@@ -50,7 +47,10 @@
         <v-chip v-if="store.dirty" color="warning" size="small">{{ t('srUnsaved') }}</v-chip>
       </div>
 
-      <v-row dense>
+      <v-row density="comfortable">
+        <v-col cols="12" sm="6" lg="2">
+          <RuntimeSelector :disabled="store.loading || store.saving || Boolean(store.launching)" />
+        </v-col>
         <v-col cols="12" sm="6" lg="2">
           <v-select
             v-model="store.plan.method"
@@ -89,7 +89,7 @@
             hide-details="auto"
           />
         </v-col>
-        <v-col cols="12" lg="4">
+        <v-col cols="12" sm="6" lg="2">
           <v-text-field
             v-model="store.plan.source_image_dir"
             :label="t('ppPathSource')"
@@ -315,22 +315,28 @@
             :label="t('srProfile')"
             autofocus
             :rules="[profileNameRule]"
-            @keyup.enter="createProfile"
+            @keyup.enter="requestCreateProfile"
           />
         </v-card-text>
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="newProfileDialog = false">{{ t('dsCancel') }}</v-btn>
-          <v-btn color="primary" :disabled="profileNameRule(newProfileName) !== true" @click="createProfile">
+          <v-btn color="primary" :disabled="profileNameRule(newProfileName) !== true" @click="requestCreateProfile">
             {{ t('srCreate') }}
           </v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
+    <UnsavedChangesDialog :model-value="Boolean(pendingChange)" :busy="store.loading || store.saving" :error="store.error || validationErrors.join('\n')"
+      @cancel="cancelChange" @discard="finishChange(false)" @save="finishChange(true)" />
   </v-container>
 </template>
 
 <script setup lang="ts">
+import RuntimeSelector from '../components/RuntimeSelector.vue'
+import WorkspaceHeading from '../components/WorkspaceHeading.vue'
+import UnsavedChangesDialog from '../components/UnsavedChangesDialog.vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useConfigStore } from '../stores/config'
 import { useNotifyStore } from '../stores/notify'
@@ -350,12 +356,33 @@ const newProfileDialog = ref(false)
 const newProfileName = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-const variantItems = computed(() =>
-  configStore.variants.map(value => ({
-    value,
-    label: configStore.variantLabels[value] || value,
-  })),
-)
+const variantItems = ref<{ value: string; label: string }[]>([])
+let variantSequence = 0
+const pendingChange = ref<(() => Promise<void>) | null>(null)
+let cancelRoute: (() => void) | undefined
+async function requestChange(action: () => Promise<void>) {
+  if (store.loading || store.saving || store.launching) return
+  if (store.hasChanges) pendingChange.value = action
+  else await action()
+}
+function cancelChange() { pendingChange.value = null; cancelRoute?.(); cancelRoute = undefined }
+async function finishChange(save: boolean) {
+  if (!pendingChange.value || store.loading || store.saving) return
+  if (save) {
+    const selected = store.selectedProfileName
+    if (store.loadedProfileName) store.selectedProfileName = store.loadedProfileName
+    if (!await saveProfileChanges()) { store.selectedProfileName = selected; return }
+  }
+  else store.discardChanges()
+  const action = pendingChange.value
+  pendingChange.value = null
+  cancelRoute = undefined
+  await action()
+}
+onBeforeRouteLeave(() => {
+  if (!store.hasChanges) return true
+  return new Promise<boolean>(resolve => { pendingChange.value = async () => { resolve(true) }; cancelRoute = () => resolve(false) })
+})
 
 const readinessRows = computed<StageReadiness[]>(() => {
   if (store.status?.stages?.length === 3) return store.status.stages
@@ -426,10 +453,10 @@ function stepRange(index: number) {
   let before = 0
   for (let i = 0; i < index; i++) before += Number(store.plan.stages[i].ratio || 0)
   const through = before + Number(store.plan.stages[index]?.ratio || 0)
-  const start = Math.round(total * before / 100)
+  const start = Math.max(0, Math.ceil(total * before / 100 - 1e-12))
   const end = index === store.plan.stages.length - 1
     ? Math.max(start, total - 1)
-    : Math.max(start, Math.round(total * through / 100) - 1)
+    : Math.max(start, Math.ceil(total * through / 100 - 1e-12) - 1)
   return `${start.toLocaleString()}–${end.toLocaleString()}`
 }
 
@@ -437,45 +464,48 @@ function profileNameRule(value: string): true | string {
   return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value.trim()) || t('srErrProfile')
 }
 
+async function fetchVariants(method: string) {
+  const sequence = ++variantSequence
+  const response = await fetch(`/api/config/variants?method=${encodeURIComponent(method)}`)
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`)
+  if (sequence === variantSequence) variantItems.value = (data.variants || []).map((value: string) => ({ value, label: data.labels?.[value] || value }))
+}
 async function syncSelectors() {
   if (!configStore.methods.length) await configStore.fetchMethods()
   if (!configStore.presets.length) await configStore.fetchPresets()
-  await configStore.fetchVariants(store.plan.method || 'lora')
+  await fetchVariants(store.plan.method || 'lora')
 }
-
 async function onMethodChange(method: string) {
-  await configStore.fetchVariants(method)
-  if (!configStore.variants.includes(store.plan.variant)) {
-    store.plan.variant = configStore.variants[0] || 'lora'
-  }
-}
-
-async function loadCurrentProfile() {
   try {
-    await store.loadProfile()
-    await syncSelectors()
-  } catch {
-    notify.show(t('srLoadFailed'), 'error')
-  }
+    await fetchVariants(method)
+    if (method === store.plan.method && !variantItems.value.some(item => item.value === store.plan.variant)) store.plan.variant = variantItems.value[0]?.value || ''
+  } catch (cause) { store.error = String(cause) }
 }
-
-function createProfile() {
+function requestLoadProfile() {
+  const name = store.selectedProfileName
+  void requestChange(() => loadCurrentProfile(name))
+}
+async function loadCurrentProfile(name = store.selectedProfileName) {
+  try { await store.loadProfile(name); await syncSelectors() }
+  catch { notify.show(t('srLoadFailed'), 'error') }
+}
+function requestCreateProfile() {
   if (profileNameRule(newProfileName.value) !== true) return
-  store.newProfile(newProfileName.value)
+  const name = newProfileName.value
   newProfileDialog.value = false
-  newProfileName.value = ''
-  syncSelectors()
+  void requestChange(async () => {
+    store.newProfile(name)
+    newProfileName.value = ''
+    try { await syncSelectors() } catch (cause) { store.error = String(cause) }
+  })
 }
-
-async function save() {
-  if (validationErrors.value.length) return
-  try {
-    await store.saveProfile()
-    notify.show(t('srSaved'), 'success')
-  } catch {
-    notify.show(t('notifyConfigSaveFailed'), 'error')
-  }
+async function saveProfileChanges(): Promise<boolean> {
+  if (validationErrors.value.length) return false
+  try { await store.saveProfile(); notify.show(t('srSaved'), 'success'); return true }
+  catch { notify.show(t('notifyConfigSaveFailed'), 'error'); return false }
 }
+async function save() { await saveProfileChanges() }
 
 async function startPreprocess() {
   if (validationErrors.value.length) return
@@ -500,19 +530,22 @@ onMounted(async () => {
     await Promise.all([store.fetchProfiles(), configStore.fetchMethods(), configStore.fetchPresets()])
     await store.loadProfile(store.selectedProfileName)
     await syncSelectors()
-  } catch {
-    await syncSelectors()
+  } catch (cause) {
+    store.error = String(cause)
   }
   pollTimer = setInterval(pollActivePreprocess, 5000)
 })
 
 onBeforeUnmount(() => {
+  ++variantSequence
+  cancelRoute?.()
   if (pollTimer) clearInterval(pollTimer)
 })
 </script>
 
 <style scoped>
 .staged-resolution-page {
+  container-type: inline-size;
   height: 100%;
   overflow-y: auto;
   max-width: 1600px;
@@ -702,7 +735,8 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
-@media (max-width: 959px) {
+/* The navigation rail reduces the available space even on desktop screens. */
+@container (max-width: 860px) {
   .stage-grid-header,
   .readiness-header {
     display: none;

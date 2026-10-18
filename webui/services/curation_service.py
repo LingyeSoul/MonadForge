@@ -15,8 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.curation.context import (
-    ENV_KEYS, checked_path, checked_report, run_context, scoped_tools,
-    validate_roots, validate_tree,
+    ENV_KEYS,
+    checked_path,
+    checked_report,
+    run_context,
+    scoped_tools,
+    validate_roots,
+    validate_tree,
 )
 from scripts.curation.bridge import in_curation_runtime
 
@@ -56,21 +61,28 @@ def _settings(loaded) -> dict:
     # its current target, not an invitation to retarget old jobs later.
     data["dataset"] = {
         name: str(loaded.D.lexical(value).resolve())
-        for name, value in data["dataset"].items() if name in ROOT_NAMES
+        for name, value in data["dataset"].items()
+        if name in ROOT_NAMES
     }
     validate_roots(data["dataset"])
     return data
 
 
 def _context(loaded, settings: dict, *, job_dir: Path | None = None) -> dict:
-    workspace = Path(os.environ.get("ANIME_TOOLS_WORKSPACE") or HOME / "workspace").resolve()
+    workspace = Path(
+        os.environ.get("ANIME_TOOLS_WORKSPACE") or HOME / "workspace"
+    ).resolve()
     source = Path(settings["dataset"]["src"])
     for path in (workspace, JOBS.resolve()):
         if path.is_relative_to(source) or source.is_relative_to(path):
-            raise ValueError("Source root must not overlap the curation workspace or job records")
+            raise ValueError(
+                "Source root must not overlap the curation workspace or job records"
+            )
     return {
-        "home": str(HOME.resolve()), "settings": settings,
-        "roots": dict(settings["dataset"]), "workspace": str(workspace),
+        "home": str(HOME.resolve()),
+        "settings": settings,
+        "roots": dict(settings["dataset"]),
+        "workspace": str(workspace),
         "job_dir": str((job_dir or JOBS).resolve()),
         "environment": {key: os.environ[key] for key in ENV_KEYS if key in os.environ},
     }
@@ -97,14 +109,25 @@ def save_roots(values: dict) -> dict:
         merged = {**settings["dataset"], **values}
         # Only this explicit registration can widen the trusted roots.
         for value in values.values():
-            if not isinstance(value, str) or not value.strip() or ".." in Path(value).parts:
-                raise ValueError("Roots must be nonempty paths without parent traversal")
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or ".." in Path(value).parts
+            ):
+                raise ValueError(
+                    "Roots must be nonempty paths without parent traversal"
+                )
         roots = loaded.D.resolve_roots(merged, trusted=True)
         paths = {name: str(path.resolve()) for name, path in roots.items()}
         validate_roots(paths)
         for name, path in paths.items():
-            if not Path(path).is_relative_to(HOME.resolve()) and not Path(path).is_dir():
-                raise ValueError(f"Register an existing external directory for {name}: {path}")
+            if (
+                not Path(path).is_relative_to(HOME.resolve())
+                and not Path(path).is_dir()
+            ):
+                raise ValueError(
+                    f"Register an existing external directory for {name}: {path}"
+                )
         settings["dataset"] = paths
         _context(loaded, settings)
         loaded.settings.save_settings(settings)
@@ -115,7 +138,9 @@ def save_roots(values: dict) -> dict:
 def save_settings(values: dict) -> dict:
     allowed = {"stage_defaults", "preprocess", "values"}
     if set(values) - allowed:
-        raise ValueError("Only stage_defaults, preprocess and values may be changed here; use /roots to register roots")
+        raise ValueError(
+            "Only stage_defaults, preprocess and values may be changed here; use /roots to register roots"
+        )
     if any(not isinstance(value, dict) for value in values.values()):
         raise ValueError("Settings sections must be objects")
     with scoped_tools(HOME) as loaded:
@@ -138,8 +163,12 @@ def get_schema() -> dict:
         settings = _settings(loaded)
         ctx = run_context(loaded, settings)
         return {
-            "stages": [loaded.S.resolved_schema(sc, **ctx.bindings()) for sc in loaded.S.load_schemas().values()],
-            "roots": ctx.roots.as_dict(), "settings": settings,
+            "stages": [
+                loaded.S.resolved_schema(sc, **ctx.bindings())
+                for sc in loaded.S.load_schemas().values()
+            ],
+            "roots": ctx.roots.as_dict(),
+            "settings": settings,
             "ladder": loaded.D.ladder_schema(),
         }
 
@@ -158,7 +187,12 @@ def dataset(search: str = "", limit: int = 20000) -> dict:
         settings = _settings(loaded)
         ctx = run_context(loaded, settings)
         validate_tree(ctx.roots.src)
-        return loaded.D.list_items(ctx.roots, pattern=ctx.defaults.get("path_pattern"), query=search, limit=limit)
+        return loaded.D.list_items(
+            ctx.roots,
+            pattern=ctx.defaults.get("path_pattern"),
+            query=search,
+            limit=limit,
+        )
 
 
 @in_curation_runtime
@@ -203,7 +237,13 @@ def compose(flat_tags: list[str], clauses: list[dict]) -> dict:
             prefix = row.get("prefix", "On the ")
             if prefix not in (*grammar.CLAUSE_PREFIXES, *grammar.TEXT_PREFIXES):
                 raise ValueError("Unknown caption clause prefix")
-            values.append(grammar.PositionClause(position=row.get("position", ""), tags=tuple(row.get("tags", [])), prefix=prefix))
+            values.append(
+                grammar.PositionClause(
+                    position=row.get("position", ""),
+                    tags=tuple(row.get("tags", [])),
+                    prefix=prefix,
+                )
+            )
         text = grammar.compose_caption(flat_tags, values)
         return {"text": text, "parsed": loaded.D.parsed_caption(text)}
 
@@ -216,7 +256,9 @@ def exclude(rel: str, excluded: bool, note: str = "") -> dict:
         _item_paths(loaded, context, rel)
         for root in [*context["roots"].values(), context["workspace"]]:
             validate_tree(root)
-        return loaded.D.set_excluded(run_context(loaded, settings).roots, rel, excluded=excluded, note=note)
+        return loaded.D.set_excluded(
+            run_context(loaded, settings).roots, rel, excluded=excluded, note=note
+        )
 
 
 @in_curation_runtime
@@ -228,7 +270,19 @@ def file_path(path: str) -> Path:
             raise FileNotFoundError(path)
         # The dataset surface serves artifacts, never credentials or configs
         # that happen to live under a broad user-registered directory.
-        if resolved.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif", ".txt", ".json"}:
+        if resolved.suffix.lower() not in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".bmp",
+            ".gif",
+            ".tif",
+            ".tiff",
+            ".avif",
+            ".txt",
+            ".json",
+        }:
             raise ValueError("Unsupported dataset artifact type")
         return resolved
 
@@ -237,7 +291,9 @@ def file_path(path: str) -> Path:
 def thumbnail(path: str, size: int = 256) -> bytes:
     resolved = file_path(path)
     with scoped_tools(HOME) as loaded:
-        return loaded.D._thumb_bytes(str(resolved), resolved.stat().st_mtime, max(16, min(size, 1024)))
+        return loaded.D._thumb_bytes(
+            str(resolved), resolved.stat().st_mtime, max(16, min(size, 1024))
+        )
 
 
 @in_curation_runtime
@@ -247,14 +303,23 @@ def groups() -> dict:
         root = run_context(loaded, settings).report_root
         # Group reports live under each immutable job, not a mutable shared path.
         for job in list_jobs()["jobs"]:
-            if job["stage"] == "groups" and job["state"] == "success" and {key: value["path"] for key, value in job["roots"].items()} == settings["dataset"]:
+            if (
+                job["stage"] == "groups"
+                and job["state"] == "success"
+                and {key: value["path"] for key, value in job["roots"].items()}
+                == settings["dataset"]
+            ):
                 root = _load_job(job["id"])["report_root"]
                 break
         return loaded.D.load_groups(root)
 
 
 def _load_job(job_id: str) -> dict:
-    if not job_id or any(c not in "0123456789abcdef" for c in job_id) or len(job_id) != 32:
+    if (
+        not job_id
+        or any(c not in "0123456789abcdef" for c in job_id)
+        or len(job_id) != 32
+    ):
         raise FileNotFoundError("Unknown curation job")
     path = JOBS / job_id / "snapshot.json"
     data = _read(path)
@@ -267,12 +332,36 @@ def _load_job(job_id: str) -> dict:
 def _job_info(snapshot: dict) -> dict:
     directory = Path(snapshot["job_dir"])
     record = _read(directory / "record.json")
-    state = _read(directory / "state.json") if (directory / "state.json").exists() else {}
-    info = {key: snapshot.get(key) for key in ("id", "stage", "apply", "roots", "values", "created_at", "report_path", "operation", "scope", "steps")}
-    info.update(task_id=record.get("task_id"), state=state.get("state", record.get("state", "pending")), error=state.get("error", record.get("error")))
-    info["roots"] = {key: {"path": value, "exists": Path(value).is_dir()} for key, value in snapshot["roots"].items()}
+    state = (
+        _read(directory / "state.json") if (directory / "state.json").exists() else {}
+    )
+    info = {
+        key: snapshot.get(key)
+        for key in (
+            "id",
+            "stage",
+            "apply",
+            "roots",
+            "values",
+            "created_at",
+            "report_path",
+            "operation",
+            "scope",
+            "steps",
+        )
+    }
+    info.update(
+        task_id=record.get("task_id"),
+        state=state.get("state", record.get("state", "pending")),
+        error=state.get("error", record.get("error")),
+    )
+    info["roots"] = {
+        key: {"path": value, "exists": Path(value).is_dir()}
+        for key, value in snapshot["roots"].items()
+    }
     # The daemon owns cancellation and failures before the wrapper starts.
     from webui.services.task_service import task_service
+
     task = task_service.get_task(record.get("task_id", ""))
     if task is not None and task.state.value != "pending":
         info["state"] = task.state.value
@@ -281,7 +370,9 @@ def _job_info(snapshot: dict) -> dict:
 
 def list_jobs() -> dict:
     jobs = []
-    for path in sorted(JOBS.glob("*/snapshot.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+    for path in sorted(
+        JOBS.glob("*/snapshot.json"), key=lambda p: p.stat().st_mtime, reverse=True
+    ):
         try:
             jobs.append(_job_info(_load_job(path.parent.name)))
         except (OSError, ValueError, KeyError):
@@ -292,7 +383,9 @@ def list_jobs() -> dict:
 def _new_context(loaded, settings: dict) -> dict:
     job_id = uuid.uuid4().hex
     context = _context(loaded, settings, job_dir=JOBS / job_id)
-    context.update(id=job_id, created_at=datetime.now(timezone.utc).isoformat(), version=1)
+    context.update(
+        id=job_id, created_at=datetime.now(timezone.utc).isoformat(), version=1
+    )
     return context
 
 
@@ -302,14 +395,35 @@ def _validate_values(loaded, sc: dict, values: dict, context: dict) -> None:
     if unknown:
         raise ValueError(f"Unknown stage fields: {', '.join(sorted(unknown))}")
     if values.get("from_report") or values.get("apply"):
-        raise ValueError("Use the reviewed job's apply operation instead of raw replay flags")
+        raise ValueError(
+            "Use the reviewed job's apply operation instead of raw replay flags"
+        )
     for name, value in values.items():
         field = fields[name]
-        if name in {"path_pattern", "category_paths"} or not field.get("path") or not value or (field.get("root") or field.get("setting")) and not field.get("overridable"):
+        if (
+            name in {"path_pattern", "category_paths"}
+            or not field.get("path")
+            or not value
+            or (field.get("root") or field.get("setting"))
+            and not field.get("overridable")
+        ):
             continue
         for path in value if isinstance(value, list) else [value]:
-            resolved = checked_path(str(path), context, bases=[*context["roots"].values(), context["workspace"], context["job_dir"], Path(context["home"]) / "models"])
-            if sc["id"] == "ocr" and name == "ocr_dir" and resolved.is_relative_to(Path(context["roots"]["src"])):
+            resolved = checked_path(
+                str(path),
+                context,
+                bases=[
+                    *context["roots"].values(),
+                    context["workspace"],
+                    context["job_dir"],
+                    Path(context["home"]) / "models",
+                ],
+            )
+            if (
+                sc["id"] == "ocr"
+                and name == "ocr_dir"
+                and resolved.is_relative_to(Path(context["roots"]["src"]))
+            ):
                 raise ValueError("OCR output cannot write under the source root")
 
 
@@ -324,7 +438,9 @@ def prepare(stage_id: str, values: dict, apply: bool = False, rel: str = "") -> 
         if not sc["available"]:
             raise ValueError(f"Stage unavailable: {sc.get('error', stage_id)}")
         if stage_id == "export" and apply:
-            raise ValueError("Export requires a preview job; review its report and apply that job")
+            raise ValueError(
+                "Export requires a preview job; review its report and apply that job"
+            )
         context = _new_context(loaded, settings)
         _validate_values(loaded, sc, values, context)
         if stage_id == "export" and values.get("out"):
@@ -343,40 +459,80 @@ def prepare(stage_id: str, values: dict, apply: bool = False, rel: str = "") -> 
         # Export reads the previous caption index, not its own new report tree.
         if stage_id == "export" and not values.get("index"):
             resolved = loaded.S.resolved_schema(sc, **bindings)
-            values["index"] = next(f["default"] for f in resolved["fields"] if f["dest"] == "index")
+            values["index"] = next(
+                f["default"] for f in resolved["fields"] if f["dest"] == "index"
+            )
         report_root = str(Path(context["job_dir"]) / "reports")
         bindings["report_root"] = report_root
-        stage_ids = [loaded.S.preprocess_for(stage_id), stage_id, loaded.S.FOLLOW_UPS.get(stage_id)]
+        stage_ids = [
+            loaded.S.preprocess_for(stage_id),
+            stage_id,
+            loaded.S.FOLLOW_UPS.get(stage_id),
+        ]
         steps = []
         for key in filter(None, stage_ids):
             schema = schemas[key]
             if not schema["available"]:
                 raise ValueError(f"Required stage unavailable: {key}")
-            vals = values if key == stage_id else (settings.get("preprocess", {}) if key == "resize" else settings.get("values", {}).get(key, {}))
+            vals = (
+                values
+                if key == stage_id
+                else (
+                    settings.get("preprocess", {})
+                    if key == "resize"
+                    else settings.get("values", {}).get(key, {})
+                )
+            )
             _validate_values(loaded, schema, vals, context)
-            argv = loaded.S.build_argv(schema, vals, apply=apply if key == stage_id else False, **bindings)
-            steps.append({"stage": key, "argv": argv, "module": loaded.S.BY_ID[key].module,
-                          "report_path": loaded.S.report_path(loaded.S.BY_ID[key], schema["fields"], vals, report_root)})
-        report_path = next(step["report_path"] for step in steps if step["stage"] == stage_id)
-        context.update(stage=stage_id, values=values, apply=bool(apply), scope=rel, steps=steps,
-                       operation="run", report_root=report_root, report_path=report_path,
-                       mask_root=ctx.mask_root, path_pattern=ctx.defaults.get("path_pattern", "*"))
+            argv = loaded.S.build_argv(
+                schema, vals, apply=apply if key == stage_id else False, **bindings
+            )
+            steps.append(
+                {
+                    "stage": key,
+                    "argv": argv,
+                    "module": loaded.S.BY_ID[key].module,
+                    "report_path": loaded.S.report_path(
+                        loaded.S.BY_ID[key], schema["fields"], vals, report_root
+                    ),
+                }
+            )
+        report_path = next(
+            step["report_path"] for step in steps if step["stage"] == stage_id
+        )
+        context.update(
+            stage=stage_id,
+            values=values,
+            apply=bool(apply),
+            scope=rel,
+            steps=steps,
+            operation="run",
+            report_root=report_root,
+            report_path=report_path,
+            mask_root=ctx.mask_root,
+            path_pattern=ctx.defaults.get("path_pattern", "*"),
+        )
         return context
 
 
 async def _submit(context: dict) -> dict:
     from webui.services.task_service import task_service
+
     directory = Path(context["job_dir"])
     digest = write_json(directory / "snapshot.json", context, exclusive=True)
     record = {"snapshot_sha256": digest, "state": "pending"}
     write_json(directory / "record.json", record, exclusive=True)
     try:
         task = await task_service.start_task(
-            "curation-stage", ["--snapshot", str(directory / "snapshot.json"), "--sha256", digest],
-            context={"curation": context}, runtime_profile="curation",
+            "curation-stage",
+            ["--snapshot", str(directory / "snapshot.json"), "--sha256", digest],
+            context={"curation": context},
+            runtime_profile="curation",
         )
     except Exception as exc:
-        write_json(directory / "record.json", {**record, "state": "failed", "error": str(exc)})
+        write_json(
+            directory / "record.json", {**record, "state": "failed", "error": str(exc)}
+        )
         raise
     write_json(directory / "record.json", {**record, "task_id": task.id})
     return _job_info(context)
@@ -384,9 +540,8 @@ async def _submit(context: dict) -> dict:
 
 async def submit(stage: str, values: dict, apply: bool = False, rel: str = "") -> dict:
     context = await asyncio.to_thread(prepare, stage, values, apply, rel)
-    result = await _submit(context)
     await asyncio.to_thread(remember_values, stage, context["values"])
-    return result
+    return await _submit(context)
 
 
 @in_curation_runtime
@@ -402,7 +557,10 @@ def remember_values(stage: str, values: dict) -> dict:
 def report(job_id: str) -> dict:
     context = _load_job(job_id)
     from scripts.curation.runner import sealed_report
-    with scoped_tools(context["home"], context["settings"], context["environment"]) as loaded:
+
+    with scoped_tools(
+        context["home"], context["settings"], context["environment"]
+    ) as loaded:
         path, data = sealed_report(loaded, context)
         return {"path": str(path), "report": data}
 
@@ -410,26 +568,44 @@ def report(job_id: str) -> dict:
 def _proposals(job_id: str) -> tuple[dict, dict]:
     context = _load_job(job_id)
     data = report(job_id)["report"]
-    with scoped_tools(context["home"], context["settings"], context["environment"]) as loaded:
+    with scoped_tools(
+        context["home"], context["settings"], context["environment"]
+    ) as loaded:
         if context["stage"] == "export":
             # Every artifact has its own key: one image may publish a mask,
             # caption, layout, variants and a master revision simultaneously.
             rows = {}
             for index, row in enumerate(data.get("rows", [])):
                 key = f"{index}:{row.get('kind')}:{row.get('rel')}"
-                rows[key] = {"rel": key, "image": row.get("src", ""), "kind": row.get("kind", "export"),
-                             "path": row.get("dst", ""), "before": row.get("before", ""),
-                             "after": row.get("text") or row.get("preview_text") or f"{row.get('status')}: {row.get('src')} → {row.get('dst')}",
-                             "status": row.get("status", "proposed")}
+                rows[key] = {
+                    "rel": key,
+                    "image": row.get("src", ""),
+                    "kind": row.get("kind", "export"),
+                    "path": row.get("dst", ""),
+                    "before": row.get("before", ""),
+                    "after": row.get("text")
+                    or row.get("preview_text")
+                    or f"{row.get('status')}: {row.get('src')} → {row.get('dst')}",
+                    "status": row.get("status", "proposed"),
+                }
             return context, rows
         path, _, roots = checked_report(loaded, context)
-        return context, {key: value.to_dict() for key, value in loaded.P.read(path, roots, context["stage"]).items()}
+        return context, {
+            key: value.to_dict()
+            for key, value in loaded.P.read(path, roots, context["stage"]).items()
+        }
 
 
 @in_curation_runtime
 def proposals(job_id: str) -> dict:
     context, found = _proposals(job_id)
-    return {"stage": context["stage"], "apply": context["apply"], "kind": "export" if context["stage"] == "export" else "revised", "total": len(found), "rels": sorted(found)}
+    return {
+        "stage": context["stage"],
+        "apply": context["apply"],
+        "kind": "export" if context["stage"] == "export" else "revised",
+        "total": len(found),
+        "rels": sorted(found),
+    }
 
 
 @in_curation_runtime
@@ -450,16 +626,38 @@ def prepare_replay(job_id: str, operation: str) -> dict:
     if operation == "apply" and source["apply"]:
         raise ValueError("This job already applied changes; create a new preview")
     from scripts.curation.runner import sealed_report, validate_operation
-    with scoped_tools(source["home"], source["settings"], source["environment"]) as loaded:
+
+    with scoped_tools(
+        source["home"], source["settings"], source["environment"]
+    ) as loaded:
         path, data = sealed_report(loaded, source)
         validate_operation(loaded, source, data, operation)
         context = _new_context(loaded, source["settings"])
         # Everything historical stays historical, including workspace/env.
-        context.update({key: source[key] for key in ("home", "roots", "workspace", "environment", "stage", "values", "scope", "path_pattern")})
-        context.update(operation=operation, apply=True, steps=[], source=source,
-                       source_report_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                       report_path=str(Path(context["job_dir"]) / "report.json"),
-                       report_root=str(Path(context["job_dir"]) / "reports"))
+        context.update(
+            {
+                key: source[key]
+                for key in (
+                    "home",
+                    "roots",
+                    "workspace",
+                    "environment",
+                    "stage",
+                    "values",
+                    "scope",
+                    "path_pattern",
+                )
+            }
+        )
+        context.update(
+            operation=operation,
+            apply=True,
+            steps=[],
+            source=source,
+            source_report_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            report_path=str(Path(context["job_dir"]) / "report.json"),
+            report_root=str(Path(context["job_dir"]) / "reports"),
+        )
     return context
 
 

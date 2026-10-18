@@ -330,7 +330,9 @@ def _write_variant_cache(path, *, n_variants, n_randomized):
     ]
 
     def emb(name):
-        return torch.full((2, 4), float(abs(hash(name)) % 1000))
+        # Every variant needs a unique marker: truncated randomized hashes
+        # occasionally made an r-family tensor indistinguishable from v2.
+        return torch.full((2, 4), float(names.index(name)))
 
     sd = {
         "num_variants": torch.tensor(n_variants),

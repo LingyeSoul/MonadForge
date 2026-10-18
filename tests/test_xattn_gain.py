@@ -16,6 +16,7 @@ import torch.nn as nn
 
 from library.anima.models import Block
 from library.inference.adapters import set_xattn_gain
+from networks.attention_dispatch import AttentionParams
 
 
 class _StubAttn(nn.Module):
@@ -49,7 +50,7 @@ def _run(block: Block) -> torch.Tensor:
     emb = torch.randn(2, 1, 8)
     ctx = torch.randn(2, 4, 8)
     with torch.no_grad():
-        return block._forward(x, emb, ctx, attn_params=None)
+        return block._forward(x, emb, ctx, attn_params=AttentionParams(attn_mode="torch"))
 
 
 def test_default_gain_is_exact_identity():

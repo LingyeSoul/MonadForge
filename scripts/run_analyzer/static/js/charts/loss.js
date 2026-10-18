@@ -54,12 +54,14 @@ export function lossChartOption(data, ui, opts = {}) {
   };
   const labelSeries = {
     name: 'epoch range', type: 'scatter', z: 8, symbol: 'none', silent: true,
+    labelLayout: { hideOverlap: true },
     data: labelData, tooltip: { show: false },
   };
 
   const mk = (name, pts, color, width, z, extra = {}) => ({
     name, type: 'line', data: pts, z,
     symbol: 'none',
+    itemStyle: { color },
     lineStyle: { width, color, type: 'solid' },
     emphasis: { lineStyle: { width: width + 1 } },
     ...extra,
@@ -87,6 +89,7 @@ export function lossChartOption(data, ui, opts = {}) {
     const avgSeries = mk('loss/average', rolling(avg, ui.smooth), C.paper, 1.8, 5);
     avgSeries.markLine = {
       silent: true, symbol: 'none',
+      label: { show: false },
       lineStyle: { color: C.g5, width: 1, type: 'dashed', opacity: 0.5 },
       data: (data.ckpts || []).map(c => ({ xAxis: c.global_step })),
     };

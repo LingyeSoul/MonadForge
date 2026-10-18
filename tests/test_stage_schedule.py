@@ -63,6 +63,19 @@ def test_validate_rejects_gap_and_bad_dataset_index():
     assert any("subset_index=3" in problem for problem in problems)
 
 
+def test_three_minimal_stages_each_receive_one_optimizer_step():
+    args = SimpleNamespace(
+        stage_schedule_enabled=True,
+        max_train_steps=3,
+        stage_schedule=build_stage_schedule([100 / 3] * 3, [512, 768, 1024]),
+    )
+    assert [active_subset_indices_for_step(args, step) for step in range(3)] == [
+        {0},
+        {1},
+        {2},
+    ]
+
+
 @pytest.mark.parametrize(
     "stage",
     [
@@ -443,8 +456,12 @@ def test_resumed_stage_skips_saved_batch_cursor(monkeypatch):
         global_step=0,
         current_step=SimpleNamespace(value=0),
         progress_bar=SimpleNamespace(update=lambda amount: None),
-        saver=SimpleNamespace(maybe_save_step=lambda *args: None),
+        saver=SimpleNamespace(
+            maybe_save_step=lambda *args: None,
+            maybe_save_rolling_state=lambda *args: None,
+        ),
         network=object(),
+        pause_watcher=None,
         optimizer_train_fn=lambda: None,
     )
     loop_module._run_epoch_steps(object(), state, epoch=0)

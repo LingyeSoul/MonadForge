@@ -284,9 +284,9 @@ def test_post_init_forces_zero_freq_balance_under_fei_mode():
 def test_chimera_router_stats_empty_on_non_chimera_network():
     """``get_chimera_router_stats`` short-circuits to ``{}`` when the network
     isn't chimera — no spurious empty keys leak into a plain hydra run."""
-    from tests.test_global_router import _make_minimal_stacked_experts_network
+    from tests.test_global_router import _make_minimal_hydra_global_router_network
 
-    net = _make_minimal_stacked_experts_network(num_experts=3, fei_dim=2)
+    net = _make_minimal_hydra_global_router_network(num_experts=3, fei_dim=2)
     # Defensive: a non-chimera network may not even have the attr set.
     if not hasattr(net, "_chimera_router_stats_cache"):
         net._chimera_router_stats_cache = None

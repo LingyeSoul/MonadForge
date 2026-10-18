@@ -1,3 +1,4 @@
+import { isTaskActive } from '../utils/taskState.ts'
 import { computed, onScopeDispose, ref } from 'vue'
 import type {
   CurationGroups, CurationItem, CurationJob, CurationProposal, CurationRoots,
@@ -5,6 +6,8 @@ import type {
 } from '../types/curation'
 
 export const rootNames: RootName[] = ['src', 'master', 'dst', 'masks', 'out']
+/** Resize changes the image extension; nested directories and dotted stems stay intact. */
+export function curationImageKey(rel: string): string { return rel.replace(/\.[^/.]+$/, '') }
 export interface CurationMaskSource { path: string; role: string; kind: string }
 export function parseMaskSource(spec: string): CurationMaskSource {
   const [role = 'keep', kind = 'text', ...rest] = spec.split(':')
@@ -128,10 +131,11 @@ export function useCuration() {
     })
     loading.value = false
   }
-  async function selectItem(rel: string) {
+  async function selectItem(rel: string, canApply: () => boolean = () => true) {
     const index = ++itemRequest
     const detail = await request<CurationItem>(`/items?${new URLSearchParams({ rel })}`)
-    if (index === itemRequest && !disposed) item.value = detail
+    // A background refresh must not replace edits made while its request was pending.
+    if (index === itemRequest && !disposed && canApply()) item.value = detail
     return detail
   }
   async function saveCaption(rel: string, kind: string, text: string) {
@@ -178,7 +182,7 @@ export function useCuration() {
     await loadJobs()
     return job.id || job.task_id || ''
   }
-  const activeJobs = computed(() => jobs.value.filter(job => ['queued', 'pending', 'running'].includes(job.state)))
+  const activeJobs = computed(() => jobs.value.filter(job => isTaskActive(job.state)))
   return { schema, roots, settings, items, groups, jobs, item, error, busy, loading, result, listInfo, activeJobs,
     perform, initialize, loadSchema, loadRoots, loadDataset, loadGroups, loadJobs, selectItem,
     saveCaption, parse, compose, saveRoots, saveSettings, exclude, submit, report, proposals, proposal, replay }

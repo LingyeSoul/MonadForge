@@ -34,7 +34,9 @@ def test_reconcile_restores_running_daemon_job(monkeypatch):
     async def list_job_groups_page(**_kwargs):
         return {"groups": [svc._physical_job_group(job)], "total": 1}
 
-    monkeypatch.setattr(task_module.daemon_client, "list_job_groups_page", list_job_groups_page)
+    monkeypatch.setattr(
+        task_module.daemon_client, "list_job_groups_page", list_job_groups_page
+    )
     monkeypatch.setattr(
         svc,
         "_ensure_monitors",
@@ -77,7 +79,9 @@ def test_reconcile_restores_stop_requested_job_as_stopping(monkeypatch):
     async def list_job_groups_page(**_kwargs):
         return {"groups": [svc._physical_job_group(job)], "total": 1}
 
-    monkeypatch.setattr(task_module.daemon_client, "list_job_groups_page", list_job_groups_page)
+    monkeypatch.setattr(
+        task_module.daemon_client, "list_job_groups_page", list_job_groups_page
+    )
     monkeypatch.setattr(svc, "_ensure_monitors", lambda *_args, **_kwargs: None)
 
     _run(svc.reconcile_daemon_jobs())
@@ -147,7 +151,9 @@ def test_queue_poll_recovers_job_missed_at_startup(monkeypatch):
         return {"paused": False}
 
     monkeypatch.setattr(task_module.daemon_client, "list_jobs", list_jobs)
-    monkeypatch.setattr(task_module.daemon_client, "list_job_groups_page", list_job_groups_page)
+    monkeypatch.setattr(
+        task_module.daemon_client, "list_job_groups_page", list_job_groups_page
+    )
     monkeypatch.setattr(task_module.daemon_client, "health", health)
     monkeypatch.setattr(
         svc,
@@ -461,7 +467,9 @@ def test_list_tasks_page_uses_daemon_total(monkeypatch):
             "limit": 25,
         }
 
-    monkeypatch.setattr(task_module.daemon_client, "list_job_groups_page", list_job_groups_page)
+    monkeypatch.setattr(
+        task_module.daemon_client, "list_job_groups_page", list_job_groups_page
+    )
     monkeypatch.setattr(svc, "_ensure_monitors", lambda *_args, **_kwargs: None)
 
     items, total = _run(svc.list_tasks_page(state="failed", limit=25, offset=25))
@@ -507,7 +515,9 @@ def test_list_tasks_page_filters_legacy_unfiltered_daemon(monkeypatch):
             return {"jobs": unfiltered, "total": len(unfiltered)}
         return {"jobs": unfiltered, "total": len(unfiltered)}
 
-    monkeypatch.setattr(task_module.daemon_client, "list_job_groups_page", list_job_groups_page)
+    monkeypatch.setattr(
+        task_module.daemon_client, "list_job_groups_page", list_job_groups_page
+    )
     monkeypatch.setattr(task_module.daemon_client, "list_jobs_page", list_jobs_page)
     monkeypatch.setattr(svc, "_ensure_monitors", lambda *_args, **_kwargs: None)
 
@@ -516,7 +526,12 @@ def test_list_tasks_page_filters_legacy_unfiltered_daemon(monkeypatch):
     assert total == 1
     assert [item["task_id"] for item in items] == ["legacy-running"]
     assert calls == [
-        {"state": "queued,running", "offset": 0, "limit": 25, "newest_first": True},
+        {
+            "state": "queued,running,paused",
+            "offset": 0,
+            "limit": 25,
+            "newest_first": True,
+        },
     ]
 
 
@@ -538,7 +553,9 @@ def test_direct_history_access_hydrates_missing_task(monkeypatch):
         }
         return svc._physical_job_group(job)
 
-    monkeypatch.setattr(task_module.daemon_client, "get_job_group_sync", get_job_group_sync)
+    monkeypatch.setattr(
+        task_module.daemon_client, "get_job_group_sync", get_job_group_sync
+    )
 
     info = svc.get_task_info("direct-history")
 
@@ -546,7 +563,9 @@ def test_direct_history_access_hydrates_missing_task(monkeypatch):
     assert info["state"] == "success"
 
 
-def test_daemon_snapshot_persists_epoch_target_without_step_default(monkeypatch, tmp_path):
+def test_daemon_snapshot_persists_epoch_target_without_step_default(
+    monkeypatch, tmp_path
+):
     from scripts.daemon import config as daemon_config
     from scripts.daemon.manager import JobManager
 

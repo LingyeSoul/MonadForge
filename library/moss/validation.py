@@ -4,8 +4,24 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from pathlib import Path
+
+from library.env import resolve_under_home
 
 from .requests import CacheRequest, GenerateRequest, TrainRequest, TuneSwapRequest
+
+
+def training_output_paths(output: str) -> tuple[Path, Path]:
+    """Keep the adapter and its JSON report at distinct destinations."""
+    path = resolve_under_home(output)
+    if path.suffix.lower() != ".safetensors":
+        raise ValueError("MOSS LoRA output must end in .safetensors")
+    report = path.with_suffix(".json")
+    if path.resolve() == report.resolve() or (
+        path.exists() and report.exists() and path.samefile(report)
+    ):
+        raise ValueError("MOSS weights and run report must be different files")
+    return path, report
 
 
 def validate_request(
@@ -24,6 +40,7 @@ def validate_request(
                 "resolution must be at least 16 and max_text_tokens positive"
             )
     if isinstance(req, TrainRequest):
+        training_output_paths(req.output)
         if req.epochs < 1 or req.rank < 1 or req.lr <= 0 or req.max_grad_norm <= 0:
             raise ValueError(
                 "epochs, rank, learning rate and gradient limit must be positive"

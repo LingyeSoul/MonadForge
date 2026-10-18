@@ -37,6 +37,14 @@ from scripts.tasks._common import build_method_args
 pytestmark = pytest.mark.slow
 
 
+@pytest.fixture(autouse=True)
+def isolate_host_gpu(monkeypatch):
+    # All subprocesses in this suite are CPU fixtures. The production guard
+    # otherwise probes the host GPU and can unload a real inference server.
+    monkeypatch.setattr(JobManager, "_evict_resident_inference", lambda _self: None)
+    monkeypatch.setattr(gpu, "gpu_mem", lambda: (0, 10_000))
+
+
 # --------------------------------------------------------------------------
 # pure helpers
 # --------------------------------------------------------------------------
@@ -577,24 +585,32 @@ def test_stopped_job_carries_kill_rc(daemon):
 
 def test_cooperative_stop_persists_state_and_queue_continues(daemon):
     cl, _ = daemon
-    first = cl.submit(
-        method="lora", overrides={"cooperative": True, "duration": 60.0}
-    )["job_id"]
+    first = cl.submit(method="lora", overrides={"cooperative": True, "duration": 60.0})[
+        "job_id"
+    ]
     second = cl.submit(method="lora", overrides={"duration": 0.2})["job_id"]
     assert _wait_until(lambda: cl.get(first)["state"] == "running", timeout=10)
+    # ``running`` means spawned, not that Python has installed its signal
+    # handlers. Wait for the fake trainer's readiness event before asserting
+    # cooperative checkpoint behavior (an earlier stop may validly SIGTERM it).
+    progress = config.JOBS_DIR / first / "progress.jsonl"
+    assert _wait_until(
+        lambda: progress.is_file() and '"ev": "step"' in progress.read_text(),
+        timeout=10,
+    )
 
     cl.stop(first)
     assert _wait_until(lambda: cl.get(first)["state"] == "stopped", timeout=10)
     record = cl.get(first)
     assert record["status_detail"] == "cooperative stop completed"
     assert record["rc"] == 0
-    state_file = (
-        config.JOBS_DIR / first / "resume-state" / "train_state.json"
-    )
+    state_file = config.JOBS_DIR / first / "resume-state" / "train_state.json"
     assert state_file.is_file()
     events = [
         json.loads(line)
-        for line in (config.JOBS_DIR / first / "progress.jsonl").read_text().splitlines()
+        for line in (config.JOBS_DIR / first / "progress.jsonl")
+        .read_text()
+        .splitlines()
     ]
     assert events[-1]["ev"] == "run_end"
     assert events[-1]["status"] == "stopped"
@@ -726,8 +742,13 @@ def test_pause_refuses_non_running(daemon):
 
     res = cl.pause_job(jid)
     assert res.get("error") and res["state"] == "queued"
-    res = cl.resume_job(jid)
-    assert res.get("error") and res["state"] == "queued"
+    import urllib.error
+
+    with pytest.raises(urllib.error.HTTPError) as error:
+        cl.resume_job(jid)
+    assert error.value.code == 409
+    assert json.loads(error.value.read())["state"] == "queued"
+    assert cl.get(jid)["state"] == "queued"
 
     cl.start_queue()
     assert _wait_until(lambda: cl.get(jid)["state"] == "done", timeout=15)
@@ -892,7 +913,9 @@ def test_resume_selects_newest_complete_state_with_matching_run_signatures(
         manager.resume_job(source.id)
 
 
-def test_resume_discovers_raw_output_name_inside_safe_output_root(tmp_path, monkeypatch):
+def test_resume_discovers_raw_output_name_inside_safe_output_root(
+    tmp_path, monkeypatch
+):
     from library.training.state import build_train_state, write_complete_marker
 
     monkeypatch.setattr(config, "STATE_DIR", tmp_path / "daemon")
@@ -947,8 +970,7 @@ def test_recovery_state_requires_matching_logical_root_owner(tmp_path, monkeypat
     output_root = output_dir / "unit"
     snapshot = tmp_path / "source.snapshot.toml"
     snapshot.write_text(
-        f'output_dir = "{output_dir.as_posix()}"\n'
-        'output_name = "unit"\n',
+        f'output_dir = "{output_dir.as_posix()}"\noutput_name = "unit"\n',
         encoding="utf-8",
     )
 
@@ -1253,7 +1275,8 @@ def test_resume_rejects_lineage_with_active_attempt(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="only the latest attempt"):
         manager.resume_job(root.id)
-    assert manager.resume_job(active.id) is None
+    with pytest.raises(ValueError, match="neither paused nor a stopped/error"):
+        manager.resume_job(active.id)
     assert set(manager._jobs) == {"root", "active"}
 
 
@@ -2259,34 +2282,39 @@ def test_tail_lines_collapse_tqdm_redraws(tmp_path):
 # --- relocation invariants: stdlib-only boundary + compat shim ---------------
 
 
-def test_anima_daemon_is_stdlib_only():
-    """The daemon package must not import ``library`` / ``networks`` / ``torch``.
+def test_anima_daemon_startup_stays_ml_import_free():
+    """Shared runtime/continuation helpers must not load the training stack.
 
-    This is the load-bearing invariant behind the disposable-daemon design: a
-    package that stays import-light boots (and eagerly restarts) in ~1s. The
-    relocation out of ``scripts/`` turns the docstring promise into a testable
-    boundary — AST-scan every module for a forbidden top-level import.
+    Runtime selection now deliberately shares lightweight library modules.
+    Check actual clean-process startup, including MCP and JobManager, rather
+    than treating every lazy library import as an eager ML dependency.
     """
-    import ast
-    from pathlib import Path
-
-    pkg = Path(config.__file__).resolve().parent
-    forbidden = {"library", "networks", "torch"}
-    offenders = []
-    for path in sorted(pkg.glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                # level>0 is a relative import (never a top-level lib); skip.
-                names = [node.module] if (node.module and node.level == 0) else []
-            else:
-                continue
-            for name in names:
-                if name and name.split(".")[0] in forbidden:
-                    offenders.append(f"{path.name}: {name}")
-    assert not offenders, f"daemon must stay stdlib-only, found: {offenders}"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, sys; import anima_daemon.mcp; "
+            "from anima_daemon.manager import JobManager; JobManager(); "
+            "print(json.dumps(sorted(set(name.split('.')[0] for name in sys.modules))))",
+        ],
+        cwd=config.ROOT,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+    loaded = set(json.loads(result.stdout))
+    assert not loaded.intersection(
+        {
+            "torch",
+            "torchvision",
+            "transformers",
+            "accelerate",
+            "diffusers",
+            "numpy",
+            "networks",
+        }
+    )
 
 
 # --------------------------------------------------------------------------
@@ -2294,18 +2322,30 @@ def test_anima_daemon_is_stdlib_only():
 # --------------------------------------------------------------------------
 
 
-def test_build_cmd_exports_job_identity_env(tmp_path, monkeypatch):
+def test_launch_exports_job_identity_env(tmp_path, monkeypatch):
     """Every spawned job learns its id + dir via env, so a bench script inside
     it can drop a result_path.json pointer (train and command kinds alike)."""
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
-    mgr = JobManager.__new__(JobManager)
+    from types import SimpleNamespace
+
+    mgr = JobManager()
+    launches = []
+    monkeypatch.setattr(
+        proc,
+        "spawn_detached",
+        lambda *_args, **kwargs: launches.append(kwargs) or SimpleNamespace(pid=123),
+    )
+    monkeypatch.setattr(proc, "create_time", lambda _pid: 42.0)
+    monkeypatch.setattr(mgr, "_monitor", lambda *_args, **_kwargs: None)
     for kind, argv in (("command", ["tasks.py", "x"]), ("train", [])):
         job = jobs.Job(
             id=f"j-{kind}", method="lora", preset="default", kind=kind, argv=argv
         )
-        _, env = mgr._build_cmd(job)
+        mgr._launch_and_monitor(job)
+        env = launches[-1]["env"]
         assert env["ANIMA_DAEMON_JOB_ID"] == f"j-{kind}"
         assert env["ANIMA_DAEMON_JOB_DIR"] == str(config.job_dir(f"j-{kind}"))
+        assert env["ANIMA_DAEMON_ROOT_JOB_ID"] == f"j-{kind}"
 
 
 def test_lift_result_reads_pointer_and_digest(tmp_path, monkeypatch):

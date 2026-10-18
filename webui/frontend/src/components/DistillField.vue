@@ -1,5 +1,6 @@
 <template>
   <div class="distill-field">
+    <v-defaults-provider :defaults="{ VTextField: { disabled }, VTextarea: { disabled }, VSwitch: { disabled } }">
     <template v-if="field.type === 'bool'">
       <v-switch
         v-model="field.value"
@@ -68,6 +69,7 @@
       />
     </template>
 
+    </v-defaults-provider>
     <div v-if="field.comment" class="text-caption text-medium-emphasis mt-1 ml-1">
       {{ field.comment }}
     </div>
@@ -79,7 +81,7 @@ import { ref, computed, watch } from 'vue'
 import { useI18n } from '../composables/useI18n'
 import type { DistillField } from '../views/DistillView.vue'
 
-const props = defineProps<{ field: DistillField }>()
+const props = defineProps<{ field: DistillField; disabled?: boolean }>()
 const { t } = useI18n()
 
 // --- Float field with scientific notation support (mirrors ConfigField) ---
@@ -122,7 +124,9 @@ function validateFloat(val: string): true | string {
   return parseFloatInput(val) !== null ? true : t('cfInvalidNumber')
 }
 
-watch(() => props.field.value, () => { if (floatRaw.value !== null) floatRaw.value = null })
+watch(() => props.field.value, (value) => {
+  if (floatRaw.value !== null && value !== parseFloatInput(floatRaw.value)) floatRaw.value = null
+})
 
 // --- List field: JSON array or one-per-line strings ---
 
@@ -165,18 +169,4 @@ function onListInput(raw: string) {
   font-size: 0.9rem;
 }
 
-/* Focus glow */
-:deep(.v-field--focused) {
-  box-shadow: 0 0 0 2px rgba(199, 91, 26, 0.15);
-  border-radius: var(--radius-md);
-}
-
-:deep(.v-field--focused .v-field__outline) {
-  border-color: var(--forge-ember) !important;
-}
-
-/* Switch ember track */
-:deep(.v-switch__track) {
-  transition: background 0.2s ease;
-}
 </style>

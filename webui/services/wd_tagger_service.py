@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Generator
 
@@ -22,6 +23,11 @@ from PIL import Image
 from torch import Tensor
 
 from webui.services.config_service import ROOT
+from webui.services.config_storage import (
+    CONFIG_WRITE_LOCK,
+    atomic_write_text,
+    read_json_object,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +53,19 @@ _model = None
 _transform = None
 _tags: list[dict] | None = None
 _current_model: str | None = None
+_model_lock = threading.RLock()
 
 
 # ── Settings ────────────────────────────────────────────────────
 
+
 def get_settings() -> dict:
     """Read tagger settings from webui_settings.json."""
-    defaults = {"model_name": DEFAULT_MODEL, "threshold": DEFAULT_THRESHOLD, "trigger_word": DEFAULT_TRIGGER_WORD}
+    defaults = {
+        "model_name": DEFAULT_MODEL,
+        "threshold": DEFAULT_THRESHOLD,
+        "trigger_word": DEFAULT_TRIGGER_WORD,
+    }
     try:
         with open(SETTINGS_FILE, encoding="utf-8") as f:
             data = json.load(f)
@@ -66,17 +78,15 @@ def get_settings() -> dict:
 
 def save_settings(model_name: str, threshold: float, trigger_word: str = "") -> dict:
     """Persist tagger settings to webui_settings.json."""
-    try:
-        with open(SETTINGS_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = {}
-
-    data["wd_tagger"] = {"model_name": model_name, "threshold": threshold, "trigger_word": trigger_word}
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-    return data["wd_tagger"]
+    with CONFIG_WRITE_LOCK:
+        data = read_json_object(SETTINGS_FILE)
+        data["wd_tagger"] = {
+            "model_name": model_name,
+            "threshold": threshold,
+            "trigger_word": trigger_word,
+        }
+        atomic_write_text(SETTINGS_FILE, json.dumps(data, indent=2, ensure_ascii=False))
+        return data["wd_tagger"]
 
 
 def get_status() -> dict:
@@ -98,6 +108,7 @@ def get_status() -> dict:
 
 
 # ── Model management ───────────────────────────────────────────
+
 
 def _ensure_model_files(model_name: str) -> Path:
     """Download model files from HuggingFace mirror if not present locally.
@@ -126,6 +137,11 @@ def _ensure_model_files(model_name: str) -> Path:
 
 
 def _load_model(model_name: str) -> None:
+    with _model_lock:
+        _load_model_unlocked(model_name)
+
+
+def _load_model_unlocked(model_name: str) -> None:
     """Lazy-load timm model from local safetensors + tags CSV."""
     global _model, _transform, _tags, _current_model
 
@@ -150,7 +166,9 @@ def _load_model(model_name: str) -> None:
 
     # Create timm model (no pretrained download)
     logger.info("Creating WD tagger: %s (%s) on %s", model_name, arch, DEVICE)
-    _model = timm.create_model(arch, pretrained=False, num_classes=config["num_classes"], **model_args)
+    _model = timm.create_model(
+        arch, pretrained=False, num_classes=config["num_classes"], **model_args
+    )
 
     # Load local safetensors weights
     state_dict = load_file(str(weights_path))
@@ -158,7 +176,9 @@ def _load_model(model_name: str) -> None:
     _model.eval()
     _model.to(DEVICE)
 
-    _transform = create_transform(**resolve_data_config(config["pretrained_cfg"], model=_model))
+    _transform = create_transform(
+        **resolve_data_config(config["pretrained_cfg"], model=_model)
+    )
 
     # Load tags CSV
     _tags = []
@@ -174,9 +194,14 @@ def _load_model(model_name: str) -> None:
 
 # ── Preprocessing ───────────────────────────────────────────────
 
+
 def _pil_ensure_rgb(image: Image.Image) -> Image.Image:
     if image.mode not in ("RGB", "RGBA"):
-        image = image.convert("RGBA") if "transparency" in image.info else image.convert("RGB")
+        image = (
+            image.convert("RGBA")
+            if "transparency" in image.info
+            else image.convert("RGB")
+        )
     if image.mode == "RGBA":
         canvas = Image.new("RGBA", image.size, (255, 255, 255))
         canvas.alpha_composite(image)
@@ -186,7 +211,7 @@ def _pil_ensure_rgb(image: Image.Image) -> Image.Image:
 
 def _preprocess(image: Image.Image) -> Tensor:
     """RGB -> square pad -> timm transform -> NCHW tensor [1,C,H,W] RGB->BGR."""
-    image = _pil_ensure_rgb(image.convert("RGB"))
+    image = _pil_ensure_rgb(image)
     w, h = image.size
     max_dim = max(w, h)
     padded = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
@@ -199,20 +224,36 @@ def _preprocess(image: Image.Image) -> Tensor:
 
 # ── Prediction ──────────────────────────────────────────────────
 
-def predict(image_path: str | Path, threshold: float | None = None) -> dict:
+
+def predict(
+    image_path: str | Path,
+    threshold: float | None = None,
+    *,
+    model_name: str | None = None,
+) -> dict:
     """Single image -> {rating, general_tags[], character_tags[], all_above_threshold[]}.
 
     Lazy-loads the model on first call.
     """
+    with _model_lock:
+        return _predict(image_path, threshold, model_name=model_name)
+
+
+def _predict(
+    image_path: str | Path,
+    threshold: float | None = None,
+    *,
+    model_name: str | None = None,
+) -> dict:
     settings = get_settings()
-    model_name = settings["model_name"]
+    model_name = model_name or settings["model_name"]
     threshold = threshold if threshold is not None else settings["threshold"]
 
     _load_model(model_name)
     assert _model is not None and _tags is not None
 
-    img = Image.open(image_path)
-    inputs = _preprocess(img).to(DEVICE)
+    with Image.open(image_path) as img:
+        inputs = _preprocess(img).to(DEVICE)
 
     with torch.inference_mode():
         outputs = _model(inputs)
@@ -255,6 +296,7 @@ def predict(image_path: str | Path, threshold: float | None = None) -> dict:
 
 # ── Batch tagging ───────────────────────────────────────────────
 
+
 def tag_directory(
     directory: str,
     threshold: float | None = None,
@@ -269,8 +311,8 @@ def tag_directory(
     """
     from webui.services.image_service import (
         IMAGE_EXTS,
-        _append_history,
         resolve_directory,
+        save_caption,
     )
 
     base = resolve_directory(directory)
@@ -278,7 +320,9 @@ def tag_directory(
         yield {"error": f"Directory not found: {directory}"}
         return
 
-    images = sorted(p for p in base.rglob("*") if p.suffix.lower() in IMAGE_EXTS)
+    images = sorted(
+        p for p in base.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+    )
     total = len(images)
     if total == 0:
         yield {"error": "No images found in directory"}
@@ -314,7 +358,7 @@ def tag_directory(
             continue
 
         try:
-            result = predict(img_path, threshold)
+            result = predict(img_path, threshold, model_name=model_name)
 
             # Build caption: trigger word, rating, general tags, character tags
             parts = []
@@ -326,9 +370,7 @@ def tag_directory(
             caption = ", ".join(parts)
 
             # Save with history preservation
-            if txt_path.exists():
-                _append_history(txt_path, txt_path.read_text(encoding="utf-8"))
-            txt_path.write_text(caption, encoding="utf-8")
+            save_caption(directory, img_path.relative_to(base).as_posix(), caption)
 
             tagged += 1
             yield {

@@ -1,6 +1,6 @@
 /** Model-specific wording for the shared typed-request workbench. */
 const mossEn = {
-  sourcesHint: 'Select a MOSS model root containing base / edit / SR variants. Text encoder, VAE and tokenizer are resolved from the base variant; the selected model determines the DiT.',
+  sourcesHint: 'Select a MOSS model root containing MOSS-Image-Base/ and MOSS-Image-SFT/. Text encoder, VAE and tokenizer are resolved from the base variant; the selected model determines the DiT.',
   cacheHint: 'Build MOSS text embeddings and packed latent caches before training. Existing pairs are reused unless overwrite is enabled.',
   generateHint: 'Choose a model variant, prompt and optional adapter. The LoRA strength controls this generation; 0 disables the adapter.',
   autoHint: 'MOSS uses its own swap and activation-budget defaults. A swap count of -1 sizes from free VRAM. Adapter alpha follows the selected algorithm; inspect each field’s help for its default.',
@@ -9,7 +9,7 @@ const mossEn = {
   cacheNotReady: 'MOSS cache is not ready', hardware: 'MOSS parameter defaults',
 }
 const mossCn: Record<keyof typeof mossEn, string> = {
-  sourcesHint: '选择包含 base／edit／SR 变体的 MOSS 模型根目录。文本编码器、VAE 和 tokenizer 来自 base；所选模型变体决定 DiT。',
+  sourcesHint: '选择包含 MOSS-Image-Base/ 与 MOSS-Image-SFT/ 的 MOSS 模型根目录。文本编码器、VAE 和 tokenizer 来自 base；所选模型变体决定 DiT。',
   cacheHint: '训练前生成 MOSS 文本嵌入与打包潜变量缓存；未启用覆盖时复用已有缓存对。',
   generateHint: '选择模型变体、提示词及可选适配器。LoRA 强度用于当前生成，填 0 可禁用适配器。',
   autoHint: 'MOSS 使用自己的换出层数与激活内存预算默认值；换出层数填 -1 时按可用显存估算。alpha 默认值随适配器算法变化，详见对应字段说明。',

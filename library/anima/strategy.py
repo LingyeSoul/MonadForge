@@ -473,7 +473,7 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             crossattn_key = f"crossattn_emb{sfx}"
             crossattn_emb = (
                 f.get_tensor(crossattn_key)
-                if self.cache_llm_adapter_outputs and crossattn_key in keys
+                if crossattn_key in keys
                 else None
             )
             t5_attn_mask = (
@@ -491,6 +491,13 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                 # none_or_stack_elements.
                 prompt_embeds = attn_mask = t5_input_ids = None
             else:
+                required = [f"{name}{sfx}" for name in ("prompt_embeds", "attn_mask", "t5_input_ids")]
+                missing = [key for key in required if key not in keys]
+                if missing:
+                    raise RuntimeError(
+                        f"incompatible cache format in {cache_path}: missing {missing}; "
+                        "rebuild the text encoder cache"
+                    )
                 prompt_embeds = f.get_tensor(f"prompt_embeds{sfx}")
                 attn_mask = f.get_tensor(f"attn_mask{sfx}")
                 t5_input_ids = f.get_tensor(f"t5_input_ids{sfx}")

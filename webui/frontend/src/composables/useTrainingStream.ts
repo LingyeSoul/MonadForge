@@ -1,3 +1,4 @@
+import { isTaskTerminal } from '../utils/taskState.ts'
 import { ref, type Ref } from 'vue'
 import { useTrainingStore } from '../stores/training'
 import type { TrainingMetrics } from '../stores/training'
@@ -43,6 +44,7 @@ export function useTrainingStream(taskId: string): LogStreamHandle & {
   let reconnectTimer = 0
   let reconnectAttempt = 0
   let manuallyClosed = false
+  let connectionVersion = 0
   let seq = 0
 
   // Skip WS replay lines already loaded via REST
@@ -117,6 +119,8 @@ export function useTrainingStream(taskId: string): LogStreamHandle & {
 
   async function open() {
     if (manuallyClosed) return
+    const version = connectionVersion
+    const active = () => !manuallyClosed && version === connectionVersion
     closeSocket()
 
     // Load accumulated history + metrics before opening the live stream so a
@@ -126,6 +130,7 @@ export function useTrainingStream(taskId: string): LogStreamHandle & {
       const res = await fetch(`/api/tasks/${taskId}/output`)
       if (res.ok) {
         const data = await res.json()
+        if (!active()) return
         if (Array.isArray(data.lines)) {
           historyCount = data.lines.length
           historyTotal.value = data.total ?? historyCount
@@ -135,7 +140,7 @@ export function useTrainingStream(taskId: string): LogStreamHandle & {
           lines.value = data.lines.slice(-MAX_RENDERED_LINES).map((line: string) => makeLogLine(seq++, line))
           activity.value++
         }
-        if (data.state && data.state !== 'running' && data.state !== 'pending') {
+        if (data.state && isTaskTerminal(data.state)) {
           done.value = true
           exitCode.value = data.exit_code ?? null
           store.done = true
@@ -146,10 +151,11 @@ export function useTrainingStream(taskId: string): LogStreamHandle & {
     }
 
     // Load existing metrics snapshot
-    await store.loadFromRest(taskId)
+    if (!active()) return
+    await store.loadFromRest(taskId, active)
 
     replayRemaining = historyCount
-    if (manuallyClosed || done.value) return
+    if (!active() || done.value) return
 
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     ws = new WebSocket(`${protocol}//${location.host}/ws/tasks/${taskId}`)
@@ -161,6 +167,7 @@ export function useTrainingStream(taskId: string): LogStreamHandle & {
     }
 
     ws.onmessage = (event) => {
+      if (!active()) return
       try {
         const msg: WsMessage = JSON.parse(event.data)
         if (msg.type === 'log' && msg.line) {
@@ -217,6 +224,7 @@ export function useTrainingStream(taskId: string): LogStreamHandle & {
   }
 
   async function connect() {
+    connectionVersion++
     manuallyClosed = false
     reconnectAttempt = 0
     done.value = false
@@ -235,6 +243,7 @@ export function useTrainingStream(taskId: string): LogStreamHandle & {
   }
 
   function disconnect() {
+    connectionVersion++
     manuallyClosed = true
     if (reconnectTimer) clearTimeout(reconnectTimer)
     reconnectTimer = 0

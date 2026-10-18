@@ -103,15 +103,17 @@ export function createDropdown({ root, onPick }) {
     if (!o) return;
     closePanel();
     setValue(o.id);
+    trigger.focus();
     onPick(o.id);
   }
 
   trigger.addEventListener('click', () => { open ? closePanel() : openPanel(); });
   trigger.addEventListener('keydown', e => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open ? closePanel() : openPanel(); }
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open ? pick(cursor) : openPanel(); }
     if (e.key === 'ArrowDown') { e.preventDefault(); open ? moveCursor(cursor + 1) : openPanel(); }
     if (e.key === 'ArrowUp') { e.preventDefault(); open ? moveCursor(cursor - 1) : openPanel(); }
     if (e.key === 'Escape' && open) { e.preventDefault(); closePanel(); }
+    if (e.key === 'Tab' && open) closePanel();
   });
   panel.addEventListener('click', e => {
     const row = e.target.closest('.mdd-row');

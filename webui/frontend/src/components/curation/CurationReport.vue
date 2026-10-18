@@ -20,7 +20,7 @@
         <v-progress-linear v-if="proposalLoading" indeterminate />
         <template v-if="proposal">
           <div class="text-caption mb-2 proposal-path">{{ proposal.status }} · {{ proposal.kind }} · {{ proposal.path }}</div>
-          <v-row dense><v-col cols="12" md="6"><div class="text-caption mb-1">{{ tr('before') }}</div><pre class="proposal-text">{{ proposal.before }}</pre></v-col><v-col cols="12" md="6"><div class="text-caption mb-1">{{ tr('after') }}</div><pre class="proposal-text">{{ proposal.after }}</pre></v-col></v-row>
+          <v-row density="comfortable"><v-col cols="12" md="6"><div class="text-caption mb-1">{{ tr('before') }}</div><pre class="proposal-text">{{ proposal.before }}</pre></v-col><v-col cols="12" md="6"><div class="text-caption mb-1">{{ tr('after') }}</div><pre class="proposal-text">{{ proposal.after }}</pre></v-col></v-row>
           <div class="proposal-diff mt-2"><span>{{ diff.prefix }}</span><del>{{ diff.removed }}</del><ins>{{ diff.added }}</ins><span>{{ diff.suffix }}</span></div>
         </template>
       </template>
@@ -37,6 +37,7 @@
   </v-card>
 </template>
 <script setup lang="ts">
+import { isTaskActive } from '../../utils/taskState.ts'
 import { computed, ref, watch } from 'vue'
 import type { UnwrapNestedRefs } from 'vue'
 import { useAppStore } from '../../stores/app'
@@ -72,7 +73,7 @@ async function load(): Promise<void> {
   const index = ++requestIndex
   proposalRequestIndex++
   loading.value = true; failure.value = ''; reportData.value = null; proposal.value = null; proposalRels.value = []; reviewed.value = new Set(); acknowledged.value = false; rowPage.value = 1
-  if (['pending', 'queued', 'running', 'stopping'].includes(props.job.state)) {
+  if (isTaskActive(props.job.state)) {
     failure.value = tr('noReport'); loading.value = false; return
   }
   try {

@@ -1,7 +1,6 @@
 <template>
   <v-container fluid class="pa-4">
-    <div class="text-h5 mb-1">{{ t('adTitle') }}</div>
-    <div class="text-body-2 text-medium-emphasis mb-4">{{ t('adSubtitle') }}</div>
+    <WorkspaceHeading :title="t('adTitle')" :subtitle="t('adSubtitle')" />
 
     <v-row>
       <v-col cols="12" md="6">
@@ -15,8 +14,13 @@
             <v-alert type="info" variant="tonal" density="compact" class="mb-2">
               <span v-html="t('adIpHint')" />
             </v-alert>
+            <v-progress-linear v-if="statsLoading['ip']" indeterminate class="mt-2" />
+            <v-alert v-if="statsErrors['ip']" data-testid="adapter-ip-stats-error" type="error" variant="tonal" density="compact" class="mt-2">
+              {{ t('adSourceImages') }} · {{ statsErrors['ip'] }}
+              <template #append><v-btn data-testid="adapter-ip-stats-retry" variant="text" size="small" :loading="statsLoading['ip']" @click="fetchStats('image_dataset', 'ip')">{{ t('cfgReload') }}</v-btn></template>
+            </v-alert>
             <!-- Dataset stats -->
-            <v-row dense class="mt-2" v-if="adapterStats['ip']">
+            <v-row density="comfortable" class="mt-2" v-if="adapterStats['ip']">
               <v-col cols="auto">
                 <v-chip prepend-icon="mdi-image" variant="tonal"
                         :color="adapterStats['ip'].source_count > 0 ? 'success' : 'default'" size="small">
@@ -88,8 +92,13 @@
             <v-alert type="info" variant="tonal" density="compact" class="mb-2">
               <span v-html="t('adEasyHint')" />
             </v-alert>
+            <v-progress-linear v-if="statsLoading['ec']" indeterminate class="mt-2" />
+            <v-alert v-if="statsErrors['ec']" data-testid="adapter-ec-stats-error" type="error" variant="tonal" density="compact" class="mt-2">
+              {{ t('adSourceImages') }} · {{ statsErrors['ec'] }}
+              <template #append><v-btn data-testid="adapter-ec-stats-retry" variant="text" size="small" :loading="statsLoading['ec']" @click="fetchStats('easycontrol-dataset', 'ec')">{{ t('cfgReload') }}</v-btn></template>
+            </v-alert>
             <!-- Dataset stats -->
-            <v-row dense class="mt-2" v-if="adapterStats['ec']">
+            <v-row density="comfortable" class="mt-2" v-if="adapterStats['ec']">
               <v-col cols="auto">
                 <v-chip prepend-icon="mdi-image" variant="tonal"
                         :color="adapterStats['ec'].source_count > 0 ? 'success' : 'default'" size="small">
@@ -161,17 +170,24 @@
 
     <v-divider class="my-4" />
 
-    <div class="text-subtitle-1 mb-2">{{ t('adActiveTasks') }}</div>
-    <v-list v-if="adapterTasks.length > 0" density="compact">
+    <div class="d-flex align-center mb-2">
+      <div class="text-subtitle-1">{{ t('adActiveTasks') }}</div><v-spacer />
+      <v-btn variant="text" size="small" prepend-icon="mdi-refresh" :loading="refreshingTasks" @click="refreshTasks">{{ t('ppRefresh') }}</v-btn>
+    </div>
+    <v-alert v-if="taskStore.taskListError" data-testid="adapter-tasks-error" type="error" variant="tonal" density="compact">
+      {{ t('taskLoadFailed') }}
+      <template #append><v-btn data-testid="adapter-tasks-retry" variant="text" size="small" :loading="refreshingTasks" @click="refreshTasks">{{ t('cfgReload') }}</v-btn></template>
+    </v-alert>
+    <v-list v-else-if="adapterTasks.length > 0" density="compact">
       <v-list-item
         v-for="task in visibleTasks"
-        :key="task.task_id"
+        :key="task.task_id" :to="{ path: '/tasks', query: { task: task.task_id } }"
         :title="task.command"
         :subtitle="`${task.task_id.slice(0, 8)} | ${t('taskState')}: ${task.state} | PID: ${task.pid ?? '—'}`"
       >
         <template #append>
           <v-chip size="small" :color="stateColor(task.state)" variant="tonal">{{ task.state }}</v-chip>
-          <v-btn v-if="task.state === 'running' || task.state === 'pending'" icon="mdi-stop" size="small" variant="text" color="error" @click="taskStore.cancelTask(task.task_id)" />
+          <TaskStopButton v-if="isTaskStoppable(task.state)" :task-id="task.task_id" />
         </template>
       </v-list-item>
     </v-list>
@@ -190,6 +206,9 @@
 </template>
 
 <script setup lang="ts">
+import { isTaskActive, isTaskStoppable } from '../utils/taskState.ts'
+import WorkspaceHeading from '../components/WorkspaceHeading.vue'
+import TaskStopButton from '../components/TaskStopButton.vue'
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
@@ -198,7 +217,14 @@ import { useI18n } from '../composables/useI18n'
 const taskStore = useTaskStore()
 const notify = useNotifyStore()
 const { t } = useI18n()
-taskStore.fetchTasks()
+const refreshingTasks = ref(false)
+async function refreshTasks(): Promise<void> {
+  if (refreshingTasks.value) return
+  refreshingTasks.value = true
+  try { await taskStore.fetchTasks() }
+  finally { refreshingTasks.value = false }
+}
+void refreshTasks()
 
 const adapterCommands = [
   'easycontrol', 'easycontrol-preprocess',
@@ -218,10 +244,11 @@ const visibleTasks = computed(() =>
 const hasHiddenTasks = computed(() => adapterTasks.value.length > TASK_PREVIEW_LIMIT)
 
 function isRunning(command: string) {
-  return taskStore.tasks.some(tp => tp.command === command && tp.state === 'running')
+  return taskStore.tasks.some(tp => tp.command === command && isTaskActive(tp.state))
 }
 
 function stateColor(state: string) {
+  if (state === 'paused') return 'warning'
   if (state === 'running' || state === 'stopping') return 'info'
   if (state === 'success') return 'success'
   if (state === 'failed') return 'error'
@@ -229,6 +256,7 @@ function stateColor(state: string) {
 }
 
 async function runTask(command: string) {
+  if (taskStore.loading || isRunning(command)) return
   const taskId = await taskStore.startTask(command)
   if (taskId) {
     notify.show(t('notifyTaskStarted', { command }), 'success')
@@ -246,12 +274,25 @@ interface AdapterStatsData { source_count: number; caption_count: number; cache:
 const ipPreviewImages = ref<PreviewImage[]>([])
 const ecPreviewImages = ref<PreviewImage[]>([])
 const adapterStats = reactive<Record<string, AdapterStatsData>>({})
+const statsErrors = reactive<Record<string, string>>({})
+const statsLoading = reactive<Record<string, boolean>>({})
 
 async function fetchStats(dir: string, key: string) {
+  if (statsLoading[key]) return
+  statsLoading[key] = true
+  statsErrors[key] = ''
   try {
     const res = await fetch(`/api/preprocess/adapter-stats?dir=${encodeURIComponent(dir)}`)
-    if (res.ok) adapterStats[key] = await res.json()
-  } catch { /* silent */ }
+    if (!res.ok) {
+      let message = `HTTP ${res.status}`
+      try { const body = await res.json(); if (typeof body.detail === 'string') message = body.detail } catch { /* Keep HTTP status for non-JSON responses. */ }
+      throw new Error(message)
+    }
+    adapterStats[key] = await res.json()
+  } catch (cause) {
+    delete adapterStats[key]
+    statsErrors[key] = cause instanceof Error ? cause.message : String(cause)
+  } finally { statsLoading[key] = false }
 }
 async function fetchPreview(dir: string): Promise<PreviewImage[]> {
   try {

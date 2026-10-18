@@ -27,6 +27,13 @@ class StageSpec:
 
     def contains_progress(self, progress: float) -> bool:
         progress = max(0.0, min(1.0, float(progress)))
+        # Percent-to-fraction conversion and step/total division can land on
+        # opposite sides of the same boundary (for example 100/3% and 1/3).
+        # Match the tolerance used when compiling integer stage boundaries.
+        if math.isclose(progress, self.start_pct, rel_tol=0.0, abs_tol=1e-12):
+            progress = self.start_pct
+        if math.isclose(progress, self.end_pct, rel_tol=0.0, abs_tol=1e-12):
+            progress = self.end_pct
         if self.end_pct >= 1.0 - 1e-12:
             return progress >= self.start_pct
         return self.start_pct <= progress < self.end_pct

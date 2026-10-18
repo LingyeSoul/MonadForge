@@ -44,7 +44,6 @@
       </div>
       <p class="text-caption text-medium-emphasis path-label mb-3">{{ version?.note }} {{ version?.path }}</p>
       <v-alert v-if="!version?.editable" type="info" variant="tonal" density="compact" class="mb-3">{{ tr('readOnly') }}</v-alert>
-      <v-alert v-if="savedStale" type="warning" variant="tonal" density="compact" class="mb-3">{{ tr('stale') }}</v-alert>
       <v-textarea v-model="text" data-testid="curation-caption-editor" :label="tr('editor')" :readonly="!version?.editable" :disabled="busy" rows="5" auto-grow hide-details />
       <div class="d-flex flex-wrap align-center ga-2 mt-2 mb-4">
         <v-btn v-if="version?.editable" data-testid="curation-caption-save" size="small" color="primary" :disabled="!dirty || busy || parsePending" @click="save">{{ tr('save') }}</v-btn>
@@ -105,10 +104,10 @@ const compareVersion = computed(() => props.item.versions.find(entry => entry.ki
 const diff = computed(() => captionDiff(compareVersion.value?.text || '', text.value))
 const dirty = computed(() => text.value !== (version.value?.text || ''))
 watch(dirty, value => emit('dirty', value))
-const savedStale = ref(false), parsed = ref<ParsedCaption | null>(null), parseError = ref(''), parsePending = ref(false)
+const parsed = ref<ParsedCaption | null>(null), parseError = ref(''), parsePending = ref(false)
 let parseTimer: ReturnType<typeof setTimeout> | undefined
 let parseIndex = 0
-function resetText(): void { text.value = version.value?.text || ''; parsed.value = version.value?.parsed || null; savedStale.value = false }
+function resetText(): void { text.value = version.value?.text || ''; parsed.value = version.value?.parsed || null }
 watch(() => props.item, () => {
   if (!props.item.versions.some(entry => entry.kind === versionKind.value)) versionKind.value = props.item.versions.find(entry => entry.editable)?.kind || props.item.versions[0]?.kind || 'master'
   resetText()
@@ -126,10 +125,10 @@ watch(text, value => {
 onBeforeUnmount(() => { clearTimeout(parseTimer); parseIndex++; discardResolve?.(false) })
 const discardOpen = ref(false)
 let discardResolve: ((value: boolean) => void) | undefined
-async function requestLeave(): Promise<boolean> { if (!dirty.value) return true; discardOpen.value = true; return new Promise(resolve => { discardResolve = resolve }) }
+async function requestLeave(): Promise<boolean> { if (props.busy) return false; if (!dirty.value) return true; discardResolve?.(false); discardOpen.value = true; return new Promise(resolve => { discardResolve = resolve }) }
 function resolveDiscard(value: boolean): void { discardOpen.value = false; discardResolve?.(value); discardResolve = undefined }
 async function selectVersion(kind: string): Promise<void> { if (kind === versionKind.value || !await requestLeave()) return; versionKind.value = kind; resetText() }
-function save(): void { if (version.value?.editable) { emit('save', versionKind.value, text.value); savedStale.value = true } }
+function save(): void { if (version.value?.editable && dirty.value && !props.busy && !parsePending.value) emit('save', versionKind.value, text.value) }
 defineExpose({ requestLeave })
 const newTag = ref(''), clauseTag = ref<Record<number, string>>({}), clausePrefix = ref('On the '), clausePosition = ref('')
 const canStructureEdit = computed(() => Boolean(version.value?.editable && !props.busy && !parsePending.value && !parseError.value))

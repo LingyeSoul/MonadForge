@@ -89,6 +89,7 @@ export const useTrainingStore = defineStore('training', () => {
   const metrics = shallowRef<TrainingMetrics>({ ...emptyMetrics })
   const connected = ref(false)
   const done = ref(false)
+  let generation = 0
 
   // Attempt + path is the durable key: resumed attempts use independent
   // sample directories and may legitimately emit the same basename.
@@ -122,6 +123,7 @@ export const useTrainingStore = defineStore('training', () => {
   }
 
   function reset() {
+    generation++
     metrics.value = {
       ...emptyMetrics,
       events: [],
@@ -135,16 +137,21 @@ export const useTrainingStore = defineStore('training', () => {
     done.value = false
   }
 
-  async function loadFromRest(taskId: string) {
+  async function loadFromRest(taskId: string, isCurrent: () => boolean = () => true) {
+    const requestGeneration = generation
+    const active = () => generation === requestGeneration && isCurrent()
     try {
       const res = await fetch(`/api/tasks/${taskId}/metrics`)
       if (res.ok) {
         const data = await res.json()
+        if (!active()) return
         metrics.value = { ...metrics.value, ...data }
       }
     } catch {
       // ignore — WS will catch up
     }
+
+    if (!active()) return
 
     // Backfill the sample history from disk so a late-joining viewer (or
     // a page reload) sees previews that were generated before the WS
@@ -155,6 +162,7 @@ export const useTrainingStore = defineStore('training', () => {
       )
       if (!res.ok) return
       const data = await res.json()
+      if (!active()) return
       const items: any[] = data?.items || []
       // REST returns newest-first; reverse so sample_history is oldest-first
       // and ``latest_sample`` ends up pointing at the newest file.

@@ -1,8 +1,6 @@
 <template>
   <v-container fluid class="pa-4 d-flex flex-column models-page">
-    <div class="d-flex align-center mb-1">
-      <div class="text-h5">{{ t('mmTitle') }}</div>
-      <v-spacer />
+    <WorkspaceHeading :title="t('mmTitle')" :subtitle="t('mmSubtitle')">
       <v-btn
         variant="tonal"
         color="primary"
@@ -12,8 +10,7 @@
       >
         {{ t('mmReload') }}
       </v-btn>
-    </div>
-    <div class="text-body-2 text-medium-emphasis mb-4">{{ t('mmSubtitle') }}</div>
+    </WorkspaceHeading>
 
     <div class="d-flex align-center ga-3 mb-3 flex-wrap">
       <v-text-field
@@ -31,7 +28,9 @@
       </v-chip>
     </div>
 
+    <v-alert v-if="loadError" type="error" variant="tonal" class="mb-3">{{ loadError }}</v-alert>
     <v-card variant="tonal" class="flex-grow-1 models-scroll">
+      <v-progress-linear v-if="loading" indeterminate />
       <v-table v-if="filteredModels.length > 0" hover>
         <thead>
           <tr>
@@ -45,7 +44,7 @@
         </thead>
         <tbody>
           <tr v-for="m in filteredModels" :key="m.path">
-            <td>
+            <td class="model-name">
               <div class="text-body-2 font-weight-medium">{{ m.name }}</div>
               <div class="text-caption text-medium-emphasis">{{ m.directory }}</div>
             </td>
@@ -63,6 +62,7 @@
                 size="small"
                 variant="text"
                 :title="t('mmDownload')"
+                :aria-label="t('mmDownload')"
                 :href="downloadUrl(m)"
               />
               <v-btn
@@ -70,6 +70,8 @@
                 size="small"
                 variant="text"
                 :title="t('mmDetails')"
+                :aria-label="t('mmDetails')"
+                :loading="detailsPath === m.path"
                 @click="openDetails(m)"
               />
               <v-btn
@@ -78,22 +80,25 @@
                 variant="text"
                 color="error"
                 :title="t('mmDelete')"
+                :aria-label="t('mmDelete')"
                 :loading="deletingPath === m.path"
-                @click="deleteModel(m)"
+                :disabled="Boolean(deletingPath)"
+                @click="pendingDelete = m"
               />
             </td>
           </tr>
         </tbody>
       </v-table>
-      <div v-else-if="!loading" class="text-center pa-10">
+      <div v-else-if="!loading && !loadError" class="text-center pa-10">
         <v-icon icon="mdi-cube-outline" size="48" class="mb-3 text-medium-emphasis" />
-        <div class="text-body-1">{{ t('mmEmpty') }}</div>
-        <div class="text-body-2 text-medium-emphasis mt-1">{{ t('mmEmptyHint') }}</div>
+        <div class="text-body-1">{{ t(models.length ? 'mmNoMatches' : 'mmEmpty') }}</div>
+        <v-btn v-if="models.length" variant="text" class="mt-2" @click="search = ''">{{ t('cfgClearSearch') }}</v-btn>
+        <div v-else class="text-body-2 text-medium-emphasis mt-1">{{ t('mmEmptyHint') }}</div>
       </div>
     </v-card>
 
     <!-- Details dialog: training metadata of one adapter -->
-    <v-dialog v-model="detailsOpen" max-width="720">
+    <v-dialog v-model="detailsOpen" max-width="720" scrollable>
       <v-card v-if="details">
         <v-card-title class="d-flex align-center ga-2">
           <span class="text-subtitle-1">{{ t('mmDetailsTitle') }}</span>
@@ -101,11 +106,11 @@
             {{ details.type_label }}
           </v-chip>
           <v-spacer />
-          <v-btn icon="mdi-close" size="small" variant="text" @click="detailsOpen = false" />
+          <v-btn icon="mdi-close" size="small" variant="text" :aria-label="t('dsClose')" @click="detailsOpen = false" />
         </v-card-title>
         <v-card-text>
-          <div class="text-body-2 font-weight-medium mb-1">{{ details.name }}</div>
-          <div class="text-caption text-medium-emphasis mb-3">
+          <div class="text-body-2 font-weight-medium mb-1 model-path">{{ details.name }}</div>
+          <div class="text-caption text-medium-emphasis mb-3 model-path">
             {{ details.size_human }} · {{ details.path }}
           </div>
 
@@ -114,7 +119,7 @@
               <tbody>
                 <tr v-for="row in summaryRows" :key="row.label">
                   <td class="text-medium-emphasis" style="width: 40%">{{ row.label }}</td>
-                  <td class="text-body-2">{{ row.value }}</td>
+                  <td class="text-body-2 model-path">{{ row.value }}</td>
                 </tr>
               </tbody>
             </v-table>
@@ -141,6 +146,17 @@
         </v-card-text>
       </v-card>
     </v-dialog>
+    <v-dialog :model-value="Boolean(pendingDelete)" max-width="480" :persistent="Boolean(deletingPath)" @update:model-value="value => { if (!value) pendingDelete = null }">
+      <v-card>
+        <v-card-title>{{ t('mmDelete') }}</v-card-title>
+        <v-card-text class="model-path">{{ t('mmDeleteConfirm', { name: pendingDelete?.name || '' }) }}</v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" :disabled="Boolean(deletingPath)" @click="pendingDelete = null">{{ t('cfCancel') }}</v-btn>
+          <v-btn color="error" variant="flat" :loading="Boolean(deletingPath)" @click="confirmDelete">{{ t('mmDelete') }}</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -148,6 +164,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from '../composables/useI18n'
 import { useNotifyStore } from '../stores/notify'
+import WorkspaceHeading from '../components/WorkspaceHeading.vue'
 
 interface ModelEntry {
   name: string
@@ -181,10 +198,14 @@ const notify = useNotifyStore()
 
 const models = ref<ModelEntry[]>([])
 const loading = ref(false)
+const loadError = ref('')
 const search = ref('')
 const deletingPath = ref('')
 const detailsOpen = ref(false)
 const details = ref<ModelMetadata | null>(null)
+const detailsPath = ref('')
+const pendingDelete = ref<ModelEntry | null>(null)
+let detailsRequest = 0
 
 const TYPE_COLORS: Record<string, string> = {
   lora: 'primary',
@@ -286,33 +307,41 @@ function downloadUrl(m: ModelEntry): string {
 }
 
 async function fetchModels() {
+  if (loading.value) return
   loading.value = true
+  loadError.value = ''
   try {
     const res = await fetch('/api/models')
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     models.value = data.models ?? []
   } catch (e) {
-    models.value = []
-    notify.show(t('mmLoadFailed', { error: String(e) }), 'error')
+    loadError.value = t('mmLoadFailed', { error: String(e) })
   } finally {
     loading.value = false
   }
 }
 
 async function openDetails(m: ModelEntry) {
+  const request = ++detailsRequest
+  detailsPath.value = m.path
   try {
     const res = await fetch(`/api/models/metadata?path=${encodeURIComponent(m.path)}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    details.value = await res.json()
+    const result = await res.json()
+    if (request !== detailsRequest) return
+    details.value = result
     detailsOpen.value = true
   } catch (e) {
-    notify.show(t('mmLoadFailed', { error: String(e) }), 'error')
+    if (request === detailsRequest) notify.show(t('mmLoadFailed', { error: String(e) }), 'error')
+  } finally {
+    if (request === detailsRequest) detailsPath.value = ''
   }
 }
 
-async function deleteModel(m: ModelEntry) {
-  if (!window.confirm(t('mmDeleteConfirm', { name: m.name }))) return
+async function confirmDelete() {
+  const m = pendingDelete.value
+  if (!m || deletingPath.value) return
   deletingPath.value = m.path
   try {
     const res = await fetch(`/api/models?path=${encodeURIComponent(m.path)}`, {
@@ -323,6 +352,7 @@ async function deleteModel(m: ModelEntry) {
       throw new Error(body.detail ?? `HTTP ${res.status}`)
     }
     models.value = models.value.filter((x) => x.path !== m.path)
+    pendingDelete.value = null
     notify.show(t('mmDeleted', { name: m.name }), 'success')
   } catch (e) {
     notify.show(t('mmDeleteFailed', { error: String(e) }), 'error')
@@ -338,6 +368,8 @@ onMounted(fetchModels)
 .models-scroll {
   overflow-y: auto;
 }
+.model-name { min-width: 220px; }
+.model-name > div, .model-path { overflow-wrap: anywhere; }
 .mono-block {
   font-family: monospace;
   background: rgba(128, 128, 128, 0.08);

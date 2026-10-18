@@ -1,171 +1,79 @@
 <template>
   <v-container fluid class="pa-4 config-editor">
-    <header class="workspace-heading">
-      <div>
-        <h1>{{ t('cfgWorkspaceTitle') }}</h1>
-        <p>{{ workspace.family === 'anima' ? t('cfgWorkspaceMeta') : `${qwen.label} / ${t('qwTrainingParameters')}` }}</p>
-      </div>
+    <WorkspaceHeading :title="t('cfgWorkspaceTitle')" :subtitle="t('cfgWorkspaceMeta', { model: modelLabel(workspace.family) })">
       <span v-if="workspaceDirty" class="config-dirty" role="status">
         <v-icon icon="mdi-circle-small" size="20" />{{ t('cfgPendingChanges') }}
       </span>
-    </header>
-    <div class="config-toolbar">
-      <v-select :model-value="workspace.family" :items="modelItems" :label="t('qwBaseModel')" density="compact" variant="outlined" hide-details data-testid="config-model-family" :disabled="trainingLaunching || qwen.busy || continuation.active" @update:model-value="requestModelChange" />
-      <RuntimeSelector :disabled="trainingLaunching || qwen.busy || continuation.active || taskStore.loading" />
-      <template v-if="workspace.family === 'anima'">
-      <div class="config-toolbar__method">
-        <v-select
-          v-model="selectedMethod"
-          :items="configStore.methods"
-          :label="t('cfgMethod')"
-          :disabled="continuation.active || trainingLaunching"
-          variant="outlined"
-          density="compact"
-          hide-details
-          @update:model-value="onMethodChange"
-        />
-      </div>
-      <div class="config-toolbar__variant">
-        <v-select
-          v-model="selectedVariant"
-          data-testid="config-variant"
-          :items="variantItems"
-          item-title="label"
-          item-value="value"
-          :label="t('cfgVariant')"
-          variant="outlined"
-          density="compact"
-          hide-details
-          :disabled="!selectedMethod || continuation.active || trainingLaunching"
-          @update:model-value="onVariantChange"
-        />
-        <v-btn
-          icon="mdi-plus"
-          variant="text"
-          density="compact"
-          size="small"
-          :disabled="!selectedMethod || continuation.active"
-          :title="t('cfgNewVariant')"
-          :aria-label="t('cfgNewVariant')"
-          @click="openCreateVariant"
-        >
-          <v-icon icon="mdi-plus" />
-          <v-tooltip activator="parent">{{ t('cfgNewVariant') }}</v-tooltip>
-        </v-btn>
-      </div>
-      <div class="config-toolbar__preset">
-          <v-select
-            v-model="selectedPreset"
-            :items="continuation.presetItems"
-            :disabled="continuation.active || trainingLaunching"
-            :label="t('cfgPreset')"
-            variant="outlined"
-            density="compact"
-            hide-details
-            @update:model-value="onVariantChange"
-          />
-          <v-btn
-            icon="mdi-plus"
-            variant="text"
-            density="compact"
-            size="small"
-            :disabled="continuation.active"
-            :title="t('cfgPresetCreate')"
-            :aria-label="t('cfgPresetCreate')"
-            @click="openCreatePreset"
-          />
-          <v-btn
-            v-if="isCustomPreset"
-            icon="mdi-delete-outline"
-            variant="text"
-            density="compact"
-            size="small"
-            color="error"
-            :disabled="continuation.active"
-            :title="t('cfgPresetDelete')"
-            @click="deleteCurrentPreset"
-          />
-      </div>
-      <v-select
-        :model-value="continuation.selected"
-        :items="trainingTaskItems"
-        :label="t('cfgTrainingTask')"
-        :placeholder="t('cfgTrainingTaskEmpty')"
-        :loading="continuation.loading || continuation.listLoading"
-        :disabled="!selectedVariant || trainingLaunching || configStore.loading"
-        item-title="title"
-        item-value="value"
-        clearable
-        persistent-placeholder
-        variant="outlined"
-        density="compact"
-        hide-details
-        data-testid="training-task-select"
-        @update:model-value="continuation.select"
-        @update:menu="(open) => open && continuation.fetchCandidates(selectedVariant)"
-      />
-      <div class="config-toolbar__actions">
-        <v-btn
-          :color="(configStore.dirty || extraArgs) ? 'warning' : 'primary'"
-          :loading="configStore.loading"
-          :disabled="!configStore.dirty && !extraArgs"
-          icon="mdi-content-save-outline"
-          variant="text"
-          size="small"
-          :aria-label="t('cfgSave')"
-          @click="onSave"
-        >
-          <v-icon icon="mdi-content-save-outline" />
-          <v-tooltip activator="parent">{{ t('cfgSave') }}</v-tooltip>
-        </v-btn>
-        <v-btn
-          variant="text"
-          :disabled="!selectedVariant || continuation.loading"
-          icon="mdi-refresh"
-          size="small"
-          :aria-label="t('cfgReload')"
-          @click="loadConfig"
-        >
-          <v-icon icon="mdi-refresh" />
-          <v-tooltip activator="parent">{{ t('cfgReload') }}</v-tooltip>
-        </v-btn>
-        <v-btn
-          color="primary"
-          :disabled="!selectedVariant || (continuation.active && !continuation.ready)"
-          :loading="trainingLaunching"
-          prepend-icon="mdi-play"
-          @click="startTraining"
-        >
-          {{ t('cfgTrain') }}
-        </v-btn>
-        <v-btn
-          variant="outlined"
-          :disabled="!selectedVariant"
-          :loading="testLaunching"
-          prepend-icon="mdi-test-tube"
-          @click="startTest"
-        >
-          {{ t('cfgTest') }}
-        </v-btn>
-      </div>
+    </WorkspaceHeading>
+    <ConfigToolbar>
+      <template #model>
+        <v-select :model-value="workspace.family" :items="modelItems" :label="t('qwBaseModel')"
+          density="compact" variant="outlined" hide-details data-testid="config-model-family"
+          :disabled="toolbarBusy || continuation.active" @update:model-value="requestModelChange" />
       </template>
-      <template v-else>
-        <v-text-field :model-value="String(qwen.draft?.train.algo || 'LoRA').toUpperCase()" :label="t('cfgMethod')" readonly variant="outlined" density="compact" hide-details />
-        <div class="config-toolbar__variant">
-          <v-select :model-value="qwen.profile" :items="qwen.profiles" :label="t('qwProfile')" :disabled="qwen.busy" hide-details density="compact" variant="outlined" data-testid="qwen-profile-select" @update:model-value="requestProfileChange" />
-          <v-btn data-testid="qwen-profile-new" icon="mdi-plus" variant="text" size="small" :aria-label="t('qwNewProfile')" :disabled="!qwen.draft || qwen.busy" @click="profileDialog = true" />
-        </div>
-        <v-text-field :model-value="qwen.family === 'moss' ? mossText(appStore.language, 'hardware') : t('qwAutomaticHardware')" :label="t('cfgPreset')" readonly density="compact" variant="outlined" hide-details />
-        <div class="config-toolbar__actions">
-          <v-btn data-testid="qwen-profile-save" icon="mdi-content-save-outline" variant="text" :aria-label="t('cfgSave')" :disabled="!qwen.dirty || qwen.busy" @click="qwen.perform(qwen.save)" />
-          <v-btn data-testid="qwen-profile-reload" icon="mdi-refresh" variant="text" :aria-label="t('cfgReload')" :disabled="!qwen.draft || qwen.busy" @click="requestProfileChange(qwen.profile)" />
-          <v-btn data-testid="qwen-train-submit" color="primary" prepend-icon="mdi-play" :loading="qwen.busy" :disabled="!qwen.draft" @click="startQwenTraining">{{ t('cfgTrain') }}</v-btn>
-          <v-btn data-testid="qwen-test-submit" variant="outlined" prepend-icon="mdi-test-tube" :disabled="!qwen.draft || qwen.busy" @click="startQwenTest">{{ t('cfgTest') }}</v-btn>
-        </div>
+      <template #runtime><RuntimeSelector :disabled="toolbarBusy || continuation.active || taskStore.loading" /></template>
+      <template #method>
+        <v-select :model-value="workspaceMethod || undefined" :items="workspaceMethodItems" :label="t('cfgMethod')"
+          :disabled="toolbarBusy || continuation.active" variant="outlined" density="compact" hide-details
+          data-testid="config-method-select" @update:model-value="requestMethodChange" />
       </template>
-    </div>
-    <QwenConfigFields v-if="workspace.family !== 'anima'" :key="workspace.family" />
-    <template v-else>
+      <template #variant>
+        <v-select :model-value="workspaceVariant || undefined" :items="workspaceVariantItems" item-title="label" item-value="value"
+          :label="t('cfgVariant')" :disabled="!workspaceMethod || toolbarBusy || continuation.active"
+          variant="outlined" density="compact" hide-details data-testid="config-variant"
+          @update:model-value="requestVariantChange" />
+        <v-btn icon="mdi-plus" variant="text" density="compact" size="small"
+          :disabled="!workspaceMethod || toolbarBusy || continuation.active" :aria-label="t('cfgNewVariant')"
+          data-testid="config-new-variant" @click="openWorkspaceVariant">
+          <v-icon icon="mdi-plus" /><v-tooltip activator="parent">{{ t('cfgNewVariant') }}</v-tooltip>
+        </v-btn>
+      </template>
+      <template #preset>
+        <v-select :model-value="isAnima ? selectedPreset : modelPresetLabel"
+          :items="isAnima ? continuation.presetItems : [modelPresetLabel]" :label="t('cfgPreset')"
+          :disabled="!isAnima || toolbarBusy || continuation.active" variant="outlined" density="compact" hide-details
+          data-testid="config-preset" @update:model-value="requestPresetChange" />
+        <v-btn icon="mdi-plus" variant="text" density="compact" size="small"
+          :disabled="!isAnima || toolbarBusy || continuation.active" :aria-label="t('cfgPresetCreate')" @click="openCreatePreset">
+          <v-icon icon="mdi-plus" /><v-tooltip activator="parent">{{ t('cfgPresetCreate') }}</v-tooltip>
+        </v-btn>
+        <v-btn v-if="isAnima && isCustomPreset" icon="mdi-delete-outline" variant="text" density="compact" size="small"
+          color="error" :disabled="toolbarBusy || continuation.active" :aria-label="t('cfgPresetDelete')" @click="deleteCurrentPreset" />
+      </template>
+      <template #task>
+        <v-select :model-value="isAnima ? continuation.selected : undefined" :items="isAnima ? trainingTaskItems : []"
+          :label="t('cfgTrainingTask')" :placeholder="t(isAnima ? 'cfgTrainingTaskEmpty' : 'cfgNewTrainingOnly')"
+          :loading="isAnima && (continuation.loading || continuation.listLoading)"
+          :disabled="!isAnima || !workspaceReady || toolbarBusy || configStore.loading"
+          item-title="title" item-value="value" clearable persistent-placeholder
+          variant="outlined" density="compact" hide-details data-testid="training-task-select"
+          @update:model-value="continuation.select" @update:menu="(open) => isAnima && open && continuation.fetchCandidates(selectedVariant)" />
+      </template>
+      <template #actions>
+        <v-btn :color="workspaceDirty ? 'warning' : 'primary'" :loading="isAnima ? configStore.loading : qwen.busy"
+          :disabled="!workspaceReady || !workspaceDirty || toolbarBusy" icon="mdi-content-save-outline" variant="text" size="small"
+          :aria-label="t('cfgSave')" data-testid="config-save" @click="saveWorkspace">
+          <v-icon icon="mdi-content-save-outline" /><v-tooltip activator="parent">{{ t('cfgSave') }}</v-tooltip>
+        </v-btn>
+        <v-btn icon="mdi-refresh" variant="text" size="small" :disabled="!workspaceReady || toolbarBusy || continuation.loading"
+          :aria-label="t('cfgReload')" data-testid="config-reload" @click="requestWorkspaceChange({ kind: 'reload' })">
+          <v-icon icon="mdi-refresh" /><v-tooltip activator="parent">{{ t('cfgReload') }}</v-tooltip>
+        </v-btn>
+        <v-btn color="primary" :disabled="!workspaceReady || toolbarBusy || (isAnima && continuation.active && !continuation.ready)"
+          :loading="isAnima ? trainingLaunching : lineLaunching === 'train'" prepend-icon="mdi-play"
+          data-testid="config-train" @click="isAnima ? startTraining() : startQwenTraining()">{{ t('cfgTrain') }}</v-btn>
+        <v-btn variant="outlined" :disabled="!workspaceReady || toolbarBusy" :loading="isAnima ? testLaunching : lineLaunching === 'test'"
+          prepend-icon="mdi-test-tube" data-testid="config-test" @click="isAnima ? startTest() : startQwenTest()">{{ t('cfgTest') }}</v-btn>
+      </template>
+    </ConfigToolbar>
+    <v-alert v-if="!isAnima && !workspaceReady && qwen.error" type="error" variant="tonal" class="mb-4">{{ qwen.error }}</v-alert>
+    <v-progress-linear v-if="!isAnima && !workspaceReady && (qwen.loading || switching)" indeterminate class="mb-4" />
+    <ConfigurationPicker v-if="!workspaceReady" :title="t(workspaceMethod ? 'cfgVariantLibrary' : 'cfgMethodLibrary')"
+      :items="workspacePickerItems" :variant="Boolean(workspaceMethod)" :disabled="toolbarBusy"
+      :create-label="workspaceMethod ? t('cfgNewVariant') : undefined" :empty-text="t('cfgSelectHint')"
+      @select="chooseWorkspaceConfiguration" @create="openWorkspaceVariant" />
+    <QwenConfigFields v-if="!isAnima && workspaceReady" :key="workspace.family" />
+    <template v-if="isAnima">
     <!-- WandB Tracking Panel -->
     <v-expansion-panels v-if="selectedVariant" v-model="wandbPanel" class="mb-4 config-tracking" variant="accordion">
       <v-expansion-panel elevation="0">
@@ -318,20 +226,8 @@
       </ul>
     </v-alert>
 
-    <div v-if="selectedVariant && configStore.fields.length" class="config-filterbar">
-      <span class="config-field-count">{{ t('cfgParametersCount', { n: visibleFieldCount }) }}</span>
-      <v-text-field v-model="fieldSearch" :label="t('cfgSearchFields')" prepend-inner-icon="mdi-magnify"
-        clearable hide-details density="compact" class="config-search" />
-      <v-btn :icon="showGuide ? 'mdi-book-open-page-variant' : 'mdi-book-open-page-variant-outline'"
-        :color="showGuide ? 'primary' : undefined" variant="text" :aria-label="t('cfgOpenGuide')"
-        :aria-pressed="showGuide" @click="showGuide = !showGuide">
-        <v-icon :icon="showGuide ? 'mdi-book-open-page-variant' : 'mdi-book-open-page-variant-outline'" />
-        <v-tooltip activator="parent">{{ t('cfgOpenGuide') }}</v-tooltip>
-      </v-btn>
-    </div>
-
-    <v-row class="config-body">
-      <v-col cols="12" :lg="selectedVariant && showGuide ? 8 : 12" class="form-column">
+    <ConfigWorkspaceLayout v-if="selectedVariant" v-model:search="fieldSearch" v-model:show-guide="showGuide"
+      :field-count="visibleFieldCount" :filterable="Boolean(selectedVariant && configStore.fields.length)">
         <v-card v-if="filteredBasic.length > 0" class="mb-4 config-section" variant="flat">
           <v-card-title class="text-subtitle-1">
             <v-icon icon="mdi-tune" class="mr-2" />
@@ -346,7 +242,7 @@
                 sm="6"
               >
                 <ConfigField
-                  :field="field"
+                  :field="{ ...field, read_only: field.read_only || configStore.loading }"
                   @update="(v) => onConfigFieldUpdate(field.key, v)"
                   @help-click="(k) => onFieldHelp(k, field.origin)"
                 />
@@ -382,7 +278,7 @@
                   />
                   <ConfigField
                     v-else
-                    :field="field"
+                    :field="{ ...field, read_only: field.read_only || configStore.loading }"
                     @update="(v) => onConfigFieldUpdate(field.key, v)"
                     @help-click="(k) => onFieldHelp(k, field.origin)"
                   />
@@ -412,7 +308,7 @@
             <v-card-text v-show="showExtraArgs">
               <v-textarea
                 v-model="extraArgs"
-                :disabled="continuation.active"
+                :disabled="continuation.active || configStore.loading"
                 :placeholder="t('cfgExtraArgsHint')"
                 variant="outlined"
                 density="compact"
@@ -426,39 +322,11 @@
           </v-expand-transition>
         </v-card>
 
-        <section v-if="!selectedVariant" class="method-library">
-          <div class="method-library__heading">
-            <h2 class="workspace-section-title">{{ t(selectedMethod ? 'cfgVariantLibrary' : 'cfgMethodLibrary') }}</h2>
-            <span class="config-field-count">{{ selectedMethod ? variantItems.length : configStore.methods.length }}</span>
-          </div>
-          <div class="method-grid">
-            <button v-for="item in pickerItems" :key="item.value" type="button" class="method-option"
-              :disabled="configStore.loading || choosingMethod" @click="chooseConfiguration(item.value)">
-              <v-icon :icon="selectedMethod ? 'mdi-file-document-outline' : 'mdi-vector-combine'" size="22" />
-              <span>{{ item.label }}</span>
-              <v-icon icon="mdi-arrow-top-right" size="17" class="method-option__arrow" />
-            </button>
-          </div>
-          <div v-if="!pickerItems.length" class="workspace-empty">
-            <v-icon icon="mdi-cog-transfer-outline" size="36" />
-            <h2>{{ t('cfgSelectHint') }}</h2>
-          </div>
-        </section>
-      </v-col>
-
-      <!-- Help panel: only shown when a variant is selected -->
-      <v-col v-if="selectedVariant && showGuide" cols="12" lg="4" class="config-reference">
-        <div class="help-panel-sticky">
-          <HelpPanel
-            ref="helpPanelRef"
-            :variant="selectedVariant"
-            :field-help="fieldHelpData"
-            :guide-html="guideHtml"
-            height="min(680px, calc(100dvh - 120px))"
-          />
-        </div>
-      </v-col>
-    </v-row>
+      <template v-if="selectedVariant" #guide>
+        <HelpPanel ref="helpPanelRef" :variant="selectedVariant" :field-help="fieldHelpData"
+          :guide-html="guideHtml" height="min(680px, calc(100dvh - 120px))" />
+      </template>
+    </ConfigWorkspaceLayout>
 
     <!-- No-cache warning dialog -->
     <v-dialog v-model="showNoCacheDlg" max-width="500">
@@ -544,60 +412,41 @@ decompose_both = false</pre>
       </v-card>
     </v-dialog>
 
-    <!-- Create variant dialog -->
+    </template>
     <v-dialog v-model="showCreateVariantDlg" max-width="400">
       <v-card>
         <v-card-title>{{ t('cfgNewVariant') }}</v-card-title>
         <v-card-text>
-          <v-text-field
-            v-model="newVariantName"
-            :label="t('cfgNewVariantName')"
-            :placeholder="t('cfgNewVariantNameHint')"
-            :rules="[variantNameRule]"
-            variant="outlined"
-            density="compact"
-            autofocus
-            @keyup.enter="confirmCreateVariant"
-          />
-          <v-checkbox
-            v-model="seedFromCurrent"
-            :label="t('cfgNewVariantSeed')"
-            density="compact"
-            hide-details
-          />
+          <v-text-field v-model="newVariantName" data-testid="config-variant-name"
+            :label="t('cfgNewVariantName')" :placeholder="t('cfgNewVariantNameHint')" :rules="[variantNameRule]"
+            :disabled="creatingVariant" variant="outlined" density="compact" autofocus @keyup.enter="confirmCreateWorkspaceVariant" />
+          <v-checkbox v-model="seedFromCurrent" :label="t('cfgNewVariantSeed')" :disabled="!workspaceReady || creatingVariant"
+            density="compact" hide-details />
+          <v-alert v-if="isAnima ? configStore.error : qwen.error" type="error" variant="tonal" class="mt-3">
+            {{ isAnima ? configStore.error : qwen.error }}
+          </v-alert>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="showCreateVariantDlg = false">{{ t('cfgCancel') }}</v-btn>
-          <v-btn
-            color="primary"
-            :disabled="!newVariantName.trim() || !!variantNameRule(newVariantName.trim())"
-            @click="confirmCreateVariant"
-          >
+          <v-btn variant="text" :disabled="creatingVariant" @click="showCreateVariantDlg = false">{{ t('cfgCancel') }}</v-btn>
+          <v-btn data-testid="config-variant-create" color="primary" :loading="creatingVariant"
+            :disabled="!newVariantName.trim() || variantNameRule(newVariantName.trim()) !== true" @click="confirmCreateWorkspaceVariant">
             {{ t('cfgNewVariant') }}
           </v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
-    </template>
     <v-alert v-if="workspaceError" type="error" variant="tonal" data-testid="workspace-switch-error">{{ workspaceError }}</v-alert>
     <v-dialog :model-value="pendingChange !== null" persistent max-width="500">
       <v-card :title="t('qwUnsavedTitle')">
         <v-card-text>{{ t('qwUnsavedBody') }}</v-card-text>
         <v-card-actions class="flex-wrap">
-          <v-btn data-testid="model-switch-cancel" :disabled="switching" @click="pendingChange = null">{{ t('dsCancel') }}</v-btn>
+          <v-btn data-testid="model-switch-cancel" :disabled="switching" @click="cancelWorkspaceChange">{{ t('dsCancel') }}</v-btn>
           <v-spacer />
           <v-btn data-testid="model-switch-discard" :disabled="switching" @click="discardWorkspaceChange">{{ t('qwDiscardSwitch') }}</v-btn>
           <v-btn data-testid="model-switch-save" color="primary" :loading="switching" @click="saveWorkspaceChange">{{ t('qwSaveSwitch') }}</v-btn>
         </v-card-actions>
         <v-alert v-if="workspaceError" type="error" variant="tonal">{{ workspaceError }}</v-alert>
-      </v-card>
-    </v-dialog>
-    <v-dialog v-model="profileDialog" max-width="420">
-      <v-card :title="t('qwNewProfile')">
-        <v-card-text><v-text-field v-model="profileName" data-testid="qwen-new-profile-name" :label="t('qwProfile')" :hint="t('qwProfileNameHint')" persistent-hint /></v-card-text>
-        <v-alert v-if="qwen.error" type="error" variant="tonal">{{ qwen.error }}</v-alert>
-        <v-card-actions><v-spacer /><v-btn @click="profileDialog = false">{{ t('dsCancel') }}</v-btn><v-btn data-testid="qwen-new-profile-save" color="primary" :loading="qwen.busy" @click="createQwenProfile">{{ t('cfgSave') }}</v-btn></v-card-actions>
       </v-card>
     </v-dialog>
     <v-dialog v-model="qwenCacheDialog" max-width="540">
@@ -611,12 +460,17 @@ decompose_both = false</pre>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, nextTick, onMounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { useModelWorkspace, type ModelFamily } from '../stores/modelWorkspace'
+import WorkspaceHeading from '../components/WorkspaceHeading.vue'
+import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
+import { useModelWorkspace, modelLabel, type ModelFamily } from '../stores/modelWorkspace'
 import { useActiveModelWorkspace, useQwenWorkspace, useMossWorkspace } from '../stores/qwenWorkspace'
 import { mossText } from '../i18n/modelWorkspace'
 import QwenConfigFields from '../components/QwenConfigFields.vue'
+import ConfigWorkspaceLayout from '../components/ConfigWorkspaceLayout.vue'
+import ConfigToolbar from '../components/ConfigToolbar.vue'
+import ConfigurationPicker from '../components/ConfigurationPicker.vue'
+import { modelAlgorithmItems } from '../utils/modelConfig'
 import RuntimeSelector from '../components/RuntimeSelector.vue'
 import { useConfigStore } from '../stores/config'
 import { useTaskStore } from '../stores/task'
@@ -639,42 +493,123 @@ const modelItems = [{ title: 'Anima', value: 'anima' }, { title: 'Qwen-Image 2.1
 const workspaceError = ref('')
 const switching = ref(false)
 type WorkspaceChange = { kind: 'model'; family: ModelFamily } | { kind: 'profile'; name: string }
+  | { kind: 'method'; method: string } | { kind: 'preset'; name: string } | { kind: 'reload' }
+  | { kind: 'leave'; resolve: (allow: boolean) => void }
 const pendingChange = ref<WorkspaceChange | null>(null)
 const workspaceDirty = computed(() => workspace.family !== 'anima' ? qwen.value.dirty : configStore.dirty || !!extraArgs.value)
-const profileDialog = ref(false)
-const profileName = ref('')
+const creatingVariant = ref(false)
 const qwenCacheDialog = ref(false)
 const cacheProblem = ref('')
 
+const isAnima = computed(() => workspace.family === 'anima')
+const lineLaunching = ref<'train' | 'test' | null>(null)
+const toolbarBusy = computed(() => switching.value || creatingVariant.value || trainingLaunching.value || testLaunching.value || qwen.value.busy || qwen.value.loading || configStore.loading)
+const workspaceMethod = computed(() => isAnima.value ? selectedMethod.value : qwen.value.configMethod)
+const workspaceVariant = computed(() => isAnima.value ? selectedVariant.value : qwen.value.configProfile)
+const workspaceReady = computed(() => Boolean(workspaceVariant.value) && (isAnima.value
+  ? selectedVariant.value === configStore.variant && selectedPreset.value === configStore.preset
+  : qwen.value.draft?.train.algo === workspaceMethod.value))
+const workspaceMethodItems = computed(() => isAnima.value
+  ? configStore.methods.map(value => ({ title: value, value })) : modelAlgorithmItems(qwen.value.schema))
+const workspaceVariantItems = computed(() => isAnima.value ? variantItems.value
+  : qwen.value.profiles.filter(name => qwen.value.profileAlgorithms[name] === workspaceMethod.value).map(value => ({ label: value, value })))
+const workspacePickerItems = computed(() => workspaceMethod.value ? workspaceVariantItems.value
+  : workspaceMethodItems.value.map(item => ({ value: item.value, label: item.title })))
+const modelPresetLabel = computed(() => qwen.value.family === 'moss' ? mossText(appStore.language, 'hardware') : t('qwAutomaticHardware'))
+
 async function applyWorkspaceChange(change: WorkspaceChange): Promise<void> {
-  if (change.kind === 'profile') await qwen.value.loadProfile(change.name)
-  else {
-    if (change.family !== 'anima') await lineWorkspaces[change.family].ensureLoaded()
+  if (change.kind === 'leave') {
+    change.resolve(true)
+  } else if (change.kind === 'profile') {
+    if (isAnima.value) {
+      const previous = selectedVariant.value
+      selectedVariant.value = change.name
+      try { await onVariantChange() }
+      catch (cause) { selectedVariant.value = previous; throw cause }
+    }
+    else await qwen.value.selectConfigProfile(change.name)
+  } else if (change.kind === 'method') {
+    if (isAnima.value) { selectedMethod.value = change.method; await onMethodChange(change.method) }
+    else qwen.value.selectConfigMethod(change.method)
+  } else if (change.kind === 'preset') {
+    const previous = selectedPreset.value
+    selectedPreset.value = change.name
+    try { await onVariantChange() }
+    catch (cause) { selectedPreset.value = previous; throw cause }
+  } else if (change.kind === 'reload') {
+    if (isAnima.value) await loadConfig()
+    else await qwen.value.selectConfigProfile(qwen.value.configProfile)
+  } else {
+    if (change.family !== 'anima') {
+      const target = lineWorkspaces[change.family]
+      await target.ensureLoaded()
+      await target.loadProfileCatalog()
+    }
     workspace.select(change.family)
   }
   pendingChange.value = null
 }
+function cancelWorkspaceChange(): void {
+  if (pendingChange.value?.kind === 'leave') pendingChange.value.resolve(false)
+  pendingChange.value = null
+}
+onBeforeRouteLeave(() => {
+  if (toolbarBusy.value) return false
+  if (!workspaceDirty.value) return true
+  cancelWorkspaceChange()
+  workspaceError.value = ''
+  return new Promise<boolean>(resolve => { pendingChange.value = { kind: 'leave', resolve } })
+})
+function beforeUnload(event: BeforeUnloadEvent): void {
+  if (workspaceDirty.value) { event.preventDefault(); event.returnValue = '' }
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', beforeUnload)
+  cancelWorkspaceChange()
+})
 async function requestWorkspaceChange(change: WorkspaceChange): Promise<void> {
+  if (toolbarBusy.value) return
   workspaceError.value = ''
   if (workspaceDirty.value) { pendingChange.value = change; return }
-  const switchingFrom = qwen.value
-  switchingFrom.busy = true // guard the profile/model selects while the switch is in flight
+  switching.value = true
   try { await applyWorkspaceChange(change) }
   catch (err) { workspaceError.value = err instanceof Error ? err.message : String(err) }
-  finally { switchingFrom.busy = false }
+  finally { switching.value = false }
 }
 async function requestModelChange(family: ModelFamily): Promise<void> {
   if (family !== workspace.family) await requestWorkspaceChange({ kind: 'model', family })
 }
-async function requestProfileChange(name: string): Promise<void> {
+async function requestMethodChange(method: string): Promise<void> {
+  if (method !== workspaceMethod.value) await requestWorkspaceChange({ kind: 'method', method })
+}
+async function requestVariantChange(name: string): Promise<void> {
   await requestWorkspaceChange({ kind: 'profile', name })
+}
+async function requestPresetChange(name: string): Promise<void> {
+  if (isAnima.value) await requestWorkspaceChange({ kind: 'preset', name })
+}
+async function chooseWorkspaceConfiguration(value: string): Promise<void> {
+  if (workspaceMethod.value) await requestVariantChange(value)
+  else await requestMethodChange(value)
+}
+function openWorkspaceVariant(): void {
+  if (!workspaceMethod.value || toolbarBusy.value) return
+  openCreateVariant()
+  if (isAnima.value) configStore.error = ''
+  else qwen.value.error = ''
+}
+async function saveWorkspace(): Promise<void> {
+  if (!workspaceReady.value || toolbarBusy.value) return
+  if (isAnima.value) await onSave()
+  else await qwen.value.perform(qwen.value.save)
 }
 async function discardWorkspaceChange(): Promise<void> {
   if (!pendingChange.value) return
   switching.value = true
   try {
     if (workspace.family !== 'anima') qwen.value.discard()
-    else { extraArgs.value = ''; await loadConfig() }
+    else { await loadConfig(); extraArgs.value = '' }
     await applyWorkspaceChange(pendingChange.value)
   } catch (err) { workspaceError.value = err instanceof Error ? err.message : String(err) }
   finally { switching.value = false }
@@ -692,23 +627,28 @@ async function saveWorkspaceChange(): Promise<void> {
   } catch (err) { workspaceError.value = err instanceof Error ? err.message : String(err) }
   finally { switching.value = false }
 }
-async function createQwenProfile(): Promise<void> {
-  await qwen.value.perform(async () => {
-    const previous = qwen.value.profile
-    const previousSaved = qwen.value.saved
-    qwen.value.createProfile(profileName.value)
-    try { await qwen.value.save() }
-    catch (err) { qwen.value.profile = previous; qwen.value.saved = previousSaved; throw err }
-    profileDialog.value = false
-    profileName.value = ''
-  })
+async function confirmCreateWorkspaceVariant(): Promise<void> {
+  const name = newVariantName.value.trim()
+  if (creatingVariant.value || !name || variantNameRule(name) !== true) return
+  creatingVariant.value = true
+  try {
+    if (isAnima.value) await confirmCreateVariant()
+    else await qwen.value.perform(async () => {
+      await qwen.value.createConfigProfile(name, seedFromCurrent.value)
+      showCreateVariantDlg.value = false
+      newVariantName.value = ''
+      notify.show(t('cfgNewVariantCreated', { name }), 'success')
+    })
+  } finally { creatingVariant.value = false }
 }
 async function openQwenTask(taskId: string): Promise<void> {
   await taskStore.fetchTasks()
   await router.push({ path: '/tasks', query: { task: taskId } })
 }
 async function startQwenTraining(): Promise<void> {
-  await qwen.value.perform(async () => {
+  if (!workspaceReady.value || toolbarBusy.value) return
+  lineLaunching.value = 'train'
+  try { await qwen.value.perform(async () => {
     if (qwen.value.dirty) await qwen.value.save()
     const status = await qwen.value.preflight()
     if (!status.ready) {
@@ -717,13 +657,15 @@ async function startQwenTraining(): Promise<void> {
       return
     }
     await openQwenTask(await qwen.value.submit('train', {}))
-  })
+  }) } finally { lineLaunching.value = null }
 }
 async function startQwenTest(): Promise<void> {
-  await qwen.value.perform(async () => {
+  if (!workspaceReady.value || toolbarBusy.value) return
+  lineLaunching.value = 'test'
+  try { await qwen.value.perform(async () => {
     if (qwen.value.dirty) await qwen.value.save()
     await openQwenTask(await qwen.value.submit('generate', {}))
-  })
+  }) } finally { lineLaunching.value = null }
 }
 async function chainQwenTraining(): Promise<void> {
   await qwen.value.perform(async () => {
@@ -741,7 +683,6 @@ const { t } = useI18n()
 const fieldSearch = ref<string | null>('')
 const expandedGroups = ref<string[]>([])
 const showGuide = ref(true)
-const choosingMethod = ref(false)
 const filteredBasic = computed(() => selectedVariant.value
   ? configStore.basicFields.filter(field => matchesConfigSearch(field, fieldSearch.value)) : [])
 const filteredAdvanced = computed(() => {
@@ -752,27 +693,8 @@ const filteredAdvanced = computed(() => {
 })
 const visibleFieldCount = computed(() => filteredBasic.value.length
   + Object.values(filteredAdvanced.value).reduce((total, fields) => total + fields.length, 0))
-const pickerItems = computed(() => selectedMethod.value
-  ? variantItems.value
-  : configStore.methods.map(method => ({ value: method, label: method })))
-
 function onExpandedGroups(value: unknown) {
   if (!fieldSearch.value && Array.isArray(value)) expandedGroups.value = value
-}
-
-async function chooseConfiguration(value: string) {
-  choosingMethod.value = true
-  try {
-    if (selectedMethod.value) {
-      selectedVariant.value = value
-      await onVariantChange()
-    } else {
-      selectedMethod.value = value
-      await onMethodChange(value)
-    }
-  } finally {
-    choosingMethod.value = false
-  }
 }
 
 const animaBlockerKeys: Record<string, string> = {
@@ -978,6 +900,7 @@ function applyLokrFullFactorMigration() {
 async function onMethodChange(method: string) {
   continuation.exit()
   selectedVariant.value = ''
+  configStore.variant = ''
   await configStore.fetchVariants(method)
 }
 
@@ -1108,7 +1031,9 @@ async function onFieldHelp(key: string, origin: string) {
 
 onMounted(async () => {
   if (route.query.model === 'qwen21' || route.query.model === 'moss') await requestModelChange(route.query.model)
-  if (workspace.family !== 'anima') await qwen.value.perform(qwen.value.ensureLoaded)
+  if (workspace.family !== 'anima' && !Object.keys(qwen.value.profileAlgorithms).length) {
+    await qwen.value.perform(qwen.value.loadProfileCatalog)
+  }
   await Promise.all([
     configStore.fetchMethods(),
     configStore.fetchPresets(),
@@ -1122,7 +1047,7 @@ onMounted(async () => {
     if (configStore.variant) {
       selectedVariant.value = configStore.variant
       selectedPreset.value = configStore.preset
-      await loadConfig()
+      try { await loadConfig() } catch { /* The store keeps the draft and exposes the error. */ }
     }
   }
 })
@@ -1184,7 +1109,7 @@ async function confirmCreatePreset() {
   if (ok) {
     showCreatePresetDlg.value = false
     selectedPreset.value = name
-    await loadConfig()
+    try { await loadConfig() } catch { /* The store exposes the load error. */ }
     notify.show(t('cfgPresetCreated', { name }), 'success')
   }
 }
@@ -1195,7 +1120,7 @@ async function deleteCurrentPreset() {
   const ok = await configStore.deletePreset(name)
   if (ok) {
     selectedPreset.value = configStore.presets.includes('default') ? 'default' : (configStore.presets[0] || '')
-    await loadConfig()
+    try { await loadConfig() } catch { /* The store exposes the load error. */ }
     notify.show(t('cfgPresetDeleted', { name }), 'success')
   }
 }
@@ -1204,7 +1129,7 @@ async function deleteCurrentPreset() {
 
 function openCreateVariant() {
   newVariantName.value = ''
-  seedFromCurrent.value = true
+  seedFromCurrent.value = workspaceReady.value
   showCreateVariantDlg.value = true
 }
 
@@ -1522,55 +1447,12 @@ function waitForTask(taskId: string): Promise<void> {
   overflow-x: hidden;
 }
 
-.help-panel-sticky {
-  position: sticky;
-  top: 16px;
-}
-
 .config-dirty {
   display: flex;
   align-items: center;
   color: rgb(var(--v-theme-warning));
   font-size: 12px;
 }
-.config-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  align-items: center;
-  padding: 20px 0;
-  margin-bottom: 24px;
-  border-top: 1px solid var(--border-subtle);
-  border-bottom: 1px solid var(--border-subtle);
-}
-.config-toolbar > * {
-  flex: 1 1 180px;
-  min-width: 0;
-  max-width: 100%;
-}
-.config-toolbar__variant, .config-toolbar__preset, .config-toolbar__actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-.config-toolbar :deep(.v-input) { min-width: 0; }
-.config-toolbar > .config-toolbar__actions {
-  flex: 0 1 auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  margin-left: auto;
-}
-.config-toolbar__actions > .v-btn { flex-shrink: 0; }
-.config-filterbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding-bottom: 18px;
-}
-.config-search { max-width: 320px; margin-left: auto; }
-.config-field-count { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
-.config-body { margin-top: 0; }
 .config-section {
   background: transparent;
   border-radius: 0 !important;
@@ -1578,46 +1460,7 @@ function waitForTask(taskId: string): Promise<void> {
 }
 .config-section > :deep(.v-card-title) { padding: 0 0 22px; }
 .config-section > :deep(.v-card-text) { padding: 0 0 20px; }
-.config-reference { border-left: 1px solid var(--border-subtle); }
-.method-library { padding-top: 4px; }
-.method-library__heading { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
-.method-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
-  grid-auto-flow: dense;
-  gap: 12px;
-}
-.method-option {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-height: 84px;
-  padding: 20px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  text-align: left;
-  transition: border-color 160ms ease, background 160ms ease;
-}
-.method-option > .v-icon:first-child { color: var(--forge-amber); flex-shrink: 0; }
-.method-option span { flex: 1; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
-.method-option__arrow { color: var(--text-muted); transition: transform 160ms ease; }
-.method-option:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
-.method-option:hover:not(:disabled) .method-option__arrow { transform: translate(2px, -2px); }
-.method-option:disabled { opacity: 0.55; cursor: wait; }
-@media (max-width: 1279px) {
-  .config-reference { border-left: 0; border-top: 1px solid var(--border-subtle); }
-  .help-panel-sticky { position: static; }
-}
 @media (max-width: 599px) {
-  .config-toolbar { gap: 16px; padding: 18px 0; }
-  .config-toolbar > * { flex-basis: 100%; }
-  .config-toolbar > .config-toolbar__actions { flex-basis: 100%; justify-content: flex-start; }
-  .config-filterbar { flex-wrap: wrap; }
-  .config-field-count { margin-right: auto; }
-  .config-search { order: 3; flex-basis: 100%; max-width: none; }
-  .method-option { min-height: 72px; }
   .config-tracking :deep(.v-expansion-panel-title) { padding-inline: 12px; flex-wrap: wrap; gap: 4px; }
 }
 </style>

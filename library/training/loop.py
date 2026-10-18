@@ -125,6 +125,8 @@ class LoopState:
     stage_index: int = -1
     stage_batch_cursor: int = 0
     stage_loader_generator_state: Any = None
+    dataloader_generator: Any = None
+    dataloader_generator_state: Any = None
     outer_epoch_index: int = 0
 
     # Cooperative daemon/CLI stop state.  The flag is inspected only after a
@@ -163,15 +165,36 @@ class LoopState:
                 args, "anima_model_signature", None
             )
         if self.stage_plan is None:
+            generator = getattr(self, "dataloader_generator", None)
+            saved_generator = getattr(self, "dataloader_generator_state", None)
+            if generator is not None and saved_generator is not None:
+                epoch = self.outer_epoch_index
+                if self.micro_batch_offset >= len(self.train_dataloader):
+                    saved_generator = generator.get_state()
+                    epoch += 1
+                runtime_state["dataloader_generator_state"] = saved_generator.tolist()
+                runtime_state["dataloader_generator_epoch"] = epoch
             return runtime_state
+        stage_index = self.stage_index
+        stage_cursor = self.stage_batch_cursor
+        generator_state = self.stage_loader_generator_state
+        index_for_step = getattr(self.stage_plan, "index_for_step", None)
+        if callable(index_for_step) and args is not None:
+            next_index = index_for_step(self.global_step, args.max_train_steps)
+            if next_index != stage_index:
+                # Persist the NEXT batch's stage, before any save/stop hook can
+                # return between the optimizer update and the loader switch.
+                stage_index, stage_cursor = next_index, 0
+                generator = self.stage_plan.loader_generator
+                generator_state = generator.get_state() if generator is not None else None
         runtime_state.update({
-            "stage_index": self.stage_index,
-            "stage_batch_cursor": self.stage_batch_cursor,
+            "stage_index": stage_index,
+            "stage_batch_cursor": stage_cursor,
             "stage_outer_epoch": self.outer_epoch_index,
         })
-        if self.stage_loader_generator_state is not None:
+        if generator_state is not None:
             runtime_state["stage_loader_generator_state"] = (
-                self.stage_loader_generator_state.tolist()
+                generator_state.tolist()
             )
         return runtime_state
 
@@ -214,6 +237,8 @@ def build_loop_state(
     initial_global_step=None,
     stage_batch_cursor=0,
     stage_loader_generator_state=None,
+    dataloader_generator=None,
+    dataloader_generator_state=None,
     stop_controller: Optional[StopController] = None,
     resume_step: int = 0,
 ) -> LoopState:
@@ -416,6 +441,8 @@ def build_loop_state(
         stage_plan=stage_plan,
         stage_batch_cursor=stage_batch_cursor,
         stage_loader_generator_state=stage_loader_generator_state,
+        dataloader_generator=dataloader_generator,
+        dataloader_generator_state=dataloader_generator_state,
         stop_controller=stop_controller,
         global_step=global_step,
         pause_watcher=PauseWatcher.from_env(),
@@ -587,14 +614,19 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
     args = state.args
     accelerator = state.accelerator
     generator = (
-        state.stage_plan.loader_generator if state.stage_plan is not None else None
+        state.stage_plan.loader_generator if state.stage_plan is not None
+        else getattr(state, "dataloader_generator", None)
+    )
+    generator_state = (
+        getattr(state, "stage_loader_generator_state", None) if state.stage_plan is not None
+        else getattr(state, "dataloader_generator_state", None)
     )
     if (
         state.initial_step > 0
         and generator is not None
-        and state.stage_loader_generator_state is not None
+        and generator_state is not None
     ):
-        generator.set_state(state.stage_loader_generator_state)
+        generator.set_state(generator_state)
 
     skipped_dataloader = None
     resume_batch_offset = max(0, int(state.initial_step))
@@ -613,7 +645,10 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
         _maybe_apply_stage_schedule(state)
         loader = skipped_dataloader or state.train_dataloader
         if skipped_dataloader is None and generator is not None:
-            state.stage_loader_generator_state = generator.get_state()
+            if state.stage_plan is not None:
+                state.stage_loader_generator_state = generator.get_state()
+            else:
+                state.dataloader_generator_state = generator.get_state()
         skipped_dataloader = None
         stage_at_start = state.stage_index
 

@@ -1,17 +1,16 @@
 <template>
   <v-container fluid class="dataset-page pa-4">
     <!-- Header row -->
-    <header class="ds-header workspace-heading">
-      <div><h1>{{ t('dsTitle') }}</h1></div>
+    <WorkspaceHeading class="ds-header" :title="t('dsTitle')" :subtitle="t('dsSubtitle')">
       <span class="text-caption text-medium-emphasis">{{ totalLabel }}</span>
-    </header>
+    </WorkspaceHeading>
 
     <v-tabs v-model="datasetTab" class="mb-4 flex-shrink-0" aria-label="Dataset workspace">
       <v-tab value="browse">{{ t('dsTitle') }}</v-tab>
       <v-tab value="curation">{{ curationTitle }}</v-tab>
     </v-tabs>
     <CurationWorkspace v-if="datasetTab === 'curation' || curationVisited" v-show="datasetTab === 'curation'" class="dataset-curation-pane" :input-dir="directory" @vue:mounted="curationVisited = true" />
-    <template v-else>
+    <template v-if="datasetTab === 'browse'">
     <!-- Toolbar: directory, search, sort, view toggle -->
     <v-card variant="flat" class="mb-4 ds-header dataset-toolbar">
       <v-row align="center" density="comfortable">
@@ -49,14 +48,14 @@
         </v-col>
         <v-col cols="12" sm="4" md="4">
           <v-text-field
-            v-model="search"
+            :model-value="search"
             prepend-inner-icon="mdi-magnify"
             :label="t('dsSearch')"
             variant="outlined"
             density="compact"
             hide-details
             clearable
-            @update:model-value="onSearchChange"
+            @update:model-value="search = $event ?? ''; onSearchChange()"
           />
         </v-col>
         <v-col cols="auto">
@@ -109,7 +108,7 @@
             variant="tonal"
             density="compact"
             :loading="tagging"
-            :disabled="tagging"
+            :disabled="tagging || !total || loadingImages"
             @click="startTagging"
           >
             <v-icon icon="mdi-tag-outline" class="mr-1" />
@@ -136,7 +135,7 @@
       <v-row align="center" density="comfortable" class="mt-1">
         <v-col>
           <v-text-field
-            v-model="customPath"
+            :model-value="customPath"
             prepend-inner-icon="mdi-folder-plus-outline"
             :label="t('dsCustomPath')"
             :placeholder="t('dsCustomPathHint')"
@@ -144,6 +143,7 @@
             density="compact"
             hide-details
             clearable
+            @update:model-value="customPath = $event ?? ''"
             @keyup.enter="addCustomPath"
           />
         </v-col>
@@ -178,14 +178,14 @@
           </v-col>
           <v-col cols="12" sm="3">
             <v-text-field
-              v-model="taggerSettings.trigger_word"
+              :model-value="taggerSettings.trigger_word"
               :label="t('tgTriggerWord')"
               :placeholder="t('tgTriggerWordHint')"
               variant="outlined"
               density="compact"
               hide-details
               clearable
-              @update:model-value="saveTaggerSettings"
+              @update:model-value="taggerSettings.trigger_word = $event ?? ''; saveTaggerSettings()"
             />
           </v-col>
           <v-col cols="12" sm="3">
@@ -228,7 +228,7 @@
 
     <!-- Batch operations toolbar -->
     <v-expand-transition>
-      <v-card v-if="selectionMode && selectedCount > 0" variant="tonal" class="mb-4 pa-4">
+      <v-card v-if="selectionMode" variant="tonal" class="mb-4 pa-4">
         <v-row align="center" density="comfortable">
           <v-col cols="auto">
             <span class="text-body-2">{{ t('dsSelected', { n: selectedCount }) }}</span>
@@ -241,17 +241,17 @@
           </v-col>
           <v-spacer />
           <v-col cols="auto">
-            <v-btn size="small" color="primary" variant="tonal" @click="openBatchDialog('append')">
+            <v-btn size="small" color="primary" variant="tonal" :disabled="!selectedCount" @click="openBatchDialog('append')">
               <v-icon icon="mdi-plus" class="mr-1" />{{ t('dsAppendTag') }}
             </v-btn>
           </v-col>
           <v-col cols="auto">
-            <v-btn size="small" color="warning" variant="tonal" @click="openBatchDialog('remove')">
+            <v-btn size="small" color="warning" variant="tonal" :disabled="!selectedCount" @click="openBatchDialog('remove')">
               <v-icon icon="mdi-minus" class="mr-1" />{{ t('dsRemoveTag') }}
             </v-btn>
           </v-col>
           <v-col cols="auto">
-            <v-btn size="small" variant="tonal" @click="openBatchDialog('replace')">
+            <v-btn size="small" variant="tonal" :disabled="!selectedCount" @click="openBatchDialog('replace')">
               <v-icon icon="mdi-find-replace" class="mr-1" />{{ t('dsFindReplace') }}
             </v-btn>
           </v-col>
@@ -260,6 +260,8 @@
     </v-expand-transition>
 
     <!-- Scrollable content area -->
+    <v-alert v-if="imagesError" type="error" variant="tonal" class="mb-3">{{ imagesError }}</v-alert>
+    <v-progress-linear v-if="loadingImages" indeterminate class="mb-3" />
     <div class="content-scroll">
       <!-- Grid view -->
       <v-row v-if="viewMode === 'grid' && images.length > 0">
@@ -275,7 +277,7 @@
             class="mx-auto dataset-card"
             variant="tonal"
             :class="{ 'border-primary': selectedImage?.path === img.path }"
-            @click="selectImage(img)"
+            @click="activateImage(img)"
           >
             <div v-if="selectionMode" class="selection-checkbox" @click.stop="toggleSelection(img.path)">
               <v-checkbox-btn :model-value="selectedPaths.has(img.path)" density="compact" color="primary" />
@@ -314,6 +316,8 @@
         :items="images"
         :headers="listHeaders"
         item-key="path"
+        :items-per-page="-1"
+        hide-default-footer
         hover
         density="compact"
         @click:row="onRowClick"
@@ -368,9 +372,10 @@
                 :key="img.path"
                 :title="img.filename"
                 :active="selectedImage?.path === img.path"
-                @click="selectImage(img)"
+                @click="activateImage(img)"
               >
                 <template #prepend>
+                  <v-checkbox-btn v-if="selectionMode" :model-value="selectedPaths.has(img.path)" :aria-label="img.filename" density="compact" color="primary" @click.stop="toggleSelection(img.path)" />
                   <v-img
                     :src="imageUrl(img)"
                     width="32"
@@ -398,9 +403,10 @@
               v-else
               :title="node.name"
               :active="selectedImage?.path === node.image?.path"
-              @click="node.image && selectImage(node.image)"
+              @click="node.image && activateImage(node.image)"
             >
               <template #prepend>
+                <v-checkbox-btn v-if="selectionMode && node.image" :model-value="selectedPaths.has(node.image.path)" :aria-label="node.name" density="compact" color="primary" @click.stop="toggleSelection(node.image.path)" />
                 <v-img
                   v-if="node.image"
                   :src="imageUrl(node.image)"
@@ -432,7 +438,7 @@
       </div>
 
       <!-- Empty state -->
-      <div v-if="!loadingImages && images.length === 0" class="text-center pa-12">
+      <div v-if="!loadingImages && !imagesError && images.length === 0" class="text-center pa-12">
         <v-icon icon="mdi-image-off-outline" size="64" color="grey" class="mb-4" />
         <div class="text-h6 text-medium-emphasis">{{ t('dsNoImages') }}</div>
         <div class="text-body-2 text-medium-emphasis" v-html="t('dsNoImagesHint')" />
@@ -440,7 +446,7 @@
     </div>
 
     <!-- Caption editor dialog -->
-    <v-dialog v-model="editorDialog" max-width="900" :persistent="isDirty">
+    <v-dialog v-model="editorDialog" max-width="900" :persistent="isDirty || saving" scrollable>
       <v-card v-if="selectedImage">
         <v-card-title class="d-flex align-center ga-2">
           <v-icon icon="mdi-image" />
@@ -486,6 +492,7 @@
                   rows="10"
                   auto-grow
                   :loading="saving"
+                  :disabled="saving"
                   :hint="captionHint"
                   persistent-hint
                   class="caption-editor"
@@ -517,7 +524,7 @@
               </div>
               <v-expand-transition>
                 <div v-if="showTagPanel" class="tag-panel mt-2">
-                  <v-text-field v-model="tagPanelSearch" prepend-inner-icon="mdi-magnify" :label="t('dsSearchTags')" variant="outlined" density="compact" hide-details clearable class="mb-2" />
+                  <v-text-field :model-value="tagPanelSearch" prepend-inner-icon="mdi-magnify" :label="t('dsSearchTags')" variant="outlined" density="compact" hide-details clearable class="mb-2" @update:model-value="tagPanelSearch = $event ?? ''" />
                   <div class="tag-panel-content">
                     <v-chip v-for="[tag, count] in topTags" :key="tag" size="small" variant="outlined" class="tag-freq-chip" @click="insertTag(tag)">
                       {{ tag }}
@@ -541,9 +548,10 @@
           </v-row>
         </v-card-text>
         <v-divider />
-        <v-card-actions class="pa-3">
+        <v-card-actions class="pa-3 flex-wrap">
           <v-btn
             variant="text"
+            :disabled="saving"
             @click="openVersions"
           >
             <v-icon icon="mdi-history" class="mr-1" />
@@ -551,7 +559,7 @@
           </v-btn>
           <v-btn
             variant="text"
-            :disabled="!isDirty"
+            :disabled="!isDirty || saving"
             @click="revertCaption"
           >
             {{ t('dsRevert') }}
@@ -559,7 +567,7 @@
           <v-spacer />
           <span class="text-caption text-medium-emphasis mr-2">{{ currentPosition }}</span>
           <v-checkbox v-model="autoAdvance" :label="t('dsAutoNext')" density="compact" hide-details class="mr-2" style="max-width: 120px" />
-          <v-btn variant="text" @click="tryCloseEditor">
+          <v-btn variant="text" :disabled="saving" @click="tryCloseEditor">
             {{ t('dsClose') }}
           </v-btn>
           <v-btn
@@ -576,15 +584,15 @@
     </v-dialog>
 
     <!-- Unsaved changes confirmation -->
-    <v-dialog v-model="discardDialog" max-width="400">
+    <v-dialog v-model="discardDialog" max-width="400" :persistent="saving" @update:model-value="value => { if (!value) cancelDiscard() }">
       <v-card>
         <v-card-title>{{ t('dsUnsavedTitle') }}</v-card-title>
         <v-card-text>{{ t('dsUnsavedBody') }}</v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="discardDialog = false">{{ t('dsCancel') }}</v-btn>
-          <v-btn color="warning" variant="text" @click="discardAndClose">{{ t('dsDiscard') }}</v-btn>
-          <v-btn color="primary" @click="saveAndClose">{{ t('dsSaveCaption') }}</v-btn>
+          <v-btn variant="text" :disabled="saving" @click="cancelDiscard">{{ t('dsCancel') }}</v-btn>
+          <v-btn color="warning" variant="text" :disabled="saving" @click="discardAndClose">{{ t('dsDiscard') }}</v-btn>
+          <v-btn color="primary" :loading="saving" @click="saveAndClose">{{ t('dsSaveCaption') }}</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -652,20 +660,20 @@
     </v-dialog>
 
     <!-- Batch operation dialog -->
-    <v-dialog v-model="batchDialog" max-width="500">
+    <v-dialog v-model="batchDialog" max-width="500" :persistent="batchProcessing">
       <v-card>
-        <v-card-title>{{ t('dsBatch') }} — {{ batchAction }}</v-card-title>
+        <v-card-title>{{ t('dsBatch') }} — {{ t(batchAction === 'append' ? 'dsAppendTag' : batchAction === 'remove' ? 'dsRemoveTag' : 'dsFindReplace') }}</v-card-title>
         <v-card-text>
-          <v-text-field v-if="batchAction === 'append' || batchAction === 'remove'" v-model="batchTag" :label="batchAction === 'append' ? t('dsTagsToAppend') : t('dsTagsToRemove')" :placeholder="t('dsTagPlaceholder')" variant="outlined" density="compact" :hint="t('dsCommaSeparated')" persistent-hint />
+          <v-text-field v-if="batchAction === 'append' || batchAction === 'remove'" v-model="batchTag" :disabled="batchProcessing" :label="batchAction === 'append' ? t('dsTagsToAppend') : t('dsTagsToRemove')" :placeholder="t('dsTagPlaceholder')" variant="outlined" density="compact" :hint="t('dsCommaSeparated')" persistent-hint />
           <template v-if="batchAction === 'replace'">
-            <v-text-field v-model="batchFind" :label="t('dsFind')" variant="outlined" density="compact" class="mb-2" />
-            <v-text-field v-model="batchReplace" :label="t('dsReplaceWith')" variant="outlined" density="compact" />
-            <v-checkbox v-model="batchUseRegex" :label="t('dsRegex')" density="compact" hide-details />
+            <v-text-field v-model="batchFind" :disabled="batchProcessing" :label="t('dsFind')" variant="outlined" density="compact" class="mb-2" />
+            <v-text-field v-model="batchReplace" :disabled="batchProcessing" :label="t('dsReplaceWith')" variant="outlined" density="compact" />
+            <v-checkbox v-model="batchUseRegex" :disabled="batchProcessing" :label="t('dsRegex')" density="compact" hide-details />
           </template>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="batchDialog = false">{{ t('dsCancel') }}</v-btn>
+          <v-btn variant="text" :disabled="batchProcessing" @click="batchDialog = false">{{ t('dsCancel') }}</v-btn>
           <v-btn color="primary" :loading="batchProcessing" :disabled="batchProcessing || (batchAction === 'append' && !batchTag) || (batchAction === 'remove' && !batchTag) || (batchAction === 'replace' && !batchFind)" @click="executeBatch">{{ t('dsExecute') }}</v-btn>
         </v-card-actions>
       </v-card>
@@ -680,7 +688,7 @@
         </v-card-title>
         <v-card-text>
           <v-file-input
-            v-model="uploadFile"
+            :model-value="uploadFile"
             :label="t('dsUploadArchive')"
             :accept="ARCHIVE_ACCEPT"
             prepend-icon="mdi-folder-zip-outline"
@@ -721,7 +729,7 @@
           <v-btn
             color="primary"
             :loading="uploading"
-            :disabled="uploading || uploadFile.length === 0 || !uploadTarget.trim()"
+            :disabled="uploading || !uploadFile || !uploadTarget.trim()"
             @click="uploadArchive"
           >
             <v-icon icon="mdi-cloud-upload-outline" class="mr-1" />
@@ -736,10 +744,12 @@
 
 <script setup lang="ts">
 import CurationWorkspace from '../components/curation/CurationWorkspace.vue'
+import WorkspaceHeading from '../components/WorkspaceHeading.vue'
 import { curationText } from '../i18n/curation'
 import { useAppStore } from '../stores/app'
 const appStore = useAppStore()
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { useI18n } from '../composables/useI18n'
 import { useNotifyStore } from '../stores/notify'
 
@@ -783,6 +793,8 @@ const totalPages = ref(0)
 
 const loadingDirs = ref(false)
 const loadingImages = ref(false)
+const imagesError = ref('')
+let imagesRequest = 0
 
 // Selection mode
 const selectionMode = ref(false)
@@ -824,6 +836,7 @@ function openBatchDialog(action: 'append' | 'remove' | 'replace') {
 }
 
 async function executeBatch() {
+  if (batchProcessing.value || !selectedCount.value) return
   batchProcessing.value = true
   try {
     const res = await fetch('/api/images/batch-caption', {
@@ -840,10 +853,11 @@ async function executeBatch() {
       }),
     })
     const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
     if (data.failed > 0) {
-      notify.show(`Updated ${data.updated}, failed ${data.failed}`, 'warning')
+      notify.show(t('dsBatchPartial', { updated: data.updated, failed: data.failed }), 'warning')
     } else {
-      notify.show(`Updated ${data.updated} caption(s)`, 'success')
+      notify.show(t('dsBatchUpdated', { count: data.updated }), 'success')
     }
     batchDialog.value = false
     deselectAll()
@@ -851,7 +865,7 @@ async function executeBatch() {
     loadImages()
     loadTagIndex()
   } catch (err: any) {
-    notify.show(err.message || 'Batch operation failed', 'error')
+    notify.show(t('cfgErrSave', { error: err.message || String(err) }), 'error')
   } finally {
     batchProcessing.value = false
   }
@@ -871,7 +885,7 @@ interface ExtractTask {
 }
 
 const uploadDialog = ref(false)
-const uploadFile = ref<File[]>([])
+const uploadFile = ref<File | null>(null)
 const uploadTarget = ref('')
 const uploading = ref(false)
 const uploadProgress = ref(0)
@@ -885,16 +899,17 @@ const extractStatusText = computed(() =>
 )
 
 function openUploadDialog() {
-  uploadFile.value = []
+  uploadFile.value = null
   uploadTarget.value = ''
   uploadProgress.value = 0
   uploading.value = false
   uploadDialog.value = true
 }
 
-function onUploadFileChange() {
-  if (!uploadTarget.value.trim() && uploadFile.value.length > 0) {
-    const stem = uploadFile.value[0].name.replace(/\.(zip|tar(\.gz|\.bz2|\.xz)?|t?g?z|tbz2|txz)$/i, '')
+function onUploadFileChange(value: File | File[] | null | undefined) {
+  uploadFile.value = Array.isArray(value) ? value[0] || null : value || null
+  if (!uploadTarget.value.trim() && uploadFile.value) {
+    const stem = uploadFile.value.name.replace(/\.(zip|tar(\.gz|\.bz2|\.xz)?|t?g?z|tbz2|txz)$/i, '')
     if (stem) uploadTarget.value = `datasets/${stem}`
   }
 }
@@ -970,14 +985,15 @@ async function pollExtractTask(taskId: string): Promise<ExtractTask> {
 }
 
 async function uploadArchive() {
-  if (!uploadFile.value.length || !uploadTarget.value.trim()) return
+  const file = uploadFile.value
+  if (uploading.value || !file || !uploadTarget.value.trim()) return
   uploading.value = true
   uploadPhase.value = 'uploading'
   uploadProgress.value = 0
   extractCount.value = 0
 
   try {
-    const task = await uploadArchiveFile(uploadFile.value[0], uploadTarget.value.trim())
+    const task = await uploadArchiveFile(file, uploadTarget.value.trim())
     uploadPhase.value = 'extracting'
     const result = await pollExtractTask(task.task_id)
     if (result.status === 'error') {
@@ -1032,6 +1048,19 @@ const currentPosition = computed(() => {
 // Unsaved
 const discardDialog = ref(false)
 let _pendingClose = false
+let routeLeaveResolve: ((value: boolean) => void) | undefined
+
+function requestEditorLeave(): boolean | Promise<boolean> {
+  if (saving.value || uploading.value || batchProcessing.value) return false
+  if (!editorDialog.value || !isDirty.value) return true
+  routeLeaveResolve?.(false)
+  tryCloseEditor()
+  return new Promise(resolve => { routeLeaveResolve = resolve })
+}
+onBeforeRouteLeave(requestEditorLeave)
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (editorDialog.value && isDirty.value) { event.preventDefault(); event.returnValue = '' }
+}
 
 // Version history
 const versionsDialog = ref(false)
@@ -1247,7 +1276,9 @@ async function loadDirectories() {
 }
 
 async function loadImages() {
+  const request = ++imagesRequest
   loadingImages.value = true
+  imagesError.value = ''
   try {
     const params = new URLSearchParams({
       directory: directory.value,
@@ -1258,19 +1289,24 @@ async function loadImages() {
     })
     const res = await fetch(`/api/images?${params}`)
     const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+    if (request !== imagesRequest) return
     images.value = data.items || []
     total.value = data.total || 0
     totalPages.value = data.pages || 0
-  } catch {
+  } catch (cause) {
+    if (request !== imagesRequest) return
     images.value = []
     total.value = 0
     totalPages.value = 0
+    imagesError.value = t('dsLoadFailed', { error: cause instanceof Error ? cause.message : String(cause) })
   } finally {
-    loadingImages.value = false
+    if (request === imagesRequest) loadingImages.value = false
   }
 }
 
 function onDirectoryChange() {
+  deselectAll()
   page.value = 1
   loadImages()
   loadTagIndex()
@@ -1299,6 +1335,7 @@ async function addCustomPath() {
     const saved = _loadCustomPaths()
     saved.push(entry)
     _saveCustomPaths(saved)
+    customDirNames.value = new Set(saved.map(d => d.name))
     customPath.value = ''
     onDirectoryChange()
     notify.show(t('dsPathAdded', { path: raw }), 'success')
@@ -1334,12 +1371,18 @@ async function fetchTaggerSettings() {
 
 async function saveTaggerSettings() {
   try {
-    await fetch('/api/tagger/settings', {
+    const res = await fetch('/api/tagger/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(taggerSettings.value),
     })
-  } catch { /* ignore */ }
+    if (!res.ok) {
+      const data = await res.json().catch(() => null)
+      throw new Error(typeof data?.detail === 'string' ? data.detail : `HTTP ${res.status}`)
+    }
+  } catch (cause) {
+    notify.show(t('cfgErrSave', { error: cause instanceof Error ? cause.message : String(cause) }), 'error')
+  }
 }
 
 async function startTagging() {
@@ -1358,6 +1401,10 @@ async function startTagging() {
         trigger_word: taggerSettings.value.trigger_word,
       }),
     })
+    if (!res.ok) {
+      const data = await res.json().catch(() => null)
+      throw new Error(data?.detail || `HTTP ${res.status}`)
+    }
 
     const reader = res.body!.getReader()
     const decoder = new TextDecoder()
@@ -1407,16 +1454,22 @@ function selectImage(img: ImageItem) {
   editorDialog.value = true
 }
 
+function activateImage(img: ImageItem) {
+  if (selectionMode.value) toggleSelection(img.path)
+  else selectImage(img)
+}
+
 function onRowClick(_event: unknown, { item }: { item: ImageItem }) {
-  selectImage(item)
+  activateImage(item)
 }
 
 function revertCaption() {
   editCaption.value = diskCaption.value
 }
 
-async function saveCaption() {
-  if (!selectedImage.value || !isDirty.value) return
+async function saveCaption(): Promise<boolean> {
+  if (saving.value || !selectedImage.value) return false
+  if (!isDirty.value) return true
   saving.value = true
   try {
     const res = await fetch(
@@ -1428,19 +1481,23 @@ async function saveCaption() {
       },
     )
     const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+    if (typeof data.content !== 'string') throw new Error(t('cfgErrSaveDetail'))
     diskCaption.value = data.content
     // Update the in-memory image list too
     const idx = images.value.findIndex(i => i.path === selectedImage.value!.path)
     if (idx >= 0) images.value[idx].caption = data.content
-  } catch {
-    // error — caption stays dirty
+    return true
+  } catch (cause) {
+    notify.show(t('cfgErrSave', { error: cause instanceof Error ? cause.message : String(cause) }), 'error')
+    return false
   } finally {
     saving.value = false
   }
 }
 
 async function saveCaptionAndMaybeAdvance() {
-  await saveCaption()
+  if (!await saveCaption()) return
   if (autoAdvance.value) {
     navigateImage(1)
   }
@@ -1456,18 +1513,29 @@ function tryCloseEditor() {
 }
 
 async function saveAndClose() {
-  await saveCaption()
+  if (!await saveCaption()) return
   discardDialog.value = false
   if (_pendingClose) {
     editorDialog.value = false
     _pendingClose = false
   }
+  routeLeaveResolve?.(true)
+  routeLeaveResolve = undefined
+}
+
+function cancelDiscard() {
+  discardDialog.value = false
+  _pendingClose = false
+  routeLeaveResolve?.(false)
+  routeLeaveResolve = undefined
 }
 
 function discardAndClose() {
   discardDialog.value = false
   editorDialog.value = false
   _pendingClose = false
+  routeLeaveResolve?.(true)
+  routeLeaveResolve = undefined
 }
 
 // ── version history ───────────────────────────────────────────
@@ -1704,6 +1772,7 @@ function navigateImage(delta: number) {
 }
 
 async function _onKeyDown(e: KeyboardEvent) {
+  if (datasetTab.value !== 'browse' || saving.value || discardDialog.value || versionsDialog.value || batchDialog.value || uploadDialog.value) return
   // Don't intercept when typing in an input/textarea
   const tag = (e.target as HTMLElement)?.tagName?.toLowerCase()
   const isInput = tag === 'input' || tag === 'textarea'
@@ -1728,13 +1797,13 @@ async function _onKeyDown(e: KeyboardEvent) {
     if (!isInput) {
       if (e.key === 'ArrowRight') {
         e.preventDefault()
-        if (isDirty.value) await saveCaption()
+        if (isDirty.value && !await saveCaption()) return
         navigateImage(1)
         return
       }
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
-        if (isDirty.value) await saveCaption()
+        if (isDirty.value && !await saveCaption()) return
         navigateImage(-1)
         return
       }
@@ -1765,6 +1834,7 @@ const grammarGuideText = computed(() => {
 // ── lifecycle ─────────────────────────────────────────────────
 
 onMounted(async () => {
+  window.addEventListener('beforeunload', beforeUnload)
   await loadDirectories()
   await loadImages()
   loadTagIndex()
@@ -1773,6 +1843,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('beforeunload', beforeUnload)
+  routeLeaveResolve?.(false)
   document.removeEventListener('keydown', _onKeyDown)
 })
 </script>

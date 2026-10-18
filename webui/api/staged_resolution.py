@@ -43,6 +43,7 @@ class ProfileListResponse(BaseModel):
 
 class ProfileActionRequest(BaseModel):
     version: Literal[1] = 1
+    runtime_profile: Literal["default", "curation", "v100"] = "default"
 
 
 def _http_error(exc: Exception, status: int = 400) -> HTTPException:
@@ -113,11 +114,15 @@ def get_profile_status(name: str) -> dict[str, Any]:
         ) from exc
 
 
-async def _start_profile_task(name: str, command: str) -> dict[str, Any]:
+async def _start_profile_task(
+    name: str, command: str, runtime_profile: str
+) -> dict[str, Any]:
     try:
         plans.load_profile(name)
         task = await task_service.start_task(
-            command, [plans.normalize_profile_name(name)]
+            command,
+            [plans.normalize_profile_name(name)],
+            runtime_profile=runtime_profile,
         )
     except ValueError as exc:
         raise _http_error(exc) from exc
@@ -133,10 +138,10 @@ async def _start_profile_task(name: str, command: str) -> dict[str, Any]:
 
 
 @router.post("/profiles/{name}/preprocess")
-async def start_preprocess(name: str, _body: ProfileActionRequest):
-    return await _start_profile_task(name, "staged-preprocess")
+async def start_preprocess(name: str, body: ProfileActionRequest):
+    return await _start_profile_task(name, "staged-preprocess", body.runtime_profile)
 
 
 @router.post("/profiles/{name}/train")
-async def start_training(name: str, _body: ProfileActionRequest):
-    return await _start_profile_task(name, "staged-train")
+async def start_training(name: str, body: ProfileActionRequest):
+    return await _start_profile_task(name, "staged-train", body.runtime_profile)

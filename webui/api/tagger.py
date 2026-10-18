@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+from typing import Literal
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from webui.services import wd_tagger_service as svc
 
 router = APIRouter()
+ModelName = Literal["wd-eva02-large-tagger-v3", "wd-swinv2-tagger-v3"]
 
 
 # ── Request / response models ───────────────────────────────────
@@ -18,15 +20,17 @@ router = APIRouter()
 
 class TagRequest(BaseModel):
     directory: str
-    threshold: float | None = None
+    threshold: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     skip_existing: bool = True
-    model_name: str | None = None
+    model_name: ModelName | None = None
     trigger_word: str | None = None
 
 
 class TaggerSettings(BaseModel):
-    model_name: str = svc.DEFAULT_MODEL
-    threshold: float = svc.DEFAULT_THRESHOLD
+    model_name: ModelName = svc.DEFAULT_MODEL
+    threshold: float = Field(
+        default=svc.DEFAULT_THRESHOLD, ge=0, le=1, allow_inf_nan=False
+    )
     trigger_word: str = svc.DEFAULT_TRIGGER_WORD
 
 
@@ -60,7 +64,11 @@ def tag_directory(body: TagRequest):
 def get_settings() -> TaggerSettings:
     """Return current tagger settings."""
     s = svc.get_settings()
-    return TaggerSettings(model_name=s["model_name"], threshold=s["threshold"], trigger_word=s.get("trigger_word", ""))
+    return TaggerSettings(
+        model_name=s["model_name"],
+        threshold=s["threshold"],
+        trigger_word=s.get("trigger_word", ""),
+    )
 
 
 @router.put("/settings", response_model=TaggerSettings)

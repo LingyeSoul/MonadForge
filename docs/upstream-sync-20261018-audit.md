@@ -16,7 +16,7 @@
 
 按固定上游的 `git ls-tree -r` 做正向路径覆盖审计：**1,952 个上游路径全部存在于当前工作树**。这只证明路径覆盖，不证明这些文件的所有调用关系、运行行为或数值一致性。
 
-反向比较审计时 `HEAD` 中的本地独有路径：共 774 个。初次检查发现 111 个原路径不存在，经主代理恢复本地文件和重建 vendor 后再次检查，**只剩 1 个旧路径**：`custom_nodes/comfyui-anima-trainer/_vendor/scripts/__init__.py`。该旧空包路径随 daemon vendor 迁移退役：`nodes.py` 已使用 `._vendor.anima_daemon.client`，`sync_vendor.py` 的 `TRAINER_PACKAGE_DIRS` 也仅登记 `anima_daemon`；因此不补造不再被消费的旧 vendor 包。
+反向比较审计时 `HEAD` 中的本地独有路径：共 774 个。初次检查发现 111 个原路径不存在，经主代理恢复本地文件和重建 vendor 后再次检查，**只剩 1 个旧路径**：trainer vendor 中旧 `scripts` 空包的 `__init__.py`。该旧包随 daemon vendor 迁移退役；现入口为 `custom_nodes/comfyui-anima-trainer/_vendor/anima_daemon/__init__.py`。`nodes.py` 已使用 `._vendor.anima_daemon.client`，`sync_vendor.py` 的 `TRAINER_PACKAGE_DIRS` 也仅登记 `anima_daemon`；因此不补造不再被消费的旧 vendor 包。
 
 ## 本地保留与上游适配
 

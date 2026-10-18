@@ -207,6 +207,23 @@ def test_wipe_does_not_touch_final_checkpoint(fake_root: Path):
     assert final.exists()
 
 
+def test_wipe_clears_current_rolling_resume_state(fake_root: Path):
+    out_dir = fake_root / "output/ckpt/lora"
+    state_dir = out_dir / "lora-rolling-state"
+    _write_state(state_dir, step=123, extra={"schema_version": 3, "global_step": 123})
+    (state_dir / "complete.marker").write_text("complete", encoding="utf-8")
+    final = out_dir / "lora.safetensors"
+    final.write_bytes(b"final adapter")
+    merged = {"output_dir": "output/ckpt", "output_name": "lora"}
+    assert cs.find_resumable_checkpoint(merged) == (state_dir, 123)
+
+    cs.wipe_checkpoint("output/ckpt", "lora")
+
+    assert not state_dir.exists()
+    assert cs.find_resumable_checkpoint(merged) is None
+    assert final.read_bytes() == b"final adapter"
+
+
 def test_wipe_removes_checkpoint_sidecars_for_all_supported_weight_formats(
     fake_root: Path,
 ):

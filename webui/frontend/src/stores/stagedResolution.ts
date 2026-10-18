@@ -1,6 +1,8 @@
+import { isTaskActive } from '../utils/taskState.ts'
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { useTaskStore, type TaskInfo } from './task'
+import { useModelWorkspace } from './modelWorkspace'
 
 export interface ResolutionStage {
   resolution: number
@@ -83,6 +85,8 @@ export const useStagedResolutionStore = defineStore('stagedResolution', () => {
   const profileAligned = computed(() =>
     selectedProfileName.value.trim() === loadedProfileName.value,
   )
+  const hasChanges = computed(() => JSON.stringify(plan.value) !== savedSnapshot.value)
+
   const dirty = computed(() =>
     !persisted.value ||
     !profileAligned.value ||
@@ -135,6 +139,21 @@ export const useStagedResolutionStore = defineStore('stagedResolution', () => {
     error.value = ''
   }
 
+  function discardChanges() {
+    if (savedSnapshot.value) {
+      selectedProfileName.value = loadedProfileName.value
+      plan.value = JSON.parse(savedSnapshot.value)
+    } else {
+      selectedProfileName.value = 'default'
+      loadedProfileName.value = ''
+      plan.value = defaultStagedPlan()
+      savedSnapshot.value = JSON.stringify(plan.value)
+      persisted.value = false
+      status.value = null
+    }
+    error.value = ''
+  }
+
   async function saveProfile() {
     saving.value = true
     error.value = ''
@@ -179,10 +198,12 @@ export const useStagedResolutionStore = defineStore('stagedResolution', () => {
   }
 
   async function start(action: 'preprocess' | 'train'): Promise<string | null> {
+    if (launching.value) return null
     launching.value = action
     error.value = ''
     try {
       if (!profileAligned.value) throw new Error('Load the selected profile before starting')
+      const runtime_profile = await useModelWorkspace().runtimeForSubmit()
       if (dirty.value) await saveProfile()
       const name = selectedProfileName.value.trim()
       const res = await fetch(
@@ -190,7 +211,7 @@ export const useStagedResolutionStore = defineStore('stagedResolution', () => {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ version: 1 }),
+          body: JSON.stringify({ version: 1, runtime_profile }),
         },
       )
       if (!res.ok) throw new Error(await responseDetail(res))
@@ -219,7 +240,7 @@ export const useStagedResolutionStore = defineStore('stagedResolution', () => {
     const task = taskStore.tasks.find(item => item.task_id === taskId)
     if (!task) return
     preprocessTaskState.value = task.state
-    if (task.state === 'pending' || task.state === 'running' || task.state === 'stopping') {
+    if (isTaskActive(task.state)) {
       await fetchStatus()
       return
     }
@@ -243,6 +264,8 @@ export const useStagedResolutionStore = defineStore('stagedResolution', () => {
     error,
     profileAligned,
     dirty,
+    hasChanges,
+    discardChanges,
     fetchProfiles,
     loadProfile,
     newProfile,

@@ -52,6 +52,7 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from library.anima import merge_analysis
+from library.anima.compat import ADAPTER_ARCH_KEYS, read_adapter_metadata
 from library.log import setup_logging
 
 setup_logging()
@@ -70,6 +71,23 @@ def load_lora(path: str):
             elif k.endswith(".alpha"):
                 alphas[k[: -len(".alpha")]] = float(f.get_tensor(k).item())
     return downs, ups, alphas
+
+
+def merged_identity(paths: list[str]) -> dict[str, str]:
+    """Retain a shared stamped base identity, never invent one for legacy files."""
+    headers = [read_adapter_metadata(path) for path in paths]
+    keys = (*ADAPTER_ARCH_KEYS, "ss_new_sd_model_hash")
+    if not any(any(key in header for key in ADAPTER_ARCH_KEYS) for header in headers):
+        return {}
+    for path, header in zip(paths, headers):
+        missing = [key for key in keys if not header.get(key)]
+        if missing:
+            raise ValueError(f"Cannot merge unstamped/incomplete adapter {path}: {missing}")
+    identity = {key: headers[0][key] for key in keys}
+    for path, header in zip(paths[1:], headers[1:]):
+        if any(header[key].lower() != identity[key].lower() for key in keys):
+            raise ValueError(f"Adapter architecture/base identity mismatch: {path}")
+    return {**identity, "ss_num_blocks": identity["ss_anima_num_blocks"]}
 
 
 def main() -> int:
@@ -132,6 +150,7 @@ def main() -> int:
         args.dtype
     ]
 
+    identity = merged_identity(args.loras)
     loaded = [load_lora(p) for p in args.loras]
     names = [Path(p).stem for p in args.loras]
 
@@ -218,6 +237,7 @@ def main() -> int:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     metadata = {
+        **identity,
         "merged_from": ",".join(names),
         "merge_weights": ",".join(str(w) for w in weights),
         "merge_kind": "concat_exact",

@@ -45,11 +45,11 @@
             {{ t('taskLegacyDescription') }}
           </v-card-text>
           <TaskAttemptHistory :task="task" />
-          <v-card-text v-if="task.state === 'running' || task.state === 'pending' || task.state === 'stopping'" class="pt-0">
+          <v-card-text v-if="isTaskActive(task.state)" class="pt-0">
             <v-progress-linear v-if="task.state === 'running' || task.state === 'stopping'" indeterminate color="primary" height="3" class="anim-progress-stripe" />
             <div class="d-flex justify-end mt-1">
               <v-btn
-                v-if="task.state === 'running' || task.state === 'pending'"
+                v-if="isTaskStoppable(task.state)"
                 size="x-small"
                 color="error"
                 variant="text"
@@ -61,15 +61,15 @@
           </v-card-text>
           <v-card-actions class="task-card-actions">
             <v-btn
-              v-if="task.resumable && (task.state === 'failed' || task.state === 'cancelled')"
+              v-if="canResumeTask(task)"
               size="x-small"
               color="primary"
               variant="text"
               prepend-icon="mdi-play-circle"
               @click="taskStore.resumeTask(task.task_id)"
-            >{{ t('taskResume') }}</v-btn>
+            >{{ t(task.state === 'paused' ? 'taskUnpause' : 'taskResume') }}</v-btn>
             <v-btn
-              v-if="task.state === 'success' || task.state === 'failed' || task.state === 'cancelled'"
+              v-if="isTaskTerminal(task.state)"
               size="x-small"
               variant="text"
               prepend-icon="mdi-delete-outline"
@@ -114,11 +114,11 @@
             {{ t('taskLegacyDescription') }}
           </div>
           <TaskAttemptHistory :task="task" />
-          <v-card-text v-if="task.state === 'running' || task.state === 'pending' || task.state === 'stopping'" class="pt-0 flex-shrink-0">
+          <v-card-text v-if="isTaskActive(task.state)" class="pt-0 flex-shrink-0">
             <v-progress-linear v-if="task.state === 'running' || task.state === 'stopping'" indeterminate color="primary" height="3" class="anim-progress-stripe" />
             <div class="d-flex justify-end mt-1">
               <v-btn
-                v-if="task.state === 'running' || task.state === 'pending'"
+                v-if="isTaskStoppable(task.state)"
                 size="x-small"
                 color="error"
                 variant="text"
@@ -129,19 +129,19 @@
             </div>
           </v-card-text>
           <v-card-text class="d-flex flex-column pt-0" style="flex: 1 1 0; min-height: 0;">
-            <LogStream :task-id="task.task_id" />
+            <LogStream :task-id="task.task_id" :attempt-id="task.current_job_id" />
           </v-card-text>
           <v-card-actions class="task-card-actions flex-shrink-0">
             <v-btn
-              v-if="task.resumable && (task.state === 'failed' || task.state === 'cancelled')"
+              v-if="canResumeTask(task)"
               size="x-small"
               color="primary"
               variant="text"
               prepend-icon="mdi-play-circle"
               @click="taskStore.resumeTask(task.task_id)"
-            >{{ t('taskResume') }}</v-btn>
+            >{{ t(task.state === 'paused' ? 'taskUnpause' : 'taskResume') }}</v-btn>
             <v-btn
-              v-if="task.state === 'success' || task.state === 'failed' || task.state === 'cancelled'"
+              v-if="isTaskTerminal(task.state)"
               size="x-small"
               variant="text"
               prepend-icon="mdi-delete-outline"
@@ -162,6 +162,7 @@
 </template>
 
 <script setup lang="ts">
+import { canResumeTask, isTaskActive, isTaskStoppable, isTaskTerminal } from '../utils/taskState.ts'
 import { ref } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useI18n } from '../composables/useI18n'
@@ -173,6 +174,7 @@ const { t } = useI18n()
 const selectedTask = ref('')
 
 function stateColor(state: string) {
+  if (state === 'paused') return 'warning'
   if (state === 'running' || state === 'stopping') return 'primary'
   if (state === 'success') return 'success'
   if (state === 'failed') return 'error'
@@ -180,6 +182,7 @@ function stateColor(state: string) {
 }
 
 function stateIcon(state: string) {
+  if (state === 'paused') return 'mdi-pause-circle'
   if (state === 'running' || state === 'stopping') return 'mdi-progress-clock'
   if (state === 'success') return 'mdi-check-circle'
   if (state === 'failed') return 'mdi-alert-circle'
