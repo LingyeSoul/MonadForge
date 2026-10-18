@@ -16,6 +16,9 @@ Changes from the reference, all additive:
   skip-22 uncond share a batch.
 - ``gradient_checkpointing``: per-block activation checkpointing in
   ``run_layers`` while training.
+- ``layer_hook``: optional ``(index, x, n_img) -> x`` run on each block's output
+  (rows that ran the block only), outside the compiled block. DAVE
+  (``library.moss.dave``) and its probe use it; ``None`` is the reference.
 - ``pack_latents`` / ``unpack_latents``: the FLUX.2 VAE ↔ DiT latent boundary
   (2×2 patchify + the VAE's BatchNorm statistics).
 """
@@ -225,6 +228,7 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         self.final_linear_video = nn.Linear(dim, latent_channels, bias=False)
         self.video_head_modulation = nn.Linear(dim, 2 * dim)
         self.gradient_checkpointing = False
+        self.layer_hook = None
 
     def load_training_state_dict(self, state_dict, *, prefix=""):
         """Load a consolidated raw/EMA model mapping, strictly; no silent key drops."""
@@ -263,11 +267,13 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         text = self.text_embedder(context, rope[:, height * width :])
         return torch.cat((video, text), 1), rope
 
-    def run_layers(self, x, rope, mod, skip_layers=frozenset(), key_mask=None):
+    def run_layers(self, x, rope, mod, skip_layers=frozenset(), key_mask=None, n_img=None):
         """The 42 blocks. ``skip_layers``: one frozenset for the whole batch, or a
-        sequence of frozensets, one per sample (rows skipping a block keep ``x``)."""
+        sequence of frozensets, one per sample (rows skipping a block keep ``x``).
+        ``n_img`` (leading image tokens) is what ``layer_hook`` sees."""
         per_sample = not isinstance(skip_layers, (frozenset, set))
         ckpt = self.gradient_checkpointing and torch.is_grad_enabled()
+        hook = self.layer_hook
         for index, layer in enumerate(self.layers):
             if per_sample:
                 active = [b for b, skips in enumerate(skip_layers) if index not in skips]
@@ -278,6 +284,8 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
                     sub = layer(
                         x[rows], rope[rows], mod[rows], None if key_mask is None else key_mask[rows]
                     )
+                    if hook is not None:
+                        sub = hook(index, sub, n_img)
                     x = x.index_copy(0, rows, sub)
                     continue
             elif index in skip_layers:
@@ -286,6 +294,8 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
                 x = checkpoint(layer, x, rope, mod, key_mask, use_reentrant=False)
             else:
                 x = layer(x, rope, mod, key_mask)
+            if hook is not None:
+                x = hook(index, x, n_img)
         return x
 
     def head(self, features, head_mod, height, width):
@@ -334,7 +344,9 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         for index in range(batch):
             context = encoder_hidden_states[index : index + 1, mask[index]]
             x, rope = self.embed_sample(hidden_states[index : index + 1], context)
-            x = self.run_layers(x, rope, mod[index : index + 1], skip_layers)
+            x = self.run_layers(
+                x, rope, mod[index : index + 1], skip_layers, n_img=height * width
+            )
             features = x[:, : height * width]
             if return_features:
                 outputs.append(features)
@@ -399,7 +411,7 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         key_mask = torch.cat((text_mask.new_ones(batch, n_img), text_mask), 1)
         if bool(text_mask.all()):
             key_mask = None
-        x = self.run_layers(x, rope, mod, skips, key_mask)
+        x = self.run_layers(x, rope, mod, skips, key_mask, n_img=n_img)
         features = x[:, :n_img]
         if return_features:
             return features

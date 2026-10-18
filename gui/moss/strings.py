@@ -114,4 +114,10 @@ FIELDS_CN_GENERATE: dict[str, tuple[str, str]] = {
     "seed": ("随机种子", "第一个提示词的种子（每个提示词 +1）"),
     "out_dir": ("输出文件夹", "图片和 manifest.json 保存在这里"),
     "spectrum": ("Spectrum", "大部分步数预测最后一个块的输出，而不是运行全部 42 个块"),
+    "dave": (
+        "DAVE",
+        "同提示词多样性：前几步在一组块上削弱图像 token 的逐通道均值。"
+        "'' = 关闭，'auto' = 内置 MOSS 掩码，'lo-hi' = 第 lo..hi 块，或 dave_alpha.npz 路径",
+    ),
+    "dave_strength": ("DAVE 强度", "在池内块上去除的均值比例（0 = 关闭，1 = 全部）"),
 }

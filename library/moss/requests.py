@@ -196,6 +196,18 @@ class GenerateRequest(Request):
     )
     spectrum_m: int = _f(3, "Chebyshev degree", advanced=True)
     spectrum_lam: float = _f(0.1, "ridge regularisation", advanced=True)
+    dave: str = _f(
+        "",
+        "DAVE same-prompt diversity: attenuate the image tokens' per-channel mean on "
+        "a block pool during the first steps. '' = off, 'auto' = the shipped MOSS "
+        "mask, 'lo-hi' = blocks lo..hi, or a dave_alpha.npz path (library/moss/dave.py)",
+    )
+    dave_strength: float = _f(
+        0.3, "fraction of the mean removed on a pooled block (0 = off, 1 = all)"
+    )
+    dave_tau: float = _f(
+        0.10, "attenuate the first tau of the steps (at least one)", advanced=True
+    )
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
 
 

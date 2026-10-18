@@ -95,6 +95,7 @@ def denoise(
     sampler="euler",
     seed=None,
     cns=None,
+    dave=None,
     on_step=None,
     progress=None,
 ):
@@ -112,6 +113,9 @@ def denoise(
     ``x̂₀ = x_t − σ·v``; ``seed`` seeds its injected noise and ``cns``
     (``library.moss.cns.MossCNS``) recolors it. ``on_step(i, x̂₀)`` sees each
     step's guided x̂₀ (CNS calibration).
+
+    ``dave`` (``library.moss.dave.MossDAVE``) is installed as the transformer's
+    ``layer_hook`` on its active steps (both branches) and removed after.
     """
     device = latents.device
     batch, _, height, width = latents.shape
@@ -136,29 +140,39 @@ def denoise(
         raise ValueError(f"unknown sampler {sampler!r}")
     if spectrum is not None:
         spectrum.begin(sigmas)
-    for i, t in enumerate(timesteps):
-        if spectrum is None or spectrum.is_full_step(i):
-            branches = _features(transformer, latents, t, embeds, masks, skips, batched)
-            if spectrum is not None:
-                spectrum.observe(i, torch.cat(branches))
-        else:
-            branches = list(spectrum.forecast(i).chunk(len(embeds)))
-        # The head per branch, as each reference forward applies it.
-        _mod, head_mod = transformer.time_conditioning(t, batch)
-        velocity = [
-            transformer.head(f, head_mod, height, width).float() for f in branches
-        ]
-        prediction = velocity[0]
-        if do_cfg:
-            prediction = velocity[1] + cfg * (velocity[0] - velocity[1])
-        if on_step is not None:
-            on_step(i, latents - sigma_t[i] * prediction)
-        if er_sde is None:
-            latents = latents + (sigma_t[i + 1] - sigma_t[i]) * prediction
-        else:
-            latents = er_sde.step(latents, latents - sigma_t[i] * prediction, i)
-        if progress is not None:
-            progress(i, len(timesteps))
+    if dave is not None:
+        dave.begin(len(timesteps))
+    try:
+        for i, t in enumerate(timesteps):
+            if dave is not None:
+                transformer.layer_hook = dave if dave.is_active(i) else None
+            if spectrum is None or spectrum.is_full_step(i):
+                branches = _features(
+                    transformer, latents, t, embeds, masks, skips, batched
+                )
+                if spectrum is not None:
+                    spectrum.observe(i, torch.cat(branches))
+            else:
+                branches = list(spectrum.forecast(i).chunk(len(embeds)))
+            # The head per branch, as each reference forward applies it.
+            _mod, head_mod = transformer.time_conditioning(t, batch)
+            velocity = [
+                transformer.head(f, head_mod, height, width).float() for f in branches
+            ]
+            prediction = velocity[0]
+            if do_cfg:
+                prediction = velocity[1] + cfg * (velocity[0] - velocity[1])
+            if on_step is not None:
+                on_step(i, latents - sigma_t[i] * prediction)
+            if er_sde is None:
+                latents = latents + (sigma_t[i + 1] - sigma_t[i]) * prediction
+            else:
+                latents = er_sde.step(latents, latents - sigma_t[i] * prediction, i)
+            if progress is not None:
+                progress(i, len(timesteps))
+    finally:
+        if dave is not None:
+            transformer.layer_hook = None
     return latents
 
 
@@ -276,6 +290,23 @@ def _build_spectrum(req: GenerateRequest, job: dict):
     )
 
 
+def _build_dave(req: GenerateRequest, num_blocks: int):
+    """DAVE hook for every job, or None."""
+    if not req.dave:
+        return None
+    from library.moss.dave import MossDAVE
+
+    dave = MossDAVE.from_spec(req.dave, num_blocks, req.dave_strength, req.dave_tau)
+    if req.spectrum and req.dave_tau * req.steps > req.spectrum_warmup:
+        # A forecast step runs no blocks, so DAVE skips it.
+        print(
+            f"[dave] tau {req.dave_tau} of {req.steps} steps reaches past Spectrum's "
+            f"{req.spectrum_warmup} warmup steps; forecast steps are not attenuated",
+            flush=True,
+        )
+    return dave
+
+
 def _fingerprint(req: GenerateRequest, job: dict) -> dict:
     """What a saved latent was made from; a resume reuses it only on a match."""
     spectrum = {
@@ -290,6 +321,11 @@ def _fingerprint(req: GenerateRequest, job: dict) -> dict:
         batched=req.batched,
         sampler=req.sampler,
         spectrum=spectrum if req.spectrum else None,
+        dave=(
+            dict(spec=req.dave, strength=req.dave_strength, tau=req.dave_tau)
+            if req.dave
+            else None
+        ),
     )
 
 
@@ -367,6 +403,7 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
         print(f"[lora] {req.lora} x{req.lora_multiplier}", flush=True)
     if req.compile:
         compile_blocks(transformer.layers)
+    dave = _build_dave(req, len(transformer.layers))
     for j, rec in pending:
         cond, cond_mask = pad_embeds([embeds[j["prompt"]]], device=device)
         uncond = uncond_mask = None
@@ -391,6 +428,7 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
             spectrum=_build_spectrum(req, j),
             sampler=req.sampler,
             seed=j["seed"],
+            dave=dave,
         ).cpu()
         torch.cuda.synchronize()
         seconds = time.time() - t0
@@ -405,7 +443,8 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
         save_latent(_latent_path(out_dir, rec), latent, rec)
         print(
             f"[{req.model}] {j['key']} {j['width']}x{j['height']} cfg {j['cfg']} "
-            f"{len(sigmas)} steps: {seconds:.1f}s, peak {peak:.1f} GiB -> "
+            f"{len(sigmas)} steps{f' ({dave.describe()})' if dave else ''}: "
+            f"{seconds:.1f}s, peak {peak:.1f} GiB -> "
             f"{_latent_path(out_dir, rec).name}",
             flush=True,
         )

@@ -19,6 +19,7 @@ Nothing Anima-side imports `library.moss`.
 | `generate.py` | `run_generate(req)`: Euler or ER-SDE (`sampler`, Anima's `ERSDESampler`), CFG + uncond skip-22, Spectrum hook-in |
 | `cns.py` | CNS noise recolor for ER-SDE on the un-patchified 32 ch grid + γ estimator; bench-only so far (`project/moss_lora/sampler.md`) |
 | `spectrum.py` | per-branch feature forecaster (cond and uncond forecast separately) |
+| `dave.py` | DAVE on the image tokens only, run through `model.layer_hook` (a post-block edit that sees only the rows that ran the block, so skip-22 is handled); τ is a step count; the massive-activation channels (`calibration/massive_channels.npz`) are left out of the mean. Mask from `bench/moss_dave/probe_dc_convergence.py` → `bench/dave/derive_alpha_mask.py`; `project/moss_lora/dave.md` |
 | `lora.py` | `library.lines.adapters` bound to `layers` (held **outside** the blocks: the swapper moves every `.weight` under a block) |
 | `train.py` | `run_train(req)` |
 | `tune.py` | `run_tune(req)`: one process, one arm per swap count at the largest budget that fits, timed on the largest sample → recommended `--blocks_to_swap` / `--activation_memory_budget` |
