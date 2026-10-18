@@ -63,6 +63,12 @@ Twin runs, identical except `channel_scaling_alpha`. **lr 2e-5:**
   s1) — the detail loss that already ruled lr 1e-4 out (`docs/experimental/moss_lora.md`).
   The cs05 cells stay on-prompt at the same style strength.
 
+![lr 1e-4 twins on the four cells named above: no LoRA | α 0 | α 0.5](assets/channel_scaling_lr1e4_ab.webp)
+
+The cells cited above, ER-SDE + Spectrum 50 steps, CFG 3, layout_json. The no-LoRA column
+is the lr 2e-5 grid's ×0.0 (same prompts, seeds and sampler); full grids in
+`output/tests/ab_caststation_layout_at_r32a128_lr1e4_svd{,_cs05}_50st`.
+
 Distance to the no-LoRA image measures how much a LoRA changes, not whether the change is
 right, so it misses this. One seed pair per cell. On this result the defaults moved to
 lr 1e-4 + α 0.5 (from lr 2e-5 + α 0). Open items: `project/moss_lora/channel_scaling.md`.
