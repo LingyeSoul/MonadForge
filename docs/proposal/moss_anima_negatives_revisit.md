@@ -12,11 +12,10 @@ any port.
 | MOSS fact | Anima counterpart | Causes it can flip |
 |---|---|---|
 | Text is never padded; the DiT sees only valid tokens | 512-token max pad, zero pads act as cross-attn sinks | sink / register results |
-| Single-stream: text is concatenated after the image tokens and runs all 42 blocks on every step | Cross-attn on a text KV computed once | text-side compute, text↔image attention probes |
+| Single-stream: text is concatenated after the image tokens and runs all 42 blocks on every step | Cross-attn on a text KV computed once | text↔image attention probes |
 | SiTU-GLU (gated) FFN | Plain GELU MLP | activation sparsity |
 | Massive channels (1356, 42; ~1900× median at block 0, prompt-independent) | No comparable channel outliers recorded | sink / register results, adapter coupling |
 | FLUX.2 VAE, 32 ch /8, packed 128 ch /16 | Anima VAE, 16 ch | latent-space objectives |
-| Trained on verbatim text transcription; renders quoted CJK out of the box | DiT composes glyphs in pixels; rare kanji fail | the whole CJK line |
 | σ sampling biased toward noise (final interval μ −1.09, median σ ≈ 0.75–0.79); sampler shift 5 | sigmoid(N(0,1)) | σ-band-limited premises |
 | Modulation from the timestep alone, one `shared_block_modulation` for all 42 blocks | per-block AdaLN | — (makes AdaLN levers weaker, not stronger) |
 
@@ -26,28 +25,7 @@ any port.
 
 Started 2026-10-18. Motivation, probe, gate and readings: `bench/moss_sinks/README.md`.
 
-### 2. CJK text rendering and OCR captions
-
-- **Anima**: `project/finished/cjk_aware_anima/findings.md`,
-  `project/finished/cjk_renderable_anima/findings.md`,
-  `docs/findings/freetext_text_rendering.md`.
-- **Cause on Anima**: "the DiT composes in pixels, not in row space"; rare kanji names
-  smear (recovery_attn 0.90 → 0.45 under a rank-16 ext-gated LoRA); OCR quote rows in
-  manga captions were inert ("the presence tag is the address").
-- **Why MOSS differs**: the techniques do not need to be ported, because the goal is
-  native. Quoted CJK in the main subject rendered correctly on day one (ja / zh / ko).
-  The training captions transcribe visible text verbatim (report p.18), so the OCR
-  text clause (`--combine_ocr`) that was inert on Anima is the format MOSS was trained
-  on. Unverified: JA and KO are never mentioned in the report, and the day-one read is
-  five prompts at one seed.
-- **Probe**: (a) a JA / KO / rare-kanji prompt sheet (bubble text, signage, names from
-  the Anima CJK eval set), Base and SFT, 4 seeds, read per glyph. (b) A manga LoRA
-  A/B: the same set with and without the OCR text clause in the layout-JSON caption.
-- **Gate**: (a) per-glyph read on held-out kana / hangul / rare kanji at least matches
-  the zh rate seen so far. (b) the OCR-clause arm renders the set's bubble text more
-  legibly and does not write captions into non-text regions.
-
-### 3. 2:4 activation sparsity (RT-Lynx)
+### 2. 2:4 activation sparsity (RT-Lynx)
 
 - **Anima**: `_archive/rt_lynx/`, `_archive/shelved_benches.md` (Numerics).
 - **Cause on Anima**: "plain-GELU MLP keeps mlp_down dense (RFE 0.25 vs paper 0.01)";
@@ -60,26 +38,9 @@ Started 2026-10-18. Motivation, probe, gate and readings: `bench/moss_sinks/READ
   activations over a few prompts and σ.
 - **Gate**: RFE ≤ ~0.05 on most blocks. Then a kernel-level timing before any
   quality arm.
-
-### 4. Text-token compute reuse across steps
-
-- **Anima**: `docs/findings/traj_stats_front_loaded_commitment.md` (committed-token
-  reuse, ceiling 25.5 % of token-steps).
-- **Cause on Anima**: the ceiling was on image tokens; text was a cross-attn KV
-  computed once, so text had no per-step cost to save.
-- **Why MOSS differs**: every text token pays full QKV + FFN in all 42 blocks on every
-  step. At 1776×1184 a 1.9k-token prompt adds ≈ +24 % linear and +53 % attention FLOPs
-  (`project/moss_lora/plan.md`). A text token's inputs are the shared, time-only
-  modulation and the joint attention over image tokens; if its hidden states drift
-  little between steps, later steps could reuse the text rows' K / V and skip their
-  FFN.
-- **Probe**: per block, step-to-step relative change of the text-token hidden states
-  (and of their K / V) over a 50-step run, cond and uncond (uncond skips block 22), at
-  a short tag prompt and a long layout-JSON prompt.
-- **Gate**: relative change below image-token drift by a wide margin over a contiguous
-  late-step range. Then a reuse arm against the plain run at matched seeds, read by
-  eye, and timed alongside Spectrum (forecast steps already skip all blocks, so the
-  saving only lands on full steps).
+- **Result (2026-10-18, closed)**: gate fails. `ffn_down` RFE 0.185 mean, ≤ 0.05
+  on 1 / 42 blocks (Anima 0.25); the other five linears are 0.19–0.39. Flat over σ.
+  `bench/moss_rfe/README.md`.
 
 ## Tier 2 — the cause was a measurement; re-measure on MOSS
 
@@ -110,11 +71,8 @@ Low expectation for CTCal, SSC and MIST; they are listed because the probes are 
 
 ## Order
 
-1. Tier 1 §1 (sinks / registers) and §4 (text-token drift). Both are one probe job
-   each on hooks the DAVE probe already uses, and §4's result also sizes the
-   saving for §3.
-2. Tier 1 §2(a), the CJK prompt sheet — no new code, `scripts/moss/generate.py` jobs through the daemon.
-3. Tier 1 §3 (RFE probe), then Tier 2 in any order.
+1. Tier 1 §1 (sinks / registers, started). §2 is closed.
+2. Tier 2 in any order.
 
 Each probe drops a `result.json` under `bench/moss_<item>/results/` and its reading is
 logged here.
