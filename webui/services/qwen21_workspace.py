@@ -6,19 +6,15 @@ request defaults; model components and hardware auto-sizing stay in workers.
 
 from __future__ import annotations
 
-import dataclasses
-import json
 import math
 import os
-import re
-import tempfile
 from pathlib import Path
 
-import toml
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 
 from library.env import resolve_under_home
 from library.qwen21.requests import CacheRequest, GenerateRequest, TrainRequest
+from webui.services.model_workspace import ProfileStore
 from webui.services.qwen21_service import Scalar
 
 MODEL_FIELDS = frozenset(
@@ -34,87 +30,41 @@ class Profile(BaseModel):
     generate: dict[str, Scalar]
 
 
+# `resolve_under_home` is resolved through this module's globals on every call,
+# so redirecting the profile tree stays a one-line patch in tests.
+_STORE = ProfileStore(
+    root="configs/custom/qwen21",
+    label="Qwen",
+    section_types={
+        "cache": CacheRequest,
+        "train": TrainRequest,
+        "generate": GenerateRequest,
+    },
+    model_fields=MODEL_FIELDS,
+    profile_cls=Profile,
+    empty_factory=lambda: Profile(models={}, cache={}, train={}, generate={}),
+    root_resolver=lambda value: resolve_under_home(value),
+)
+
+
 def normalize_profile(profile: Profile) -> Profile:
-    models = {
-        key: value for key, value in profile.models.items() if key in MODEL_FIELDS
-    }
-    sections: dict[str, dict[str, Scalar]] = {}
-    for name, cls in (
-        ("cache", CacheRequest),
-        ("train", TrainRequest),
-        ("generate", GenerateRequest),
-    ):
-        values = {
-            key: value
-            for key, value in getattr(profile, name).items()
-            if key not in MODEL_FIELDS
-        }
-        req = TypeAdapter(cls).validate_json(
-            json.dumps({**values, **models}), strict=True
-        )
-        # Editing a profile may be incomplete; action validation happens at submission.
-        for field in dataclasses.fields(req):
-            choices = field.metadata.get("choices")
-            if choices is not None and getattr(req, field.name) not in choices:
-                raise ValueError(f"{name}.{field.name} must be one of {choices}")
-        full = dataclasses.asdict(req)
-        sections[name] = {
-            key: value for key, value in full.items() if key not in MODEL_FIELDS
-        }
-        models = {key: value for key, value in full.items() if key in MODEL_FIELDS}
-    return Profile(models=models, **sections)
+    return _STORE.normalize(profile)
 
 
 def profile_path(name: str) -> Path:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
-        raise ValueError(
-            "Profile name must contain 1–64 letters, digits, underscores or hyphens"
-        )
-    root = resolve_under_home("configs/custom/qwen21").resolve()
-    path = root / f"{name}.toml"
-    if path.is_symlink():
-        raise ValueError(f"Qwen profile must not be a symbolic link: {path}")
-    return path
+    return _STORE.path(name)
 
 
 def list_profiles() -> list[str]:
-    root = profile_path("default").parent
-    return sorted({"default", *(path.stem for path in root.glob("*.toml"))})
+    return _STORE.list()
 
 
 def read_profile(name: str) -> Profile:
-    path = profile_path(name)
-    if name == "default" and not path.exists():
-        return normalize_profile(Profile(models={}, cache={}, train={}, generate={}))
-    return normalize_profile(
-        Profile.model_validate(
-            toml.loads(path.read_text(encoding="utf-8")), strict=True
-        )
-    )
+    return _STORE.read(name)
 
 
 def save_profile(name: str, profile: Profile) -> Profile:
-    normalized = normalize_profile(profile)
-    path = profile_path(name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = {
-        section: {key: value for key, value in values.items() if value is not None}
-        for section, values in normalized.model_dump().items()
-    }
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, delete=False
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(toml.dumps(data))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
-    return normalized
+    return _STORE.save(name, profile)
 
 
 class TensorHeader(BaseModel):

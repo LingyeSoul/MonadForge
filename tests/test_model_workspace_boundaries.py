@@ -163,14 +163,16 @@ def test_failed_profile_replace_keeps_original_and_removes_temporary(
     modified = original.model_copy(deep=True)
     modified.train["rank"] = 64
 
-    def failed_replace(*_args):
+    def failed_replace(*_args, **_kwargs):
         raise OSError("fixture: replacement failed")
 
-    monkeypatch.setattr(workspace.os, "replace", failed_replace)
+    # Profiles are written through config_storage's staged writer, so the
+    # injection point is Path.replace (the shared writer's commit step).
+    monkeypatch.setattr(Path, "replace", failed_replace)
     with pytest.raises(OSError, match="replacement failed"):
         workspace.save_profile("existing", modified)
     assert path.read_bytes() == original_bytes
-    assert list(path.parent.iterdir()) == [path]
+    assert not [item for item in path.parent.iterdir() if item.name.endswith(".tmp")]
     assert workspace.read_profile("existing") == original
 
 

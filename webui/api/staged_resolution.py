@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from library.training import staged_resolution_plan as plans
+from webui.api.errors import daemon_detail
 from webui.services.daemon_client import DaemonError
 from webui.services.task_service import task_service
 
@@ -131,9 +132,12 @@ async def _start_profile_task(
             status_code=404, detail="staged-resolution profile not found"
         ) from exc
     except DaemonError as exc:
-        raise HTTPException(
-            status_code=502, detail="Training daemon is unavailable"
-        ) from exc
+        # Keep the friendly fallback for an unstructured failure, but surface the
+        # daemon's i18n key when it raised a localizable one.
+        detail = daemon_detail(exc)
+        if isinstance(detail, str):
+            detail = "Training daemon is unavailable"
+        raise HTTPException(status_code=502, detail=detail) from exc
     return task.info()
 
 

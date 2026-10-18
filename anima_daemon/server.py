@@ -743,17 +743,17 @@ class _Handler(BaseHTTPRequestHandler):
             limit=integer("limit", 100),
             newest_first=order in {"desc", "newest"},
         )
-        if not query:
-            self._send_json([j.public() for j in jobs])
-        else:
-            self._send_json(
-                {
-                    "jobs": [j.public() for j in jobs],
-                    "total": total,
-                    "offset": integer("offset", 0),
-                    "limit": integer("limit", 100),
-                }
-            )
+        # One shape for every caller. The bare array this used to return when no
+        # query was present made clients branch (and lose `total`), and the
+        # sibling `/job-groups` always answered with an envelope anyway.
+        self._send_json(
+            {
+                "jobs": [j.public() for j in jobs],
+                "total": total,
+                "offset": integer("offset", 0),
+                "limit": integer("limit", 100),
+            }
+        )
 
     def _handle_group_list(self, query: str = "") -> None:
         params = urllib.parse.parse_qs(query)

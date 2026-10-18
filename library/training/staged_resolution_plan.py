@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import copy
 import math
-import os
 import re
 import shutil
 from pathlib import Path
@@ -22,6 +21,7 @@ from PIL import Image
 from library.config.io import load_dataset_config_from_base, load_method_preset
 from library.datasets.buckets import ALLOWED_TARGET_RES
 from library.env import anima_home
+from library.io.atomic import atomic_write_text
 from library.training.staged_resolution import build_stage_schedule
 
 PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -200,10 +200,7 @@ def load_profile(
 
 
 def _atomic_write_toml(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(toml.dumps(data), encoding="utf-8")
-    os.replace(tmp, path)
+    atomic_write_text(path, toml.dumps(data))
 
 
 def save_profile(

@@ -24,6 +24,7 @@ from scripts.curation.context import (
     validate_tree,
 )
 from scripts.curation.bridge import in_curation_runtime
+from webui.services.config_storage import atomic_write_text
 
 ROOT = Path(__file__).resolve().parents[2]
 HOME = ROOT
@@ -35,12 +36,11 @@ def write_json(path: Path, data: dict, *, exclusive: bool = False) -> str:
     payload = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     if exclusive:
+        # create-if-absent is the whole point: never clobber another job's record.
         with path.open("x", encoding="utf-8") as stream:
             stream.write(payload)
     else:
-        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        temporary.write_text(payload, encoding="utf-8")
-        temporary.replace(path)
+        atomic_write_text(path, payload)
     return hashlib.sha256(payload.encode()).hexdigest()
 
 

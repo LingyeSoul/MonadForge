@@ -11,6 +11,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from scripts.curation.context import CurationUnavailable
+from webui.api.errors import daemon_detail
 from webui.services import curation_service as svc
 from webui.services.daemon_client import DaemonError
 
@@ -29,7 +30,8 @@ class CurationRoute(APIRoute):
             except (ValueError, KeyError) as exc:
                 raise HTTPException(400, str(exc)) from exc
             except DaemonError as exc:
-                raise HTTPException(502, str(exc)) from exc
+                raise HTTPException(502, daemon_detail(exc)) from exc
+
         return handle
 
 
@@ -138,12 +140,20 @@ def exclude(body: Exclusion):
 @router.get("/files")
 def files(path: str):
     resolved = svc.file_path(path)
-    return FileResponse(resolved, media_type=mimetypes.guess_type(resolved.name)[0] or "application/octet-stream", headers={"cache-control": "no-cache"})
+    return FileResponse(
+        resolved,
+        media_type=mimetypes.guess_type(resolved.name)[0] or "application/octet-stream",
+        headers={"cache-control": "no-cache"},
+    )
 
 
 @router.get("/thumb")
 def thumb(path: str, size: int = Query(256, ge=16, le=1024)):
-    return Response(svc.thumbnail(path, size), media_type="image/webp", headers={"cache-control": "no-cache"})
+    return Response(
+        svc.thumbnail(path, size),
+        media_type="image/webp",
+        headers={"cache-control": "no-cache"},
+    )
 
 
 @router.get("/jobs")

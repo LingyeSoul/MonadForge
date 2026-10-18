@@ -3,38 +3,29 @@
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
-from typing import Iterator, Literal
+from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from library.moss.requests import CacheRequest, TrainRequest
+from webui.api.errors import workspace_errors as _shared_workspace_errors
 from webui.services import moss_service as svc, moss_workspace as workspace
-from webui.services.daemon_client import DaemonError, daemon_client
+from webui.services.daemon_client import daemon_client
 from webui.services.task_service import task_service
 
 router = APIRouter()
 
 
+def workspace_errors():
+    """The shared model-line mapping, labelled with this line's name."""
+    return _shared_workspace_errors("MOSS")
+
+
 class JobResponse(BaseModel):
     task_id: str
     command: str
-
-
-@contextmanager
-def workspace_errors() -> Iterator[None]:
-    try:
-        yield
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (ValueError, OSError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except DaemonError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"MOSS daemon request failed: {exc}"
-        ) from exc
 
 
 @router.get("/schema", response_model=svc.FormSchema)

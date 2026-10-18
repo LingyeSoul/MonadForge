@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-import dataclasses
-import json
-import os
-import re
-import tempfile
 from pathlib import Path
 
-import toml
-from pydantic import BaseModel, ConfigDict, TypeAdapter
+from pydantic import BaseModel, ConfigDict
 
 from library.env import resolve_under_home
 from library.moss.requests import (
@@ -20,6 +14,7 @@ from library.moss.requests import (
     TuneSwapRequest,
 )
 from library.moss.scan import LATENT_RE, LATENT_SUFFIX, TE_SUFFIX
+from webui.services.model_workspace import ProfileStore
 from webui.services.qwen21_workspace import CacheStatus, read_header
 
 Scalar = str | int | float | bool | None
@@ -41,81 +36,37 @@ class Profile(BaseModel):
     tune: dict[str, Scalar] = {}
 
 
+# `resolve_under_home` is resolved through this module's globals on every call,
+# so redirecting the profile tree stays a one-line patch in tests.
+_STORE = ProfileStore(
+    root="configs/custom/moss",
+    label="MOSS",
+    section_types=SECTION_TYPES,
+    model_fields=MODEL_FIELDS,
+    profile_cls=Profile,
+    empty_factory=Profile,
+    root_resolver=lambda value: resolve_under_home(value),
+)
+
+
 def normalize_profile(profile: Profile) -> Profile:
-    models = {
-        key: value for key, value in profile.models.items() if key in MODEL_FIELDS
-    }
-    sections = {}
-    for name, cls in SECTION_TYPES.items():
-        values = {
-            key: value
-            for key, value in getattr(profile, name).items()
-            if key not in MODEL_FIELDS
-        }
-        req = TypeAdapter(cls).validate_json(
-            json.dumps({**values, **models}), strict=True
-        )
-        for field in dataclasses.fields(req):
-            choices = field.metadata.get("choices")
-            if choices is not None and getattr(req, field.name) not in choices:
-                raise ValueError(f"{name}.{field.name} must be one of {choices}")
-        full = dataclasses.asdict(req)
-        sections[name] = {
-            key: value for key, value in full.items() if key not in MODEL_FIELDS
-        }
-        models = {key: value for key, value in full.items() if key in MODEL_FIELDS}
-    return Profile(models=models, **sections)
+    return _STORE.normalize(profile)
 
 
 def profile_path(name: str) -> Path:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
-        raise ValueError(
-            "Profile name must contain 1–64 letters, digits, underscores or hyphens"
-        )
-    root = resolve_under_home("configs/custom/moss").resolve()
-    path = root / f"{name}.toml"
-    if path.is_symlink():
-        raise ValueError("MOSS profiles cannot be symbolic links")
-    return path
+    return _STORE.path(name)
 
 
 def list_profiles() -> list[str]:
-    root = profile_path("default").parent
-    return sorted(
-        {
-            "default",
-            *[path.stem for path in root.glob("*.toml") if not path.is_symlink()],
-        }
-    )
+    return _STORE.list()
 
 
 def read_profile(name: str) -> Profile:
-    path = profile_path(name)
-    if not path.exists():
-        if name == "default":
-            return normalize_profile(Profile())
-        raise FileNotFoundError(f"MOSS profile does not exist: {name}")
-    return normalize_profile(Profile.model_validate(toml.load(path), strict=True))
+    return _STORE.read(name)
 
 
 def save_profile(name: str, profile: Profile) -> Profile:
-    normalized = normalize_profile(profile)
-    path = profile_path(name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, delete=False
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(toml.dumps(normalized.model_dump(exclude_none=True)))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-    return normalized
+    return _STORE.save(name, profile)
 
 
 def inspect_cache(directory: str) -> CacheStatus:

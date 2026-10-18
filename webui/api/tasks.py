@@ -7,6 +7,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from webui.api.errors import daemon_detail
 from webui.services.daemon_client import (
     DaemonError,
     DaemonNotFoundError,
@@ -72,9 +73,7 @@ def _daemon_http_error(exc: DaemonError) -> HTTPException:
         status = 404
     else:
         status = 409
-    detail: object = str(exc)
-    if exc.key:
-        detail = {"message": str(exc), "key": exc.key, "params": exc.params}
+    detail: object = daemon_detail(exc)
     return HTTPException(status_code=status, detail=detail)
 
 
@@ -89,12 +88,15 @@ async def continuation_candidates(variant: str = "lora"):
 @router.get("/{task_id}/continuation")
 async def continuation_detail(task_id: str, lang: str = "cn"):
     from webui.services.config_service import describe_config
+
     try:
         result = await daemon_client.continuation_detail(task_id)
     except DaemonError as exc:
         raise _daemon_http_error(exc) from exc
     candidate = result["candidate"]
-    described = describe_config(result["snapshot"], {}, candidate["variant"], candidate["preset"], lang)
+    described = describe_config(
+        result["snapshot"], {}, candidate["variant"], candidate["preset"], lang
+    )
     for field in described["fields"]:
         field["read_only"] = field["key"] != candidate["budget_key"]
     return {"candidate": candidate, "fields": described["fields"]}
@@ -193,13 +195,19 @@ async def daemon_shutdown(body: DaemonShutdownRequest):
     as a sidecar — its shutdown tree-kills this server too. The shutdown has
     still been triggered in that case.
     """
-    if body.mode is not None and body.mode not in {"detach", "cooperative-stop", "force"}:
+    if body.mode is not None and body.mode not in {
+        "detach",
+        "cooperative-stop",
+        "force",
+    }:
         raise HTTPException(
             status_code=400,
             detail="shutdown mode must be detach, cooperative-stop, or force",
         )
     try:
-        return await task_service.shutdown_daemon(kill_jobs=body.kill_jobs, mode=body.mode)
+        return await task_service.shutdown_daemon(
+            kill_jobs=body.kill_jobs, mode=body.mode
+        )
     except DaemonError as exc:
         raise HTTPException(status_code=502, detail=f"daemon: {exc}") from exc
 
@@ -249,7 +257,9 @@ async def start_task(body: TaskStartRequest):
     _reject_forbidden_args(body.args)
     try:
         task = await task_service.start_task(
-            body.command, body.args, body.env or None,
+            body.command,
+            body.args,
+            body.env or None,
             runtime_profile=body.runtime_profile,
         )
     except (ValueError, FileNotFoundError) as exc:
@@ -307,5 +317,7 @@ async def delete_history(task_id: str):
     except DaemonError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not ok:
-        raise HTTPException(status_code=409, detail="Only terminal tasks can be deleted")
+        raise HTTPException(
+            status_code=409, detail="Only terminal tasks can be deleted"
+        )
     return {"status": "deleted", "task_id": task_id}
