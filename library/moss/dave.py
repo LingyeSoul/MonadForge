@@ -17,9 +17,10 @@ Three things differ from ``library.inference.corrections.dave``:
   would shift the block output instead of unlocking it. The list is
   ``DEFAULT_CHANNELS_PATH``, from ``bench/moss_dave/derive_massive_channels.py``.
 
-The pool is a ``{0,1}`` vector over the 42 blocks: a ``dave_alpha.npz`` from
-``bench/dave/derive_alpha_mask.py`` over a MOSS probe
-(``bench/moss_dave/probe_dc_convergence.py``), or a block range ``"lo-hi"``.
+The pool is a ``{0,1}`` vector over the 42 blocks: a ``dave_alpha.npz`` (``auto`` =
+the shipped one, blocks 19–30, picked from a DAVE-on pool sweep of
+``bench/moss_dave/probe_dc_convergence.py``; ``project/moss_lora/dave.md``), or a
+block range ``"lo-hi"``.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ import torch
 
 from library.env import resolve_under_home
 
-# ``dave="auto"`` reads this; it is derived from the MOSS probe, not Anima's mask.
+# ``dave="auto"`` reads this: blocks 19–30 from the MOSS pool sweep, not Anima's mask.
 DEFAULT_MASK_PATH = "library/moss/calibration/dave_alpha.npz"
 DEFAULT_CHANNELS_PATH = "library/moss/calibration/massive_channels.npz"
 _RANGE = re.compile(r"(\d+)-(\d+)")
@@ -51,9 +52,7 @@ def pool_weight(spec: str, num_blocks: int) -> np.ndarray:
     path = resolve_under_home(DEFAULT_MASK_PATH if spec == "auto" else spec)
     if not Path(path).is_file():
         raise FileNotFoundError(
-            f"DAVE mask not found: {path}. Run bench/moss_dave/probe_dc_convergence.py, "
-            "then bench/dave/derive_alpha_mask.py on its per_block.npz, or pass a "
-            "block range like '8-18'."
+            f"DAVE mask not found: {path}. Pass a block range like '19-30'."
         )
     w = np.load(path)["weight"].astype(np.float64)
     if w.shape != (num_blocks,):

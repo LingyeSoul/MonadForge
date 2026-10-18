@@ -21,22 +21,19 @@ window is too wide.
 
 Surface: `GenerateRequest.dave` (`'' | auto | lo-hi | npz`), `dave_strength` (0.3),
 `dave_tau` (0.10, advanced); part of the latent fingerprint. `auto` reads
-`dave_alpha.npz` in `library/moss/calibration/`, which does not exist until the probe
-below has been run and a mask derived.
+`library/moss/calibration/dave_alpha.npz`: blocks 19–30, picked from the DAVE-on pool
+sweep in the log (`derive_alpha_mask.py`'s `DC_sim` cut does not separate MOSS blocks).
+ComfyUI: `~/ComfyUI-Anima-DAVE` ≥ 0.2.0 detects the `moss-image` transformer and, with
+`mask=auto`, bundles the same pool + the massive-channel list (`moss_dave_alpha.npz`).
 
 ## Phases
 
-1. **Premise probe** — `bench/moss_dave/probe_dc_convergence.py` (2 prompts × 8 seeds ×
-   30 steps, cond forward). Gate: early-step DC sim ≫ AC sim on the DC-heavy blocks
-   (`premise_holds`). If it fails, stop.
-2. **Mask** — `bench/dave/derive_alpha_mask.py --probe <run>/per_block.npz --block_cap N
-   --out …`, writing `dave_alpha.npz` into `library/moss/calibration/`. Open: the cap
-   on 42 blocks (Anima's ≤ 18 was the patch-grid dot artifact; re-eyeball here), and
-   whether block 22 belongs in the pool.
-3. **Dose / window sweep** — τ {0.06, 0.10, 0.15} × strength {0.3, 0.5, 0.8}, Base and SFT,
-   prompts with quoted CJK text and hands. Read per grid.
-4. **Ship** — mask committed, `docs/experimental/moss_lora.md` section, bench
-   `result.json` cited here.
+1. **Premise probe** — done (log): passes once the massive channels are left out.
+2. **Mask** — done: blocks 19–30 from a DAVE-on pool sweep, not `derive_alpha_mask.py`
+   (log). Block 22 is in the pool; under skip-22 only the cond pass is edited there.
+3. **Dose / window sweep** — one arm read (19-30 · s0.3 · τ0.10, Base). Open: τ 0.06 for
+   hands, higher dose, SFT (and whether SFT has the same massive channels).
+4. **Ship** — done for Base at s0.3 · τ0.10: `dave=auto` + ComfyUI node 0.2.0.
 
 ## Log
 
@@ -87,3 +84,33 @@ Done the same day: `MossDAVE` now leaves a channel list out of the subtracted me
 `bench/moss_dave/derive_massive_channels.py --probe <run>/channels.npz --k 4`: the union of
 each block's top 4 = 18 channels, 1356 and 42 among them). Derived on Base; whether SFT
 has the same channels is unchecked.
+
+**2026-10-18 — DAVE-on pool sweep, Base** (`bench/moss_dave/results/20261018-{1915-dave-8-18,
+1958-dave-19-30,1928-dave-8-30,1942-dave-8-40}`, same 3 prompts × 8 seeds × 30 steps as the
+channel probe, s 0.3, τ 0.10 = 3 steps, 18 channels left out; vanilla = the channel
+probe's `per_block_k4.npz`). Cross-seed AC sim (k4, all-block mean; lower = more diverse):
+
+| | vanilla | 8-18 | 19-30 | 8-30 | 8-40 |
+|---|---|---|---|---|---|
+| AC sim step 3 | 0.531 | 0.520 | 0.442 | 0.432 | 0.448 |
+| AC sim step 29 | 0.406 | 0.379 | 0.209 | 0.205 | 0.192 |
+| DC sim steps 20–29 | 0.980 | 0.981 | 0.965 | 0.966 | 0.953 |
+
+- Anima's pool (8–18) barely moves MOSS: the early drop is pulled back as soon as DAVE
+  stops. Anima's 8–18 halved its late AC sim (0.538 → 0.265).
+- 19–30 alone does what 8–30 does, from step 3 on, and the unlock compounds after the
+  hook goes quiet. 8–18 adds only a transient drop in steps 0–2.
+- 31–40 add 0.013 of AC drop and 0.013 of DC-sim drop, most on blocks 31–41: seeds
+  diverge more in global attributes without more layout unlock.
+- The DC-sim drop (0.980 → 0.965) comes with 19–30 and is not avoidable by shrinking
+  the pool.
+
+**2026-10-18 — eyeball, 19-30 · s0.3 · τ0.10, Base** (`output/moss_dave/eyeball_1018/`,
+ER-SDE 50 steps so τ 0.10 = 5 steps, CFG 3, skip 22; ja_manga / anime_sunset / a two-hand
+mug close-up × 4 seeds, paired with vanilla). Text stays legible on all four; bubble
+placement, panel framing and drawing style vary where vanilla pins the bubble to the right.
+Silver hair / red eyes / black uniform hold; one seed of four turns the sunset sky blue
+(the DC-sim drop above). Hand close-ups recompose (off-centre, side, wider) where vanilla
+repeats one framing, at a visible cost: a hand half through the mug, a mug opening on the
+wrong side, a softer render. Shipped as is (mask committed, ComfyUI node 0.2.0); τ 0.06
+(3 steps at 50, the probe's window) is the open follow-up for hands.
