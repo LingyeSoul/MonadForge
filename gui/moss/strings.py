@@ -83,7 +83,7 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
         "DC 隔离",
         "仅 lora：把校准得到的输入直流方向（各目标的 token 均值 x̄）放进 down 的一行，"
         "其余行保持与它正交，使只有一列 up 学习与 token 无关的偏置。初始输出不变，"
-        "保存为普通 LoRA。实验性",
+        "保存为普通 LoRA。默认开启（配合 lr 5e-5）",
     ),
     "lr": ("学习率", "AdamW 学习率"),
     "warmup_ratio": ("预热比例", "线性预热占总步数的比例"),

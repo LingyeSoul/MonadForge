@@ -19,7 +19,8 @@ rank = 32
 # factor = -1                  # lokr only
 down_init = "weight_svd"       # lora only: weight_svd | kaiming
 channel_scaling_alpha = 0.5     # lora only: 0 = off (docs/moss/channel_scaling.md)
-lr = 1e-4
+dc_isolate = true               # lora only: one rank row for the input DC (same doc)
+lr = 5e-5
 warmup_ratio = 0.05
 caption_dropout = 0.0
 lora_dtype = "bf16"            # bf16 | fp16 | fp32

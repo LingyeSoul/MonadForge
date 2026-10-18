@@ -181,6 +181,10 @@ Reading: consistent with the hypothesis, but not a controlled comparison — the
 arm at lr 5e-5 does not exist yet, so "dc at half the lr" is not separable from "half the
 lr". That control is the next run.
 
+**2026-10-18 — defaults flipped** on the lr 5e-5 grid (user decision, control arm pending):
+`dc_isolate` off → on, `lr` 1e-4 → 5e-5 (α 0.5, rank 32 / alpha 128 unchanged). Revert path:
+`--no-dc_isolate --lr 1e-4`.
+
 
 1. **Second seed** — train seed 1 for both arms at lr 1e-4 and check the eyeball verdict
    holds; a metric for it would need prompt adherence (tagger / VLM on the off-prompt

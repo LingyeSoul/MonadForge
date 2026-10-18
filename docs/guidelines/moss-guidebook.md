@@ -109,22 +109,24 @@ Renders the prompt twice with the same seed: once with the LoRA at `lora_multipl
 
 ## 4. Recommended Settings
 
-The measured run: 30 images of one artist (`@channel (caststation)`), Base, LoRA rank 16, alpha 16, lr 1e-4 (the earlier defaults), `weight_svd`, 20 epochs = 600 steps, about 18–21 minutes. Of the variants tried, this one carried the most of the artist's cues with no leakage. The current defaults (rank 32, alpha 128, lr 1e-4, channel scaling 0.5) came from later comparisons, below.
+The measured run: 30 images of one artist (`@channel (caststation)`), Base, LoRA rank 16, alpha 16, lr 1e-4 (the earlier defaults), `weight_svd`, 20 epochs = 600 steps, about 18–21 minutes. Of the variants tried, this one carried the most of the artist's cues with no leakage. The current defaults (rank 32, alpha 128, lr 5e-5, channel scaling 0.5, DC isolation) came from later comparisons, below.
 
 | Field | Default | Notes |
 |---|---|---|
 | `algo` | `lora` | `lokr` / `loha`: §4.1 |
 | `rank` | `32` | 37.2 M parameters at rank 16 (the earlier default) |
 | `alpha` | `128` for `lora` (scale 4 at rank 32); = rank for `lokr` / `loha` | scale = alpha / rank |
-| `lr` | `1e-4` | AdamW, 5 % linear warmup |
+| `lr` | `5e-5` | AdamW, 5 % linear warmup |
 | `channel_scaling_alpha` | `0.5` | `lora` only; `0` turns it off |
+| `dc_isolate` | on | `lora` only; one LoRA rank row for the input's constant offset |
 | `down_init` | `weight_svd` | `weight_svd` or `kaiming` |
 | `epochs` | `8` | the measured run used 20 |
 | `caption_dropout` | `0` | the measured run used 0 |
 
 - **alpha and lr**: under AdamW, raising the scale is the same as raising the lr of the LoRA's up matrix by that factor. Rank 16 with alpha 90 (scale 5.6) at lr 1e-4 puts the up matrix at ~5.6e-4. That arm matched the default's style but started copying the set's signature: one sample carried the artist's watermark and handle. Alpha 90 at lr 5e-5 gave a softer, partial transfer. That comparison ranked alpha = rank at lr 1e-4 first, and it was the default until the later comparison below.
 - **Rank 32, alpha 128: lr 1e-4 vs 2e-5 (without channel scaling)**: on the caststation set (20 epochs, `weight_svd`, layout_json) with the artist tag injected, the two complex gallery prompts (a ten-character ensemble, a 4:1 banner) behaved differently. Rank 32 / alpha 128 at lr 1e-4 pushed the style hard (white backgrounds, flat pale fills) but lost prompt details (the wrong character held the bag, a plush was missing). At lr 2e-5 the details held (right bag holder, plush present) with a milder style shift, judged much better, and it was the default until channel scaling came in. Under AdamW the effective lr at scale 4 and lr 2e-5 is 8e-5 for the up matrix and 2e-5 for the down matrix.
-- **Current defaults (lr 1e-4 with channel scaling 0.5)**: channel scaling rebalances the LoRA's per-channel updates so that a few very loud input channels (on MOSS, one channel feeding every FFN) stop taking the largest share; the output at the start is unchanged and the saved file is an ordinary LoRA. At lr 1e-4 it kept the strong style while staying on-prompt, where the same run without it added things the prompt never asked for (glasses, garbled-text signs, a street instead of a park). Details: `docs/moss/channel_scaling.md`. Set `channel_scaling_alpha 0` and `lr 2e-5` for the previous behaviour.
+- **Channel scaling 0.5 at lr 1e-4** (the default until the next bullet): channel scaling rebalances the LoRA's per-channel updates so that a few very loud input channels (on MOSS, one channel feeding every FFN) stop taking the largest share; the output at the start is unchanged and the saved file is an ordinary LoRA. At lr 1e-4 it kept the strong style while staying on-prompt, where the same run without it added things the prompt never asked for (glasses, garbled-text signs, a street instead of a park). Details: `docs/moss/channel_scaling.md`. Set `channel_scaling_alpha 0` and `lr 2e-5` for the behaviour before it.
+- **Current defaults (lr 5e-5, channel scaling 0.5, DC isolation)**: the same loud channel also feeds a constant offset into the LoRA's `up` matrix on every token, which pulls most of the `up` update toward a global shift. `dc_isolate` gives that offset one LoRA rank row and keeps the other rows clear of it; output at the start is unchanged and the file is still an ordinary LoRA. It learns faster, so lr 1e-4 over-fit (the artist tag appeared as text in 3 of 12 test images); at lr 5e-5 all 12 were clean and on-prompt with the style strength of lr 1e-4. The α 0.5-only run at lr 5e-5 has not been made yet, so the lr and the flag are not separated. `--no-dc_isolate` and `lr 1e-4` give the previous default.
 - **down_init**: `weight_svd` starts the LoRA's down projection on the base weight's top singular vectors; `kaiming` is the random init. `weight_svd` kept the artist's style better by eye. The two inits give different samples at the same seed, about as different as a seed change.
 - **epochs**: at 10 of 20 epochs the results were looser and more varied; at 20 they were cleaner and more uniform, with a mild drift toward frontal, centred upper bodies. Set `save_every_epochs` to compare both from one run.
 - **sigma_\*** (Advanced): the defaults are MOSS's final pretraining noise schedule. Anima's schedule (`sigma_mu 0`, `sigma_s 1`, `sigma_cutoff 1.0`, `sigma_uniform 0`) gave the weakest transfer of every arm.

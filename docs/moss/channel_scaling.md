@@ -6,8 +6,9 @@ reaches for first. Channel scaling rebalances the optimizer's step per input cha
 forward output is unchanged, the saved file is a plain LoRA, and inference never knows it
 was there.
 
-**On by default** (`channel_scaling_alpha = 0.5`, since 2026-10-18, together with lr 1e-4 at
-rank 32 / alpha 128). `--channel_scaling_alpha 0` turns it off. GUI: Train step →
+**On by default** (`channel_scaling_alpha = 0.5`, since 2026-10-18, together with
+`dc_isolate` and lr 5e-5 at rank 32 / alpha 128 — see "the `up` gradient" below for the
+second flag). `--channel_scaling_alpha 0` turns it off. GUI: Train step →
 `channel_scaling_alpha`. `lora` only; the trainer skips it for `lokr` / `loha`.
 
 | α | effect on the loudest channel's step |
@@ -96,15 +97,17 @@ of the full gradient. This is the entanglement GraLoRA (arXiv:2505.20355) descri
 
 ![bias share of the up gradient: plain LoRA, full fine-tune, dc_isolate](assets/channel_scaling_up_gradient.png)
 
-`--dc_isolate` (experimental, off by default) is the up-side counterpart: the calibrated DC
-direction of the input becomes one rank row of `down`, the other 31 rows are kept orthogonal
-to it (re-projected after every optimizer step), so one `up` column learns the bias and the
-rest get a centered gradient. It does what it says: the bias share on the other 31 columns
-drops to 5–12 % (green line). In images: at lr 1e-4 it was not better than α 0.5 alone,
-with the artist tag rendered as text in 3 / 12 cells; at lr 5e-5 those cells are clean and
-the style strength stays close to lr 1e-4, which fits "the centered gradient learns
-faster", but the α 0.5-only control at lr 5e-5 has not been run. It stays opt-in until it
-has. Log and next steps: `project/moss_lora/channel_scaling.md`.
+`--dc_isolate` (**on by default** since 2026-10-18, `--no-dc_isolate` to turn off) is the
+up-side counterpart: the calibrated DC direction of the input becomes one rank row of
+`down`, the other 31 rows are kept orthogonal to it (re-projected after every optimizer
+step), so one `up` column learns the bias and the rest get a centered gradient. It does
+what it says: the bias share on the other 31 columns drops to 5–12 % (green line). In
+images it wants a lower lr: at lr 1e-4 it over-fit (the artist tag rendered as text in
+3 / 12 cells, no better than α 0.5 alone); at lr 5e-5 all 12 cells are clean and on-prompt
+with style strength close to lr 1e-4, which fits "the centered gradient learns faster".
+That pair, dc_isolate + lr 5e-5, is the default. The α 0.5-only control at lr 5e-5 has not
+been run yet, so the lr and the flag are not separated. Log and next steps:
+`project/moss_lora/channel_scaling.md`.
 
 ## Calibration
 

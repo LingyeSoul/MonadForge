@@ -54,13 +54,14 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
 ## What to expect
 
 - **Defaults**: `--rank 32`, alpha 128 for `lora` (scale 4; `lokr` / `loha` fall back
-  to alpha = rank), `--lr 1e-4`, `--channel_scaling_alpha 0.5`. On the caststation set
-  (20 epochs, `weight_svd`, layout_json, artist tag injected), rank 32 / alpha 128 at
-  lr 1e-4 without channel scaling pushed the style hard (white backgrounds, flat pale
-  fills) but lost details on two complex gallery prompts (wrong bag holder, missing
-  plush); lr 2e-5 held the details with a milder style shift and was the default until
-  2026-10-18. With channel scaling, lr 1e-4 kept the style strength and stayed on-prompt
-  (`docs/moss/channel_scaling.md`).
+  to alpha = rank), `--lr 5e-5`, `--channel_scaling_alpha 0.5`, `--dc_isolate`. On the
+  caststation set (20 epochs, `weight_svd`, layout_json, artist tag injected), rank 32 /
+  alpha 128 at lr 1e-4 without channel scaling pushed the style hard (white backgrounds,
+  flat pale fills) but lost details on two complex gallery prompts (wrong bag holder,
+  missing plush); lr 2e-5 held the details with a milder style shift. With channel
+  scaling, lr 1e-4 kept the style strength and stayed on-prompt; adding `dc_isolate`
+  (one LoRA rank row for the input's DC) over-fit at lr 1e-4 and is clean at lr 5e-5 with
+  the same style strength, hence the current pair (`docs/moss/channel_scaling.md`).
 - **Training** (earlier default: 5070 Ti, Base, rank 16, alpha 16, lr 1e-4, compiled, checkpointed, no block swap): 30
   images × 20 epochs took 21 min at about 2.1 s/step, with an 11.8 GiB peak. The LoRA
   moved line work and palette toward the set. Character identity held, including
@@ -138,6 +139,6 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
 
 Measured numbers, A/B notes and open questions are in `project/moss_lora/`: `lora.md`
 (training), `spectrum.md`, `cache.md`, `phase0.md` (parity with the reference pipeline),
-`channel_scaling.md`. Channel scaling (`--channel_scaling_alpha`, 0.5 by default):
-`docs/moss/channel_scaling.md`.
+`channel_scaling.md`. Channel scaling (`--channel_scaling_alpha`, 0.5 by default) and
+`--dc_isolate` (on by default): `docs/moss/channel_scaling.md`.
 Code map: `library/moss/CLAUDE.md`.

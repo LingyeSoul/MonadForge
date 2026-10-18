@@ -269,13 +269,14 @@ class TrainRequest(Request):
         advanced=True,
     )
     dc_isolate: bool = _f(
-        False,
+        True,
         "lora only: put the calibrated input DC direction (token-mean x̄ per target) "
         "into one rank row of down and keep the other rows orthogonal to it, so only "
         "one up column learns the token-independent bias and the rest of the up "
         "gradient is centered (the GraLoRA up-side entanglement, localised). Same "
-        "output at init, plain LoRA on disk, composes with channel scaling. "
-        "Experimental (2026-10-18)",
+        "output at init, plain LoRA on disk, composes with channel scaling. On by "
+        "default with lr 5e-5 (2026-10-18): clean and on-prompt at lr 1e-4-like style "
+        "strength; at lr 1e-4 it over-fits (text artifacts)",
     )
     channel_mean: str = _f(
         "library/moss/calibration/channel_mean.safetensors",
@@ -284,10 +285,10 @@ class TrainRequest(Request):
         advanced=True,
     )
     lr: float = _f(
-        1e-4,
-        "AdamW learning rate (rank 32 / alpha 128: 1e-4 with channel scaling keeps "
-        "prompt details and a stronger style; without it 1e-4 lost details and 2e-5 "
-        "was the safer pick, 2026-10-17/18)",
+        5e-5,
+        "AdamW learning rate (rank 32 / alpha 128 with channel scaling + dc_isolate: "
+        "5e-5 is clean and on-prompt at lr 1e-4-like style strength; 1e-4 over-fits "
+        "with dc_isolate; without dc_isolate 1e-4 was the pick, 2026-10-18)",
     )
     warmup_ratio: float = _f(0.05, "linear warmup, as a fraction of all steps")
     save_every_epochs: int = _f(0, "also save every N epochs (0 = final only)")
