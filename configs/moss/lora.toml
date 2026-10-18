@@ -23,6 +23,7 @@ dc_isolate = true               # lora only: one rank row for the input DC (same
 lr = 5e-5
 warmup_ratio = 0.05
 caption_dropout = 0.0
+plain_caption_rate = 0.2       # layout_json cache: share of steps on the plain Anima caption
 lora_dtype = "bf16"            # bf16 | fp16 | fp32
 
 # Memory / speed (16 GB card). scripts/moss/tune_swap.py measures this machine's pair.

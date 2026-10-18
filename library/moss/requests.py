@@ -297,6 +297,11 @@ class TrainRequest(Request):
         "probability of training a step on the empty-prompt embedding (CFG's "
         "uncond); > 0 encodes it once into <cache>/_empty.moss_te.safetensors",
     )
+    plain_caption_rate: float = _f(
+        0.2,
+        "probability of training a step on the plain Anima caption instead of its "
+        "layout JSON; only a caption_format=layout_json cache carries the plain one",
+    )
     lora_dtype: str = _f(
         "bf16",
         "dtype the LoRA is saved in; training keeps fp32 masters and runs the "

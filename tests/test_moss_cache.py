@@ -14,8 +14,10 @@ from library.moss.cache import (
     TE_SUFFIX,
     find_pairs,
     fit,
+    _te_current,
     list_items,
     load_item,
+    load_plain,
     target_size,
 )
 from library.moss.model import pack_latents, unpack_latents
@@ -112,6 +114,38 @@ def test_list_and_load_items(tmp_path):
     latent, embeds = load_item(items[0])
     assert latent.dtype == torch.float32 and latent.shape == (128, 72, 56)
     assert embeds.dtype == torch.bfloat16 and embeds.shape == (37, 4096)
+    assert items[0].n_text_plain == 0 and load_plain(items[0]) is None
+
+
+def test_plain_embedding_rides_in_the_te_file(tmp_path):
+    save_file({"latent": torch.randn(128, 4, 4)}, tmp_path / f"a_64x64{LATENT_SUFFIX}")
+    save_file(
+        {
+            "embeds": torch.randn(40, 4096).bfloat16(),
+            "embeds_plain": torch.randn(25, 4096).bfloat16(),
+        },
+        tmp_path / f"a{TE_SUFFIX}",
+    )
+    (item,) = list_items(tmp_path)
+    assert (item.n_text, item.n_text_plain) == (40, 25)
+    plain = load_plain(item)
+    assert plain.dtype == torch.bfloat16 and plain.shape == (25, 4096)
+
+
+def test_te_current_tracks_the_plain_caption(tmp_path):
+    path = tmp_path / f"a{TE_SUFFIX}"
+    meta = {"caption_sha256": caption_sha("{json}"), "max_text_tokens": "4096"}
+    save_file({"embeds": torch.zeros(1, 4)}, path, metadata=meta)
+    assert _te_current(path, "{json}", 4096)
+    # A layout cache written before plain captions: re-encoded to add one.
+    assert not _te_current(path, "{json}", 4096, plain="tags")
+    save_file(
+        {"embeds": torch.zeros(1, 4)},
+        path,
+        metadata={**meta, "plain_caption_sha256": caption_sha("tags")},
+    )
+    assert _te_current(path, "{json}", 4096, plain="tags")
+    assert not _te_current(path, "{json}", 4096, plain="edited tags")
 
 
 def test_find_pairs_prefixes_colliding_stems(tmp_path):
@@ -151,6 +185,8 @@ def test_find_pairs_layout_json(tmp_path, monkeypatch):
         '{"summary":{"characters":["hatsune miku"],"caption":"1girl, long hair"}}'
     )
     assert pair.source_sha == caption_sha("1girl, hatsune miku, long hair")
+    assert pair.plain == "1girl, hatsune miku, long hair"
+    assert find_pairs(src, "text")[0].plain == ""
 
 
 def test_layout_json_passes_layout_captions_through(monkeypatch):
@@ -188,6 +224,7 @@ def test_find_pairs_prefers_a_current_layout_sidecar(tmp_path, monkeypatch):
     pairs = {p.stem: p for p in find_pairs(src, "layout_json")}
     assert pairs["fresh"].caption == '{"summary":{}}'
     assert pairs["fresh"].source_sha == caption_sha("fresh tags")
+    assert pairs["fresh"].plain == "fresh tags"
     assert pairs["edited"].caption == "converted:edited tags"
     assert pairs["bare"].caption == "converted:bare tags"
     # ``text`` ignores the sidecar.

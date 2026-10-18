@@ -5,6 +5,11 @@ Qwen3.5-9B TE nor the VAE is loaded; the one exception is ``--caption_dropout``,
 which encodes the empty prompt once into ``<cache>/_empty.moss_te.safetensors``
 (key ``embeds``) if it is not there yet.
 
+A layout-JSON cache also holds each image's plain Anima caption
+(``embeds_plain``); a step trains on it with probability ``plain_caption_rate``,
+drawn from its own RNG so the shuffle and dropout draws match a run without it.
+Step 1 takes the longer of the two, so the fit report still bounds the worst case.
+
 Objective (report App. A.2): ``z_σ = (1−σ)·z0 + σ·ε``, the DiT predicts
 ``ε − z0`` at timestep ``1000·σ``, MSE averaged over image tokens and channels —
 text tokens never reach the head, and there is no σ/SNR weighting.
@@ -66,6 +71,7 @@ class Sample:
     load: Callable[
         [], tuple[torch.Tensor, torch.Tensor]
     ]  # latent (128,h,w), embeds (S,4096)
+    load_plain: Callable[[], torch.Tensor] | None = None  # embeds_plain (S',4096)
 
 
 def samples_from_cache(cache_dir: Path) -> list[Sample]:
@@ -79,9 +85,18 @@ def samples_from_cache(cache_dir: Path) -> list[Sample]:
             latent, embeds = moss_cache.load_item(item)
             return latent, embeds
 
+        load_plain = (
+            functools.partial(moss_cache.load_plain, item)
+            if item.n_text_plain
+            else None
+        )
         out.append(
             Sample(
-                item.stem, (item.width // 16) * (item.height // 16), item.n_text, load
+                item.stem,
+                (item.width // 16) * (item.height // 16),
+                max(item.n_text, item.n_text_plain),
+                load,
+                load_plain,
             )
         )
     return out
@@ -257,6 +272,19 @@ def train(
         flush=True,
     )
     data = {s.stem: s.load() for s in samples}
+    plain = (
+        {s.stem: s.load_plain() for s in samples if s.load_plain is not None}
+        if req.plain_caption_rate > 0
+        else {}
+    )
+    if plain:
+        print(
+            f"plain Anima captions: {len(plain)}/{len(samples)} samples, "
+            f"rate {req.plain_caption_rate}",
+            flush=True,
+        )
+    plain_rng = random.Random(req.seed + 1)
+    plain_steps = 0
 
     transformer = load_transformer(req.model_dir, req.model)
     transformer.requires_grad_(False)
@@ -342,6 +370,7 @@ def train(
         "sigma": f"mu={req.sigma_mu} s={req.sigma_s} cutoff={req.sigma_cutoff} "
         f"uniform={req.sigma_uniform}",
         "caption_dropout": req.caption_dropout,
+        "plain_caption_rate": req.plain_caption_rate if plain else 0.0,
     }
 
     def save(tag: str | None = None) -> Path:
@@ -367,6 +396,14 @@ def train(
             if step >= total:
                 break
             latent, embeds = data[s.stem]
+            alt = plain.get(s.stem)
+            if alt is not None and (
+                alt.shape[0] > embeds.shape[0]
+                if step == 0
+                else plain_rng.random() < req.plain_caption_rate
+            ):
+                embeds = alt
+                plain_steps += 1
             if empty is not None and random.random() < req.caption_dropout:
                 embeds = empty
             latent = latent.unsqueeze(0).to(device, torch.float32)
@@ -426,6 +463,7 @@ def train(
         "request": {k: getattr(req, k) for k in req.__dataclass_fields__},
         "fit": fit,
         "steps": step,
+        "plain_steps": plain_steps,
         "minutes": seconds / 60,
         "s_per_step": seconds / max(1, step - 1),
         "peak_allocated_gb": torch.cuda.max_memory_allocated() / 1024**3,

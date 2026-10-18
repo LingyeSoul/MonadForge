@@ -92,6 +92,11 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
         "标注丢弃率",
         "以空提示词嵌入（CFG 的无条件分支）训练一步的概率",
     ),
+    "plain_caption_rate": (
+        "Anima 标注比例",
+        "以原始 Anima 格式标注代替其 layout JSON 训练一步的概率；"
+        "仅 caption_format=layout_json 的缓存带有原始标注",
+    ),
     "lora_dtype": (
         "LoRA 精度",
         "保存的 LoRA 文件精度。训练时保持 fp32 主权重，秩矩阵乘法按 bf16 进行",

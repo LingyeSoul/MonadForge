@@ -5,8 +5,11 @@ leaves two files per image in one flat folder.
 
     {stem}.moss_te.safetensors
         embeds  (S, 4096) bf16 — ``last_hidden_state`` at the caption's true length
+        embeds_plain  (S', 4096) bf16 — under ``layout_json`` only: the plain Anima
+                caption the layout came from, which training swaps in at
+                ``plain_caption_rate``
         metadata: caption, caption_sha256, caption_format, source_sha256, n_text,
-                  max_text_tokens, encoder
+                  max_text_tokens, encoder (+ plain_caption_sha256, n_text_plain)
     {stem}_{W}x{H}.moss_latent.safetensors
         latent  (128, H/16, W/16) fp32 — packed 2×2 and BN-normalised, i.e. exactly
                 what the DiT consumes (``model.encode``, the inverse of the decode)
@@ -17,8 +20,8 @@ DiT slices each context to its true length and the image's rope frame coordinate
 equals that length, so a padded cache would train an offset inference never sees.
 
 Invalidation: a TE file is current while its ``caption_sha256`` (and truncation
-length) match the caption on disk, so a caption edit re-encodes that caption
-only. A latent file is current while it is newer than its source image; a latent
+length, and under ``layout_json`` its ``plain_caption_sha256``) match the caption
+on disk, so a caption edit re-encodes that caption only. A latent file is current while it is newer than its source image; a latent
 at a different size for the same stem is deleted when the new one is written.
 ``--overwrite`` re-encodes everything.
 
@@ -82,6 +85,7 @@ class CacheItem:
     width: int
     height: int
     n_text: int
+    n_text_plain: int = 0  # 0 = no plain-caption embedding in the TE file
 
 
 @dataclass
@@ -90,6 +94,7 @@ class Pair:
     image: Path
     caption: str  # what the TE encodes
     source_sha: str  # of the .txt it came from
+    plain: str = ""  # the .txt itself, encoded beside a layout-JSON caption
 
 
 # ------------------------------------------------------------------ reading
@@ -114,7 +119,12 @@ def list_items(cache_dir) -> list[CacheItem]:
             continue
         with safe_open(te, "pt") as f:
             n_text = f.get_slice("embeds").get_shape()[0]
-        items.append(CacheItem(stem, path, te, w, h, n_text))
+            n_plain = (
+                f.get_slice("embeds_plain").get_shape()[0]
+                if "embeds_plain" in f.keys()
+                else 0
+            )
+        items.append(CacheItem(stem, path, te, w, h, n_text, n_plain))
     return items
 
 
@@ -123,6 +133,13 @@ def load_item(item: CacheItem) -> tuple[torch.Tensor, torch.Tensor]:
     latent = load_file(item.latent_path)["latent"].float()
     embeds = load_file(item.te_path)["embeds"].to(torch.bfloat16)
     return latent, embeds
+
+
+def load_plain(item: CacheItem) -> torch.Tensor | None:
+    """``embeds_plain (S', 4096)`` bf16 on CPU, or ``None`` when the file has none."""
+    if not item.n_text_plain:
+        return None
+    return load_file(item.te_path)["embeds_plain"].to(torch.bfloat16)
 
 
 # ------------------------------------------------------------------ sizing
@@ -185,7 +202,9 @@ def find_pairs(src: Path, caption_format: str = "text") -> list[Pair]:
 
     Under ``layout_json`` a ``{stem}.layout.txt`` that anime_tools' Export
     published beside the caption is used as is, unless the ``.txt`` is newer
-    (edited after the export); every other caption is converted here."""
+    (edited after the export); every other caption is converted here. Either
+    way the ``.txt`` rides along as ``plain`` — unless it already is layout
+    JSON, which has no plain form."""
     images, found = source_pairs(src)
     captioned = {image for _, image, _ in found}
     for p in images:
@@ -205,7 +224,8 @@ def find_pairs(src: Path, caption_format: str = "text") -> list[Pair]:
         if caption is None:
             convert = convert or caption_converter(caption_format)
             caption = convert(raw)
-        pairs.append(Pair(stem, image, caption, caption_sha(raw)))
+        plain = raw if caption_format == "layout_json" and caption != raw else ""
+        pairs.append(Pair(stem, image, caption, caption_sha(raw), plain))
     if caption_format == "layout_json":
         print(
             f"layout_json: {from_sidecar} from Export's sidecars, "
@@ -265,7 +285,7 @@ def _tag_knowledge_base():
     return load_tag_knowledge_base(csv)
 
 
-def _te_current(path: Path, caption: str, max_tokens: int) -> bool:
+def _te_current(path: Path, caption: str, max_tokens: int, plain: str = "") -> bool:
     if not path.exists():
         return False
     try:
@@ -273,9 +293,12 @@ def _te_current(path: Path, caption: str, max_tokens: int) -> bool:
             meta = f.metadata() or {}
     except Exception:
         return False
-    return meta.get("caption_sha256") == caption_sha(caption) and meta.get(
-        "max_text_tokens"
-    ) == str(max_tokens)
+    return (
+        meta.get("caption_sha256") == caption_sha(caption)
+        and meta.get("max_text_tokens") == str(max_tokens)
+        and meta.get("plain_caption_sha256", "")
+        == (caption_sha(plain) if plain else "")
+    )
 
 
 def _latents_for(out_dir: Path, stem: str) -> list[Path]:
@@ -309,7 +332,9 @@ def cache_text(
         p
         for p in pairs
         if overwrite
-        or not _te_current(out_dir / f"{p.stem}{TE_SUFFIX}", p.caption, max_tokens)
+        or not _te_current(
+            out_dir / f"{p.stem}{TE_SUFFIX}", p.caption, max_tokens, p.plain
+        )
     ]
     if not todo:
         print("text: all cached", flush=True)
@@ -317,7 +342,10 @@ def cache_text(
     t0 = time.time()
     tok = load_tokenizer(model_dir)
     longest = max(
-        prompt_ids(tok, p.caption, max_tokens).input_ids.shape[1] for p in todo
+        prompt_ids(tok, text, max_tokens).input_ids.shape[1]
+        for p in todo
+        for text in (p.caption, p.plain)
+        if text
     )
     tok, te = load_text_encoder(model_dir, device, longest, tok=tok)
     t_load = time.time() - t0
@@ -331,21 +359,31 @@ def cache_text(
         n = embeds.shape[0]
         lengths.append(n)
         note = "  TRUNCATED" if n >= max_tokens else ""
-        print(f"  text {i}/{len(todo)} {p.stem}: {n} tokens{note}", flush=True)
-        save_file(
-            {"embeds": embeds.contiguous()},
-            out_dir / f"{p.stem}{TE_SUFFIX}",
-            metadata={
-                "caption": p.caption,
-                "caption_sha256": caption_sha(p.caption),
-                "caption_format": caption_format,
-                "source_sha256": p.source_sha,
-                "n_text": str(n),
-                "max_text_tokens": str(max_tokens),
-                "encoder": ENCODER_ID,
-                "source": str(p.image),
-            },
+        tensors = {"embeds": embeds.contiguous()}
+        meta = {
+            "caption": p.caption,
+            "caption_sha256": caption_sha(p.caption),
+            "caption_format": caption_format,
+            "source_sha256": p.source_sha,
+            "n_text": str(n),
+            "max_text_tokens": str(max_tokens),
+            "encoder": ENCODER_ID,
+            "source": str(p.image),
+        }
+        plain_note = ""
+        if p.plain:
+            plain = encode_prompt(tok, te, p.plain, device, max_tokens).to(
+                "cpu", torch.bfloat16
+            )
+            tensors["embeds_plain"] = plain.contiguous()
+            meta["plain_caption_sha256"] = caption_sha(p.plain)
+            meta["n_text_plain"] = str(plain.shape[0])
+            plain_note = f" (plain {plain.shape[0]})"
+        print(
+            f"  text {i}/{len(todo)} {p.stem}: {n} tokens{plain_note}{note}",
+            flush=True,
         )
+        save_file(tensors, out_dir / f"{p.stem}{TE_SUFFIX}", metadata=meta)
     t_enc = time.time() - t1
     peak = torch.cuda.max_memory_allocated() / 1024**3
     print(

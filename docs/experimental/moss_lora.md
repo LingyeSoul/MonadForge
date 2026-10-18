@@ -116,9 +116,15 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   (`anime_tools.captions.layout_json`): rating / meta, characters, series and artists
   (with their `@`) get their own `summary` keys; meta tags that describe the pixels
   (`cropped`, `scan`, …) and the remaining tags become `summary.caption`, each
-  position clause a `subject` item with its relative position, each OCR line a `text`
-  item. On a 30-image style set this kept the style strength of plain tags and leaked
-  fewer of the set's attributes onto other characters. Train and prompt in the same
+  position clause a `character` item with its relative position (never a box), each
+  OCR line a `text` item. A `{stem}.layout.txt` from anime_tools' Export
+  (`caption_format layout_json` with `combine_ocr`) also gives each text item its OCR
+  box (`bbox`, MOSS's `abs_centralized` / `yxyx`), and adds the top-level
+  `bbox_coord_space` / `bbox_format` keys only then; the cache's own conversion of a
+  `.txt` has no boxes. On a 30-image style set this kept the style strength of plain
+  tags and leaked fewer of the set's attributes onto other characters. A `layout_json`
+  cache also stores the plain Anima caption, and training uses it on
+  `plain_caption_rate` (default 0.2) of the steps. Train and prompt in the same
   form (`text` on both for plain captions); switching it re-encodes the TE cache. In
   ComfyUI, the **Anima Caption → MOSS Layout JSON** node (in the Anima Tagger pack,
   `anime_tools`) does the same conversion in front of the text encoder.
