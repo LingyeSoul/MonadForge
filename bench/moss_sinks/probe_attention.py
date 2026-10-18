@@ -16,6 +16,14 @@ uncond branches apart. Keys are split into classes
   * top-1 % key share: the head's mean attention per key over the image (or text)
     queries, the sum over its top ``ceil(0.01·N)`` keys; uniform = 0.01
 
+  * what the template writes, on values centred on the image keys' mean v̄_img
+    (the no-op write once the values carry the massive-channel DC): per image
+    query, ‖Σ_template p·v‖ over ‖Σ p·v‖ (per key class too), the value norm per
+    key class over the image keys', how one-directional the template and image
+    writes are across image queries (‖mean unit write‖; 1 = one vector for every
+    query), and the cosine of the template write between cond and uncond and
+    across prompts
+
 and, from ``layer_hook`` on the block output, a per-token norm census with the
 massive channels of ``library/moss/calibration/massive_channels.npz`` left out
 (raw norms are also kept; with the channels in, the 0.99 image DC caps image
@@ -27,6 +35,7 @@ mass on ≤ 1 % of the keys; or excluded-channel image max/median ≥ 10 on most
 blocks.
 
     make daemon-run ARGS="bench/moss_sinks/probe_attention.py"
+    make daemon-run ARGS="bench/moss_sinks/probe_attention.py --lora <ckpt> --label <name>"
 
 Writes ``per_block.npz`` (all per-sample arrays), ``top_keys.json`` (per block,
 the head-mean top keys by received image-query mass, with class labels),
@@ -39,6 +48,7 @@ import argparse
 import json
 import math
 import sys
+import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
@@ -51,6 +61,18 @@ from run_bench import PROMPTS  # noqa: E402
 
 CLASSES = ("image", "tok0", "prefix", "caption", "suffix")
 BRANCHES = ("cond", "uncond")
+FIELDS = (
+    "mass_img",
+    "mass_txt",
+    "top_img",
+    "top_txt",
+    "norms",
+    "write_img",
+    "vnorm",
+    "tpl_coh",
+    "tpl_write",
+    "img_coh",
+)
 NORM_FIELDS = (
     "img_ratio_ex",
     "img_ratio_raw",
@@ -111,12 +133,34 @@ class Probe:
         self.top_img = np.full((*self.shape, heads), np.nan, **nan)
         self.top_txt = np.full_like(self.top_img, np.nan)
         self.norms = np.full((*self.shape, len(NORM_FIELDS)), np.nan, **nan)
+        # image queries: per key class, ‖Σ_c p·v‖ over ‖Σ p·v‖ (per-query ratio, mean)
+        self.write_img = np.full_like(self.mass_img, np.nan)
+        # mean value norm per key class over the image keys' mean
+        self.vnorm = np.full_like(self.mass_img, np.nan)
+        # ‖mean over image queries of the unit template write‖; 1 = one direction
+        self.tpl_coh = np.full_like(self.top_img, np.nan)
+        # image queries: ‖Σ_template p·v‖ over ‖Σ p·v‖ (per-query ratio, mean)
+        self.tpl_write = np.full_like(self.top_img, np.nan)
+        self.img_coh = np.full_like(self.top_img, np.nan)
+        # template write (Σ_template p·v), mean over image queries, seeds, probe steps
+        self.tpl_vec = None
         # head-wise mean image-query mass per key, summed over seeds and probe steps
         self.col = torch.zeros(2, num_blocks, heads, self.N, device=device)
 
     def new_seed(self):
         self.fi = -1
-        for a in (self.mass_img, self.mass_txt, self.top_img, self.top_txt, self.norms):
+        for a in (
+            self.mass_img,
+            self.mass_txt,
+            self.top_img,
+            self.top_txt,
+            self.norms,
+            self.write_img,
+            self.vnorm,
+            self.tpl_coh,
+            self.tpl_write,
+            self.img_coh,
+        ):
             a.fill(np.nan)
 
     @property
@@ -128,7 +172,7 @@ class Probe:
 
     # --- hooks -----------------------------------------------------------------
 
-    def attention(self, q, k, rope, heads):
+    def attention(self, q, k, v, rope, heads):
         """Stats of the explicit softmax over one sample's joint sequence."""
         from library.moss.model import _rotate
 
@@ -140,8 +184,25 @@ class Probe:
         dtype = q.dtype
         q = _rotate(q.reshape(shape), rope).transpose(1, 2)[0].to(dtype)
         k = _rotate(k.reshape(shape), rope).transpose(1, 2)[0].to(dtype)
+        v = v.reshape(shape).transpose(1, 2)[0].float()
+        # The no-op write is the mean image value (the values carry the massive-
+        # channel DC), not 0; Σp = 1, so out − v̄_img = Σ p·(v − v̄_img). Every
+        # write and value-norm stat is taken on the centred values.
+        v = v - v[:, : self.n_img].mean(1, keepdim=True)
+        vn = v.norm(dim=-1)  # (heads, N)
         scale = 1.0 / math.sqrt(shape[-1])
         n_img, top_n = self.n_img, math.ceil(0.01 * self.N)
+        self.vnorm[branch, j, b] = (
+            (
+                torch.stack([vn[:, lo:hi].mean(-1) for lo, hi in self.bounds], -1)
+                / vn[:, :n_img].mean(-1, keepdim=True)
+            )
+            .cpu()
+            .numpy()
+        )
+        tpl = [
+            c for c, name in enumerate(CLASSES) if name in ("tok0", "prefix", "suffix")
+        ]
         for h0 in range(0, heads, self.chunk):
             hs = slice(h0, min(h0 + self.chunk, heads))
             p = torch.softmax(
@@ -160,7 +221,29 @@ class Probe:
                 top[branch, j, b, hs] = col.topk(top_n, -1).values.sum(-1).cpu().numpy()
                 if qs.start == 0:
                     self.col[branch, b, hs] += col
-            del p
+            pi, vh = p[:, :n_img], v[hs]
+            parts = [
+                pi[..., lo:hi] @ vh[:, lo:hi] for lo, hi in self.bounds
+            ]  # (h, Q, hd)
+            out = torch.stack(parts).sum(0).norm(dim=-1).clamp_min(1e-12)
+            self.write_img[branch, j, b, hs] = (
+                torch.stack([(c.norm(dim=-1) / out).mean(-1) for c in parts], -1)
+                .cpu()
+                .numpy()
+            )
+            tw = torch.stack([parts[c] for c in tpl]).sum(0)
+            twn = tw.norm(dim=-1, keepdim=True)
+            self.tpl_write[branch, j, b, hs] = (
+                (twn[..., 0] / out).mean(-1).cpu().numpy()
+            )
+            unit = tw / twn.clamp_min(1e-12)
+            self.tpl_coh[branch, j, b, hs] = unit.mean(1).norm(dim=-1).cpu().numpy()
+            iw = parts[0] / parts[0].norm(dim=-1, keepdim=True).clamp_min(1e-12)
+            self.img_coh[branch, j, b, hs] = iw.mean(1).norm(dim=-1).cpu().numpy()
+            if self.tpl_vec is None:
+                self.tpl_vec = torch.zeros(2, self.L, heads, shape[-1], device=v.device)
+            self.tpl_vec[branch, b, hs] += tw.mean(1)
+            del p, pi, parts, out, tw, unit, iw
 
     def __call__(self, index, x, n_img):
         w = self.where
@@ -246,6 +329,8 @@ def main() -> None:
     ap.add_argument(
         "--massive", default="library/moss/calibration/massive_channels.npz"
     )
+    ap.add_argument("--lora", default="", help="LoRA loaded (hooked) onto the DiT")
+    ap.add_argument("--lora_multiplier", type=float, default=1.0)
     ap.add_argument("--model_dir", default="")
     ap.add_argument(
         "--te_cache", default="/media/sorryhyun/data/moss_image/bench/_te_cache"
@@ -280,6 +365,13 @@ def main() -> None:
     )
     uncond, uncond_mask = pad_embeds([embeds[""]], device=device)
     transformer = load_transformer(model_dir, args.model, device=device)
+    if args.lora:
+        from library.moss.lora import load_for_inference
+
+        load_for_inference(
+            transformer, resolve_under_home(args.lora), args.lora_multiplier
+        )
+        print(f"[lora] {args.lora} x{args.lora_multiplier}", flush=True)
     num_blocks, heads = len(transformer.layers), transformer.config.num_heads
     sigmas = snapped_sigmas(args.steps)
     n_steps = len(sigmas)
@@ -319,7 +411,7 @@ def main() -> None:
                 p.fi = state["fi"]
 
         def wrapped(q, k, v, rope, heads_, key_mask=None):
-            active().attention(q, k, rope, heads_)
+            active().attention(q, k, v, rope, heads_)
             return original(q, k, v, rope, heads_, key_mask)
 
         def layer_hook(index, x, n):
@@ -341,9 +433,7 @@ def main() -> None:
             handles.append(layer.register_forward_pre_hook(set_block(i)))
         moss_model._attention = wrapped
         transformer.layer_hook = layer_hook
-        per_seed = {
-            n: [] for n in ("mass_img", "mass_txt", "top_img", "top_txt", "norms")
-        }
+        per_seed = {n: [] for n in FIELDS}
         try:
             for s in range(args.seeds):
                 state["fi"] = -1
@@ -378,9 +468,15 @@ def main() -> None:
             for b in (0, 1)
         ]
         results[key]["bounds"] = bounds
+        results[key]["tpl_vec"] = (
+            torch.stack([probes[b].tpl_vec[b] for b in (0, 1)]).cpu().numpy()
+        )  # (2, L, H, hd)
         torch.cuda.empty_cache()
 
     # --- analysis ----------------------------------------------------------------
+    # uncond skips block 22 and has no caption tokens: those slices are all-NaN
+    warnings.filterwarnings("ignore", "Mean of empty slice", RuntimeWarning)
+    warnings.filterwarnings("ignore", "All-NaN slice encountered", RuntimeWarning)
 
     def pooled(name):
         """Mean over prompts, seeds and probe steps → ``(2, L, …)``."""
@@ -391,6 +487,10 @@ def main() -> None:
     top_img, top_txt = pooled("top_img"), pooled("top_txt")  # (2, L, H)
     mass_img, mass_txt = pooled("mass_img"), pooled("mass_txt")  # (2, L, H, C)
     norms = pooled("norms")  # (2, L, F)
+    write_img, vnorm = pooled("write_img"), pooled("vnorm")  # (2, L, H, C)
+    tpl_coh, tpl_write = pooled("tpl_coh"), pooled("tpl_write")  # (2, L, H)
+    img_coh = pooled("img_coh")
+    tpl_c = [CLASSES.index(c) for c in ("tok0", "prefix", "suffix")]
     # head fraction per sample, then pooled: a head counts per (seed, step)
     frac = np.nanmean(
         np.stack(
@@ -413,6 +513,22 @@ def main() -> None:
     blocks_norm = ratio_ex[0] >= args.norm_ratio
     gate_attn = bool(blocks_attn.mean() > 0.5)
     gate_norm = bool(blocks_norm.mean() > 0.5)
+
+    def cos(a, b):
+        """Per (block, head) cosine of two ``(L, H, hd)`` arrays → ``(L, H)``."""
+        den = np.linalg.norm(a, axis=-1) * np.linalg.norm(b, axis=-1)
+        # a branch that skipped the block (uncond at 22) has a zero vector there
+        return np.where(den > 0, (a * b).sum(-1) / np.maximum(den, 1e-12), np.nan)
+
+    # cond template write against uncond's (same prompt), and across prompts (cond)
+    tv = {k: results[k]["tpl_vec"] for k in keys}
+    cos_cu = np.nanmean([cos(tv[k][0], tv[k][1]) for k in keys], 0)  # (L, H)
+    pairs = [(a, b) for i, a in enumerate(keys) for b in keys[i + 1 :]]
+    cos_xp = (
+        np.nanmean([cos(tv[a][0], tv[b][0]) for a, b in pairs], 0)
+        if pairs
+        else np.full_like(cos_cu, np.nan)
+    )
 
     top_keys = {}
     for key in keys:
@@ -442,10 +558,11 @@ def main() -> None:
     run_dir = make_run_dir("moss_sinks", label=args.label)
     arrays = {}
     for key in keys:
-        for name in ("mass_img", "mass_txt", "top_img", "top_txt", "norms"):
+        for name in FIELDS:
             arrays[f"{key}__{name}"] = results[key][name]
         for br in (0, 1):
             arrays[f"{key}__col_{BRANCHES[br]}"] = results[key]["col"][br]
+        arrays[f"{key}__tpl_vec"] = results[key]["tpl_vec"]
     np.savez(
         run_dir / "per_block.npz",
         classes=np.array(CLASSES),
@@ -471,6 +588,8 @@ def main() -> None:
         return {c: np.nanmean(m[..., i], -1).tolist() for i, c in enumerate(CLASSES)}
 
     metrics = dict(
+        template_write_cos_cond_vs_uncond_per_block=np.nanmean(cos_cu, -1).tolist(),
+        template_write_cos_cross_prompt_per_block=np.nanmean(cos_xp, -1).tolist(),
         prompts=keys,
         template_splits={k: list(v) for k, v in splits.items()},
         num_blocks=num_blocks,
@@ -499,6 +618,24 @@ def main() -> None:
                     np.nanmean(top_txt[i], -1).tolist(),
                 ),
                 ("img_q_mass_by_class", per_class(mass_img[i])),
+                ("img_q_write_share_by_class", per_class(write_img[i])),
+                ("value_norm_over_image_by_class", per_class(vnorm[i])),
+                (
+                    "template_write_coherence_per_block",
+                    np.nanmean(tpl_coh[i], -1).tolist(),
+                ),
+                (
+                    "template_write_share_per_block",
+                    np.nanmean(tpl_write[i], -1).tolist(),
+                ),
+                (
+                    "image_write_coherence_per_block",
+                    np.nanmean(img_coh[i], -1).tolist(),
+                ),
+                (
+                    "template_mass_per_block",
+                    np.nanmean(mass_img[i][..., tpl_c].sum(-1), -1).tolist(),
+                ),
                 ("txt_q_mass_by_class", per_class(mass_txt[i])),
                 (
                     "norms",
@@ -537,6 +674,24 @@ def main() -> None:
             + f" | {ratio_ex[0, b]:6.1f}/{norms[0, b, 1]:5.2f} | "
             f"{frac[1, b]:.2f} {np.nanmean(top_img[1, b]):.2f} "
             f"{mu[1] + mu[2] + mu[4]:.3f}"
+        )
+    print(
+        "  block | cond template: mass write write/mass coh (img coh) "
+        "| value norm / image: tok0 pre cap suf | uncond: mass write "
+        "| write cos c-u xP"
+    )
+    for b in range(num_blocks):
+        m0 = np.nanmean(mass_img[0, b][:, tpl_c].sum(-1))
+        w0 = np.nanmean(tpl_write[0, b])
+        m1 = np.nanmean(mass_img[1, b][:, tpl_c].sum(-1))
+        w1 = np.nanmean(tpl_write[1, b])
+        vn = np.nanmean(vnorm[0, b], 0)
+        print(
+            f"  {b:5d} | {m0:.3f} {w0:.3f} {w0 / m0:5.2f} {np.nanmean(tpl_coh[0, b]):.2f} "
+            f"({np.nanmean(img_coh[0, b]):.2f}) | "
+            + " ".join(f"{v:5.2f}" for v in vn[1:])
+            + f" | {m1:.3f} {w1:.3f}"
+            + f" | {np.nanmean(cos_cu[b]):.2f} {np.nanmean(cos_xp[b]):.2f}"
         )
     print("=" * 96)
     print(f"→ {run_dir}", flush=True)

@@ -93,12 +93,67 @@ states for every prompt (Qwen is causal), and it is the only text the uncond bra
 sees. This is the 2607.19139 substrate. Not yet known: whether the sink *writes* anything
 (a null-valued OFF-gate like Anima's pads, or a semantic register as the paper claims).
 
+**2026-10-18 — base-write** (`results/20261018-1616-base-write`, same run shape, with the
+write stats). Values are centred on the image keys' mean v̄_img first: the values carry
+the massive-channel DC, and on raw values every write is near-constant (image write
+coherence 0.92–0.98 in the smoke), so raw shares cannot separate the two. Since Σp = 1,
+`out − v̄_img = Σ p·(v − v̄_img)`, and a key whose value is v̄_img writes nothing.
+**The template is not a null sink: it writes a per-head bias.**
+
+- **Write share**: the template writes 0.15–0.51 of the centred image-query output
+  (blocks 19–21 and 25–29 ≈ 0.46–0.51), 1.13–2.1× its mass share. A null sink would
+  sit well below 1×.
+- **One vector for every query**: coherence of the template write across image queries
+  0.89–0.98 on blocks 0–40 (0.34 on 41), against 0.18–0.65 for the image keys' write.
+  Per head, it adds a fixed vector to every image token, scaled by the mass that query
+  parks on the template.
+- **Value norms** (centred, over image): `<|im_start|>` 0.43–0.9 on blocks 0–37 (the
+  nearest to a null value), prefix 0.5–1.5 past block 7, suffix 1.0–2.4. On blocks 1–7
+  caption and suffix values are 3.5–9.4×.
+- **Cond vs uncond**: template write cosine 0.93–0.96 on blocks 0–21, 0.76–0.94 after
+  block 22 (the uncond row skips 22). Uncond's template takes a little more mass and
+  writes a little more (0.16–0.62 against 0.15–0.51). Under CFG the template write
+  mostly cancels in cond − uncond.
+- **Across prompts** (cond, anime_sunset vs ja_manga): cosine 0.70–0.88, lower than
+  cond vs uncond. The two prompts also run different trajectories, so this mixes
+  template content with the image state that sets each query's weights over the 10
+  tokens. It is not yet a read on caption semantics in the template.
+
+Reading: on MOSS the template does two jobs. It is the OFF-gate (it takes 0.11–0.45 of
+the mass), and it is a learned per-head bias channel into every image token, mostly
+prompt-independent. Anima's pads did only the first.
+
+**2026-10-18 — LoRA arms** (`results/20261018-1632-lora-lr1e4`,
+`results/20261018-1645-lora-lr5e5dc`; same run shape, `--lora` at ×1.0). Two caststation
+layout LoRAs (r32 α128, SVD init): `lr1e4_svd` (no channel scaling, no `dc_isolate`) and
+`lr5e5_svd_cs05_dc` (the current defaults). Step 0 is the clean read: the same x_T and
+σ, so only the LoRA differs. Base's seed-to-seed CV of step-0 template mass is 0.5 %, so
+paired-by-seed shifts are resolved on 35 / 42 and 33 / 42 blocks (|t| > 4). **The LoRAs
+move the sink by a small, systematic amount, and its write keeps its direction.**
+
+| | lr1e4_svd | lr5e5_svd_cs05_dc |
+|---|---|---|
+| step-0 template mass, mean \|Δ\| / base | 5.4 % | 3.0 % |
+| largest block shifts | −20 % (6), −19 % (5, 17), +18 % (23), −12 % (1) | −11 % (8), −9 % (40), +8 % (7) |
+| pooled mass / write, mean \|Δ\| / base | 7.1 % / 4.8 % | 4.2 % / 2.5 % |
+| template write vs base, cosine (mean, min) | 0.905, 0.825 (41) | 0.948, 0.852 (41) |
+| template write norm ratio | 1.06 (0.78–1.33) | 1.04 (0.92–1.14) |
+
+For scale: within one Base run the template mass swings ±15 % over the steps (0.24 →
+0.34), and cond vs uncond at the same latent sits at write cosine 0.93–0.96. The pooled
+cosines also include the LoRA's change of trajectory (different images from step 1 on),
+so they are a lower bound on how well the write direction is kept. The two arms differ
+in lr, channel scaling and `dc_isolate` at once, so the 2× gap between them is not
+attributed. Nor is the shift itself: it can come from the template rows' K / V or from
+the image rows' Q, since the LoRA edits both.
+
+Reading: a style LoRA does not lean on the template channel much. The per-head bias
+stays where it was (cos ≥ 0.9, norm ±5 %), and the gate opens or closes by a few percent
+on most blocks, up to ~20 % on a handful with the stronger LoRA.
+
 ## Next
 
-1. **Null or register**: per block and head, the template's share of the attention
-   *output* (`‖Σ_template p·v‖` against `‖Σ p·v‖`) and the template value norms against
-   image values. A small output share at a large mass share means an OFF-gate. Cheap: an
-   extra stat in `probe_attention.py`, same run shape.
+1. ~~**Null or register**~~: done (base-write above). A bias channel, not null.
 2. **Does the prompt move it**: caption length and format (short tag bag, long layout
    JSON) against the template mass and the per-block head counts above.
 3. **Only then** anything that edits the template: a shortened or altered template is off
@@ -106,4 +161,14 @@ sees. This is the 2607.19139 substrate. Not yet known: whether the sink *writes*
    Null-TTA (arXiv 2511.20889, test-time optimisation of the CFG null embedding) lands
    here: on MOSS the null embedding *is* the template span, so optimising it moves the
    sink, not a semantic direction. Read (1) before considering it.
-4. Test-time registers: dropped. The model already ships fixed registers.
+4. **LoRA and the template rows**: `library/moss/lora.py` wraps whole linears, so the 10
+   template rows get the LoRA delta in every block's q / k / v / o. Given (1), an edit to
+   their values is a global per-head shift of every image token, and an edit to their
+   keys changes how far each head shuts off. That is a cheap global lever, the token-axis
+   counterpart of what `dc_isolate` removes on the channel axis. First read done (LoRA
+   arms above): the shift is small (3–5 % mean, ≤ 20 % on a few blocks, write cosine
+   ≥ 0.9). Parked: a template-row mask on the LoRA delta is not worth an A/B on this
+   evidence. Reopen if a LoRA shows a global tone or gloss shift that channel scaling
+   and `dc_isolate` do not explain, or if a much stronger LoRA (higher lr / rank) moves
+   the step-0 mass well past 20 %.
+5. Test-time registers: dropped. The model already ships fixed registers.
