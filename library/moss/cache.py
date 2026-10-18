@@ -37,7 +37,10 @@ layout-JSON prompt by ``anime_tools.captions.layout_json`` (the default
 ``--caption_format layout_json``; ``caption`` / ``caption_sha256`` are the JSON;
 a ``{stem}.layout.txt`` published by anime_tools' Export is read instead) or verbatim with ``--caption_format text``. ``source_sha256`` is always the ``.txt``. Stems must be unique
 in the flat cache; a stem that appears in several subfolders is prefixed with its
-relative folder (``sub__dir__stem``).
+relative folder (``sub__dir__stem``). A caption in the Anima resized tree with no
+PNG beside it (anime_tools' ``sidecars_only`` Export publishes captions only)
+pairs with its ``image_dataset/`` original, minus the excluded ones
+(``scan.original_tree``).
 
     make daemon-run ARGS="scripts/moss/cache.py \\
         --src 'post_image_dataset/resized/channel_(caststation)' \\
@@ -66,6 +69,7 @@ from library.moss.scan import (
     TE_SUFFIX,
     caption_sha,
     layout_sidecar,
+    original_tree,
     source_pairs,
 )
 from library.moss.scan import LATENT_RE as _LATENT_RE
@@ -205,7 +209,16 @@ def find_pairs(src: Path, caption_format: str = "text") -> list[Pair]:
     (edited after the export); every other caption is converted here. Either
     way the ``.txt`` rides along as ``plain`` — unless it already is layout
     JSON, which has no plain form."""
-    images, found = source_pairs(src)
+    originals, skip = original_tree(src)
+    images, found = source_pairs(src, originals, skip)
+    if originals is not None:
+        n = sum(1 for _, image, _ in found if not image.is_relative_to(src))
+        if n:
+            print(
+                f"{n} captions without a resized image: "
+                f"using the originals under {originals}",
+                flush=True,
+            )
     captioned = {image for _, image, _ in found}
     for p in images:
         if p not in captioned:

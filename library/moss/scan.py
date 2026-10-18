@@ -16,6 +16,8 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
+from library.env import resolve_under_home
+
 IMAGE_EXTS = (".webp", ".png", ".jpg", ".jpeg")
 TE_SUFFIX = ".moss_te.safetensors"
 LATENT_SUFFIX = ".moss_latent.safetensors"
@@ -24,24 +26,71 @@ LATENT_RE = re.compile(
 )
 
 
-def source_pairs(src: Path) -> tuple[list[Path], list[tuple[str, Path, Path]]]:
+def original_tree(src: Path) -> tuple[Path | None, frozenset[Path]]:
+    """The ``image_dataset/`` folder ``src`` mirrors when ``src`` sits in the Anima
+    resized tree, and the originals the exclusion ledgers name; ``(None, ∅)``
+    for any other ``src``.
+
+    anime_tools' Export under ``sidecars_only`` (what the trainer GUI seeds)
+    publishes captions into the resized tree and no pixels — Anima's resize stage
+    fills the PNGs in. The MOSS line has no resize stage, so a caption there whose
+    PNG was never written pairs with its original instead."""
+    from library.datasets.curation_actions import (
+        RESIZED_DIR,
+        SOURCE_DIR,
+        excluded_rels,
+        workspace_excluded_rels,
+    )
+
+    resized = resolve_under_home(RESIZED_DIR)
+    source = resolve_under_home(SOURCE_DIR)
+    for a, b in ((src, resized), (src.resolve(), resized.resolve())):
+        if a.is_relative_to(b):
+            rel = a.relative_to(b)
+            break
+    else:
+        return None, frozenset()
+    rels = {*excluded_rels(), *workspace_excluded_rels()}
+    return source / rel, frozenset(source / r for r in rels)
+
+
+def source_pairs(
+    src: Path, originals: Path | None = None, skip: frozenset[Path] = frozenset()
+) -> tuple[list[Path], list[tuple[str, Path, Path]]]:
     """Every image under ``src`` and, for those with a ``.txt`` beside them,
     ``(cache stem, image, caption)``. A stem that appears in several subfolders
-    is prefixed with its relative folder (``sub__dir__stem``)."""
+    is prefixed with its relative folder (``sub__dir__stem``).
+
+    With ``originals`` (a tree mirroring ``src``), a caption under ``src`` with
+    no image beside it pairs with the image at the same relative folder and stem
+    there, unless that image is in ``skip``."""
     images = sorted(
         p for p in src.rglob("*") if p.suffix.lower() in IMAGE_EXTS and p.is_file()
     )
+    roots = {p: src for p in images}
+    if originals is not None and originals.is_dir():
+        have = {p.relative_to(src).with_suffix("") for p in images}
+        for p in sorted(originals.rglob("*")):
+            if p.suffix.lower() not in IMAGE_EXTS or not p.is_file() or p in skip:
+                continue
+            rel = p.relative_to(originals).with_suffix("")
+            if rel in have or not (src / rel.parent / f"{p.stem}.txt").exists():
+                continue
+            have.add(rel)
+            images.append(p)
+            roots[p] = originals
     counts: dict[str, int] = {}
     for p in images:
         counts[p.stem] = counts.get(p.stem, 0) + 1
     pairs = []
     for p in images:
-        caption = p.with_suffix(".txt")
+        rel = p.relative_to(roots[p])
+        caption = src / rel.parent / f"{p.stem}.txt"
         if not caption.exists():
             continue
         stem = p.stem
         if counts[stem] > 1:
-            stem = "__".join((*p.relative_to(src).parent.parts, p.stem))
+            stem = "__".join((*rel.parent.parts, p.stem))
         pairs.append((stem, p, caption))
     return images, pairs
 
@@ -82,7 +131,7 @@ def scan(src: Path | None, out: Path | None) -> CacheScan:
     images: list[Path] = []
     pairs: list[tuple[str, Path, Path]] = []
     if src is not None and src.is_dir():
-        images, pairs = source_pairs(src)
+        images, pairs = source_pairs(src, *original_tree(src))
     dupes = sum(1 for stem, image, _ in pairs if stem != image.stem)
     text = latents = stale = 0
     if out is not None and out.is_dir():

@@ -65,7 +65,8 @@ class CacheRequest(Request):
     src: str = _f(
         "post_image_dataset/resized",
         "folder of images + .txt captions, subfolders included (default: the "
-        "Anima resized tree, whose captions are the revised ones)",
+        "Anima resized tree, whose captions are the revised ones; a caption there "
+        "with no resized image uses its image_dataset/ original)",
     )
     out: str = _f("post_image_dataset/moss", "cache folder (two files per image, flat)")
     resolution: int = _f(

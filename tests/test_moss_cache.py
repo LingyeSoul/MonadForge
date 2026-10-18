@@ -166,6 +166,31 @@ def test_find_pairs_prefixes_colliding_stems(tmp_path):
     }
 
 
+def test_find_pairs_falls_back_to_originals(tmp_path, monkeypatch):
+    """A sidecars_only Export leaves captions in the resized tree with no PNG:
+    those pair with the image_dataset/ original, minus the excluded ones."""
+    import library.datasets.curation_actions as curation
+
+    monkeypatch.setenv("ANIMA_HOME", str(tmp_path))
+    monkeypatch.setattr(curation, "excluded_rels", lambda: ("set/gone.jpg",))
+    monkeypatch.setattr(curation, "workspace_excluded_rels", lambda: ())
+    resized = tmp_path / "post_image_dataset" / "resized" / "set"
+    source = tmp_path / "image_dataset" / "set"
+    resized.mkdir(parents=True)
+    source.mkdir(parents=True)
+    for stem in ("done", "orig", "gone", "nocap"):
+        Image.new("RGB", (32, 32)).save(source / f"{stem}.jpg")
+    for stem in ("done", "orig", "gone"):
+        (resized / f"{stem}.txt").write_text(stem, encoding="utf-8")
+    Image.new("RGB", (32, 32)).save(resized / "done.png")
+    pairs = {p.stem: p.image for p in find_pairs(resized)}
+    assert pairs == {"done": resized / "done.png", "orig": source / "orig.jpg"}
+    s = scan(resized, None)
+    assert (s.images, s.pairs) == (2, 2)
+    # Outside the resized tree there is nothing to fall back to.
+    assert [p.stem for p in find_pairs(source.parent)] == []
+
+
 def test_find_pairs_layout_json(tmp_path, monkeypatch):
     pytest.importorskip("anime_tools.captions.layout_json")
     import anime_tools.captions.correction as correction

@@ -36,7 +36,8 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
     "src": (
         "图片文件夹",
         "包含图片和同名 .txt 标注的文件夹，包括子文件夹"
-        "（默认：Anima 的 resized 目录，其中是修订后的标注）",
+        "（默认：Anima 的 resized 目录，其中是修订后的标注；"
+        "该目录中只有标注、没有图片时，使用 image_dataset/ 中的原图）",
     ),
     "out": ("缓存文件夹", "每张图片写入两个缓存文件（文本嵌入 + 潜变量）"),
     "resolution": (
