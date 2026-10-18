@@ -72,7 +72,11 @@ def main() -> None:
         default="er_sde:1.0,er_sde:0.0",
         help="<euler|er_sde|cns>:<multiplier>, comma-separated",
     )
-    ap.add_argument("--cns_gamma", default="networks/calibration/moss_cns_gamma.npz")
+    ap.add_argument(
+        "--cns_gamma",
+        default="auto",
+        help="γ npz for cns arms; auto = the shipped γ for the variant at the nearest cfg",
+    )
     ap.add_argument(
         "--spectrum",
         action=argparse.BooleanOptionalAction,
@@ -148,7 +152,7 @@ def main() -> None:
             cond, cond_mask = pad_embeds([embeds[prompts[pi]]], device)
             net.set_multiplier(m)
             cns = (
-                MossCNS.from_npz(resolve_under_home(args.cns_gamma))
+                MossCNS.from_spec(args.cns_gamma, variant, args.cfg)
                 if sampler == "cns"
                 else None
             )

@@ -156,8 +156,8 @@ def main() -> None:
     ap.add_argument("--model_dir", default="")
     ap.add_argument(
         "--cns_gamma",
-        default="networks/calibration/moss_cns_gamma.npz",
-        help="γ for cns=1 arms (cns_calibrate.py)",
+        default="auto",
+        help="γ npz for cns=1 arms; auto = the shipped γ for the model at the nearest cfg",
     )
     ap.add_argument("--image_root", default="/media/sorryhyun/data/moss_image/bench")
     ap.add_argument(
@@ -185,7 +185,6 @@ def main() -> None:
     )
     from library.moss.model import DEFAULT_UNCOND_SKIP, decode, snapped_sigmas
     from library.moss.requests import resolve_model_dir
-    from library.env import resolve_under_home
     from library.moss.cns import MossCNS
     from library.moss.spectrum import MossSpectrum
 
@@ -264,7 +263,7 @@ def main() -> None:
             cond, cond_mask = pad_embeds([embeds[PROMPTS[key]]], device=device)
             spectrum = MossSpectrum(**arm["knobs"]) if arm["spectrum"] else None
             cns = (
-                MossCNS.from_npz(resolve_under_home(args.cns_gamma))
+                MossCNS.from_spec(args.cns_gamma, model, args.cfg)
                 if arm["cns"]
                 else None
             )
