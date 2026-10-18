@@ -136,13 +136,13 @@ make download-model ARGS=moss-sft
 | LoKr f8 | `rank 100000`, `factor 8` | 2.26 s/step, 여유 3.6 GB | LoRA에 근접, 얼굴의 개성은 약간 덜함 |
 | LoHa r16 | `rank 16` | 2.49 s/step, 여유 1.7 GB | 과적합: 회청색으로 팔레트가 바뀌고, 세트의 의상이 다른 캐릭터에 입혀짐 |
 
-- 둘 다 LoRA보다 메모리를 더 씁니다. **Advanced** 에서 `blocks_to_swap 24`, `activation_memory_budget 0.1` 로 설정하세요. 이전 기본값(swap 12, budget 0.15)으로는 1024²에서 메모리가 부족했습니다.
+- 둘 다 LoRA보다 메모리를 더 씁니다. **Basic** 에서 `blocks_to_swap 24`, **Advanced** 에서 `activation_memory_budget 0.1` 로 설정하세요. 이전 기본값(swap 12, budget 0.15)으로는 1024²에서 메모리가 부족했습니다.
 - LoKr의 `rank` 가 큰 인수 변의 절반 이상이면(위의 `rank 100000`) 그 인수는 전체 행렬이 되고 alpha는 무시됩니다(scale 1).
 - LoHa: 다음으로 시도할 값은 lr 5e-5이며, 아직 측정하지 않았습니다.
 
 ### 4.2 메모리 구성 (16 GB)
 
-기본값: `grad_checkpointing` 끔, `compile` 켬, 그리고 **Advanced** 의 `blocks_to_swap 12` (CPU에 두고 필요할 때 올리는 DiT 블록 수)와 `activation_memory_budget 0.1` (forward 결과 중 backward용으로 보관하는 비율, 나머지는 재계산).
+기본값: `grad_checkpointing` 끔, `compile` 켬, **Basic** 의 `blocks_to_swap 12` (CPU에 두고 필요할 때 올리는 DiT 블록 수)와 **Advanced** 의 `activation_memory_budget 0.1` (forward 결과 중 backward용으로 보관하는 비율, 나머지는 재계산).
 
 | 구성 | 필드 | s/step | 여유 VRAM |
 |---|---|---|---|
@@ -192,7 +192,7 @@ make download-model ARGS=moss-sft
 
 | 증상 | 조치 |
 |---|---|
-| 학습 중 메모리 부족 | Advanced: `blocks_to_swap 24`, 그다음 `activation_memory_budget 0.1`. 또는 `tune_swap.py` 실행. LoKr/LoHa는 24 / 0.1 필요. `grad_checkpointing` 켬 + `blocks_to_swap 0` 은 swap 없이 들어가는 더 느린 구성 |
+| 학습 중 메모리 부족 | Basic: `blocks_to_swap 24`, 그다음 Advanced: `activation_memory_budget 0.1`. 또는 `tune_swap.py` 실행. LoKr/LoHa는 24 / 0.1 필요. `grad_checkpointing` 켬 + `blocks_to_swap 0` 은 swap 없이 들어가는 더 느린 구성 |
 | 스타일이 너무 약함 | 에폭을 늘립니다 (측정한 학습은 20). 프롬프트에 캡션과 같은 철자의 작가 태그가 있는지, `prompt_format` 이 `caption_format` 과 같은지 확인 |
 | 스타일이 너무 강함, 세트의 서명·워터마크가 나옴, 모든 이미지 구도가 같음 | 앞 에폭의 `_e<N>` 체크포인트를 테스트하거나 `lora_multiplier` 를 낮춥니다. 서명을 베끼기 시작한 것은 실효 lr을 올렸을 때였음(현재 기본 lr은 2e-5) |
 | 세트의 의상이나 색이 다른 캐릭터에 샘 | `caption_format layout_json` 사용 (기본값, 일반 태그보다 누출이 적었음). LoHa는 LoRA나 LoKr로 교체 |

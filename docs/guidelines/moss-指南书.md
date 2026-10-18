@@ -136,13 +136,13 @@ make download-model ARGS=moss-sft
 | LoKr f8 | `rank 100000`，`factor 8` | 2.26 s/step，剩余 3.6 GB | 接近 LoRA，面部的个性略少 |
 | LoHa r16 | `rank 16` | 2.49 s/step，剩余 1.7 GB | 过头：色调偏灰青，数据集的服装出现在其他角色身上 |
 
-- 两者都比 LoRA 占用更多显存：在 **高级** 中设置 `blocks_to_swap 24` 和 `activation_memory_budget 0.1`。此前的默认值（swap 12，budget 0.15）在 1024² 下会显存不足。
+- 两者都比 LoRA 占用更多显存：在 **基础** 中设置 `blocks_to_swap 24`，在 **高级** 中设置 `activation_memory_budget 0.1`。此前的默认值（swap 12，budget 0.15）在 1024² 下会显存不足。
 - LoKr 的 `rank` 达到较大因子边长的一半及以上时（如上面的 `rank 100000`），该因子为满矩阵，alpha 被忽略（缩放为 1）。
 - LoHa：下一个要尝试的是学习率 5e-5，尚未实测。
 
 ### 4.2 显存方案（16 GB）
 
-默认：梯度检查点（`grad_checkpointing`）关闭，`compile` 开启，**高级** 中 `blocks_to_swap 12`（放在 CPU 上、用时再传入的 DiT 块数）和 `activation_memory_budget 0.1`（前向结果中为反向保留的比例，其余重新计算）。
+默认：梯度检查点（`grad_checkpointing`）关闭，`compile` 开启，**基础** 中 `blocks_to_swap 12`（放在 CPU 上、用时再传入的 DiT 块数），**高级** 中 `activation_memory_budget 0.1`（前向结果中为反向保留的比例，其余重新计算）。
 
 | 方案 | 字段 | s/step | 剩余显存 |
 |---|---|---|---|
@@ -192,7 +192,7 @@ make download-model ARGS=moss-sft
 
 | 现象 | 处理 |
 |---|---|
-| 训练时显存不足 | 高级：`blocks_to_swap 24`，再不行 `activation_memory_budget 0.1`；或运行 `tune_swap.py`。LoKr/LoHa 需要 24 / 0.1。梯度检查点开启 + `blocks_to_swap 0` 是不用 swap 也能放下的较慢方案 |
+| 训练时显存不足 | 基础：`blocks_to_swap 24`；再不行到高级调 `activation_memory_budget 0.1`；或运行 `tune_swap.py`。LoKr/LoHa 需要 24 / 0.1。梯度检查点开启 + `blocks_to_swap 0` 是不用 swap 也能放下的较慢方案 |
 | 风格太弱 | 增加轮数（实测训练用 20）。确认提示词中的画师标签与标注写法一致，`prompt_format` 与 `caption_format` 一致 |
 | 风格太强、出现数据集的签名或水印、所有图构图相同 | 测试更早的 `_e<N>` 检查点，或降低 LoRA 强度（`lora_multiplier`）。开始复制签名的正是提高了有效学习率的那一组（当前默认学习率为 2e-5） |
 | 数据集的服装或颜色泄漏到其他角色 | 使用 `caption_format layout_json`（默认值，泄漏比普通标签少）。LoHa 改回 LoRA 或 LoKr |

@@ -136,13 +136,13 @@ The measured run: 30 images of one artist (`@channel (caststation)`), Base, LoRA
 | LoKr f8 | `rank 100000`, `factor 8` | 2.26 s/step, 3.6 GB free | Close to the LoRA, slightly less character in the faces |
 | LoHa r16 | `rank 16` | 2.49 s/step, 1.7 GB free | Overshot: grey-teal palette shift, the set's costume on other characters |
 
-- Both need more memory than a LoRA: set `blocks_to_swap 24` and `activation_memory_budget 0.1` (Advanced). The earlier defaults (swap 12, budget 0.15) ran out of memory at 1024².
+- Both need more memory than a LoRA: set `blocks_to_swap 24` (Basic) and `activation_memory_budget 0.1` (Advanced). The earlier defaults (swap 12, budget 0.15) ran out of memory at 1024².
 - LoKr with `rank` at or above half the larger factor's side (the `rank 100000` above) uses a full matrix for that factor and ignores alpha (scale 1).
 - LoHa: lr 5e-5 is the next setting to try; it has not been measured.
 
 ### 4.2 Memory plan (16 GB)
 
-Defaults: `grad_checkpointing` off, `compile` on, and under Advanced `blocks_to_swap 12` (DiT blocks kept on the CPU and streamed in) and `activation_memory_budget 0.1` (how much of the forward pass is kept for the backward; the rest is recomputed).
+Defaults: `grad_checkpointing` off, `compile` on, `blocks_to_swap 12` (Basic; DiT blocks kept on the CPU and streamed in) and `activation_memory_budget 0.1` (Advanced; how much of the forward pass is kept for the backward, the rest is recomputed).
 
 | Plan | Fields | s/step | Free VRAM |
 |---|---|---|---|
@@ -192,7 +192,7 @@ The sampler defaults come from MOSS's reference pipeline; Anima's sampler habits
 
 | Symptom | What to do |
 |---|---|
-| Out of memory in training | Advanced: `blocks_to_swap 24`, then `activation_memory_budget 0.1`; or run `tune_swap.py`. LoKr/LoHa need 24 / 0.1. `grad_checkpointing` on with `blocks_to_swap 0` is the slower plan that fits without swap |
+| Out of memory in training | Basic: `blocks_to_swap 24`, then Advanced: `activation_memory_budget 0.1`; or run `tune_swap.py`. LoKr/LoHa need 24 / 0.1. `grad_checkpointing` on with `blocks_to_swap 0` is the slower plan that fits without swap |
 | Style too weak | More epochs (the measured run used 20). Check the prompt carries the artist tag spelled as in the captions, and that `prompt_format` matches `caption_format` |
 | Style too strong, the set's signature or watermark shows up, every image has the same composition | Test an earlier `_e<N>` checkpoint or lower `lora_multiplier`. A higher effective lr is what started copying the signature (the default lr is now 2e-5) |
 | The set's costume or colours leak onto other characters | Use `caption_format layout_json` (the default; it leaked less than plain tags). Switch LoHa back to LoRA or LoKr |

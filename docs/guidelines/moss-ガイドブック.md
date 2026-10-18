@@ -136,13 +136,13 @@ make download-model ARGS=moss-sft
 | LoKr f8 | `rank 100000`、`factor 8` | 2.26 s/step、空き 3.6 GB | LoRA に近い。顔の個性はやや弱い |
 | LoHa r16 | `rank 16` | 2.49 s/step、空き 1.7 GB | 行き過ぎ: 灰青緑へのパレット変化、セットの衣装が他のキャラクターに出る |
 
-- どちらも LoRA よりメモリを使います。**Advanced** で `blocks_to_swap 24` と `activation_memory_budget 0.1` を設定してください。以前のデフォルト（swap 12、budget 0.15）では 1024² でメモリ不足になりました。
+- どちらも LoRA よりメモリを使います。**Basic** で `blocks_to_swap 24`、**Advanced** で `activation_memory_budget 0.1` を設定してください。以前のデフォルト（swap 12、budget 0.15）では 1024² でメモリ不足になりました。
 - LoKr の `rank` が大きい因子の辺の半分以上（上の `rank 100000`）だと、その因子はフル行列になり、alpha は無視されます（scale 1）。
 - LoHa: 次に試す値は lr 5e-5 で、まだ計測していません。
 
 ### 4.2 メモリ構成（16 GB）
 
-デフォルト: `grad_checkpointing` オフ、`compile` オン、**Advanced** の `blocks_to_swap 12`（CPU に置き、必要なときに転送する DiT ブロック数）と `activation_memory_budget 0.1`（forward の結果のうち backward 用に保持する割合。残りは再計算）。
+デフォルト: `grad_checkpointing` オフ、`compile` オン、**Basic** の `blocks_to_swap 12`（CPU に置き、必要なときに転送する DiT ブロック数）と **Advanced** の `activation_memory_budget 0.1`（forward の結果のうち backward 用に保持する割合。残りは再計算）。
 
 | 構成 | 項目 | s/step | 空き VRAM |
 |---|---|---|---|
@@ -192,7 +192,7 @@ make download-model ARGS=moss-sft
 
 | 症状 | 対処 |
 |---|---|
-| 学習中にメモリ不足 | Advanced: `blocks_to_swap 24`、次に `activation_memory_budget 0.1`。または `tune_swap.py` を実行。LoKr/LoHa は 24 / 0.1 が必要。`grad_checkpointing` オン + `blocks_to_swap 0` は swap なしで収まる遅めの構成 |
+| 学習中にメモリ不足 | Basic: `blocks_to_swap 24`、次に Advanced: `activation_memory_budget 0.1`。または `tune_swap.py` を実行。LoKr/LoHa は 24 / 0.1 が必要。`grad_checkpointing` オン + `blocks_to_swap 0` は swap なしで収まる遅めの構成 |
 | スタイルが弱すぎる | エポックを増やす（計測した学習は 20）。プロンプトの絵師タグがキャプションと同じ表記か、`prompt_format` が `caption_format` と一致しているかを確認 |
 | スタイルが強すぎる、セットのサインやウォーターマークが出る、どの画像も同じ構図になる | 早いエポックの `_e<N>` チェックポイントをテストするか、`lora_multiplier` を下げる。サインを写し始めたのは実効 lr を上げた設定（現在のデフォルト lr は 2e-5） |
 | セットの衣装や色が他のキャラクターに漏れる | `caption_format layout_json` を使う（デフォルト。通常のタグより漏れが少なかった）。LoHa は LoRA か LoKr に戻す |

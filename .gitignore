@@ -111,3 +111,9 @@ project/finished/ocr_reader/eval_data/
 
 # Cross-process curation settings lock (runtime only).
 .anime_tools_webui.lock
+
+# Snow session runtime state (logs / screenshots / nested worktree). The audit
+# notes under .snow/plan/ stay trackable.
+.snow/logs/
+.snow/artifacts/
+.snow/team-worktree/

@@ -258,6 +258,10 @@ url = "https://stable.repo.amd.com/rocm/whl-next/"
 # runtime — so `make test-unit` splits them (fast serial + `-m slow -n auto`).
 # Registered here so the marker isn't an "unknown mark" warning.
 addopts = '-m "not qwen_training and not training_step"'
+# Keep a bare `pytest` on the maintained suite. Archived project/ lines contain
+# same-named test modules (test_line.py), which collide during collection when
+# the repo root is scanned; explicit paths still override testpaths.
+testpaths = ["tests"]
 markers = [
     "qwen_training: executes Qwen backward/optimizer; explicitly opt in",
     "training_step: executes model backward/optimizer; explicitly opt in",
