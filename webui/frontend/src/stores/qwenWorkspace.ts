@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useModelWorkspace, modelLabel } from './modelWorkspace.ts'
+import { modelActionValues } from '../utils/modelConfig.ts'
 import {
   cacheStatus, checkedValues, draftKey, initialDraft, jobId, parseSchema, profileNames, readDraft, requestJson,
   type CacheStatus, type Phase, type QwenDraft, type QwenSchema, type Scalar, type Values,
@@ -50,9 +51,11 @@ function createModelWorkspace(family: 'qwen21' | 'moss') {
     draft.value = { ...draft.value, [section]: { ...draft.value[section], [name]: value } }
     cache.value = null
   }
-  function values(phase: Phase): Values {
+  function values(phase: Phase, overrides: Values = {}): Values {
     if (!schema.value || !draft.value) throw new Error(`${modelLabel(family)} workspace has not loaded`)
-    return checkedValues(schema.value[phase], { ...draft.value[phase], ...draft.value.models })
+    return checkedValues(schema.value[phase], modelActionValues(family, phase, schema.value[phase], {
+      ...draft.value[phase], ...draft.value.models, ...overrides,
+    }))
   }
   async function loadProfileData(name: string, method: string): Promise<boolean> {
     if (!schema.value) throw new Error(`${modelLabel(family)} schema has not loaded`)
@@ -208,7 +211,7 @@ function createModelWorkspace(family: 'qwen21' | 'moss') {
   async function submit(phase: Phase, overrides: Values): Promise<string> {
     const runtime_profile = await useModelWorkspace().runtimeForSubmit()
     return jobId(await requestJson(`${apiRoot}/jobs/${phase}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: { ...values(phase), ...overrides }, runtime_profile }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: values(phase, overrides), runtime_profile }),
     }))
   }
   async function chain(): Promise<string> {

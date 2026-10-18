@@ -23,6 +23,47 @@ function setup(t) {
 }
 const response = value => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } })
 
+test('action applicability follows final overrides and never overwrites hidden profile values', async t => {
+  setup(t)
+  const calls = []
+  const boolField = (name, value) => ({ ...field(name, value), kind: 'bool' })
+  const spec = {
+    train: [field('model_dir', '/models/qwen21'), field('algo', 'lora'), field('factor', -1), field('down_init', 'kaiming')],
+    cache: [field('model_dir', '/models/qwen21'), boolField('skip_text', false), boolField('skip_latents', false), field('te_blocks_to_swap', 0)],
+    generate: [field('model_dir', '/models/qwen21'), field('lora', ''), field('multipliers', '1.0,0.0'), field('true_cfg_scale', 1), field('negative_prompt', '')],
+  }
+  const stored = initialDraft(parseSchema(spec))
+  stored.train.factor = -2 // old unused value must not block plain LoRA submission
+  stored.generate.multipliers = '0.75,0.0'
+  stored.generate.negative_prompt = 'saved negative'
+  stored.cache.skip_text = true
+  stored.cache.te_blocks_to_swap = 12
+  t.mock.method(globalThis, 'fetch', async (url, init = {}) => {
+    calls.push({ url, init })
+    if (url === '/api/system/runtimes') return response({ runtimes: [{ name: 'default', available: true, python: '/python/default', error: null }] })
+    if (url.endsWith('/schema')) return response(spec)
+    if (url.endsWith('/profiles')) return response(['default'])
+    if (url.endsWith('/profiles/default')) return response(stored)
+    if (url.includes('/jobs/')) return response({ task_id: 'isolated-job' })
+    throw new Error(`Unexpected URL ${url}`)
+  })
+  const workspace = useQwenWorkspace()
+  await workspace.ensureLoaded()
+  const original = JSON.stringify(workspace.draft)
+  await workspace.submit('train', {})
+  await workspace.submit('generate', {})
+  await workspace.submit('generate', { lora: 'selected.safetensors', true_cfg_scale: 2 })
+  await workspace.submit('cache', { skip_text: false, skip_latents: true })
+  const payloads = calls.filter(call => call.url.includes('/jobs/')).map(call => JSON.parse(call.init.body).values)
+  assert.equal(payloads[0].factor, -1)
+  assert.equal(payloads[1].multipliers, '0.0')
+  assert.equal(payloads[1].negative_prompt, '')
+  assert.equal(payloads[2].multipliers, '0.75,0.0')
+  assert.equal(payloads[2].negative_prompt, 'saved negative')
+  assert.equal(payloads[3].te_blocks_to_swap, 12)
+  assert.equal(JSON.stringify(workspace.draft), original)
+})
+
 test('MOSS tuning values survive profile load, edit and serialization', () => {
   const parsed = parseSchema(schema('moss'))
   const draft = initialDraft(parsed)

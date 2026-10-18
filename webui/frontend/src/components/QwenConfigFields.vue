@@ -58,7 +58,7 @@ const expandedGroups = ref<string[]>([])
 const searching = computed(() => Boolean(search.value?.trim()))
 const helpPanel = ref<InstanceType<typeof HelpPanel> | null>(null)
 const paths = ref<Record<string, string> | null>(null)
-const allGroups = computed(() => groupModelConfigFields(qwen.value.schema))
+const allGroups = computed(() => groupModelConfigFields(qwen.value.schema, qwen.value.draft, qwen.value.family))
 const fieldLabel = (name: string) => modelFieldLabel(qwen.value.family, app.language, name, t(`qwenField_${name}`))
 const groups = computed(() => {
   const terms = (search.value ?? '').toLowerCase().split(/\s+/).filter(Boolean)

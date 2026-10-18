@@ -335,7 +335,7 @@ _GROUPS = {
     },
 }
 _K2G = {k: g for g, ks in _GROUPS.items() for k in ks}
-_SKIP = {"base_config", "dataset_config", "general", "datasets", "variant"}
+_SKIP = {"base_config", "dataset_config", "general", "datasets", "variant", "gui"}
 _VIRTUAL_KEYS = {
     "use_valid",
     "validation_split_num",
@@ -895,6 +895,206 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
 # ── Field metadata for the frontend ────────────────────────────
 
 
+def _field_visibility(key: str) -> list[dict[str, list[Any]]] | None:
+    """Declare display dependencies without dropping inactive saved values.
+
+    Each clause is an AND of accepted values; clauses are ORed. The frontend
+    evaluates against the current draft, including legacy network_args, so
+    toggling a feature reveals its existing settings without a save/reload.
+    """
+    disabled = [None, False]
+    moe = ["shared_A", "independent_A"]
+    conditions: list[dict[str, list[Any]]] | None = None
+    module: dict[str, list[Any]] = {}
+    lora_only = {
+        "use_lokr",
+        "use_glokr",
+        "use_loha",
+        "use_ve",
+        "use_dylora",
+        "use_ortho",
+        "use_ortho_init",
+        "use_timestep_mask",
+        "use_moe_style",
+        "use_chimera_hydra",
+        "min_rank",
+        "alpha_rank_scale",
+        "down_init",
+        "decompose_both",
+        "route_per_layer",
+        "router_source",
+        "num_experts",
+        "router_targets",
+        "balance_loss_weight",
+        "balance_loss_warmup_ratio",
+        "per_bucket_balance_weight",
+        "num_sigma_buckets",
+        "specialize_experts_by_sigma_buckets",
+        "sigma_bucket_boundaries",
+        "sigma_feature_dim",
+        "channel_scaling_alpha",
+        "network_reg_dims",
+        "network_reg_lrs",
+        "network_reg_alphas",
+        "lora_fp32_compute",
+    }
+    if key in lora_only or key.startswith(("lokr_", "glokr_", "dylora_", "vera_")):
+        module = {"network_module": [None, "networks.lora_anima"]}
+
+    for prefix, flag in (
+        ("lokr_", "use_lokr"),
+        ("glokr_", "use_glokr"),
+        ("dylora_", "use_dylora"),
+        ("vera_", "use_ve"),
+        ("sigma_lowres_", "sigma_lowres"),
+    ):
+        if key.startswith(prefix):
+            conditions = [{flag: [True]}]
+            break
+    if key == "decompose_both":
+        conditions = [{"use_lokr": [True]}, {"use_glokr": [True]}]
+    elif key in {"min_rank", "alpha_rank_scale"}:
+        conditions = [{"use_timestep_mask": [True]}]
+    elif key in {"route_per_layer", "router_source", "num_experts"}:
+        conditions = [{"use_moe_style": moe, "use_chimera_hydra": disabled}]
+    elif key in {
+        "router_targets",
+        "balance_loss_weight",
+        "balance_loss_warmup_ratio",
+        "network_router_lr_scale",
+    }:
+        conditions = [{"use_moe_style": moe}, {"use_chimera_hydra": [True]}]
+    elif key == "num_sigma_buckets":
+        conditions = [{"use_moe_style": moe, "use_chimera_hydra": disabled}]
+    elif key == "per_bucket_balance_weight":
+        conditions = [
+            {
+                "use_moe_style": ["shared_A"],
+                "use_chimera_hydra": disabled,
+                "router_source": ["sigma"],
+                "route_per_layer": [None, True],
+            }
+        ]
+    elif key in {"specialize_experts_by_sigma_buckets", "sigma_bucket_boundaries"}:
+        conditions = [{"use_moe_style": ["shared_A"], "use_chimera_hydra": disabled}]
+        if key == "sigma_bucket_boundaries":
+            conditions[0]["specialize_experts_by_sigma_buckets"] = [True]
+    elif key == "sigma_feature_dim":
+        conditions = [
+            {"use_moe_style": moe, "router_source": ["sigma"]},
+            {"use_chimera_hydra": [True], "freq_router_mode": [None, "learned"]},
+        ]
+    elif key in {"fei_feature_dim", "fei_sigma_low_div"}:
+        conditions = [
+            {"use_moe_style": moe, "router_source": ["fei"]},
+            {"use_chimera_hydra": [True]},
+        ]
+    elif key in {"router_hidden_dim", "router_hidden", "router_tau"}:
+        conditions = [
+            {"use_moe_style": moe, "route_per_layer": [False]},
+            {"use_chimera_hydra": [True]},
+        ]
+    elif key in {
+        "num_experts_content",
+        "num_experts_freq",
+        "balance_w_content",
+        "balance_w_freq",
+        "network_content_router_lr_scale",
+        "network_freq_router_lr_scale",
+    } or key.startswith(("chimera_", "content_router_", "freq_router_")):
+        conditions = [{"use_chimera_hydra": [True]}]
+        if key == "freq_router_tau":
+            conditions[0]["freq_router_mode"] = ["fei"]
+        elif key in {
+            "freq_router_layer_norm",
+            "network_freq_router_lr_scale",
+            "balance_w_freq",
+        }:
+            conditions[0]["freq_router_mode"] = [None, "learned"]
+        elif key == "freq_router_init_std":
+            # The centered learned router always initializes at zero.
+            conditions = []
+    elif key == "down_init":
+        conditions = [
+            {
+                "use_lokr": disabled,
+                "use_glokr": disabled,
+                "use_loha": disabled,
+                "use_ve": disabled,
+                "use_dylora": disabled,
+                "use_ortho": disabled,
+                "use_ortho_init": disabled,
+                "use_moe_style": disabled,
+                "use_chimera_hydra": disabled,
+            }
+        ]
+    elif key == "channel_scaling_alpha":
+        conditions = [
+            {"use_lokr": disabled, "use_glokr": disabled, "use_loha": disabled}
+        ]
+    elif key == "use_repa" or key.startswith("repa_"):
+        module = {
+            "network_module": [
+                None,
+                "networks.lora_anima",
+                "networks.methods.easycontrol",
+            ]
+        }
+        if key != "use_repa":
+            conditions = [{"use_repa": [True]}]
+            if key.startswith("repa_dog_"):
+                conditions[0]["repa_target_dog"] = [None, True]
+    elif key == "train_adaln" or key.startswith("adaln_"):
+        module = {
+            "network_module": [
+                None,
+                "networks.lora_anima",
+                "networks.methods.easycontrol",
+            ]
+        }
+        if key != "train_adaln":
+            conditions = [{"train_adaln": [True]}]
+    elif key == "network_alpha":
+        conditions = [
+            {
+                "network_module": [
+                    None,
+                    "networks.lora_anima",
+                    "networks.methods.easycontrol",
+                ]
+            }
+        ]
+    elif key == "network_dim":
+        conditions = [
+            {
+                "network_module": [
+                    None,
+                    "networks.lora_anima",
+                    "networks.methods.easycontrol",
+                    "networks.methods.soft_tokens",
+                ]
+            }
+        ]
+    elif key == "validation_split_num":
+        conditions = [{"use_valid": [True]}]
+    elif key in {"compile_dynamic_seq", "compile_mode", "activation_memory_budget"}:
+        conditions = [{"torch_compile": [True]}]
+    elif key == "unsloth_offload_checkpointing":
+        conditions = [{"gradient_checkpointing": [True]}]
+    elif key == "sigmoid_bias":
+        conditions = [{"timestep_sampling": [None, "sigmoid"]}]
+    elif key.startswith("convrot_"):
+        conditions = [{"base_compute": ["w8a16_convrot", "w8a8_convrot"]}]
+        if key == "convrot_prequant_path":
+            conditions[0]["convrot_weight_source"] = ["prequant_checkpoint"]
+        elif key == "convrot_large_min_in_features":
+            conditions[0]["convrot_large_layer_mode"] = ["w8a16", "w8a8"]
+
+    if conditions is None:
+        return [module] if module else None
+    return [{**module, **condition} for condition in conditions]
+
+
 def _field_desc(key: str, lang: str) -> str | None:
     """Return the localized description for *key* from FIELD_HELP."""
     return _pre_field_help_lang(key, lang) or _field_help_lang(key, lang)
@@ -976,6 +1176,7 @@ def describe_config(
                 "is_basic": key in _BASIC,
                 "is_virtual": key in _VIRTUAL_KEYS,
                 "read_only": read_only,
+                "visible_when": _field_visibility(key),
                 "options": (
                     _SAMPLER_CHOICES
                     if key == "sample_sampler"

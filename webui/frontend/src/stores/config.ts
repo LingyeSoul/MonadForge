@@ -20,6 +20,7 @@ export interface FieldMeta {
   is_virtual: boolean
   read_only: boolean
   options?: string[]
+  visible_when?: Record<string, unknown[]>[] | null
 }
 
 const _GROUP_LABELS: Record<string, Record<string, string>> = {
@@ -83,17 +84,37 @@ export const useConfigStore = defineStore('config', () => {
   const error = ref('')
   const editedValues = ref<Record<string, unknown>>({})
 
-  const basicFields = computed(() => fields.value.filter(f => f.group === 'basic'))
-  const advancedFields = computed(() => fields.value.filter(f => f.group !== 'basic'))
+  function isFieldVisible(field: FieldMeta): boolean {
+    if (!field.visible_when) return true
+    const normalize = (value: unknown): unknown => {
+      if (value == null) return null
+      if (typeof value !== 'string') return value
+      if (/^(true|yes|1)$/i.test(value.trim())) return true
+      if (/^(false|no|0)$/i.test(value.trim())) return false
+      return value.trim()
+    }
+    // Explicit network_args win over top-level keys in the training intake.
+    const networkArgs = getFieldValue('network_args')
+    const overrides = new Map<string, string>()
+    if (Array.isArray(networkArgs)) for (const item of networkArgs) {
+      if (typeof item !== 'string' || !item.includes('=')) continue
+      const index = item.indexOf('=')
+      overrides.set(item.slice(0, index).trim(), item.slice(index + 1).trim())
+    }
+    return field.visible_when.some(clause => Object.entries(clause).every(([key, values]) => {
+      const actual = normalize(overrides.has(key) ? overrides.get(key) : getFieldValue(key))
+      return values.some(value => Object.is(normalize(value), actual))
+    }))
+  }
+
+  const basicFields = computed(() => fields.value.filter(f => f.group === 'basic' && isFieldVisible(f)))
+  const advancedFields = computed(() => fields.value.filter(f => f.group !== 'basic' && isFieldVisible(f)))
 
   const groupedAdvanced = computed(() => {
     const lang = appStore.language
     const labels = _GROUP_LABELS[lang] ?? _GROUP_LABELS.en
     const groups: Record<string, FieldMeta[]> = {}
-    const convrotActive = String(getFieldValue('base_compute') ?? 'bf16') !== 'bf16'
-    const convrotEdited = Object.keys(editedValues.value).some(key => key.startsWith('convrot_'))
     for (const f of advancedFields.value) {
-      if (!convrotActive && !convrotEdited && f.key.startsWith('convrot_')) continue
       const raw = f.group || 'Other'
       // Prefer the i18n catalog (cfgGroup*) for groups that have a message key
       // (Other, Resume & Warm-start); fall back to the language label table,
@@ -262,7 +283,7 @@ export const useConfigStore = defineStore('config', () => {
     loading, dirty, error, editedValues,
     basicFields, advancedFields, groupedAdvanced,
     fetchMethods, fetchVariants, fetchPresets, fetchMerged,
-    setFieldValue, getFieldValue, save,
+    setFieldValue, getFieldValue, isFieldVisible, save,
     createPreset, deletePreset,
   }
 })
