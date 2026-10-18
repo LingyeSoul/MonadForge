@@ -28,5 +28,5 @@ eager vs compiled); the warm-up time lands in `metrics.warmup_seconds`.
 `--decode_only <image dir>` decodes saved latents and writes the envelope with no DiT.
 
 Rel-L2 is a drift number, not a quality score: a plain 30-step arm drifts from the
-50-step one without being worse. Judge by the grids. Numbers and verdicts:
-`project/moss_lora/spectrum.md`.
+50-step one without being worse. Judge by the grids. Run envelopes:
+`bench/moss_spectrum/results/`.

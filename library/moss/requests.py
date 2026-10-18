@@ -79,7 +79,7 @@ class CacheRequest(Request):
         "what the TE encodes: the Anima caption mapped onto MOSS's layout-JSON "
         "prompt (anime_tools.captions.layout_json; needs the danbooru tag CSV), or "
         "the .txt verbatim. Less leakage of the set's attributes onto other "
-        "characters than plain tags (project/moss_lora/lora.md, 2026-10-17); "
+        "characters than plain tags (caststation A/B, 2026-10-17); "
         "generate with the same form",
         choices=("text", "layout_json"),
     )

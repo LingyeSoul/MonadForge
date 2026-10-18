@@ -23,7 +23,7 @@ grid that spends most of its steps at high σ under shift 5.
 
 Default memory plan: no checkpointing, 12 blocks swapped, and the compiled
 blocks' saved set capped by ``activation_memory_budget`` (0.15), which is faster
-than checkpointing on 16 GB (``project/moss_lora/lora.md`` § Swap + budget).
+than checkpointing on 16 GB (measured 2026-10-17).
 ``--grad_checkpointing`` wraps each block's ``forward`` (not ``__call__``), so
 the block swapper's forward hooks fire once per step and never again during
 the recompute; ``MOSSImageTransformer.gradient_checkpointing`` is left off.

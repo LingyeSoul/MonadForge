@@ -2,7 +2,7 @@
 
 Reference grids for judging changes to the LoRA recipe, all on the inference setup we
 keep using: ER-SDE + Spectrum, 50 steps (flex_window 0.5), Base DiT, CFG 3, uncond skip
-22, 1024², prompts through `--prompt_format layout_json`. Write-up: `../lora.md`.
+22, 1024², prompts through `--prompt_format layout_json`. Write-up: `docs/experimental/moss_lora.md`.
 
 Each grid is 2 columns (LoRA ×0, ×1) × 2 rows (seeds 1, 2), 512 px tiles. Prompts
 (`project/moss_lora/src/lora_ab.py` `PROMPTS`): p0 Miku tag bag (in the set), p1 Akita

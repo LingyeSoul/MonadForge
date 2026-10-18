@@ -103,7 +103,7 @@ Low expectation for CTCal, SSC and MIST; they are listed because the probes are 
 | L2P pixel transplant (`docs/findings/l2p_pixel_transfer.md`) | VAE-bound; nothing MOSS-specific helps |
 | Self-Flow (`docs/findings/selfflow.md`) | MOSS Base is also a finished denoiser |
 | DEFT (`docs/findings/deft_subtractive_coupling_slows_convergence.md`) | Coupling through W0's large singular values; the massive channels likely make it worse |
-| HF-residual adapter (`_archive/proposals/hf_residual_adapter.md`) | MOSS round 2 (`project/moss_lora/lora.md`) already found style lives at high σ, the same direction |
+| HF-residual adapter (`_archive/proposals/hf_residual_adapter.md`) | MOSS round 2 (the LoRA training log, removed from `project/moss_lora/` on 2026-10-18) already found style lives at high σ, the same direction |
 | HydraLoRA / chimera routing (`_archive/bench/hydralora/hydralora_proposal.md`) | No routed LoRA on the MOSS line; not a priority |
 | FA4 / packed QKV / torch 2.14 (`docs/optimizations/fa4.md`, `docs/findings/torch214_no_win_on_sm120.md`) | Hardware (sm120), not model |
 | CJK distillation-target, eval-instrument, reward and curriculum failures (`_archive/shelved_benches.md`, CJK findings) | Data / objective / instrument causes; the model change does not touch them |

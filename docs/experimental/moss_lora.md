@@ -143,8 +143,9 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
 
 ## More
 
-Measured numbers, A/B notes and open questions are in `project/moss_lora/`: `lora.md`
-(training), `spectrum.md`, `cache.md`, `phase0.md` (parity with the reference pipeline),
-`channel_scaling.md`. Channel scaling (`--channel_scaling_alpha`, 0.5 by default) and
+Logs and open items for the parts still moving are in `project/moss_lora/`
+(`plan.md`, `sampler.md`, `channel_scaling.md`, `dave.md`); the finished phase logs
+(reference parity, caches, Spectrum, LoRA training) were removed on 2026-10-18 and are
+in git history. Channel scaling (`--channel_scaling_alpha`, 0.5 by default) and
 `--dc_isolate` (on by default): `docs/moss/channel_scaling.md`.
 Code map: `library/moss/CLAUDE.md`.
