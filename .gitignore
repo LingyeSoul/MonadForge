@@ -14,6 +14,8 @@ output/
 # checkpoint. Regenerate via `bench/channel_stats/analyze_lora_input_channels.py`.
 !networks/calibration/channel_stats.safetensors
 !networks/calibration/cond_channel_stats.safetensors
+# MOSS-Image's (bench/moss_channel_stats/probe_lora_inputs.py), same role.
+!library/moss/calibration/channel_stats.safetensors
 *.ckpt
 *.pt
 .DS_Store
