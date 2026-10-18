@@ -100,9 +100,11 @@ of the full gradient. This is the entanglement GraLoRA (arXiv:2505.20355) descri
 direction of the input becomes one rank row of `down`, the other 31 rows are kept orthogonal
 to it (re-projected after every optimizer step), so one `up` column learns the bias and the
 rest get a centered gradient. It does what it says: the bias share on the other 31 columns
-drops to 5–12 % (green line). Its one image A/B so far was not better than α 0.5 alone,
-with the artist tag rendered as text in 3 / 12 cells, so it stays opt-in. Log and next
-steps: `project/moss_lora/channel_scaling.md`.
+drops to 5–12 % (green line). In images: at lr 1e-4 it was not better than α 0.5 alone,
+with the artist tag rendered as text in 3 / 12 cells; at lr 5e-5 those cells are clean and
+the style strength stays close to lr 1e-4, which fits "the centered gradient learns
+faster", but the α 0.5-only control at lr 5e-5 has not been run. It stays opt-in until it
+has. Log and next steps: `project/moss_lora/channel_scaling.md`.
 
 ## Calibration
 

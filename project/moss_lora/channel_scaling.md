@@ -165,7 +165,22 @@ Reading: the up-side mechanism is real and the init fixes it as measured, but on
 seed it does not improve the images over α 0.5 and brings back the off-prompt text that
 decided the earlier A/B. `dc_isolate` stays opt-in (default off); defaults unchanged.
 
-## Open
+**2026-10-18 — DC isolation at lr 5e-5** (`caststation_layout_at_r32a128_lr5e5_svd_cs05_dc`,
+the dc arm with lr halved and nothing else changed; grid `output/tests/ab_…_lr5e5_svd_cs05_dc_50st`).
+Hypothesis: the centered up gradient learns faster, so lr 1e-4 × 20 epochs over-fits with
+it (the text artifacts).
+
+- Loss at epoch 20: 0.2207 (lr 1e-4 dc 0.2227, lr 1e-4 α 0.5 0.2242).
+- Distance to no-LoRA 43.7 (lr 1e-4 arms 50.0, lr 2e-5 α 0.5 42.3).
+- Eyeball (Claude's read, user verdict pending): **no text artifact in 12 / 12 cells** — the
+  three cells that failed at lr 1e-4 (sky "caststation", hair-clip text ×2) are clean; style
+  strength by eye close to the lr 1e-4 arms, stronger than lr 2e-5 α 0.5; on-prompt
+  throughout (two solid-colour backgrounds on p1, which asks for a simple background).
+
+Reading: consistent with the hypothesis, but not a controlled comparison — the α 0.5-only
+arm at lr 5e-5 does not exist yet, so "dc at half the lr" is not separable from "half the
+lr". That control is the next run.
+
 
 1. **Second seed** — train seed 1 for both arms at lr 1e-4 and check the eyeball verdict
    holds; a metric for it would need prompt adherence (tagger / VLM on the off-prompt
@@ -177,10 +192,10 @@ decided the earlier A/B. `dc_isolate` stays opt-in (default off); defaults uncha
 4. **Calibration** — sample saturation (re-probe on `sincos_layout`, compare `s`) and SFT
    (`--model sft`); both 2-min jobs, low priority.
 5. If (1) or (2) goes against cs05, revert the defaults to lr 2e-5 + α 0.
-6. **Up-side arm: DC isolation** — built and measured (above); image A/B on one seed is
-   not better than α 0.5. To pursue: a second seed, an α 0 + dc_isolate arm (separates the
-   two sides), and a look at whether the text artifacts track the captions' `english text`
-   images. Original note: not centering. The FFT reference says the bias is half
+6. **Up-side arm: DC isolation** — built and measured (above). At lr 1e-4 it is not better
+   than α 0.5 (text artifacts); at lr 5e-5 it is clean with lr 1e-4-like style strength. Next:
+   **α 0.5 alone at lr 5e-5** (the missing control), then a second seed; α 0 + dc_isolate
+   separates the two sides. Original note: not centering. The FFT reference says the bias is half
    the loss's own, so closing the bias path (centering `x`) would fight the target;
    isolating it keeps the path and frees the other rank directions. Output-neutral at init
    (`up` is zero): project `x̄` (or the massive channels' columns) into one row of `down`,
