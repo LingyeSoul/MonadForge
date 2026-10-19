@@ -66,6 +66,7 @@ from safetensors.torch import load_file, save_file
 from library.env import resolve_under_home
 from library.moss.scan import (
     LATENT_SUFFIX,
+    REF_SUFFIX,
     TE_SUFFIX,
     caption_sha,
     layout_sidecar,
@@ -90,6 +91,8 @@ class CacheItem:
     height: int
     n_text: int
     n_text_plain: int = 0  # 0 = no plain-caption embedding in the TE file
+    ref_path: Path | None = None  # clean reference latent (i2i probe)
+    n_ref: int = 0
 
 
 @dataclass
@@ -128,8 +131,24 @@ def list_items(cache_dir) -> list[CacheItem]:
                 if "embeds_plain" in f.keys()
                 else 0
             )
-        items.append(CacheItem(stem, path, te, w, h, n_text, n_plain))
+        ref, n_ref = cache_dir / f"{stem}{REF_SUFFIX}", 0
+        if ref.exists():
+            with safe_open(ref, "pt") as f:
+                _, rh, rw = f.get_slice("latent").get_shape()
+            n_ref = rh * rw
+        items.append(
+            CacheItem(
+                stem, path, te, w, h, n_text, n_plain, ref if n_ref else None, n_ref
+            )
+        )
     return items
+
+
+def load_ref(item: CacheItem) -> torch.Tensor | None:
+    """``ref (128, h, w)`` fp32 on CPU, or ``None``."""
+    if item.ref_path is None:
+        return None
+    return load_file(item.ref_path)["latent"].float()
 
 
 def load_item(item: CacheItem) -> tuple[torch.Tensor, torch.Tensor]:

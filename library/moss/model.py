@@ -80,7 +80,9 @@ def _attention(q, k, v, rope, heads, key_mask=None):
     v = v.reshape(shape).transpose(1, 2)
     attn_mask = None if key_mask is None else key_mask[:, None, None, :]
     return (
-        F.scaled_dot_product_attention(q.to(v.dtype), k.to(v.dtype), v, attn_mask=attn_mask)
+        F.scaled_dot_product_attention(
+            q.to(v.dtype), k.to(v.dtype), v, attn_mask=attn_mask
+        )
         .transpose(1, 2)
         .flatten(2)
     )
@@ -155,7 +157,8 @@ class _RoPE(nn.Module):
     def _default_bands(self, device):
         # Match training's CPU fp32 construction, including under meta init.
         exponent = (
-            torch.arange(self.num_bands, device="cpu", dtype=torch.float32) / self.num_bands
+            torch.arange(self.num_bands, device="cpu", dtype=torch.float32)
+            / self.num_bands
         )
         return (1 / (self.base**exponent)).to(device)
 
@@ -170,25 +173,47 @@ class _RoPE(nn.Module):
         # Frequencies are derived constants; retain the key for checkpoint compatibility.
         self.bands = self._default_bands(self.bands.device)
 
-    def forward(self, height, width, text_length, device):
-        """``(1, H·W + text_length, head_dim)``, fp32. Image tokens first."""
+    def forward(self, height, width, text_length, device, ref_hw=None):
+        """``(1, H·W [+ h·w] + text_length, head_dim)``, fp32. Image tokens first.
+
+        ``ref_hw = (h, w)`` adds a reference grid after the image tokens on the
+        reserved ``r = 1`` axis, its ``(h, w)`` coordinates stretched onto the
+        image's grid so each reference token sits over the image region it covers."""
         # Diffusers/Accelerate can install tensors directly, bypassing load hooks.
         if self.bands.dtype != torch.float32:
             self.bands = self._default_bands(device)
         # Coordinates: (r, f, h, w); sequence order is image followed by text.
         h, w = torch.meshgrid(
-            torch.arange(height, device=device), torch.arange(width, device=device), indexing="ij"
+            torch.arange(height, device=device),
+            torch.arange(width, device=device),
+            indexing="ij",
         )
         image = (
-            torch.stack((torch.zeros_like(h), torch.full_like(h, text_length), h, w), -1)
+            torch.stack(
+                (torch.zeros_like(h), torch.full_like(h, text_length), h, w), -1
+            )
             .flatten(0, 1)
             .float()
         )
         image[:, 2] -= (height - 1) / 2
         image[:, 3] -= (width - 1) / 2
+        parts = [image]
+        if ref_hw is not None:
+            rh, rw = ref_hw
+            h, w = torch.meshgrid(
+                (torch.arange(rh, device=device) + 0.5) * height / rh - 0.5,
+                (torch.arange(rw, device=device) + 0.5) * width / rw - 0.5,
+                indexing="ij",
+            )
+            ref = torch.stack(
+                (torch.ones_like(h), torch.full_like(h, text_length), h, w), -1
+            ).flatten(0, 1)
+            ref[:, 2] -= (height - 1) / 2
+            ref[:, 3] -= (width - 1) / 2
+            parts.append(ref)
         text = torch.zeros(text_length, 4, device=device, dtype=torch.float32)
         text[:, 1] = torch.arange(text_length, device=device)
-        phase = torch.cat((image, text), 0).unsqueeze(-1) * self.bands
+        phase = torch.cat((*parts, text), 0).unsqueeze(-1) * self.bands
         return torch.cat((phase.sin(), phase.cos()), -2).flatten(-2).unsqueeze(0)
 
 
@@ -223,7 +248,9 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
             nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim)
         )
         self.shared_block_modulation = nn.Linear(dim, 6 * dim)
-        self.layers = nn.ModuleList([_Block(dim, ffn_dim, num_heads) for _ in range(num_layers)])
+        self.layers = nn.ModuleList(
+            [_Block(dim, ffn_dim, num_heads) for _ in range(num_layers)]
+        )
         self.final_norm_video = _RMSNorm(dim)
         self.final_linear_video = nn.Linear(dim, latent_channels, bias=False)
         self.video_head_modulation = nn.Linear(dim, 2 * dim)
@@ -235,7 +262,9 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         if prefix:
             if any(not key.startswith(prefix) for key in state_dict):
                 raise ValueError("All keys must start with the explicit prefix.")
-            state_dict = {key[len(prefix) :]: value for key, value in state_dict.items()}
+            state_dict = {
+                key[len(prefix) :]: value for key, value in state_dict.items()
+            }
         return self.load_state_dict(state_dict, strict=True)
 
     # ------------------------------------------------------------------ pieces
@@ -248,26 +277,49 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         times = times.expand(batch)
         # Training computes the sinusoid in float64 and feeds float32 into its MLP.
         half = self.config.freq_dim // 2
-        freq = 10000 ** (-torch.arange(half, device=times.device, dtype=torch.float64) / half)
+        freq = 10000 ** (
+            -torch.arange(half, device=times.device, dtype=torch.float64) / half
+        )
         phase = times.double()[:, None] * freq
         embedding = torch.cat((phase.cos(), phase.sin()), -1).float()
-        time = self.time_embedding(embedding.to(self.time_embedding[0].weight.dtype)).float()
-        mod = self.shared_block_modulation(time.to(self.shared_block_modulation.weight.dtype))
-        head = self.video_head_modulation(time.to(self.video_head_modulation.weight.dtype))
+        time = self.time_embedding(
+            embedding.to(self.time_embedding[0].weight.dtype)
+        ).float()
+        mod = self.shared_block_modulation(
+            time.to(self.shared_block_modulation.weight.dtype)
+        )
+        head = self.video_head_modulation(
+            time.to(self.video_head_modulation.weight.dtype)
+        )
         return mod.view(batch, 6, -1), head.view(batch, 2, -1)
 
-    def embed_sample(self, latent, context):
+    def embed_sample(self, latent, context, ref=None):
         """One sample: ``latent (1,C,H,W)``, ``context (1,S,text_dim)`` at its true
-        length → ``x (1, H·W+S, D)``, ``rope (1, H·W+S, head_dim)``."""
+        length, optional clean reference latent ``ref (1,C,h,w)`` → ``x (1, H·W
+        [+ h·w] + S, D)``, ``rope`` to match."""
         _, _, height, width = latent.shape
-        video = latent.flatten(2).transpose(1, 2)
-        video = self.video_embedder(video.to(self.video_embedder.weight.dtype).contiguous())
+        video = self._embed_latent(latent)
+        ref_hw = None if ref is None else tuple(ref.shape[-2:])
         # Match the reference activation dtype under fp32 weights + autocast.
-        rope = self.rope(height, width, context.shape[1], latent.device).to(video.dtype)
-        text = self.text_embedder(context, rope[:, height * width :])
-        return torch.cat((video, text), 1), rope
+        rope = self.rope(height, width, context.shape[1], latent.device, ref_hw).to(
+            video.dtype
+        )
+        parts = [video]
+        if ref is not None:
+            parts.append(self._embed_latent(ref))
+        n = sum(p.shape[1] for p in parts)
+        text = self.text_embedder(context, rope[:, n:])
+        return torch.cat((*parts, text), 1), rope
 
-    def run_layers(self, x, rope, mod, skip_layers=frozenset(), key_mask=None, n_img=None):
+    def _embed_latent(self, latent):
+        tokens = latent.flatten(2).transpose(1, 2)
+        return self.video_embedder(
+            tokens.to(self.video_embedder.weight.dtype).contiguous()
+        )
+
+    def run_layers(
+        self, x, rope, mod, skip_layers=frozenset(), key_mask=None, n_img=None
+    ):
         """The 42 blocks. ``skip_layers``: one frozenset for the whole batch, or a
         sequence of frozensets, one per sample (rows skipping a block keep ``x``).
         ``n_img`` (leading image tokens) is what ``layer_hook`` sees."""
@@ -276,13 +328,18 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         hook = self.layer_hook
         for index, layer in enumerate(self.layers):
             if per_sample:
-                active = [b for b, skips in enumerate(skip_layers) if index not in skips]
+                active = [
+                    b for b, skips in enumerate(skip_layers) if index not in skips
+                ]
                 if not active:
                     continue
                 if len(active) < x.shape[0]:
                     rows = torch.tensor(active, device=x.device)
                     sub = layer(
-                        x[rows], rope[rows], mod[rows], None if key_mask is None else key_mask[rows]
+                        x[rows],
+                        rope[rows],
+                        mod[rows],
+                        None if key_mask is None else key_mask[rows],
                     )
                     if hook is not None:
                         sub = hook(index, sub, n_img)
@@ -309,16 +366,23 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
     # ---------------------------------------------------------------- forwards
 
     def _check_inputs(self, hidden_states, encoder_hidden_states, mask):
-        if hidden_states.ndim != 4 or hidden_states.shape[1] != self.config.latent_channels:
+        if (
+            hidden_states.ndim != 4
+            or hidden_states.shape[1] != self.config.latent_channels
+        ):
             raise ValueError("hidden_states must be [B, latent_channels, H, W].")
         batch = hidden_states.shape[0]
         if encoder_hidden_states.ndim != 3 or encoder_hidden_states.shape[0] != batch:
             raise ValueError("encoder_hidden_states must be [B, S, text_dim].")
         if mask is None:
             mask = torch.ones(
-                encoder_hidden_states.shape[:2], dtype=torch.bool, device=hidden_states.device
+                encoder_hidden_states.shape[:2],
+                dtype=torch.bool,
+                device=hidden_states.device,
             )
-        if mask.shape != encoder_hidden_states.shape[:2] or not torch.all((mask == 0) | (mask == 1)):
+        if mask.shape != encoder_hidden_states.shape[:2] or not torch.all(
+            (mask == 0) | (mask == 1)
+        ):
             raise ValueError("encoder_attention_mask must be a binary [B, S] mask.")
         if not torch.all(mask.bool().any(1)):
             raise ValueError("Each sample needs at least one valid text token.")
@@ -333,17 +397,25 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         return_dict=True,
         skip_layers=None,
         return_features=False,
+        ref=None,
     ):
         """The reference per-sample loop. ``return_features`` returns the
-        image-token hidden state ``(B, H·W, D)`` before ``head`` instead."""
+        image-token hidden state ``(B, H·W, D)`` before ``head`` instead.
+        ``ref (B,C,h,w)``: clean reference latents (``embed_sample``)."""
         skip_layers = _validate_skip_layers(skip_layers, len(self.layers))
-        mask = self._check_inputs(hidden_states, encoder_hidden_states, encoder_attention_mask)
+        mask = self._check_inputs(
+            hidden_states, encoder_hidden_states, encoder_attention_mask
+        )
         batch, _, height, width = hidden_states.shape
         mod, head = self.time_conditioning(timestep, batch)
         outputs = []
         for index in range(batch):
             context = encoder_hidden_states[index : index + 1, mask[index]]
-            x, rope = self.embed_sample(hidden_states[index : index + 1], context)
+            x, rope = self.embed_sample(
+                hidden_states[index : index + 1],
+                context,
+                None if ref is None else ref[index : index + 1],
+            )
             x = self.run_layers(
                 x, rope, mod[index : index + 1], skip_layers, n_img=height * width
             )
@@ -351,7 +423,9 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
             if return_features:
                 outputs.append(features)
             else:
-                outputs.append(self.head(features, head[index : index + 1], height, width))
+                outputs.append(
+                    self.head(features, head[index : index + 1], height, width)
+                )
         sample = torch.cat(outputs)
         if return_features:
             return sample
@@ -365,6 +439,7 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         encoder_attention_mask=None,
         skip_layers=None,
         return_features=False,
+        ref=None,
     ):
         """All samples in one forward. Text is right-padded to the longest valid
         length and masked out of every key set (text refiner and joint blocks), so
@@ -376,9 +451,15 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         Returns the velocity ``(B, C, H, W)`` (or features ``(B, H·W, D)``).
         """
         depth = len(self.layers)
-        mask = self._check_inputs(hidden_states, encoder_hidden_states, encoder_attention_mask)
+        mask = self._check_inputs(
+            hidden_states, encoder_hidden_states, encoder_attention_mask
+        )
         batch, _, height, width = hidden_states.shape
-        if skip_layers is not None and len(skip_layers) and not isinstance(skip_layers[0], int):
+        if (
+            skip_layers is not None
+            and len(skip_layers)
+            and not isinstance(skip_layers[0], int)
+        ):
             if len(skip_layers) != batch:
                 raise ValueError("Per-sample skip_layers needs one entry per sample.")
             skips = [_validate_skip_layers(s, depth) for s in skip_layers]
@@ -388,27 +469,31 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
             skips = _validate_skip_layers(skip_layers, depth)
         mod, head = self.time_conditioning(timestep, batch)
         n_img = height * width
+        ref_hw = None if ref is None else tuple(ref.shape[-2:])
+        n_ref = 0 if ref is None else ref_hw[0] * ref_hw[1]
         lengths = mask.sum(1)
         s_max = int(lengths.max())
         device = hidden_states.device
 
-        context = encoder_hidden_states.new_zeros(batch, s_max, encoder_hidden_states.shape[-1])
+        context = encoder_hidden_states.new_zeros(
+            batch, s_max, encoder_hidden_states.shape[-1]
+        )
         text_mask = torch.zeros(batch, s_max, dtype=torch.bool, device=device)
         ropes = []
         for b in range(batch):
             n = int(lengths[b])
             context[b, :n] = encoder_hidden_states[b, mask[b]]
             text_mask[b, :n] = True
-            rope = self.rope(height, width, n, device)
+            rope = self.rope(height, width, n, device, ref_hw)
             if n < s_max:
                 rope = F.pad(rope, (0, 0, 0, s_max - n))
             ropes.append(rope)
-        video = hidden_states.flatten(2).transpose(1, 2)
-        video = self.video_embedder(video.to(self.video_embedder.weight.dtype).contiguous())
+        video = self._embed_latent(hidden_states)
         rope = torch.cat(ropes).to(video.dtype)
-        text = self.text_embedder(context, rope[:, n_img:], text_mask)
-        x = torch.cat((video, text), 1)
-        key_mask = torch.cat((text_mask.new_ones(batch, n_img), text_mask), 1)
+        text = self.text_embedder(context, rope[:, n_img + n_ref :], text_mask)
+        parts = [video] if ref is None else [video, self._embed_latent(ref)]
+        x = torch.cat((*parts, text), 1)
+        key_mask = torch.cat((text_mask.new_ones(batch, n_img + n_ref), text_mask), 1)
         if bool(text_mask.all()):
             key_mask = None
         x = self.run_layers(x, rope, mod, skips, key_mask, n_img=n_img)
@@ -427,7 +512,11 @@ class MOSSImageScheduler(FlowMatchEulerDiscreteScheduler):
         self.register_to_config(shift=shift, training_shift=training_shift)
 
     def set_timesteps(self, num_inference_steps=50, device=None):
-        if num_inference_steps < 1 or self.config.shift <= 0 or self.config.training_shift <= 0:
+        if (
+            num_inference_steps < 1
+            or self.config.shift <= 0
+            or self.config.training_shift <= 0
+        ):
             raise ValueError("Steps and shifts must be positive.")
         sigmas = snapped_sigmas(
             num_inference_steps,
@@ -455,7 +544,9 @@ def snapped_sigmas(num_steps, shift=DEFAULT_SHIFT, training_shift=1.0, total=100
     upper = torch.searchsorted(training, sigmas).clamp(max=total - 1)
     lower = (upper - 1).clamp(min=0)
     nearest = torch.where(
-        (sigmas - training[lower]).abs() <= (training[upper] - sigmas).abs(), lower, upper
+        (sigmas - training[lower]).abs() <= (training[upper] - sigmas).abs(),
+        lower,
+        upper,
     )
     return torch.unique_consecutive(training[nearest])
 
@@ -477,14 +568,22 @@ def unpack_latents(z, vae):
     mean, std = _bn_stats(vae, z)
     z = z * std + mean
     b, c, h, w = z.shape
-    return z.reshape(b, c // 4, 2, 2, h, w).permute(0, 1, 4, 2, 5, 3).reshape(b, c // 4, 2 * h, 2 * w)
+    return (
+        z.reshape(b, c // 4, 2, 2, h, w)
+        .permute(0, 1, 4, 2, 5, 3)
+        .reshape(b, c // 4, 2 * h, 2 * w)
+    )
 
 
 def pack_latents(z, vae):
     """FLUX.2 VAE latent ``(B,32,H,W)`` → DiT latent ``(B,128,H/2,W/2)``: the exact
     inverse of ``unpack_latents`` (FLUX.2's ``_patchify_latents`` + BN normalise)."""
     b, c, h, w = z.shape
-    z = z.view(b, c, h // 2, 2, w // 2, 2).permute(0, 1, 3, 5, 2, 4).reshape(b, c * 4, h // 2, w // 2)
+    z = (
+        z.view(b, c, h // 2, 2, w // 2, 2)
+        .permute(0, 1, 3, 5, 2, 4)
+        .reshape(b, c * 4, h // 2, w // 2)
+    )
     mean, std = _bn_stats(vae, z)
     return (z - mean) / std
 

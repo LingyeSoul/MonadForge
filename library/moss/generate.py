@@ -41,9 +41,11 @@ def _parse_skip(value) -> tuple[int, ...]:
     return tuple(int(v) for v in str(value).split(",") if v.strip())
 
 
-def _features(transformer, latents, t, embeds, mask, skip, batched):
+def _features(transformer, latents, t, embeds, mask, skip, batched, ref=None):
     """Image-token features of the cond rows then the uncond rows, ``(R, H·W, D)``.
-    ``embeds`` / ``mask`` / ``skip`` are per-branch lists (one entry = no CFG)."""
+    ``embeds`` / ``mask`` / ``skip`` are per-branch lists (one entry = no CFG);
+    ``ref`` (clean reference latents) goes to every branch."""
+    kw = {} if ref is None else {"ref": ref}
     if len(embeds) == 1:
         return [
             transformer(
@@ -53,11 +55,12 @@ def _features(transformer, latents, t, embeds, mask, skip, batched):
                 mask[0],
                 skip_layers=skip[0],
                 return_features=True,
+                **kw,
             )
         ]
     if not batched:
         return [
-            transformer(latents, t, e, m, skip_layers=s, return_features=True)
+            transformer(latents, t, e, m, skip_layers=s, return_features=True, **kw)
             for e, m, s in zip(embeds, mask, skip)
         ]
     rows = []
@@ -74,6 +77,7 @@ def _features(transformer, latents, t, embeds, mask, skip, batched):
         joint_mask,
         skip_layers=skips,
         return_features=True,
+        **({} if ref is None else {"ref": ref.repeat(len(embeds), 1, 1, 1)}),
     )
     return list(feats.chunk(len(embeds)))
 
@@ -98,6 +102,7 @@ def denoise(
     dave=None,
     on_step=None,
     progress=None,
+    ref=None,
 ):
     """Euler-integrate ``latents (B,128,h,w)`` over ``sigmas`` (``snapped_sigmas``:
     descending, no terminal 0). Returns fp32 latents.
@@ -113,6 +118,8 @@ def denoise(
     ``x̂₀ = x_t − σ·v``; ``seed`` seeds its injected noise and ``cns``
     (``library.moss.cns.MossCNS``) recolors it. ``on_step(i, x̂₀)`` sees each
     step's guided x̂₀ (CNS calibration).
+
+    ``ref (B,128,h,w)``: clean reference latents in every forward (i2i probe).
 
     ``dave`` (``library.moss.dave.MossDAVE``) is installed as the transformer's
     ``layer_hook`` on its active steps (both branches) and removed after.
@@ -148,7 +155,7 @@ def denoise(
                 transformer.layer_hook = dave if dave.is_active(i) else None
             if spectrum is None or spectrum.is_full_step(i):
                 branches = _features(
-                    transformer, latents, t, embeds, masks, skips, batched
+                    transformer, latents, t, embeds, masks, skips, batched, ref
                 )
                 if spectrum is not None:
                     spectrum.observe(i, torch.cat(branches))

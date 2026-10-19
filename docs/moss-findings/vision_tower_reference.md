@@ -85,4 +85,7 @@ CFG 3, uncond `''` skipping block 22, seed 1. Captions are layout JSON. Arms:
   A structure-preserving task (colorize, edit) needs a LoRA that learns alignment from
   these tokens, or a VAE reference in the sequence. The free `r` RoPE axis is the slot for
   one, and a reference latent at reduced size would keep the cost down.
+  - **Tested 2026-10-19** on colorize: both were tried. A LoRA trained on these tokens
+    alone reached luma r 0.42. Adding a half-size VAE reference on `r = 1` reached 0.97.
+    See `docs/proposal/moss_i2i.md`.
 - The probe is one seed on Base. SFT was not run.

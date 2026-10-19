@@ -119,7 +119,9 @@ class _Bench:
         latent, embeds = sample.load()
         self.latent = latent.unsqueeze(0).to(device, torch.float32)
         self.embeds = embeds.unsqueeze(0).to(device)
-        self.joint = sample.n_img + sample.n_text
+        ref = sample.load_ref() if sample.load_ref is not None else None
+        self.ref = None if ref is None else ref.unsqueeze(0).to(device, torch.float32)
+        self.joint = sample.n_img + sample.n_ref + sample.n_text
         self.device = device
 
     def arm(self, swap: int, *, grad_checkpointing: bool = False) -> dict:
@@ -175,7 +177,9 @@ class _Bench:
                 torch.cuda.synchronize()
                 start = time.perf_counter()
             sigma = 0.25 + 0.5 * torch.rand((), generator=gen).item()
-            loss = training_loss(self.transformer, self.latent, self.embeds, sigma)
+            loss = training_loss(
+                self.transformer, self.latent, self.embeds, sigma, ref=self.ref
+            )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.params, 1.0)
             optimizer.step()
@@ -220,9 +224,10 @@ def run_tune(req: TuneSwapRequest) -> dict:
         samples = samples_from_cache(resolve_under_home(req.cache))
         if not samples:
             raise SystemExit(f"no cached pairs under {req.cache}")
-    sample = max(samples, key=lambda s: s.n_img + s.n_text)
+    sample = max(samples, key=lambda s: s.n_img + s.n_ref + s.n_text)
     print(
-        f"timing {sample.stem}: {sample.n_img} image + {sample.n_text} text tokens "
+        f"timing {sample.stem}: {sample.n_img} image + {sample.n_ref} ref + "
+        f"{sample.n_text} text tokens "
         f"(largest of {len(samples)})",
         flush=True,
     )
@@ -272,7 +277,7 @@ def run_tune(req: TuneSwapRequest) -> dict:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2))
     print(
-        f"\n{report['gpu']} ({report['pcie']}), {sample.n_img + sample.n_text} joint tokens"
+        f"\n{report['gpu']} ({report['pcie']}), {sample.n_img + sample.n_ref + sample.n_text} joint tokens"
     )
     for arm in arms:
         print(_row(arm) + ("   <- recommended" if arm is chosen else ""))

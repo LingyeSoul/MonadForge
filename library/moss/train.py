@@ -72,6 +72,8 @@ class Sample:
         [], tuple[torch.Tensor, torch.Tensor]
     ]  # latent (128,h,w), embeds (S,4096)
     load_plain: Callable[[], torch.Tensor] | None = None  # embeds_plain (S',4096)
+    n_ref: int = 0
+    load_ref: Callable[[], torch.Tensor] | None = None  # clean ref latent (128,h,w)
 
 
 def samples_from_cache(cache_dir: Path) -> list[Sample]:
@@ -97,6 +99,8 @@ def samples_from_cache(cache_dir: Path) -> list[Sample]:
                 max(item.n_text, item.n_text_plain),
                 load,
                 load_plain,
+                item.n_ref,
+                functools.partial(moss_cache.load_ref, item) if item.n_ref else None,
             )
         )
     return out
@@ -123,15 +127,16 @@ def sample_sigma(
     return j / total
 
 
-def training_loss(transformer, latent, embeds, sigma: float, gen=None):
-    """``latent (1,128,h,w)`` fp32, ``embeds (1,S,4096)`` at true length."""
+def training_loss(transformer, latent, embeds, sigma: float, gen=None, ref=None):
+    """``latent (1,128,h,w)`` fp32, ``embeds (1,S,4096)`` at true length,
+    ``ref (1,128,h',w')`` an optional clean reference latent (never noised)."""
     noise = torch.randn(
         latent.shape, generator=gen, device=latent.device, dtype=latent.dtype
     )
     noisy = (1.0 - sigma) * latent + sigma * noise
     target = noise - latent
     timestep = torch.tensor([NUM_TRAIN_TIMESTEPS * sigma], device=latent.device)
-    pred = transformer(noisy, timestep, embeds, return_dict=False)[0]
+    pred = transformer(noisy, timestep, embeds, return_dict=False, ref=ref)[0]
     return F.mse_loss(pred.float(), target.float())
 
 
@@ -272,6 +277,15 @@ def train(
         flush=True,
     )
     data = {s.stem: s.load() for s in samples}
+    refs = {s.stem: s.load_ref() for s in samples if s.load_ref is not None}
+    if refs:
+        ref_tok = sorted(s.n_ref for s in samples if s.load_ref is not None)
+        print(
+            f"reference latents: {len(refs)}/{len(samples)} samples, "
+            f"{ref_tok[0]}-{ref_tok[-1]} tokens",
+            flush=True,
+        )
+    joint = max(s.n_img + s.n_ref + s.n_text for s in samples)
     plain = (
         {s.stem: s.load_plain() for s in samples if s.load_plain is not None}
         if req.plain_caption_rate > 0
@@ -326,7 +340,7 @@ def train(
     budgeted = req.compile and not req.grad_checkpointing
     budget = req.activation_memory_budget if budgeted else 1.0
     reserve_gb = step_reserve_gb(
-        img[-1] + txt[-1], grad_checkpointing=req.grad_checkpointing, budget=budget
+        joint, grad_checkpointing=req.grad_checkpointing, budget=budget
     )
     attached = place(transformer, device, req.blocks_to_swap, reserve_gb)
     if budgeted and budget < 1.0:
@@ -371,6 +385,7 @@ def train(
         f"uniform={req.sigma_uniform}",
         "caption_dropout": req.caption_dropout,
         "plain_caption_rate": req.plain_caption_rate if plain else 0.0,
+        "reference_latents": len(refs),
     }
 
     def save(tag: str | None = None) -> Path:
@@ -382,7 +397,7 @@ def train(
         network.save(path, req.lora_dtype, **meta)
         return path
 
-    by_size = sorted(samples, key=lambda s: s.n_img + s.n_text, reverse=True)
+    by_size = sorted(samples, key=lambda s: s.n_img + s.n_ref + s.n_text, reverse=True)
     history, losses_all, fit = [], [], None
     step = 0
     torch.cuda.reset_peak_memory_stats()
@@ -408,10 +423,13 @@ def train(
                 embeds = empty
             latent = latent.unsqueeze(0).to(device, torch.float32)
             embeds = embeds.unsqueeze(0).to(device)
+            ref = refs.get(s.stem)
+            if ref is not None:
+                ref = ref.unsqueeze(0).to(device, torch.float32)
             sigma = sample_sigma(
                 gen, req.sigma_mu, req.sigma_s, req.sigma_cutoff, req.sigma_uniform
             )
-            loss = training_loss(transformer, latent, embeds, sigma)
+            loss = training_loss(transformer, latent, embeds, sigma, ref=ref)
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(params, req.max_grad_norm)
             optimizer.step()

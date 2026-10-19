@@ -21,6 +21,8 @@ from library.env import resolve_under_home
 IMAGE_EXTS = (".webp", ".png", ".jpg", ".jpeg")
 TE_SUFFIX = ".moss_te.safetensors"
 LATENT_SUFFIX = ".moss_latent.safetensors"
+# Optional clean reference latent per stem (i2i probe), key ``latent``.
+REF_SUFFIX = ".moss_ref.safetensors"
 LATENT_RE = re.compile(
     r"^(?P<stem>.+)_(?P<w>\d+)x(?P<h>\d+)\.moss_latent\.safetensors$"
 )
