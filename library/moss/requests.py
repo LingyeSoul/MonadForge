@@ -310,7 +310,7 @@ class TrainRequest(Request):
         "with dc_isolate; without dc_isolate 1e-4 was the pick, 2026-10-18)",
     )
     warmup_ratio: float = _f(0.05, "linear warmup, as a fraction of all steps")
-    save_every_epochs: int = _f(0, "also save every N epochs (0 = final only)")
+    save_every_epochs: int = _f(0, "also save every N epochs into <output dir>/<name>/<name>_eN (0 = final only)")
     caption_dropout: float = _f(
         0.0,
         "probability of training a step on the empty-prompt embedding (CFG's "

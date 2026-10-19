@@ -93,7 +93,7 @@ make download-model ARGS=moss-sft
 | `output` | `output/ckpt_moss/moss_lora.safetensors` | LoRA の保存先。隣に `.json` の実行レポート（ステップごとの loss）が保存される |
 | `model` | `base` | 学習に使う DiT |
 | `epochs` | `8` | キャッシュを回る回数（1 ステップに画像 1 枚） |
-| `save_every_epochs` | `0` | N エポックごとに `<name>_e10.safetensors` などとして追加保存 |
+| `save_every_epochs` | `0` | N エポックごとに最終ファイルの隣の `<name>/<name>_e10.safetensors` などとして追加保存（最後のエポックは最終ファイルそのもの） |
 
 ランク、alpha、lr、アダプターの種類は §4 で扱います。**Train** は `cache` を読み込み、**Preprocess, then train** は先に前処理を実行してから `cache` をその `out` に合わせて学習します。
 

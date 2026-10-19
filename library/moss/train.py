@@ -400,11 +400,13 @@ def train(
     }
 
     def save(tag: str | None = None) -> Path:
-        path = (
-            out_path
-            if tag is None
-            else out_path.with_name(f"{out_path.stem}_{tag}{out_path.suffix}")
-        )
+        """The final file at ``out_path``; an epoch save under ``<dir>/<stem>/``."""
+        if tag is None:
+            path = out_path
+        else:
+            folder = out_path.parent / out_path.stem
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"{out_path.stem}_{tag}{out_path.suffix}"
         network.save(path, req.lora_dtype, **meta)
         return path
 
@@ -482,7 +484,11 @@ def train(
             f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB",
             flush=True,
         )
-        if req.save_every_epochs and (epoch + 1) % req.save_every_epochs == 0:
+        if (
+            req.save_every_epochs
+            and (epoch + 1) % req.save_every_epochs == 0
+            and epoch + 1 < epochs
+        ):
             print(f"  saved {save(f'e{epoch + 1}')}", flush=True)
 
     final = save()

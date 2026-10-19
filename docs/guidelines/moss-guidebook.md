@@ -93,7 +93,7 @@ Press **Run preprocessing**. The status line counts images, captions and cached 
 | `output` | `output/ckpt_moss/moss_lora.safetensors` | LoRA path; a `.json` run report (per-step loss) lands beside it |
 | `model` | `base` | Which DiT to train on |
 | `epochs` | `8` | Passes over the cache (one image per step) |
-| `save_every_epochs` | `0` | Also save every N epochs, as `<name>_e10.safetensors` etc. |
+| `save_every_epochs` | `0` | Also save every N epochs, as `<name>/<name>_e10.safetensors` etc. beside the final file (the last epoch is the final file itself) |
 
 Rank, alpha, lr and the adapter type are in §4. **Train** reads `cache`; **Preprocess, then train** runs Preprocess first and points `cache` at its `out`.
 
