@@ -121,7 +121,7 @@ make download-model ARGS=moss-sft
 | `dc_isolate` | 开启 | 仅 `lora`；为输入的恒定偏移单独分配一行 LoRA 秩 |
 | down 初始化（`down_init`） | `weight_svd` | `weight_svd` 或 `kaiming` |
 | 轮数（`epochs`） | `8` | 实测训练用 20 |
-| 标注丢弃率（`caption_dropout`） | `0` | 实测训练用 0 |
+| 标注丢弃率（`caption_dropout`） | `0` | 保持 0：0.05 和 0.1 在 CFG 下都削弱了风格（uncond 吸收了风格）— `project/moss_lora/caption_dropout.md` |
 
 - **alpha 与学习率**：在 AdamW 下，提高缩放等同于把 LoRA up 矩阵的学习率提高同样的倍数。秩 16、alpha 90（缩放 5.6）、学习率 1e-4 时，up 矩阵相当于约 5.6e-4。这一组的风格与默认设置相同，但开始复制数据集的签名：一张样图上出现了画师的水印和账号名。alpha 90、学习率 5e-5 的迁移更弱、不完整。该对比中 alpha = 秩、学习率 1e-4 排名第一，在下面的后续对比之前一直是默认值。
 - **秩 32，alpha 128：学习率 1e-4 与 2e-5（无通道缩放）**：在 caststation 数据集上（20 轮，`weight_svd`，layout_json），注入画师标签后，两条复杂的画廊提示词（十人群像、4:1 横幅）表现不同。秩 32 / alpha 128、学习率 1e-4 把风格推得很重（白色背景、平涂的浅色填充），却丢了提示词细节（拿包的角色错了，缺少玩偶）。学习率 2e-5 时细节保住了（拿包的角色正确，玩偶在），风格偏移较温和，被判定为“好得多”，在引入通道缩放之前一直是默认值。在 AdamW 下，缩放 4、学习率 2e-5 的有效学习率为：up 矩阵 8e-5，down 矩阵 2e-5。

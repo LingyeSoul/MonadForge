@@ -121,7 +121,7 @@ The measured run: 30 images of one artist (`@channel (caststation)`), Base, LoRA
 | `dc_isolate` | on | `lora` only; one LoRA rank row for the input's constant offset |
 | `down_init` | `weight_svd` | `weight_svd` or `kaiming` |
 | `epochs` | `8` | the measured run used 20 |
-| `caption_dropout` | `0` | the measured run used 0 |
+| `caption_dropout` | `0` | keep 0: 0.05 and 0.1 weakened the style under CFG (the uncond picks up the style) — `project/moss_lora/caption_dropout.md` |
 
 - **alpha and lr**: under AdamW, raising the scale is the same as raising the lr of the LoRA's up matrix by that factor. Rank 16 with alpha 90 (scale 5.6) at lr 1e-4 puts the up matrix at ~5.6e-4. That arm matched the default's style but started copying the set's signature: one sample carried the artist's watermark and handle. Alpha 90 at lr 5e-5 gave a softer, partial transfer. That comparison ranked alpha = rank at lr 1e-4 first, and it was the default until the later comparison below.
 - **Rank 32, alpha 128: lr 1e-4 vs 2e-5 (without channel scaling)**: on the caststation set (20 epochs, `weight_svd`, layout_json) with the artist tag injected, the two complex gallery prompts (a ten-character ensemble, a 4:1 banner) behaved differently. Rank 32 / alpha 128 at lr 1e-4 pushed the style hard (white backgrounds, flat pale fills) but lost prompt details (the wrong character held the bag, a plush was missing). At lr 2e-5 the details held (right bag holder, plush present) with a milder style shift, judged much better, and it was the default until channel scaling came in. Under AdamW the effective lr at scale 4 and lr 2e-5 is 8e-5 for the up matrix and 2e-5 for the down matrix.

@@ -121,7 +121,7 @@ make download-model ARGS=moss-sft
 | `dc_isolate` | 켜짐 | `lora` 전용; 입력의 상수 오프셋에 LoRA 랭크 한 행을 할당 |
 | `down_init` | `weight_svd` | `weight_svd` 또는 `kaiming` |
 | `epochs` | `8` | 측정한 학습은 20 |
-| `caption_dropout` | `0` | 측정한 학습은 0 |
+| `caption_dropout` | `0` | 0 유지: 0.05·0.1 모두 CFG에서 스타일이 약해짐 (uncond가 스타일을 가져감) — `project/moss_lora/caption_dropout.md` |
 
 - **alpha와 lr**: AdamW에서는 scale을 올리는 것이 LoRA up 행렬의 lr을 그 배수만큼 올리는 것과 같습니다. 랭크 16에 alpha 90(scale 5.6), lr 1e-4면 up 행렬은 약 5.6e-4가 됩니다. 이 설정은 기본값과 같은 스타일을 냈지만 세트의 서명을 베끼기 시작했습니다. 샘플 하나에 작가의 워터마크와 핸들이 찍혀 나왔습니다. alpha 90에 lr 5e-5는 더 약하고 부분적인 전이만 보였습니다. 그 비교에서는 alpha = rank, lr 1e-4가 1위였고, 아래의 이후 비교 전까지 기본값이었습니다.
 - **랭크 32, alpha 128: lr 1e-4 vs 2e-5 (채널 스케일링 없음)**: caststation 세트(20 에폭, `weight_svd`, layout_json)에 작가 태그를 넣은 상태에서, 복잡한 갤러리 프롬프트 두 개(10명 앙상블, 4:1 배너)의 결과가 달랐습니다. 랭크 32 / alpha 128에 lr 1e-4는 스타일을 강하게 밀어(흰 배경, 단조로운 옅은 채색) 프롬프트의 디테일을 잃었습니다(가방을 든 캐릭터가 틀림, 인형 누락). lr 2e-5에서는 디테일이 유지되고(가방 든 캐릭터 정확, 인형 있음) 스타일 변화는 더 약했으며, "훨씬 낫다"고 판단되어 채널 스케일링이 들어오기 전까지 기본값이었습니다. AdamW에서 scale 4, lr 2e-5의 실효 lr은 up 행렬 8e-5, down 행렬 2e-5입니다.
