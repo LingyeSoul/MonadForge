@@ -120,7 +120,9 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   By default (`caption_format` on the cache, `prompt_format` on generate, both
   `layout_json`) the Anima caption is mapped onto MOSS's layout-JSON prompt
   (`anime_tools.captions.layout_json`): rating / meta, characters, series and artists
-  (with their `@`) get their own `summary` keys; meta tags that describe the pixels
+  (with their `@`) get their own `summary` keys — the rating collapses to `sfw`
+  (safe, sensitive) or `nsfw` (nsfw, explicit), which MOSS follows better than the
+  four booru classes; meta tags that describe the pixels
   (`cropped`, `scan`, …) and the remaining tags become `summary.caption`, each
   position clause a `character` item with its relative position (never a box), each
   OCR line a `text` item. A `{stem}.layout.txt` from anime_tools' Export
