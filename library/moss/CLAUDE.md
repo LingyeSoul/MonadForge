@@ -21,7 +21,7 @@ Nothing Anima-side imports `library.moss`.
 | `spectrum.py` | per-branch feature forecaster (cond and uncond forecast separately) |
 | `dave.py` | DAVE on the image tokens only, run through `model.layer_hook` (a post-block edit that sees only the rows that ran the block, so skip-22 is handled); τ is a step count; the massive-activation channels (`calibration/massive_channels.npz`) are left out of the mean. `auto` = `calibration/dave_alpha.npz`, blocks 19–30 from a DAVE-on pool sweep; the ComfyUI node `~/ComfyUI-Anima-DAVE` bundles the same pool + channel list; `project/moss_lora/dave.md` |
 | `lora.py` | `library.lines.adapters` bound to `layers` (held **outside** the blocks: the swapper moves every `.weight` under a block). `channel_scaling_alpha` reads `calibration/channel_stats.safetensors` and `dc_isolate` (on by default) reads `calibration/channel_mean.safetensors` (both from `bench/moss_channel_stats/probe_lora_inputs.py`); `docs/moss/channel_scaling.md` |
-| `train.py` | `run_train(req)` |
+| `train.py` | `run_train(req)`; `--caption_dropout` reads the shipped `asset/empty_prompt.safetensors` (the `""` TE embedding, one for every cache) |
 | `tune.py` | `run_tune(req)`: one process, one arm per swap count at the largest budget that fits, timed on the largest sample → recommended `--blocks_to_swap` / `--activation_memory_budget` |
 | `scan.py` | **torch-free** cache file layout (suffixes, stem prefixing) + source/cache counts for the GUI; `cache.py` imports its constants |
 

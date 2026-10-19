@@ -1,9 +1,9 @@
 """Train a LoRA on a precached folder — flow matching, batch 1.
 
 Reads only what ``cache.py`` wrote (latents + text embeddings), so neither the
-Qwen3.5-9B TE nor the VAE is loaded; the one exception is ``--caption_dropout``,
-which encodes the empty prompt once into ``<cache>/_empty.moss_te.safetensors``
-(key ``embeds``) if it is not there yet.
+Qwen3.5-9B TE nor the VAE is loaded. ``--caption_dropout`` reads the empty prompt
+from the shipped ``library/moss/asset/empty_prompt.safetensors`` (key ``embeds``;
+one file for every cache, re-encoded only if it is missing).
 
 A layout-JSON cache also holds each image's plain Anima caption
 (``embeds_plain``); a step trains on it with probability ``plain_caption_rate``,
@@ -56,7 +56,7 @@ from library.moss.loader import (
 from library.moss.lora import LoRANetwork, load_channel_stats
 from library.moss.requests import LORA_ALPHA, TrainRequest
 
-EMPTY_TE_NAME = "_empty.moss_te.safetensors"
+EMPTY_PROMPT_PATH = "library/moss/asset/empty_prompt.safetensors"
 NUM_TRAIN_TIMESTEPS = 1000
 PROGRESS_EVERY = 2  # steps per "  progress i/n" line (the GUI bar reads them)
 
@@ -237,16 +237,17 @@ def report_fit(transformer, attached, n_img: int, n_text: int) -> dict:
     return fit
 
 
-def empty_prompt_embeds(req: TrainRequest, cache_dir: Path) -> torch.Tensor:
-    """``(S, 4096)`` bf16 embedding of ``""``, encoded once and kept in the cache."""
+def empty_prompt_embeds(req: TrainRequest) -> torch.Tensor:
+    """``(S, 4096)`` bf16 embedding of ``""`` (10 chat-template tokens)."""
     from safetensors.torch import load_file, save_file
 
-    path = cache_dir / EMPTY_TE_NAME
+    path = resolve_under_home(EMPTY_PROMPT_PATH)
     if not path.exists():
         from library.moss.loader import encode_prompts
 
         print(f"encoding the empty prompt -> {path}", flush=True)
-        embeds = encode_prompts(req.model_dir, [""])[""]
+        embeds = encode_prompts(req.model_dir, [""])[""].to(torch.bfloat16)
+        path.parent.mkdir(parents=True, exist_ok=True)
         save_file({"embeds": embeds.contiguous()}, str(path))
     return load_file(str(path))["embeds"]
 
@@ -256,7 +257,7 @@ def run_train(req: TrainRequest) -> Path:
     samples = samples_from_cache(cache_dir)
     if not samples:
         raise SystemExit(f"no cached pairs under {cache_dir}")
-    empty = empty_prompt_embeds(req, cache_dir) if req.caption_dropout > 0 else None
+    empty = empty_prompt_embeds(req) if req.caption_dropout > 0 else None
     return train(req, samples, empty)
 
 

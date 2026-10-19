@@ -314,7 +314,7 @@ class TrainRequest(Request):
     caption_dropout: float = _f(
         0.0,
         "probability of training a step on the empty-prompt embedding (CFG's "
-        "uncond); > 0 encodes it once into <cache>/_empty.moss_te.safetensors",
+        "uncond), read from library/moss/asset/empty_prompt.safetensors",
     )
     plain_caption_rate: float = _f(
         0.2,
