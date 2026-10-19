@@ -270,6 +270,11 @@ def build_soup_file(
     metadata["ss_network_dim"] = rank_str
     metadata["ss_network_alpha"] = rank_str
     metadata["ss_soup_ingredients"] = json.dumps(ingredients)
+    # library.lines LoRAs (MOSS / qwen21) take rank and scale from these
+    # metadata keys, not from the .alpha tensors; keep them on scale 1 too.
+    for key in ("rank", "alpha"):
+        if key in metadata:
+            metadata[key] = rank_str
 
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
