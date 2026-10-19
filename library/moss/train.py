@@ -7,7 +7,8 @@ one file for every cache, re-encoded only if it is missing).
 
 A layout-JSON cache also holds each image's plain Anima caption
 (``embeds_plain``); a step trains on it with probability ``plain_caption_rate``,
-drawn from its own RNG so the shuffle and dropout draws match a run without it.
+drawn from its own RNG, as is ``--caption_dropout``, so the shuffle matches a run
+without either.
 Step 1 takes the longer of the two, so the fit report still bounds the worst case.
 
 Objective (report App. A.2): ``z_σ = (1−σ)·z0 + σ·ε``, the DiT predicts
@@ -299,6 +300,7 @@ def train(
             flush=True,
         )
     plain_rng = random.Random(req.seed + 1)
+    drop_rng = random.Random(req.seed + 2)
     plain_steps = 0
 
     transformer = load_transformer(req.model_dir, req.model)
@@ -428,7 +430,7 @@ def train(
             ):
                 embeds = alt
                 plain_steps += 1
-            if empty is not None and random.random() < req.caption_dropout:
+            if empty is not None and drop_rng.random() < req.caption_dropout:
                 embeds = empty
             latent = latent.unsqueeze(0).to(device, torch.float32)
             embeds = embeds.unsqueeze(0).to(device)
