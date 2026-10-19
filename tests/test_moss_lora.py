@@ -196,6 +196,52 @@ def test_weight_svd_down_init():
         LoRANetwork(model, rank=4, down_init="pissa")
 
 
+def test_svd_slice_windows_are_orthogonal():
+    model = _tiny()
+    rows = {}
+    for slice_, count in ((0, 0), (1, 0), (0, 3), (2, 3)):
+        net = LoRANetwork(
+            model,
+            rank=4,
+            down_init="weight_svd",
+            svd_slice=slice_,
+            svd_slice_count=count,
+        )
+        rows[slice_, count] = {
+            name: net.adapters[name.replace(".", "_")].down.weight * math.sqrt(3.0)
+            for name, _ in net._targets
+        }
+        meta = net.metadata()
+        assert meta.get("ss_svd_slice") == (str(slice_) if slice_ else None)
+        assert meta.get("ss_svd_slice_count") == (str(count) if count else None)
+    for name, module in net._targets:
+        vh = torch.linalg.svd(module.weight.float(), full_matrices=False).Vh
+        for (slice_, count), by_name in rows.items():
+            idx = (
+                slice_ + count * torch.arange(4)
+                if count
+                else slice_ * 4 + torch.arange(4)
+            )
+            # Same subspace as the exact window (singular vectors up to sign).
+            proj = vh[idx] @ by_name[name].T
+            assert torch.allclose(proj.abs(), torch.eye(4), atol=1e-3)
+        # Disjoint windows of one basis: no overlap.
+        cross = rows[0, 0][name] @ rows[1, 0][name].T
+        assert cross.abs().max() < 1e-3
+        cross = rows[0, 3][name] @ rows[2, 3][name].T
+        assert cross.abs().max() < 1e-3
+    with pytest.raises(ValueError, match="window ends"):
+        LoRANetwork(model, rank=4, down_init="weight_svd", svd_slice=24)
+    with pytest.raises(ValueError, match="weight_svd"):
+        LoRANetwork(model, rank=4, svd_slice=1)
+    with pytest.raises(ValueError, match="weight_svd"):
+        LoRANetwork(model, rank=4, down_init="weight_svd", algo="lokr", svd_slice=1)
+    with pytest.raises(ValueError, match="must be <"):
+        LoRANetwork(
+            model, rank=4, down_init="weight_svd", svd_slice=3, svd_slice_count=3
+        )
+
+
 def _skewed_stats(model):
     """One loud input channel per target, like MOSS's ch 42 into ffn_up_gate."""
     g = torch.Generator().manual_seed(3)

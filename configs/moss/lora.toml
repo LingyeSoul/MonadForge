@@ -18,6 +18,8 @@ rank = 32
 # alpha = 128.0                # unset: 128 for lora, = rank for lokr / loha
 # factor = -1                  # lokr only
 down_init = "weight_svd"       # lora only: weight_svd | kaiming
+# svd_slice = 0                # weight_svd only: window [k·r, (k+1)·r) of W0's basis
+# svd_slice_count = 0          # > 0: interleaved slices {k, k+N, …}
 channel_scaling_alpha = 0.5     # lora only: 0 = off (docs/moss/channel_scaling.md)
 dc_isolate = true               # lora only: one rank row for the input DC (same doc)
 lr = 5e-5

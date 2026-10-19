@@ -321,11 +321,19 @@ def train(
         if dc_isolate
         else None,
         dc_isolate=dc_isolate,
+        svd_slice=req.svd_slice,
+        svd_slice_count=req.svd_slice_count,
     )
     patched = network.apply_to()
     network.to(device)
     detail = {
         "lora": f"{req.down_init} down"
+        + (
+            f" slice {req.svd_slice}"
+            + (f"/{req.svd_slice_count} interleaved" if req.svd_slice_count else "")
+            if req.svd_slice or req.svd_slice_count
+            else ""
+        )
         + (f", channel scaling α={channel_alpha:g}" if channel_alpha > 0 else "")
         + (", dc isolate" if dc_isolate else ""),
         "lokr": f"factor {req.factor}",

@@ -255,6 +255,24 @@ class TrainRequest(Request):
         "better by eye, 2026-10-17) or kaiming",
         choices=("kaiming", "weight_svd"),
     )
+    svd_slice: int = _f(
+        0,
+        "lora + weight_svd only: seed down from the base weight's right singular "
+        "vectors [k·r, (k+1)·r) instead of the top-r. Slices of one basis are "
+        "mutually orthogonal, so LoRAs trained on different slices own disjoint "
+        "input subspaces (Anima's svd_slice, docs/methods/svd-down-lora.md); under "
+        "dc_isolate every slice shares row 0, the DC direction. Stamped as "
+        "ss_svd_slice. 0 = the top-r",
+        advanced=True,
+    )
+    svd_slice_count: int = _f(
+        0,
+        "> 0 interleaves the slices: slice k takes singular vectors {k, k+N, "
+        "k+2N, …}, so every slice gets one of the top-N directions instead of "
+        "slice 0 holding the whole top of the spectrum. Needs svd_slice < N. "
+        "0 = contiguous",
+        advanced=True,
+    )
     channel_scaling_alpha: float = _f(
         0.5,
         "lora only (lokr / loha ignore it): Anima's channel scaling — rescale each "

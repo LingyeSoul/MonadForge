@@ -87,6 +87,12 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   down projection starts on the base weight's top-r right singular vectors. On the
   caststation set it kept the artist's style better by eye than Kaiming; the two
   inits land different samples at the same seed, as far apart as a seed change.
+  `--svd_slice k` seeds from the singular vectors `[k·r, (k+1)·r)` instead
+  (`--svd_slice_count N` interleaves: `{k, k+N, …}`), Anima's `svd_slice`
+  (`docs/methods/svd-down-lora.md`): LoRAs on different slices start in mutually
+  orthogonal input subspaces. MOSS's targets are all ≥ 3072 wide, so rank 32 fits
+  96 contiguous slices. Under `--dc_isolate` (the default) row 0 is the same DC
+  direction in every slice, so slices share that one row.
 - **LyCORIS** (`--algo lokr` / `--algo loha`, from `lycoris-lora`): LoKr is the
   Kronecker product (`--factor` caps the small factor; a `--rank` at or above half the
   larger factor's side makes `w2` a full matrix and the scale 1, the usual

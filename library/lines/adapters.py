@@ -20,7 +20,12 @@ reads the earlier ``adapters.<module_name>.{down,up}.weight`` layout.
 ``down_init="weight_svd"`` seeds ``down`` with ``V_rᵀ/√3`` from the base weight's
 SVD, as Anima's SVD-Down (``docs/methods/svd-down-lora.md``). The Kaiming draw
 still runs first, so the global RNG stream (and the training noise drawn after
-it) is the same under either init.
+it) is the same under either init. ``svd_slice=k`` moves the window to singular
+vectors ``[k·r, (k+1)·r)`` (``svd_slice_count=N``: the interleaved comb
+``k + N·j``), Anima's ``svd_slice``: slices of one basis are mutually orthogonal,
+so LoRAs trained on different slices own disjoint input subspaces. Under
+``dc_isolate`` row 0 becomes the DC direction in every slice, so slices share
+that one row.
 
 ``algo`` picks the adapter: ``lora``, or the LyCORIS ``lokr`` / ``loha``. Their
 init, scale and ΔW math come from ``lycoris.functional`` (pinned ``backend="torch"``
@@ -138,16 +143,32 @@ class LoRAAdapter(nn.Module):
         w[1:] -= torch.outer(w[1:] @ u, u)
 
     @torch.no_grad()
-    def init_down_weight_svd(self, base: nn.Linear) -> None:
+    def init_down_weight_svd(
+        self, base: nn.Linear, svd_slice: int = 0, svd_slice_count: int = 0
+    ) -> None:
         """``down = V_rᵀ / √3``: the base weight's top-r right singular vectors,
-        at the Kaiming default's expected row norm. Computed on the card when
-        there is one (an fp32 eigh of the in_features² Gram per linear)."""
+        at the Kaiming default's expected row norm. ``svd_slice`` /
+        ``svd_slice_count`` pick another window of the same basis (module
+        docstring). Computed on the card when there is one (an fp32 eigh of the
+        smaller Gram per linear)."""
         from networks.lora_modules.lora import _top_right_singular_vectors
 
+        rank = self.down.out_features
+        if svd_slice_count:
+            idx = svd_slice + svd_slice_count * torch.arange(rank)
+        else:
+            idx = svd_slice * rank + torch.arange(rank)
+        end = int(idx[-1]) + 1
+        if end > min(base.weight.shape):
+            raise ValueError(
+                f"svd_slice={svd_slice}: window ends at {end}, past the "
+                f"{min(base.weight.shape)}-vector spectrum of a "
+                f"{tuple(base.weight.shape)} linear; lower the slice or the rank"
+            )
         device = "cuda" if torch.cuda.is_available() else "cpu"
         weight = base.weight.detach().to(device, torch.float32)
-        basis = _top_right_singular_vectors(weight, self.down.out_features)
-        self.down.weight.copy_(basis.T / math.sqrt(3.0))
+        basis = _top_right_singular_vectors(weight, end)
+        self.down.weight.copy_(basis[:, idx.to(basis.device)].T / math.sqrt(3.0))
 
     def forward(self, x: torch.Tensor, base_out: torch.Tensor) -> torch.Tensor:
         if self.multiplier == 0.0:
@@ -285,6 +306,8 @@ class LoRANetwork(nn.Module):
         channel_scaling_alpha: float = 0.0,
         channel_mean: dict[str, torch.Tensor] | None = None,
         dc_isolate: bool = False,
+        svd_slice: int = 0,
+        svd_slice_count: int = 0,
     ):
         super().__init__()
         if down_init not in DOWN_INITS:
@@ -301,6 +324,19 @@ class LoRANetwork(nn.Module):
             raise ValueError("dc_isolate applies to algo='lora' only")
         if dc_isolate and channel_mean is None:
             raise ValueError("dc_isolate needs channel_mean")
+        if svd_slice < 0 or svd_slice_count < 0:
+            raise ValueError("svd_slice / svd_slice_count must be non-negative")
+        if (svd_slice or svd_slice_count) and (
+            algo != "lora" or down_init != "weight_svd"
+        ):
+            raise ValueError(
+                "svd_slice / svd_slice_count apply to algo='lora' with "
+                "down_init='weight_svd' only"
+            )
+        if svd_slice_count and svd_slice >= svd_slice_count:
+            raise ValueError(
+                f"svd_slice={svd_slice} must be < svd_slice_count={svd_slice_count}"
+            )
         targets = targets or self.DEFAULT_TARGETS
         pattern = re.compile(targets)
         self.algo = algo
@@ -311,6 +347,8 @@ class LoRANetwork(nn.Module):
         self.down_init = down_init
         self.channel_scaling_alpha = float(channel_scaling_alpha)
         self.dc_isolate = bool(dc_isolate)
+        self.svd_slice = int(svd_slice)
+        self.svd_slice_count = int(svd_slice_count)
         self.num_blocks = self._num_blocks(model)
         self.adapters = nn.ModuleDict()
         self._targets: list[tuple[str, nn.Linear]] = []
@@ -326,7 +364,9 @@ class LoRANetwork(nn.Module):
                     module.in_features, module.out_features, rank, self.alpha, dtype
                 )
                 if down_init == "weight_svd":
-                    adapter.init_down_weight_svd(module)
+                    adapter.init_down_weight_svd(
+                        module, self.svd_slice, self.svd_slice_count
+                    )
                 if self.dc_isolate:
                     if name not in channel_mean:
                         raise ValueError(f"no channel mean for {name}")
@@ -404,6 +444,11 @@ class LoRANetwork(nn.Module):
                 meta["channel_scaling_alpha"] = str(self.channel_scaling_alpha)
             if self.dc_isolate:
                 meta["dc_isolate"] = "1"
+            # Same keys as Anima's: which window of W0's basis seeded down.
+            if self.svd_slice:
+                meta["ss_svd_slice"] = str(self.svd_slice)
+            if self.svd_slice_count:
+                meta["ss_svd_slice_count"] = str(self.svd_slice_count)
         if self.algo == "lokr":
             meta["factor"] = str(self.factor)
         meta.update({k: str(v) for k, v in extra.items()})
