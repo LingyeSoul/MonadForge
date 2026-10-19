@@ -88,8 +88,10 @@ project/sigma_lowres/paper_bench/
 project/sigma_lowres/bench/probe1024_closure
 project/sigma_lowres/bench/probe1280_cache
 
-# anime_tools stage reports (report_dir defaults anchor on ANIMA_HOME = this checkout)
-workspace/
+# anime_tools stage reports (report_dir defaults anchor on ANIMA_HOME = this
+# checkout). Anchored: a bare `workspace/` also swallowed the
+# library/curation_compat/workspace/ package, which is tracked source.
+/workspace/
 # anime_tools panel settings (seeded by the GUI's anime_tools tab)
 .anime_tools_gui.json
 
