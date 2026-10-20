@@ -145,14 +145,12 @@ for the ComfyUI node). Nothing Anima-side imports `library.moss`.
 GUI tab, ComfyUI node, Anima-side inference stacks beyond Spectrum (SMC-CFG, CNS, …),
 fp8 DiT weights.
 
-**Soup (deferred, 2026-10-19).** The next try keeps the lr fixed at 5e-5 and changes
-only the seed. The LR-diverse sincos soup (2e-5 / 5e-5 / 1e-4, no uncond init) failed:
-pairwise ΔW cos was 0.01–0.02, the 1e-4 ingredient carried ~82 % of the energy, and the
-average washed the style out. The single 5e-5 run went into the merge instead. Before
-building, check the ingredients' pairwise ΔW cos. Anima's seed soups worked at cos
-0.96–0.98 because they shared an uncond init. Near 0 means the average dilutes again;
-drop the soup. Ingredients of one soup share one `svd_slice`. Slices are for merging
-different artists.
+**Soup (2026-10-20, `soup.md`).** A 3-seed soup at fixed lr 5e-5 on caststation keeps
+the style even though the ingredients' full-sum ΔW cos is only ~0.17. The earlier
+LR-diverse sincos soup (2e-5 / 5e-5 / 1e-4) washed out because one ingredient carried
+~82 % of the energy. Before building, check the energy shares with
+`src/dw_cos.py`: they should be roughly even. cos alone is not a gate. Ingredients of
+one soup share one `svd_slice`. Slices are for merging different artists.
 
 ## Open questions
 
