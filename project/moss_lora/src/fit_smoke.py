@@ -35,6 +35,7 @@ def main() -> None:
             str(args.steps),
             "--log_every",
             "1",
+            "--fit_report",
             *rest,
         ]
     )

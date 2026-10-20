@@ -9,7 +9,8 @@ A layout-JSON cache also holds each image's plain Anima caption
 (``embeds_plain``); a step trains on it with probability ``plain_caption_rate``,
 drawn from its own RNG, as is ``--caption_dropout``, so the shuffle matches a run
 without either.
-Step 1 takes the longer of the two, so the fit report still bounds the worst case.
+With ``--fit_report``, step 1 is the largest sample with the longer of the two
+captions, so the report bounds the worst case.
 
 Objective (report App. A.2): ``z_σ = (1−σ)·z0 + σ·ε``, the DiT predicts
 ``ε − z0`` at timestep ``1000·σ``, MSE averaged over image tokens and channels —
@@ -410,15 +411,18 @@ def train(
         network.save(path, req.lora_dtype, **meta)
         return path
 
-    by_size = sorted(samples, key=lambda s: s.n_img + s.n_ref + s.n_text, reverse=True)
+    largest = max(samples, key=lambda s: s.n_img + s.n_ref + s.n_text)
     history, losses_all, fit = [], [], None
     step = 0
     torch.cuda.reset_peak_memory_stats()
     t_start = time.time()
     for epoch in range(epochs):
-        # The largest sample first in epoch 1, so step 1 is the worst case the
-        # fit report bounds; shuffled after that.
-        order = by_size if epoch == 0 else random.sample(samples, len(samples))
+        order = random.sample(samples, len(samples))
+        if epoch == 0 and req.fit_report:
+            # Only the largest sample moves to step 1, the worst case the fit
+            # report bounds; the rest of epoch 1 stays shuffled.
+            order.remove(largest)
+            order.insert(0, largest)
         losses, t_epoch = [], time.time()
         for s in order:
             if step >= total:
@@ -427,7 +431,7 @@ def train(
             alt = plain.get(s.stem)
             if alt is not None and (
                 alt.shape[0] > embeds.shape[0]
-                if step == 0
+                if step == 0 and req.fit_report
                 else plain_rng.random() < req.plain_caption_rate
             ):
                 embeds = alt
@@ -454,10 +458,16 @@ def train(
             losses.append(value)
             losses_all.append({"step": step, "loss": value, "sigma": sigma})
             if step == 1:
-                fit = report_fit(transformer, attached, s.n_img, embeds.shape[1])
+                if req.fit_report:
+                    fit = report_fit(transformer, attached, s.n_img, embeds.shape[1])
                 t_start = time.time()  # s/step excludes step 1's allocator warm-up
-            per_step = (time.time() - t_start) / max(1, step - 1)
-            eta = int(per_step * (total - step))
+                t_window, step_window, per_step = t_start, 1, None
+            eta_rate = (
+                (time.time() - t_start) / max(1, step - 1)
+                if per_step is None
+                else per_step
+            )
+            eta = int(eta_rate * (total - step))
             if step % PROGRESS_EVERY == 0 or step == total:
                 print(
                     f"  progress {step}/{total} epoch {epoch + 1}/{epochs} "
@@ -466,11 +476,18 @@ def train(
                     flush=True,
                 )
             if step % req.log_every == 0:
+                # s/step over the steps since the last log line, so a recompile
+                # stays in the window it landed in. Step 1 (compile) has none.
+                now = time.time()
+                if step > step_window:
+                    per_step = (now - t_window) / (step - step_window)
+                    t_window, step_window = now, step
+                rate = f" {per_step:.2f}s/step" if per_step is not None else ""
                 print(
                     f"  step {step}/{total} loss {value:.4f} |g| {grad_norm.item():.3f} "
                     f"sigma {sigma:.3f} lr {lr_sched.get_last_lr()[0]:.2e} "
-                    f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB "
-                    f"{per_step:.2f}s/step",
+                    f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB"
+                    f"{rate}",
                     flush=True,
                 )
         if not losses:

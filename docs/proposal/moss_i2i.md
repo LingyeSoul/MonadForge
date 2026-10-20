@@ -1,6 +1,7 @@
 # MOSS-Image i2i — a VAE reference on RoPE's `r` axis
 
-Status: PROPOSED 2026-10-19. One probe measured (colorize, below). Code on branch
+Status: PROPOSED 2026-10-19. Two probes measured (colorize, and colorize with manga pages,
+below). Code on branch
 `i2i_probe`.
 
 ## Premise
@@ -70,6 +71,32 @@ CbCr distance to the target.
   expected: a B&W page does not fix hue.
 - **Limits**: one seed, 8 pages. Base gets no ref, so the fair comparison is v1 vs ref.
 
+## Probe 2: colour manga pages, lr 5e-5
+
+- **Data**: the same 1000 pairs plus 500 pages from EasyControl's `manga_color` slice:
+  hitocrawl's full-colour works, JA / EN / KO editions, 7117 pairs in all
+  (`colorize_cache.py --manga 500`). The holdout is the same 8 plus 4 manga works; no page
+  of a held-out work trains, in any edition.
+- **Run**: ref at half size as before, lr 5e-5 (v1: 1e-4), 2 epochs = 3000 steps, 137 min
+  at 2.75 s/step (swap 28, budget 0.15 from `tune_swap`).
+- **Loss**: 5e-5 starts slower. It meets ref_v1 at about 0.5 epoch, and from there the two
+  overlap on an epochs axis. Epoch means: 0.309 / 0.278 (ref_v1: 0.302 / 0.276). The
+  datasets differ, so only the shapes compare. ref_v1's epoch 1 also ran size-sorted
+  (since fixed, see `--fit_report`).
+- **Eval**: as above, 12 held out, seed 1, compared by eye against ref_v1 rendered on
+  the same holdout.
+
+| | manga run vs ref_v1 |
+|---|---|
+| Lettering on the manga pages | Better. `889354_en`: "YOU ARE SO CUTE, NANOHA." and "OOH YOU SQUIRTED." read right; ref_v1 gives "YO U ARE", "DON YOU SQUIRTES". Small balloons garble in both. Red balloon lettering comes out black in both |
+| Hair colour on the manga pages | Closer on 2 of 3 works (orange `889354`, blonde `403801`); ref_v1 is closer on `623751` |
+| The 8 illustrations, with caption | Even. One clear miss: `eight_tohyama` gets two green-haired characters where the target has one purple, one green |
+| Page only | More conservative. Where the hue is ambiguous it stays near the page's grey, and saturation is lower; ref_v1 picks a vivid hue, often a wrong one |
+
+- **Limits**: one seed, 12 pages, by eye; no metric pass yet.
+- **Lettering**: the half-size ref is the likely limit on small text; untested. It adds a
+  lettering read to the ref-size arms (open question 2).
+
 ## Open questions, in order
 
 1. **Is the vision tower still needed?**
@@ -78,7 +105,7 @@ CbCr distance to the target.
      joint sequence, and Qwen's tower drops out of the loop.
 2. **Ref size.**
    - Arms: 1/4 per side (~250 tokens), 1/2 (this run), full (≈ image tokens).
-   - Read alignment (luma r / PSNR) against s/step.
+   - Read alignment (luma r / PSNR) and small-balloon lettering against s/step.
 3. **Ref guidance.**
    - The ref is in both CFG branches now.
    - Arms: ref dropped from uncond (image CFG), and a separate ref guidance scale

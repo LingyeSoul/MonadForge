@@ -27,9 +27,18 @@ feeds as clean reference tokens on RoPE's ``r = 1`` axis. ``--link_from <cache>`
 symlinks an existing cache's latents, TE files and holdout into ``--out`` first, so a
 reference variant reuses them and the source cache stays as it was.
 
+``--manga N`` adds N pages of the EasyControl ``manga_color`` slice (hitocrawl's
+full-colour works, JA / EN / KO editions; condition under ``manga_color/staging``,
+target under ``manga_color/resized``) as ``manga__{anchor}_{lang}_{page}`` stems. They
+are drawn on their own, so the curated selection above does not move. Holdout is by
+work: ``--manga_holdout`` works give one page each to the holdout, and none of their
+pages, in any edition, train.
+
     make daemon-run ARGS="--stall-timeout 900 project/moss_lora/src/colorize_cache.py --n 1000"
     make daemon-run ARGS="--stall-timeout 900 project/moss_lora/src/colorize_cache.py --n 1000 \
         --link_from post_image_dataset/moss/colorize_te --out post_image_dataset/moss/colorize_ref --ref_scale 2"
+    make daemon-run ARGS="--stall-timeout 900 project/moss_lora/src/colorize_cache.py --n 1000 \
+        --manga 500 --link_from post_image_dataset/moss/colorize_te --out post_image_dataset/moss/colorize_manga --ref_scale 2"
 """
 
 import argparse
@@ -54,6 +63,7 @@ from color_caption import filter_to_colors_and_protected, load_copyright_tags  #
 
 STAGING = "post_image_dataset/easycontrol/colorize/staging"
 RESIZED = "post_image_dataset/resized"
+MANGA = "post_image_dataset/easycontrol/colorize/manga_color"
 PROBE_STEMS = ("dan_6768037", "9859367", "11115380")
 
 
@@ -68,6 +78,32 @@ def find_pairs():
     return out
 
 
+def find_manga_pairs():
+    """EasyControl's ``manga_color`` slice: ``{staging,resized}/{ja,en,ko}/{anchor}_{lang}_{page}.png``."""
+    root = resolve_under_home(MANGA)
+    out = []
+    for cond in sorted((root / "staging").rglob("*.png")):
+        target = root / "resized" / cond.relative_to(root / "staging")
+        if target.exists() and target.with_suffix(".txt").exists():
+            out.append((f"manga__{cond.stem}", cond, target))
+    return out
+
+
+def split_manga(pairs, n, n_holdout, seed):
+    """Hold out whole works (every edition of them), one page each; draw ``n`` from the rest."""
+    rng = random.Random(seed)
+    works = {}
+    for p in pairs:
+        works.setdefault(p[2].stem.split("_")[0], []).append(p)
+    anchors = sorted(works)
+    rng.shuffle(anchors)
+    held = anchors[:n_holdout]
+    holdout = [rng.choice(works[a]) for a in held]
+    rest = [p for a in anchors[n_holdout:] for p in works[a]]
+    rng.shuffle(rest)
+    return rest[:n], holdout
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=1000, help="training pairs")
@@ -77,6 +113,8 @@ def main() -> None:
     ap.add_argument("--out", default="post_image_dataset/moss/colorize_te")
     ap.add_argument("--ref_scale", type=int, default=0, help="0 = no reference")
     ap.add_argument("--link_from", default="")
+    ap.add_argument("--manga", type=int, default=0, help="manga_color pairs added")
+    ap.add_argument("--manga_holdout", type=int, default=4, help="held-out works")
     args = ap.parse_args()
     out = resolve_under_home(args.out)
     (out / "holdout").mkdir(parents=True, exist_ok=True)
@@ -100,6 +138,18 @@ def main() -> None:
     print(
         f"{len(pairs)} pairs: {len(train)} train, {len(holdout)} held out", flush=True
     )
+    if args.manga:
+        manga = find_manga_pairs()
+        m_train, m_holdout = split_manga(
+            manga, args.manga, args.manga_holdout, args.seed
+        )
+        train += m_train
+        holdout += m_holdout
+        print(
+            f"{len(manga)} manga pairs: {len(m_train)} train, "
+            f"{len(m_holdout)} held out (whole works)",
+            flush=True,
+        )
 
     copyright_tags = load_copyright_tags()
 

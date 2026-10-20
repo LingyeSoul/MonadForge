@@ -310,7 +310,10 @@ class TrainRequest(Request):
         "with dc_isolate; without dc_isolate 1e-4 was the pick, 2026-10-18)",
     )
     warmup_ratio: float = _f(0.05, "linear warmup, as a fraction of all steps")
-    save_every_epochs: int = _f(0, "also save every N epochs into <output dir>/<name>/<name>_eN (0 = final only)")
+    save_every_epochs: int = _f(
+        0,
+        "also save every N epochs into <output dir>/<name>/<name>_eN (0 = final only)",
+    )
     caption_dropout: float = _f(
         0.0,
         "probability of training a step on the empty-prompt embedding (CFG's "
@@ -365,6 +368,13 @@ class TrainRequest(Request):
         "0.1 at rank 32 and ~4.5k joint tokens on 16 GB with ~1.7 GB to spare (24 "
         "for more room); more swap costs PCIe time the step cannot hide. scripts/moss/tune_swap.py measures "
         "this machine's pair",
+        advanced=True,
+    )
+    fit_report: bool = _f(
+        False,
+        "train the largest sample (longer caption) at step 1 and report its peak "
+        "against free VRAM, with a --blocks_to_swap suggestion; off, epoch 1 is "
+        "shuffled like the rest",
         advanced=True,
     )
     compile: bool = _f(
