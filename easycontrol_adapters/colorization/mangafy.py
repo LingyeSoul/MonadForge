@@ -38,10 +38,12 @@ _TONE_BLACK_CUT = 0.10  # luminance <= this -> solid black (deep shadow)
 # Real manga mixes clustered-dot, parallel-line/hatch, and cross-hatch tone; each
 # luminance band (see below) draws its own pattern so texture changes where value does.
 _TONE_KINDS = ("dot", "line", "cross")
-# Weighted draw per band. Hatch over large flat regions of smooth-shaded
-# illustrations reads as dense stripes, so line is down-weighted and cross is off;
-# every kind stays in the table (the draw consumes one rng slot per band either way).
-_TONE_KIND_WEIGHTS = (0.8, 0.2, 0.0)  # P(dot, line, cross)
+# Weighted draw per band. Line and cross are off: at `_HATCH_PERIOD` (~0.7–1.6 px,
+# under the 2 px Nyquist) a stripe can't be drawn, and the ss-render + box resolve
+# beats it into ragged gray bands (period ~5–11 px) that survive downscaling while
+# real dot tone averages out. Every kind stays in the table (the draw consumes one
+# rng slot per band either way), so dot-only pages keep their exact structure.
+_TONE_KIND_WEIGHTS = (1.0, 0.0, 0.0)  # P(dot, line, cross)
 # The toned luminance range is split into this many bands per image; each gets its
 # own pattern/angle/period. 1 = single tone whole image.
 _TONE_BAND_COUNTS = (1, 2, 3, 4)
