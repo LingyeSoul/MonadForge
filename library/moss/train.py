@@ -76,6 +76,7 @@ class Sample:
     load_plain: Callable[[], torch.Tensor] | None = None  # embeds_plain (S',4096)
     n_ref: int = 0
     load_ref: Callable[[], torch.Tensor] | None = None  # clean ref latent (128,h,w)
+    latent_path: Path | None = None  # finds the REPA target (latent metadata)
 
 
 def samples_from_cache(cache_dir: Path) -> list[Sample]:
@@ -103,6 +104,7 @@ def samples_from_cache(cache_dir: Path) -> list[Sample]:
                 load_plain,
                 item.n_ref,
                 functools.partial(moss_cache.load_ref, item) if item.n_ref else None,
+                item.latent_path,
             )
         )
     return out
@@ -364,6 +366,31 @@ def train(
             "per step; add --grad_checkpointing unless the card has room",
             flush=True,
         )
+    repa, repa_targets = None, {}
+    if req.repa_weight > 0:
+        from library.moss.repa import REPATerm, load_target, pe_sidecar
+
+        pe_root = resolve_under_home(req.repa_pe_root)
+        for s in samples:
+            _, h, w = data[s.stem][0].shape
+            path = (
+                pe_sidecar(s.latent_path, s.stem, w * 16, h * 16, pe_root)
+                if s.latent_path is not None
+                else None
+            )
+            if path is not None:
+                repa_targets[s.stem] = load_target(path, h, w)
+        if not repa_targets:
+            raise SystemExit(
+                f"repa_weight {req.repa_weight} but no sample has a PE-Spatial sidecar "
+                f"under {pe_root} (make preprocess-pe-spatial)"
+            )
+        repa = REPATerm(transformer, req.repa_layer)
+        print(
+            f"REPA: block {req.repa_layer}, weight {req.repa_weight:g}, DoG-Gram target "
+            f"on {len(repa_targets)}/{len(samples)} samples",
+            flush=True,
+        )
     if req.compile:
         compile_blocks(transformer.layers)
     if req.grad_checkpointing:
@@ -399,6 +426,8 @@ def train(
         "plain_caption_rate": req.plain_caption_rate if plain else 0.0,
         "reference_latents": len(refs),
     }
+    if repa is not None:
+        meta.update(repa_weight=req.repa_weight, repa_layer=req.repa_layer)
 
     def save(tag: str | None = None) -> Path:
         """The final file at ``out_path``; an epoch save under ``<dir>/<stem>/``."""
@@ -423,7 +452,7 @@ def train(
             # report bounds; the rest of epoch 1 stays shuffled.
             order.remove(largest)
             order.insert(0, largest)
-        losses, t_epoch = [], time.time()
+        losses, aligns, t_epoch = [], [], time.time()
         for s in order:
             if step >= total:
                 break
@@ -446,8 +475,20 @@ def train(
             sigma = sample_sigma(
                 gen, req.sigma_mu, req.sigma_s, req.sigma_cutoff, req.sigma_uniform
             )
+            if repa is not None:
+                target, grid = repa_targets.get(s.stem, (None, None))
+                repa.prime(
+                    None if target is None else target.to(device),
+                    grid,
+                    tuple(latent.shape[-2:]),
+                )
             loss = training_loss(transformer, latent, embeds, sigma, ref=ref)
-            loss.backward()
+            align = repa.loss() if repa is not None else None
+            if align is not None:
+                (loss + req.repa_weight * align).backward()
+                aligns.append(align.item())
+            else:
+                loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(params, req.max_grad_norm)
             optimizer.step()
             network.reproject_dc()
@@ -456,7 +497,10 @@ def train(
             step += 1
             value = loss.item()
             losses.append(value)
-            losses_all.append({"step": step, "loss": value, "sigma": sigma})
+            losses_all.append(
+                {"step": step, "loss": value, "sigma": sigma}
+                | ({"repa": aligns[-1]} if align is not None else {})
+            )
             if step == 1:
                 if req.fit_report:
                     fit = report_fit(transformer, attached, s.n_img, embeds.shape[1])
@@ -483,6 +527,8 @@ def train(
                     per_step = (now - t_window) / (step - step_window)
                     t_window, step_window = now, step
                 rate = f" {per_step:.2f}s/step" if per_step is not None else ""
+                if align is not None:
+                    rate += f" repa {aligns[-1]:.4f}"
                 print(
                     f"  step {step}/{total} loss {value:.4f} |g| {grad_norm.item():.3f} "
                     f"sigma {sigma:.3f} lr {lr_sched.get_last_lr()[0]:.2e} "
@@ -495,9 +541,11 @@ def train(
         mean = sum(losses) / len(losses)
         history.append(
             {"epoch": epoch + 1, "loss": mean, "seconds": time.time() - t_epoch}
+            | ({"repa": sum(aligns) / len(aligns)} if aligns else {})
         )
+        repa_mean = f" repa {sum(aligns) / len(aligns):.4f}" if aligns else ""
         print(
-            f"epoch {epoch + 1}/{epochs}: loss {mean:.4f} {time.time() - t_epoch:.0f}s "
+            f"epoch {epoch + 1}/{epochs}: loss {mean:.4f}{repa_mean} {time.time() - t_epoch:.0f}s "
             f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB",
             flush=True,
         )

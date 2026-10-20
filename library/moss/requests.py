@@ -324,6 +324,27 @@ class TrainRequest(Request):
         "probability of training a step on the plain Anima caption instead of its "
         "layout JSON; only a caption_format=layout_json cache carries the plain one",
     )
+    repa_weight: float = _f(
+        0.0,
+        "relational REPA (Anima's DoG-Gram term, docs/methods/repa.md): weight of "
+        "the Gram MSE between block repa_layer's image tokens and the image's "
+        "PE-Spatial patch tokens. 0 = off",
+        advanced=True,
+    )
+    repa_layer: int = _f(
+        11,
+        "block whose output REPA aligns; the gradient reaches the LoRA in blocks "
+        "<= it. 11: the start of the early plateau in the base model's "
+        "PE-alignment (bench/moss_repa/probe_layer_sigma_cka.py, 2026-10-20)",
+        advanced=True,
+    )
+    repa_pe_root: str = _f(
+        "post_image_dataset/lora",
+        "root of the Anima PE-Spatial sidecars "
+        "(<root>/<source dir>/{stem}_anima_pe_spatial.safetensors; "
+        "make preprocess-pe-spatial writes them)",
+        advanced=True,
+    )
     lora_dtype: str = _f(
         "bf16",
         "dtype the LoRA is saved in; training keeps fp32 masters and runs the "
