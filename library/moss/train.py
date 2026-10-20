@@ -308,6 +308,7 @@ def train(
 
     transformer = load_transformer(req.model_dir, req.model)
     transformer.requires_grad_(False)
+    transformer.ref_timestep = req.ref_timestep if req.ref_timestep >= 0 else None
     channel_alpha = req.channel_scaling_alpha if req.algo == "lora" else 0.0
     dc_isolate = req.dc_isolate and req.algo == "lora"
     network = LoRANetwork(
@@ -426,6 +427,8 @@ def train(
         "plain_caption_rate": req.plain_caption_rate if plain else 0.0,
         "reference_latents": len(refs),
     }
+    if refs:
+        meta["ref_timestep"] = req.ref_timestep
     if repa is not None:
         meta.update(repa_weight=req.repa_weight, repa_layer=req.repa_layer)
 

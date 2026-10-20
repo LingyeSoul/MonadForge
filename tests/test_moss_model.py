@@ -61,6 +61,51 @@ def test_features_then_head_is_forward(tiny):
     assert torch.equal(out, tiny(x, 250.0, e, mask).sample)
 
 
+def _ref(batch=2):
+    return torch.randn(batch, 8, 2, 3, generator=torch.Generator().manual_seed(2))
+
+
+@pytest.fixture
+def ref_t(tiny):
+    """Sets ``tiny.ref_timestep`` for one test and restores the shared default."""
+
+    def set_(value):
+        tiny.ref_timestep = value
+
+    yield set_
+    tiny.ref_timestep = None
+
+
+@torch.no_grad()
+def test_ref_timestep_at_image_t_is_shared(tiny, ref_t):
+    x, e, mask = _inputs()
+    shared = tiny(x, 500.0, e, mask, ref=_ref()).sample
+    ref_t(500.0)
+    assert torch.allclose(tiny(x, 500.0, e, mask, ref=_ref()).sample, shared, atol=1e-6)
+
+
+@torch.no_grad()
+def test_ref_timestep_zero_batched_matches_reference(tiny, ref_t):
+    x, e, mask = _inputs()
+    shared = tiny(x, 500.0, e, mask, ref=_ref()).sample
+    ref_t(0.0)
+    single = tiny(x, 500.0, e, mask, ref=_ref()).sample
+    assert not torch.allclose(single, shared, atol=1e-3)
+    batched = tiny.forward_batched(x, 500.0, e, mask, ref=_ref())
+    assert torch.allclose(batched, single, atol=1e-5)
+    r1 = tiny(x[1:], 500.0, e[1:], mask[1:], skip_layers=[2], ref=_ref()[1:]).sample
+    out = tiny.forward_batched(x, 500.0, e, mask, skip_layers=[(), (2,)], ref=_ref())
+    assert torch.allclose(out, torch.cat([single[:1], r1]), atol=1e-5)
+
+
+@torch.no_grad()
+def test_ref_timestep_ignored_without_ref(tiny, ref_t):
+    x, e, mask = _inputs()
+    plain = tiny(x, 500.0, e, mask).sample
+    ref_t(0.0)
+    assert torch.equal(tiny(x, 500.0, e, mask).sample, plain)
+
+
 def test_pack_unpack_roundtrip():
     g = torch.Generator().manual_seed(2)
     bn = SimpleNamespace(

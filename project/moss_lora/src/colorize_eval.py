@@ -31,7 +31,7 @@ from library.moss.loader import (
     load_vae,
     pad_embeds,
 )
-from library.moss.lora import load_for_inference
+from library.moss.lora import load_for_inference, ref_timestep
 from library.moss.model import decode, snapped_sigmas
 from library.moss.requests import GenerateRequest
 
@@ -71,6 +71,7 @@ def main() -> None:
     if todo:
         tr = load_transformer("", "base", device=device)
         net = load_for_inference(tr, lora)
+        tr.ref_timestep = ref_timestep(lora)
         compile_blocks(tr.layers)
         for it, arm in todo:
             key, mult = ARMS[arm]

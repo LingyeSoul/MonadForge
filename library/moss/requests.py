@@ -324,6 +324,14 @@ class TrainRequest(Request):
         "probability of training a step on the plain Anima caption instead of its "
         "layout JSON; only a caption_format=layout_json cache carries the plain one",
     )
+    ref_timestep: float = _f(
+        0.0,
+        "timestep (1000·σ) whose block modulation the reference tokens get (a "
+        "cache with *.moss_ref files); 0 = clean, as the reference is. Negative = "
+        "the image's timestep, as the first i2i probes trained "
+        "(docs/proposal/moss_i2i.md, probe 4). Stamped in the LoRA metadata",
+        advanced=True,
+    )
     repa_weight: float = _f(
         0.0,
         "relational REPA (Anima's DoG-Gram term, docs/methods/repa.md): weight of "

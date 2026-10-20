@@ -32,3 +32,13 @@ class LoRANetwork(_LoRANetwork):
 
 load_network = LoRANetwork.from_file
 load_for_inference = LoRANetwork.for_inference
+
+
+def ref_timestep(path) -> float | None:
+    """The ``ref_timestep`` a reference LoRA trained with; None = the image's
+    (stamped negative, or absent: the LoRAs from before the flag)."""
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt") as handle:
+        value = (handle.metadata() or {}).get("ref_timestep")
+    return None if value is None or float(value) < 0 else float(value)

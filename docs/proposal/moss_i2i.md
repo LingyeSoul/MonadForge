@@ -97,32 +97,99 @@ CbCr distance to the target.
 - **Lettering**: the half-size ref is the likely limit on small text; untested. It adds a
   lettering read to the ref-size arms (open question 2).
 
+## Probe 3: real B&W pages, no target
+
+- **Data**: 8 pages from `comfy/input/to_colorize{,2}`, never through Mangafy: 4 Korean
+  manga pages (screentone, panels, lettering) and 4 grey-shaded illustrations. Page
+  only, no caption; ref_v1 and the manga run, seed 1 (`colorize_wild.py`).
+- **Read**: luma r against the page; chroma as above (the colorize targets average 16).
+
+| | luma r, manga / illus. | chroma, manga / illus. |
+|---|---|---|
+| ref_v1 | 0.90 / 0.94 | 3.1 / 12.4 |
+| manga run | 0.91 / 0.97 | 3.0 / 7.7 |
+
+- **Alignment holds off-distribution.** Panels, black fills, screentone gradients and
+  balloon placement stay. Screentone is not copied as noise. On the Korean pages the
+  manga run is clearly ahead: its lettering reads closer to the page, it keeps the faces
+  (ref_v1 redraws some), and it adds no background wash.
+- **The manga pages barely colour.** Both LoRAs leave them mostly white and grey, with a
+  few accents (a hoodie, jackets, hair, eyes). Real pages are sparser than Mangafy's
+  output, and with no caption nothing fixes hue. A colour caption is the untested lever.
+- **On the illustrations**, ref_v1 colours vividly but invents: cat ears, a teal tail, a
+  starred background, bokeh dots on one manga page. The manga run stays faithful but
+  desaturated.
+- **No degradation augmentation** is needed for alignment.
+
+## Settled
+
+- **The vision tower stays** in the TE input; no text-only-TE arm.
+- **Ref size** is capped at 1/2 per side, the current setting; no size arms.
+
+## Probe 4: the reference at t = 0
+
+- **Why**: the ref tokens share the image's block modulation, so a clean latent is
+  modulated as if noised; with the median training σ near 0.75 that is most steps.
+- **Change**: `--ref_timestep 0` gives the ref tokens the t = 0 modulation (shift,
+  scale and both gates) in every block; the image and text keep the step's. A negative
+  value is the old behaviour, and `ref=None` stays bit-exact. The value goes into the LoRA
+  metadata, and the eval scripts set it from there.
+- **Arm**: `ref_v1`'s request as it ran (`colorize_ref`, 1000 pairs, 1600 steps, lr
+  1e-4, rank 32, ref 1/2), with only `--ref_timestep 0`.
+- **Baseline**: `moss_colorize_ref_v1`; it is not retrained. Its epoch 1 ran
+  size-sorted (since fixed), which the new arm does not.
+- **Read**: the 12-page holdout of probe 2, metrics as in probe 1, seed 1.
+- **Cost**: 71.9 min at 2.70 s/step (ref_v1: 71.3 min, 2.67 s/step).
+- **Loss**: epoch means 0.290 / 0.270 (ref_v1: 0.302 / 0.276). Epoch 1 also differs in
+  order, so read epoch 2.
+
+| Arm | 64 px luma PSNR, 8 illus. / 4 manga | luma r | chroma error, 8 illus. |
+|---|---|---|---|
+| ref_v1 + caption | 25.62 / 23.73 | 0.966 | 13.6 |
+| **t0 + caption** | **27.27 / 26.10** | **0.975** | **13.3** |
+| ref_v1, page only | 24.77 / 23.34 | 0.964 | 18.9 |
+| **t0, page only** | **26.58 / 25.96** | **0.974** | **16.7** |
+| manga run + caption (more data, other lr) | 27.49 / 26.74 | 0.975 | 13.0 |
+
+- **t = 0 wins.** With the caption it is ahead on 11 of 12 pages.
+- **One page carries much of the illustration mean.** `yomu` gains 8 dB because t0
+  gets its pink background where ref_v1 painted it blue. Without that page the gain on
+  the illustrations is +0.7 dB; on the 4 manga pages it is +2.4.
+- **By eye**:
+  - `eight_tohyama` keeps one purple-haired and one green-haired character, as the
+    target and ref_v1 have them; the manga run made both green.
+  - `ru_zhai`'s background turns warm, as in the target, where ref_v1 made it night
+    blue.
+  - `ama_mitsuki`'s hoodie turns blue where the target's is beige.
+- **On 1000 pairs and 1600 steps**, t0 comes within 0.2 dB of the manga run on the
+  illustrations.
+- **Limits**: one seed, 12 pages.
+- **Default**: `--ref_timestep` is now 0 by default; `-1` opts out. LoRAs from before
+  the flag carry no stamp and load with the old, shared timestep.
+- **Then**: masking the ref to attend only to itself. With t = 0, that makes the ref's
+  per-block K/V one computation per image, reused across steps and CFG branches.
+
 ## Open questions, in order
 
-1. **Is the vision tower still needed?**
-   - Arm: ref + text-only colour caption, through the stock TE and its cache.
-   - If it matches, i2i is a plain LoRA with plain caching: no 1000-row TE, a cheaper
-     joint sequence, and Qwen's tower drops out of the loop.
-2. **Ref size.**
-   - Arms: 1/4 per side (~250 tokens), 1/2 (this run), full (≈ image tokens).
-   - Read alignment (luma r / PSNR) and small-balloon lettering against s/step.
-3. **Ref guidance.**
+1. **Ref guidance.**
    - The ref is in both CFG branches now.
    - Arms: ref dropped from uncond (image CFG), and a separate ref guidance scale
      (InstructPix2Pix-style).
    - Training needs ref dropout for this.
-4. **Other tasks on the same path**: lineart / sketch → colour, edits (needs pairs), and
+2. **Other tasks on the same path**: lineart / sketch → colour, edits (needs pairs), and
    2× SR. A half-size ref *is* an SR condition. Check against the finished ResShift line
    (`project/finished/`).
-5. **Eval protocol**:
+3. **Eval protocol**:
    - More seeds and a larger holdout.
    - A safe-only holdout for anything published.
-6. **Ship surface** (after 1–3):
+   - Real B&W pages (`colorize_wild.py`): the training conditions all come from
+     Mangafy.
+4. **Ship surface** (after 1):
    - `GenerateRequest(ref_image=, ref_scale=)` with VAE-encode in the request path.
    - A ref input on the ComfyUI MOSS node.
    - `reference_latents` / ref scale stamped in the LoRA metadata (train.py already
      writes `reference_latents`) so inference can refuse a mismatch.
    - A cache stage for refs outside the probe script.
 
-Gate before the ship surface: open questions 1 and 2 are answered, and alignment holds on
-a second task (lineart or SR).
+Gate before the ship surface: alignment holds on a second
+task (lineart or SR).
