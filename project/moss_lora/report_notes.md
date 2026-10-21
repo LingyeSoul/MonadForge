@@ -43,9 +43,14 @@ parentheses. *Italic* = our inference, not the report's.
   optical-rs, marqo, git_10m, Megalith, CommonCatalog, TextAtlas5M, HumanCaption,
   textrecap, Google Landmarks, WikiArt, Places365, poster100k. **No booru or anime
   source; character names never mentioned.** Captions "predominantly in English" (p.16).
+  *Still, a raw Danbooru tag bag (`1girl, solo, akita neru, …`) rendered on-prompt in
+  the 2026-10-16 first look, on Base and SFT.*
 - **Recaptions**: gemma4 short / medium / long, mean 21 / 77 / 235 tokens, P90
   26 / 97 / 293, max 3126 (p.18 Table 11). 80 % recaption, 20 % original; the three
   lengths 1/3 each (p.6, p.19).
+- *Caption length is step time (our arithmetic): the model is single-stream, so every
+  text token runs all 42 blocks beside the image tokens. At 1776×1184 a 1.9k-token
+  prompt adds ≈ +24 % linear and +53 % attention FLOPs.*
 - **Caption content**: visible text transcribed verbatim (no translation; line breaks,
   reading order, position, font, colour kept) (p.18). Line breaks in prompts help text
   rendering (p.9, p.33). Artifacts (watermarks, blur) are captioned, not filtered (p.5).
@@ -79,4 +84,6 @@ parentheses. *Italic* = our inference, not the report's.
 - No dedicated Chinese caption annotation (p.16): the ability comes from verbatim
   transcription plus text-heavy sources (TextAtlas5M, textrecap, poster100k).
 - **Japanese and Korean are never mentioned** — the 2026-10-16 JA/KO renders go beyond
-  what the report documents.
+  what the report documents: quoted text in the main subject came out correct on Base
+  and SFT ("待ってくれ！" vertical in a manga bubble, three handwritten Chinese lines, a
+  "오늘도 수고했어" neon sign); small background signage was still pseudo-glyphs.
