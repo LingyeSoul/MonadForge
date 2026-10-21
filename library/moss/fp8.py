@@ -59,8 +59,12 @@ def quantize_weight(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return (w / scale).to(FP8), scale
 
 
-def quantize_te(src_dir: str | Path, out_path: str | Path, log=print) -> dict:
-    """``text_encoder/`` (sharded HF safetensors) → ``out_path``. Returns counts."""
+def quantize_te(
+    src_dir: str | Path, out_path: str | Path, log=print, quantized: dict | None = None
+) -> dict:
+    """``text_encoder/`` (sharded HF safetensors) → ``out_path``. Returns counts.
+    ``quantized`` maps a linear's weight key to an already quantized ``(fp8, scale)``
+    (a calibrated rounding) in place of ``quantize_weight``'s."""
     src_dir, out_path = Path(src_dir), Path(out_path)
     index = json.loads((src_dir / "model.safetensors.index.json").read_text())
     shards = sorted(set(index["weight_map"].values()))
@@ -71,7 +75,7 @@ def quantize_te(src_dir: str | Path, out_path: str | Path, log=print) -> dict:
             for key in f.keys():
                 t = f.get_tensor(key)
                 if is_quantized_linear(key):
-                    q, scale = quantize_weight(t)
+                    q, scale = (quantized or {}).get(key) or quantize_weight(t)
                     prefix = key[: -len("weight")]
                     out[key] = q
                     out[f"{prefix}weight_scale"] = scale

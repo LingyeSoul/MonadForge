@@ -10,6 +10,8 @@ token embedding (CPU, as in ``loader``) and the vision tower are left alone. Arm
   w8_row       fp8 weight, one scale per output channel, dequantised
   w8a8_tensor  per-tensor weight + per-tensor dynamic activation, ``torch._scaled_mm``
   w8a8_row     per-channel weight + per-token dynamic activation, ``torch._scaled_mm``
+  <name>       ``--fp8_file <name>=<path>``: an fp8 file in ``library/moss/fp8.py``'s
+               format (e.g. ``gptq.py``'s), through ``load_fp8_text_encoder``
 
 Text: cached ``*.moss_te.safetensors`` captions sampled across
 ``post_image_dataset/moss/*`` (their ``embeds`` is the on-disk bf16 reference; the
@@ -220,7 +222,24 @@ def run_te(args, run_dir, device):
         gc.collect()
         torch.cuda.empty_cache()
 
-    fp8_arms = [a for a in arms if a != "bf16"]
+    files = dict(f.split("=", 1) for f in args.fp8_file)
+    for arm in [a for a in arms if a in files]:
+        from library.moss.fp8 import load_fp8_text_encoder
+        from library.moss.loader import offload_by_layer, te_reserve_gb
+
+        t0 = time.time()
+        te = load_fp8_text_encoder(files[arm])
+        offload_by_layer(te, device, te_reserve_gb(4096))
+        speed[arm] = {"load_s": round(time.time() - t0, 1)}
+        e, s = encode_all(tok, te, texts, device)
+        speed[arm].update(s)
+        embeds[arm] = e
+        print(f"[{arm}] {speed[arm]}", flush=True)
+        del te
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    fp8_arms = [a for a in arms if a != "bf16" and a not in files]
     if fp8_arms:
         root = variant_dir(model_dir, "base")
         te = AutoModel.from_pretrained(root / "text_encoder", dtype=torch.bfloat16)
@@ -259,32 +278,56 @@ def run_te(args, run_dir, device):
     rows = []
     for i, t in enumerate(texts):
         ref, kind = refs[t]
-        kind_text = "prompt" if t in PROMPTS.values() else ("empty" if not t else "caption")
+        kind_text = (
+            "prompt" if t in PROMPTS.values() else ("empty" if not t else "caption")
+        )
         for arm, e in embeds.items():
             if arm == "bf16" and kind == "bf16":
                 continue
             rows.append(
-                {"text": i, "kind": kind_text, "ref": kind, "arm": arm,
-                 "tokens": int(ref.shape[0]), **compare(e[t], ref, massive)}
+                {
+                    "text": i,
+                    "kind": kind_text,
+                    "ref": kind,
+                    "arm": arm,
+                    "tokens": int(ref.shape[0]),
+                    **compare(e[t], ref, massive),
+                }
             )
     summary = {}
     for arm in embeds:
         for kind in ("caption", "prompt", "empty", "all"):
-            sel = [r for r in rows if r["arm"] == arm and "rel_l2" in r
-                   and (kind == "all" or r["kind"] == kind)]
+            sel = [
+                r
+                for r in rows
+                if r["arm"] == arm
+                and "rel_l2" in r
+                and (kind == "all" or r["kind"] == kind)
+            ]
             if not sel:
                 continue
             summary[f"{arm}/{kind}"] = {
                 "n": len(sel),
-                **{k: round(float(np.mean([r[k] for r in sel])), 5)
-                   for k in ("rel_l2", "rel_l2_ex", "cos_mean", "cos_ex_mean")},
+                **{
+                    k: round(float(np.mean([r[k] for r in sel])), 5)
+                    for k in ("rel_l2", "rel_l2_ex", "cos_mean", "cos_ex_mean")
+                },
                 "rel_l2_max": round(max(r["rel_l2"] for r in sel), 5),
                 "cos_ex_min": round(min(r["cos_ex_min"] for r in sel), 5),
             }
     for k, v in summary.items():
         print(f"[err] {k:24s} {v}")
-    return texts, embeds, {"summary": summary, "speed": speed, "weight_rel_err": werr,
-                           "massive_channels": massive, "rows": rows}
+    return (
+        texts,
+        embeds,
+        {
+            "summary": summary,
+            "speed": speed,
+            "weight_rel_err": werr,
+            "massive_channels": massive,
+            "rows": rows,
+        },
+    )
 
 
 def _paged(te):
@@ -297,7 +340,12 @@ def run_images(args, run_dir, texts, embeds, device):
     from diffusers.image_processor import VaeImageProcessor
 
     from library.moss.generate import denoise, initial_noise
-    from library.moss.loader import compile_blocks, load_transformer, load_vae, pad_embeds
+    from library.moss.loader import (
+        compile_blocks,
+        load_transformer,
+        load_vae,
+        pad_embeds,
+    )
     from library.moss.model import decode, snapped_sigmas
     from library.moss.requests import resolve_model_dir
 
@@ -346,12 +394,18 @@ def run_images(args, run_dir, texts, embeds, device):
         for key in PROMPTS:
             a, b = pixels[(key, arm)], pixels[(key, "bf16")]
             mse = float(np.mean((a - b) ** 2))
-            rows.append({"prompt": key, "arm": arm,
-                         "rel_l2": float(np.linalg.norm(a - b) / np.linalg.norm(b)),
-                         "psnr": float(10 * np.log10(1 / max(mse, 1e-12)))})
+            rows.append(
+                {
+                    "prompt": key,
+                    "arm": arm,
+                    "rel_l2": float(np.linalg.norm(a - b) / np.linalg.norm(b)),
+                    "psnr": float(10 * np.log10(1 / max(mse, 1e-12))),
+                }
+            )
         sel = [r for r in rows if r["arm"] == arm]
-        summary[arm] = {k: round(float(np.mean([r[k] for r in sel])), 4)
-                        for k in ("rel_l2", "psnr")}
+        summary[arm] = {
+            k: round(float(np.mean([r[k] for r in sel])), 4) for k in ("rel_l2", "psnr")
+        }
         print(f"[img] {arm} vs bf16 {summary[arm]}")
 
     from PIL import Image
@@ -371,6 +425,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--arms", default=",".join(ARMS))
     p.add_argument("--image_arms", default=",".join(ARMS))
+    p.add_argument(
+        "--fp8_file", action="append", default=[], help="name=path, repeatable"
+    )
     p.add_argument("--per_dir", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--no_images", action="store_true")
@@ -385,8 +442,14 @@ def main():
     metrics = {"te": te_metrics}
     if not args.no_images:
         metrics["images"] = run_images(args, run_dir, texts, embeds, device)
-    write_result(run_dir, script=__file__, args=args, metrics=metrics,
-                 label=args.label, device=device)
+    write_result(
+        run_dir,
+        script=__file__,
+        args=args,
+        metrics=metrics,
+        label=args.label,
+        device=device,
+    )
     print(f"[done] {run_dir}")
 
 
