@@ -46,7 +46,7 @@ from library.moss import cache as moss_cache
 from library.moss.cache import _tag_knowledge_base
 from library.moss.loader import empty_cache, load_tokenizer
 from library.moss.scan import LATENT_SUFFIX, REF_SUFFIX, TE_SUFFIX
-from vision_te import encode, load_te
+from vision_te import encode, encode_variants, load_te
 
 
 def dedupe(lines: list[list]) -> list[tuple[str, list[int]]]:
@@ -231,11 +231,9 @@ def main() -> None:
         for i, (stem, _, cond, target, caption, path) in enumerate(todo, 1):
             layout, text, (w, h) = captions[stem]
             page = moss_cache.fit(moss_cache.load_rgb(cond), w, h)
-            embeds, n_img, prefix = encode(
-                tok, te, page, layout, w * h, device, prefix=True
+            (embeds, n_img, prefix), (text_embeds, _, _), (plain, _, _) = (
+                encode_variants(tok, te, page, [layout, text, ""], w * h, device)
             )
-            text_embeds, _, _ = encode(tok, te, page, text, w * h, device, prefix=True)
-            plain, _ = encode(tok, te, page, "", w * h, device)
             var, var_meta = moss_cache.variant_entries([(text, text_embeds)], prefix)
             save_file(
                 {

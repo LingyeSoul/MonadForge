@@ -70,7 +70,7 @@ from library.env import resolve_under_home
 from library.moss import cache as moss_cache
 from library.moss.loader import empty_cache, load_tokenizer
 from library.moss.scan import REF_SUFFIX, TE_SUFFIX
-from vision_te import encode, load_te
+from vision_te import encode_variants, load_te
 
 sys.path.insert(0, str(resolve_under_home("easycontrol_adapters/colorization")))
 from color_caption import (  # noqa: E402
@@ -209,24 +209,14 @@ def main() -> None:
         tok = load_tokenizer("")
         te = load_te(tok, device)
 
-        def variant_embeds(stem, caption, page, pixels, embeds):
-            """``[(caption, embeds)]`` of the variants, the page prefix they share
-            with ``embeds``, and the largest page-row deviation of any variant
-            from ``embeds``."""
+        def variant_texts(stem, caption):
+            """The variant captions of ``caption`` (none below ``--variants 2``)."""
             if args.variants < 2:
-                return [], 0, 0.0
+                return []
             random.seed(f"{args.seed}:{stem}")
-            texts = generate_caption_variants(
+            return generate_caption_variants(
                 caption, args.variants, args.tag_dropout, is_comic_tag
             )[1:]
-            out, prefix, dev = [], 0, 0.0
-            for text in texts:
-                e, _, prefix = encode(tok, te, page, text, pixels, device, prefix=True)
-                e = e.to("cpu", torch.bfloat16)
-                shared = embeds[:prefix].to("cpu", torch.bfloat16)
-                dev = max(dev, (e[:prefix].float() - shared.float()).abs().max().item())
-                out.append((text, e))
-            return out, prefix, dev
 
         t0 = time.time()
         for i, (stem, cond, target, path) in enumerate(todo, 1):
@@ -234,9 +224,13 @@ def main() -> None:
                 w, h = moss_cache.target_size(*im.size, args.resolution)
             page = moss_cache.fit(moss_cache.load_rgb(cond), w, h)
             caption = colour_caption(target)
-            embeds, n_img = encode(tok, te, page, caption, w * h, device)
-            plain, _ = encode(tok, te, page, "", w * h, device)
-            variants, prefix, dev = variant_embeds(stem, caption, page, w * h, embeds)
+            texts = variant_texts(stem, caption)
+            (embeds, n_img, prefix), (plain, _, _), *rest = encode_variants(
+                tok, te, page, [caption, "", *texts], w * h, device
+            )
+            variants = [
+                (t, e.to("cpu", torch.bfloat16)) for t, (e, _, _) in zip(texts, rest)
+            ]
             var, var_meta = moss_cache.variant_entries(variants, prefix)
             save_file(
                 {
@@ -258,9 +252,8 @@ def main() -> None:
             )
             print(
                 f"  te {i}/{len(todo)} {stem}: {embeds.shape[0]} rows "
-                f"({n_img} image), "
-                + (f"variant page rows ±{dev:.3g}, " if var else "")
-                + f"{time.time() - t0:.0f}s",
+                f"({n_img} image), {len(variants)} variants, "
+                f"{time.time() - t0:.0f}s",
                 flush=True,
             )
         t0 = time.time()
@@ -271,7 +264,20 @@ def main() -> None:
             with safe_open(str(path), "pt") as f:
                 caption = f.metadata()["caption"]
                 embeds = f.get_tensor("embeds")
-            variants, prefix, dev = variant_embeds(stem, caption, page, w * h, embeds)
+            texts = variant_texts(stem, caption)
+            got = encode_variants(tok, te, page, texts, w * h, device)
+            prefix = got[0][2]
+            variants = [
+                (t, e.to("cpu", torch.bfloat16)) for t, (e, _, _) in zip(texts, got)
+            ]
+            # The stored embeds' page rows are an earlier forward's: the largest
+            # deviation of this one's from them.
+            dev = (
+                (got[0][0][:prefix].to("cpu").float() - embeds[:prefix].float())
+                .abs()
+                .max()
+                .item()
+            )
             # Linked files are completed at their target.
             moss_cache.add_variants(path, variants, prefix)
             caps = " | ".join(text for text, _ in variants)

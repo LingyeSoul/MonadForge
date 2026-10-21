@@ -31,7 +31,7 @@ from library.moss import cache as moss_cache
 from library.moss.cache import read_te
 from library.moss.loader import empty_cache, load_tokenizer
 from library.moss.scan import TE_SUFFIX
-from vision_te import encode, load_te
+from vision_te import encode, encode_variants, load_te
 
 
 def error(x: torch.Tensor, ref: torch.Tensor, rows: slice) -> dict:
@@ -64,15 +64,18 @@ def main() -> None:
             keys = set(f.keys())
         w, h = it["width"], it["height"]
         page = moss_cache.fit(moss_cache.load_rgb(it["condition"]), w, h)
-        embeds, n_img, img_end = encode(
-            tok, te, page, meta["caption"], w * h, device, prefix=True
+        texts = [
+            meta[f"caption_v{k}"]
+            for k in range(1, 1 + sum(key.startswith("embeds_v") for key in keys))
+        ]
+        (embeds, n_img, img_end), (plain, _, _), *rest = encode_variants(
+            tok, te, page, [meta["caption"], "", *texts], w * h, device
         )
-        plain, _ = encode(tok, te, page, "", w * h, device)
-        variants, prefix = [], 0
-        for k in range(1, 1 + sum(key.startswith("embeds_v") for key in keys)):
-            text = meta[f"caption_v{k}"]
-            e, _, prefix = encode(tok, te, page, text, w * h, device, prefix=True)
-            variants.append((text, e.to("cpu", torch.bfloat16)))
+        prefix = img_end
+        variants = [
+            (t, e.to("cpu", torch.bfloat16)) for t, (e, _, _) in zip(texts, rest)
+        ]
+
         tensors = {
             "embeds": embeds.to("cpu", torch.bfloat16).contiguous(),
             "embeds_plain": plain.to("cpu", torch.bfloat16).contiguous(),

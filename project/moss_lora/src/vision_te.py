@@ -97,3 +97,50 @@ def encode(tok, te, image, text, max_pixels, device, drop_rows=False, prefix=Fal
     end = int(is_image.nonzero().max()) + 1
     assert inputs["input_ids"][0, end] == tok.convert_tokens_to_ids("<|vision_end|>")
     return hidden, int(is_image.sum()), end + 1
+
+
+@torch.no_grad()
+def encode_variants(tok, te, image, texts, max_pixels, device):
+    """``encode(..., prefix=True)`` of each of ``texts`` after the same ``image``, the
+    page run once: the rows through ``<|vision_end|>`` are prefilled into a cache
+    (attention KV + GDN conv/recurrent state) and each text continues from a copy
+    of it, with its M-RoPE positions sliced from its own full-sequence index.
+    ``[(last_hidden_state, image token count, prefix)]``, one per text."""
+    import copy
+
+    inputs = [te_inputs(tok, image, t, max_pixels, device) for t in texts]
+    first = inputs[0]
+    is_image = first["mm_token_type_ids"][0] == 1
+    end = int(is_image.nonzero().max()) + 1
+    assert first["input_ids"][0, end] == tok.convert_tokens_to_ids("<|vision_end|>")
+    p = end + 1
+    for x in inputs[1:]:
+        assert torch.equal(x["input_ids"][0, :p], first["input_ids"][0, :p])
+
+    def positions(x):
+        return te.get_rope_index(
+            x["input_ids"], x["mm_token_type_ids"], image_grid_thw=x["image_grid_thw"]
+        )[0]
+
+    out = te(
+        input_ids=first["input_ids"][:, :p],
+        pixel_values=first["pixel_values"],
+        image_grid_thw=first["image_grid_thw"],
+        mm_token_type_ids=first["mm_token_type_ids"][:, :p],
+        position_ids=positions(first)[..., :p],
+        use_cache=True,
+        return_dict=True,
+    )
+    shared, cache = out.last_hidden_state[0], out.past_key_values
+    n_img = int(is_image.sum())
+    results = []
+    for x in inputs:
+        tail = te(
+            input_ids=x["input_ids"][:, p:],
+            position_ids=positions(x)[..., p:],
+            past_key_values=copy.deepcopy(cache),
+            use_cache=True,
+            return_dict=True,
+        ).last_hidden_state[0]
+        results.append((torch.cat([shared, tail]), n_img, p))
+    return results
