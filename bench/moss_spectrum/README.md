@@ -12,7 +12,8 @@ make daemon-run ARGS="bench/moss_spectrum/run_bench.py --label sft5 --models sft
 ```
 
 Arms: `p<N>` plain N steps, `s<N>[:k=v,…]` Spectrum (`ws fw warm stop w m lam K cal`,
-see the script docstring); `b=1` on any arm uses the batched cond+uncond forward. The
+see the script docstring; `full=0-3+6+10+47-49` replaces the growing window with a fixed
+full-step list); `b=1` on any arm uses the batched cond+uncond forward. The
 first arm is the reference for speed-up and latent rel-L2.
 
 Output: `results/<stamp>-<label>/result.json` (`metrics.summary` per `model/arm`:
@@ -30,3 +31,11 @@ eager vs compiled); the warm-up time lands in `metrics.warmup_seconds`.
 Rel-L2 is a drift number, not a quality score: a plain 30-step arm drifts from the
 50-step one without being worse. Judge by the grids. Run envelopes:
 `bench/moss_spectrum/results/`.
+
+`--example a/parameters.json,b/parameters.json` replays HF Space gallery entries (their own
+prompt, negative, size, cfg, seed, uncond skip; key `space<folder>`) in place of
+`--prompts`.
+
+`probe_skip_cost.py` scores candidate full-step schedules open-loop on recorded p50
+trajectories, with no DiT in the replay. Its ranking across schedule families does not
+match closed loop. See `docs/moss/findings/spectrum_schedule.md`.

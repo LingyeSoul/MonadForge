@@ -5,7 +5,8 @@ Every arm runs through ``library.moss.generate.denoise`` (the shipped path) at a
 fixed seed per prompt. Arm spec: ``p<N>`` = plain N steps, ``s<N>[:k=v,…]`` =
 Spectrum at N steps with ``MossSpectrum`` overrides (``ws`` window_size, ``fw``
 flex_window, ``warm`` warmup, ``stop`` stop_caching_step, ``w``, ``m``, ``lam``,
-``K`` history, ``cal`` calibration) over its defaults, the generator's (``fw``
+``K`` history, ``cal`` calibration, ``full`` an explicit full-step list such as
+``0-3+6+10+47-49`` in place of the growing window) over its defaults, the generator's (``fw``
 0.5; runs before 2026-10-21 defaulted to ``fw=0.25``); add ``b=1`` to either for the batched
 cond+uncond forward, ``sde=1`` for the ER-SDE sampler instead of Euler,
 ``cns=1`` (with ``sde=1``) to recolor its noise with ``--cns_gamma``.
@@ -86,12 +87,78 @@ def parse_arm(spec: str) -> dict:
             arm["sampler"] = "er_sde" if int(v) else "euler"
         elif k == "cns":
             arm["cns"] = bool(int(v))
+        elif k == "full" and arm["spectrum"]:
+            arm["full"] = v
         elif k in _KNOBS and arm["spectrum"]:
             name, kind = _KNOBS[k]
             arm["knobs"][name] = kind(v)
         else:
             raise SystemExit(f"bad knob {k!r} in {spec!r}")
     return arm
+
+
+def _jobs(args) -> dict[str, dict]:
+    """Per prompt key: prompt, negative, size, cfg, seed, uncond skip."""
+    from library.moss.requests import DEFAULT_UNCOND_SKIP
+
+    if not args.example:
+        return {
+            k: dict(
+                prompt=PROMPTS[k],
+                negative="",
+                h=args.size,
+                w=args.size,
+                cfg=args.cfg,
+                seed=args.seed,
+                skip=DEFAULT_UNCOND_SKIP,
+            )
+            for k in args.prompts.split(",")
+            if k
+        }
+    jobs = {}
+    for path in filter(None, (p.strip() for p in args.example.split(","))):
+        path = Path(path)
+        p = json.loads(path.read_text(encoding="utf-8"))
+        p = p.get("parameters", p)
+        skip = p.get("uncond_skip_layers", DEFAULT_UNCOND_SKIP)
+        if isinstance(skip, str):
+            skip = tuple(int(v) for v in skip.split(",") if v.strip())
+        jobs[f"space{path.parent.name}"] = dict(
+            prompt=p["prompt"],
+            negative=p.get("negative_prompt", ""),
+            h=int(p["height"]),
+            w=int(p["width"]),
+            cfg=float(p.get("cfg", p.get("guidance_scale", args.cfg))),
+            seed=int(p["seed"]),
+            skip=tuple(skip),
+        )
+    return jobs
+
+
+def parse_full(spec: str, num_steps: int) -> list[bool]:
+    """``0-3+6+10`` → per-step ``True`` = full forward."""
+    full = [False] * num_steps
+    for part in spec.split("+"):
+        lo, _, hi = part.partition("-")
+        for i in range(int(lo), int(hi or lo) + 1):
+            full[i] = True
+    return full
+
+
+def build_spectrum(arm: dict):
+    from library.moss.spectrum import MossSpectrum
+
+    if "full" not in arm:
+        return MossSpectrum(**arm["knobs"])
+
+    # A subclass, not a patched bound method: a closure over the instance is a
+    # cycle that keeps each image's forecaster history on the GPU until gc runs.
+    class Fixed(MossSpectrum):
+        def begin(self, sigmas):
+            super().begin(sigmas)
+            self.schedule = parse_full(arm["full"], self.num_steps)
+
+    return Fixed(**arm["knobs"])
 
 
 def _grid(tiles, out_path, tile=512):
@@ -150,6 +217,12 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--cfg", type=float, default=3.0)
     ap.add_argument(
+        "--example",
+        default="",
+        help="comma list of Space parameters.json; replaces --prompts/--size/--seed/--cfg "
+        "with each entry's prompt, negative, size, cfg, seed and uncond skip",
+    )
+    ap.add_argument(
         "--label",
         default=None,
         help="also names the image dir, so a rerun with the same label resumes",
@@ -185,13 +258,13 @@ def main() -> None:
         pad_embeds,
     )
     from library.moss.model import decode, snapped_sigmas
-    from library.moss.requests import DEFAULT_UNCOND_SKIP, resolve_model_dir
+    from library.moss.requests import resolve_model_dir
     from library.moss.cns import MossCNS
-    from library.moss.spectrum import MossSpectrum
 
     # A comma starts a new arm only before p<N> / s<N>; others separate knobs.
     arms = [parse_arm(a) for a in filter(None, re.split(r",(?=[ps]\d)", args.arms))]
-    keys = [k for k in args.prompts.split(",") if k]
+    jobs = _jobs(args)
+    keys = list(jobs)
     models = [m for m in args.models.split(",") if m]
     model_dir = resolve_model_dir(args.model_dir)
     run_dir = make_run_dir("moss_spectrum", label=args.label)
@@ -201,7 +274,6 @@ def main() -> None:
         image_dir = Path(args.image_root) / (args.label or run_dir.name)
     image_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda")
-    h = w = args.size
 
     todo = {
         model: [
@@ -220,10 +292,9 @@ def main() -> None:
         # TE outputs are cached per text on disk too (cached_embeds).
         embeds = cached_embeds(
             model_dir,
-            [PROMPTS[k] for k in keys] + [""],
+            sorted({t for j in jobs.values() for t in (j["prompt"], j["negative"])}),
             Path(args.image_root) / "_te_cache",
         )
-        uncond, uncond_mask = pad_embeds([embeds[""]], device=device)
     warmup_s = {}
     for model in models:
         if not todo[model]:
@@ -240,19 +311,21 @@ def main() -> None:
         if args.compile:
             compile_blocks(transformer.layers)
         # Warm the kernels (and the compile) so the first timed image is not the slow one.
-        cond, cond_mask = pad_embeds([embeds[PROMPTS[keys[0]]]], device=device)
+        job = jobs[keys[0]]
+        cond, cond_mask = pad_embeds([embeds[job["prompt"]]], device=device)
+        uncond, uncond_mask = pad_embeds([embeds[job["negative"]]], device=device)
         torch.cuda.synchronize()
         t0 = time.perf_counter()
         denoise(
             transformer,
-            initial_noise(0, h, w).to(device),
+            initial_noise(0, job["h"], job["w"]).to(device),
             cond,
             cond_mask,
             uncond,
             uncond_mask,
             snapped_sigmas(50)[:2],
-            cfg=args.cfg,
-            uncond_skip=DEFAULT_UNCOND_SKIP,
+            cfg=job["cfg"],
+            uncond_skip=job["skip"],
         )
         torch.cuda.synchronize()
         warmup_s[model] = round(time.perf_counter() - t0, 2)
@@ -261,14 +334,16 @@ def main() -> None:
         )
         for arm, key in todo[model]:
             sigmas = snapped_sigmas(arm["steps"])
-            cond, cond_mask = pad_embeds([embeds[PROMPTS[key]]], device=device)
-            spectrum = MossSpectrum(**arm["knobs"]) if arm["spectrum"] else None
+            job = jobs[key]
+            cond, cond_mask = pad_embeds([embeds[job["prompt"]]], device=device)
+            uncond, uncond_mask = pad_embeds([embeds[job["negative"]]], device=device)
+            spectrum = build_spectrum(arm) if arm["spectrum"] else None
             cns = (
-                MossCNS.from_spec(args.cns_gamma, model, args.cfg)
+                MossCNS.from_spec(args.cns_gamma, model, job["cfg"])
                 if arm["cns"]
                 else None
             )
-            noise = initial_noise(args.seed, h, w).to(device)
+            noise = initial_noise(job["seed"], job["h"], job["w"]).to(device)
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
             t0 = time.perf_counter()
@@ -280,12 +355,12 @@ def main() -> None:
                 uncond,
                 uncond_mask,
                 sigmas,
-                cfg=args.cfg,
-                uncond_skip=DEFAULT_UNCOND_SKIP,
+                cfg=job["cfg"],
+                uncond_skip=job["skip"],
                 batched=arm["batched"],
                 spectrum=spectrum,
                 sampler=arm["sampler"],
-                seed=args.seed,
+                seed=job["seed"],
                 cns=cns,
             )
             torch.cuda.synchronize()
