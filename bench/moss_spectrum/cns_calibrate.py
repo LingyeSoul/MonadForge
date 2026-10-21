@@ -68,10 +68,10 @@ def main() -> None:
 
     from library.env import resolve_under_home
     from library.moss.cns import gamma_for_trajectory
-    from library.moss.generate import _cached_embeds, denoise, initial_noise
+    from library.moss.generate import cached_embeds, denoise, initial_noise
     from library.moss.loader import compile_blocks, load_transformer, pad_embeds
-    from library.moss.model import DEFAULT_UNCOND_SKIP, snapped_sigmas
-    from library.moss.requests import resolve_model_dir
+    from library.moss.model import snapped_sigmas
+    from library.moss.requests import DEFAULT_UNCOND_SKIP, resolve_model_dir
 
     keys = [k for k in args.prompts.split(",") if k]
     seeds = [int(s) for s in args.seeds.split(",") if s]
@@ -85,7 +85,7 @@ def main() -> None:
     run_dir = make_run_dir("moss_cns", label=args.label)
     device = torch.device("cuda")
 
-    embeds = _cached_embeds(
+    embeds = cached_embeds(
         model_dir, [PROMPTS[k] for k in keys] + [""], Path(args.te_cache)
     )
     uncond, uncond_mask = pad_embeds([embeds[""]], device=device)

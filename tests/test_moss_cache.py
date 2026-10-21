@@ -7,18 +7,25 @@ from types import SimpleNamespace
 import pytest
 import torch
 from PIL import Image
+from safetensors import safe_open
 from safetensors.torch import save_file
 
 from library.moss.cache import (
     LATENT_SUFFIX,
     TE_SUFFIX,
+    Pair,
+    add_variants,
+    cache_text,
     find_pairs,
     fit,
     _te_current,
     list_items,
     load_item,
     load_plain,
+    load_variant,
+    read_te,
     target_size,
+    variant_entries,
 )
 from library.moss.model import pack_latents, unpack_latents
 from library.moss.scan import caption_sha, scan
@@ -277,3 +284,117 @@ def test_scan_reads_source_sha(tmp_path):
         )
     s = scan(src, out)
     assert (s.text_cached, s.stale_text) == (2, 1)
+
+
+def test_caption_variants_ride_in_the_te_file(tmp_path):
+    """A variant stores its rows after the shared page prefix; reading it puts
+    ``embeds``' first ``variant_prefix`` rows back in front."""
+    save_file({"latent": torch.randn(128, 4, 4)}, tmp_path / f"a_64x64{LATENT_SUFFIX}")
+    embeds = torch.randn(40, 4096).bfloat16()
+    tail = torch.randn(4, 4096).bfloat16()
+    save_file(
+        {
+            "embeds": embeds,
+            "embeds_plain": torch.randn(25, 4096).bfloat16(),
+            "embeds_v1": torch.randn(9, 4096).bfloat16(),
+            "embeds_v2": tail,
+        },
+        tmp_path / f"a{TE_SUFFIX}",
+        metadata={"variant_prefix": "30"},
+    )
+    (item,) = list_items(tmp_path)
+    assert (item.n_variants, item.n_text_variants) == (2, 39)
+    assert torch.equal(load_variant(item, 2), torch.cat((embeds[:30], tail)))
+    assert torch.equal(read_te(item.te_path), embeds)
+
+
+def test_variant_without_prefix_reads_whole(tmp_path):
+    """``variant_prefix`` absent (or 0): the variant is stored whole."""
+    whole = torch.randn(7, 4096).bfloat16()
+    path = tmp_path / f"a{TE_SUFFIX}"
+    save_file({"embeds": torch.randn(9, 4096).bfloat16(), "embeds_v1": whole}, path)
+    assert torch.equal(read_te(path, "embeds_v1"), whole)
+
+
+def test_variant_writers_round_trip(tmp_path):
+    """``variant_entries`` stores the tails, ``add_variants`` replaces the set in
+    place (through a symlink, at its target) and keeps everything else."""
+    embeds = torch.randn(12, 4096).bfloat16()
+    full = [
+        ("a, b", torch.cat((embeds[:8], torch.randn(3, 4096).bfloat16()))),
+        ("b", torch.cat((embeds[:8], torch.randn(2, 4096).bfloat16()))),
+    ]
+    target = tmp_path / "real" / f"a{TE_SUFFIX}"
+    target.parent.mkdir()
+    tensors, meta = variant_entries(full, 8)
+    assert [t.shape[0] for t in tensors.values()] == [3, 2]
+    save_file({"embeds": embeds} | tensors, target, metadata={"caption": "c"} | meta)
+    link = tmp_path / f"a{TE_SUFFIX}"
+    link.symlink_to(target)
+    assert torch.equal(read_te(link, "embeds_v2"), full[1][1])
+
+    add_variants(link, full[:1], 8)
+    assert link.is_symlink()
+    with safe_open(str(target), "pt") as f:
+        assert sorted(f.keys()) == ["embeds", "embeds_v1"]
+        assert f.metadata() == {
+            "caption": "c",
+            "variant_prefix": "8",
+            "caption_v1": "a, b",
+        }
+    assert torch.equal(read_te(target, "embeds_v1"), full[0][1])
+
+
+def _stub_te(monkeypatch, rows: dict[str, int]):
+    """``cache_text`` on CPU: the TE returns ``rows[text]`` random rows."""
+    import library.moss.loader as loader
+
+    monkeypatch.setattr(loader, "load_tokenizer", lambda _d: None)
+    monkeypatch.setattr(loader, "load_text_encoder", lambda *a, **k: (None, None))
+    monkeypatch.setattr(
+        loader,
+        "prompt_ids",
+        lambda _t, text, _m: SimpleNamespace(input_ids=torch.zeros(1, rows[text])),
+    )
+    monkeypatch.setattr(
+        loader,
+        "encode_prompt",
+        lambda _t, _te, text, *_a: torch.randn(rows[text], 4096),
+    )
+    monkeypatch.setattr(loader, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda: None)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda: 0)
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_cache_text_keeps_variants_of_an_unchanged_caption(
+    tmp_path, monkeypatch, capsys, edited
+):
+    """A re-encode (here ``overwrite``) keeps the file's caption variants while its
+    caption is the one they were drawn from; an edited caption drops them."""
+    _stub_te(monkeypatch, {"red hair": 6, "blue hair": 6})
+    path = tmp_path / f"a{TE_SUFFIX}"
+    tail = torch.randn(2, 4096).bfloat16()
+    save_file(
+        {"embeds": torch.randn(6, 4096).bfloat16(), "embeds_v1": tail},
+        path,
+        metadata={
+            "caption_sha256": caption_sha("red hair"),
+            "variant_prefix": "4",
+            "caption_v1": "hair",
+        },
+    )
+    caption = "blue hair" if edited else "red hair"
+    pair = Pair("a", tmp_path / "a.png", caption, caption_sha(caption))
+    cache_text([pair], tmp_path, "", "cpu", 4096, overwrite=True)
+    with safe_open(str(path), "pt") as f:
+        keys, meta = set(f.keys()), f.metadata()
+    assert meta["caption"] == caption
+    if edited:
+        assert keys == {"embeds"}
+        assert "caption_v1" not in meta and "variant_prefix" not in meta
+        assert "stale caption variants" in capsys.readouterr().out
+    else:
+        assert keys == {"embeds", "embeds_v1"}
+        assert (meta["caption_v1"], meta["variant_prefix"]) == ("hair", "4")
+        assert torch.equal(read_te(path, "embeds_v1")[4:], tail)

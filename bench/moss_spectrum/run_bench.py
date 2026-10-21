@@ -5,7 +5,8 @@ Every arm runs through ``library.moss.generate.denoise`` (the shipped path) at a
 fixed seed per prompt. Arm spec: ``p<N>`` = plain N steps, ``s<N>[:k=v,…]`` =
 Spectrum at N steps with ``MossSpectrum`` overrides (``ws`` window_size, ``fw``
 flex_window, ``warm`` warmup, ``stop`` stop_caching_step, ``w``, ``m``, ``lam``,
-``K`` history, ``cal`` calibration); add ``b=1`` to either for the batched
+``K`` history, ``cal`` calibration) over its defaults, the generator's (``fw``
+0.5; runs before 2026-10-21 defaulted to ``fw=0.25``); add ``b=1`` to either for the batched
 cond+uncond forward, ``sde=1`` for the ER-SDE sampler instead of Euler,
 ``cns=1`` (with ``sde=1``) to recolor its noise with ``--cns_gamma``.
 
@@ -175,7 +176,7 @@ def main() -> None:
 
     from diffusers.image_processor import VaeImageProcessor
 
-    from library.moss.generate import _cached_embeds, denoise, initial_noise
+    from library.moss.generate import cached_embeds, denoise, initial_noise
     from library.moss.loader import (
         compile_blocks,
         empty_cache,
@@ -183,8 +184,8 @@ def main() -> None:
         load_vae,
         pad_embeds,
     )
-    from library.moss.model import DEFAULT_UNCOND_SKIP, decode, snapped_sigmas
-    from library.moss.requests import resolve_model_dir
+    from library.moss.model import decode, snapped_sigmas
+    from library.moss.requests import DEFAULT_UNCOND_SKIP, resolve_model_dir
     from library.moss.cns import MossCNS
     from library.moss.spectrum import MossSpectrum
 
@@ -216,8 +217,8 @@ def main() -> None:
             f"--decode_only: {sum(map(len, todo.values()))} latents missing in {image_dir}"
         )
     if any(todo.values()):
-        # TE outputs are cached per text on disk too (_cached_embeds).
-        embeds = _cached_embeds(
+        # TE outputs are cached per text on disk too (cached_embeds).
+        embeds = cached_embeds(
             model_dir,
             [PROMPTS[k] for k in keys] + [""],
             Path(args.image_root) / "_te_cache",

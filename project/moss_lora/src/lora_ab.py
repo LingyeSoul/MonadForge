@@ -8,7 +8,9 @@ Spectrum at its shipped settings (50 steps, flex_window 0.5), ``er_sde:1.0,er_sd
 Same noise per (prompt, seed), so each row differs by the arm only. Writes one row
 per (variant, prompt, seed) into ``--out``. Blocks are compiled after the LoRA is
 attached (``--no-compile`` for eager; grids made before 2026-10-17 16:30 are eager,
-so compare compiled arms only against compiled arms).
+so compare compiled arms only against compiled arms). Latent names carry a digest of
+the LoRA (path + mtime), prompts, steps, cfg, size, compile, Spectrum (and CNS γ
+on cns arms), so a rerun resumes only what matches.
 
     make daemon-run ARGS="project/moss_lora/src/lora_ab.py --lora output/ckpt_moss/x.safetensors"
 """
@@ -19,27 +21,22 @@ from pathlib import Path
 
 import torch
 from PIL import Image, ImageDraw
-from safetensors.torch import load_file, save_file
 
+from _render import (
+    decoded,
+    load_dit,
+    lora_id,
+    render,
+    save_latent,
+    settings_tag,
+    spectrum_settings,
+    uncond_embeds,
+)
 from library.env import resolve_under_home
 from library.moss.cache import caption_converter
 from library.moss.cns import MossCNS
-from library.moss.generate import (
-    _build_spectrum,
-    _cached_embeds,
-    denoise,
-    initial_noise,
-)
-from library.moss.loader import (
-    compile_blocks,
-    empty_cache,
-    load_transformer,
-    load_vae,
-    pad_embeds,
-)
-from library.moss.lora import load_for_inference
-from library.moss.model import decode, snapped_sigmas
-from library.moss.requests import GenerateRequest
+from library.moss.loader import empty_cache, load_vae
+from library.moss.model import snapped_sigmas
 
 PROMPTS = [
     # Tag bag in the training captions' own format, characters it saw.
@@ -112,11 +109,19 @@ def main() -> None:
         for p in PROMPTS
     ]
 
-    embeds = _cached_embeds(
-        "", [*prompts, ""], resolve_under_home("post_image_dataset/moss_prompt_te")
-    )
-    uncond, uncond_mask = pad_embeds([embeds[""]], device)
+    lora = resolve_under_home(args.lora)
+    embeds, uncond, uncond_mask = uncond_embeds(device, prompts)
     sigmas = snapped_sigmas(args.steps)
+    tag = settings_tag(
+        lora=lora_id(lora),
+        prompts=prompts,
+        steps=args.steps,
+        cfg=args.cfg,
+        size=args.size,
+        compile=args.compile,
+        spectrum=spectrum_settings(args.spectrum),
+    )
+    cns_tag = settings_tag(base=tag, cns_gamma=args.cns_gamma)
 
     # Each latent hits disk as soon as its denoise ends; reruns skip what is there.
     lat_dir = out / "latents"
@@ -131,10 +136,8 @@ def main() -> None:
     ]
 
     def stem(job):
-        # Euler keeps the pre-arms names, so earlier runs resume.
         v, pi, s, (sampler, m) = job
-        name = f"{v}_p{pi}_s{s}_x{m}" + ("" if sampler == "euler" else f"_{sampler}")
-        return name + ("_spec" if args.spectrum else "")
+        return f"{v}_p{pi}_s{s}_x{m}_{sampler}_{cns_tag if sampler == 'cns' else tag}"
 
     def lat_path(job):
         return lat_dir / f"{stem(job)}.safetensors"
@@ -143,36 +146,30 @@ def main() -> None:
         todo = [j for j in jobs if j[0] == variant and not lat_path(j).exists()]
         if not todo:
             continue
-        tr = load_transformer("", variant, device=device)
-        net = load_for_inference(tr, resolve_under_home(args.lora))
-        if args.compile:
-            compile_blocks(tr.layers)
+        tr, net = load_dit(lora, device, variant, compile=args.compile)
         for job in todo:
             _, pi, seed, (sampler, m) = job
-            cond, cond_mask = pad_embeds([embeds[prompts[pi]]], device)
             net.set_multiplier(m)
             cns = (
                 MossCNS.from_spec(args.cns_gamma, variant, args.cfg)
                 if sampler == "cns"
                 else None
             )
-            z = denoise(
+            z = render(
                 tr,
-                initial_noise(seed, h, w).to(device),
-                cond,
-                cond_mask,
+                embeds[prompts[pi]],
                 uncond,
                 uncond_mask,
                 sigmas,
+                seed=seed,
+                height=h,
+                width=w,
                 cfg=args.cfg,
                 sampler="euler" if sampler == "euler" else "er_sde",
-                seed=seed,
+                spectrum=args.spectrum,
                 cns=cns,
-                spectrum=_build_spectrum(GenerateRequest(spectrum=True), {})
-                if args.spectrum
-                else None,
             )
-            save_file({"latent": z.cpu().contiguous()}, str(lat_path(job)))
+            save_latent(z, lat_path(job))
             print(
                 f"[{variant}] p{pi} s{seed} {sampler} x{m} -> {lat_path(job).name}",
                 flush=True,
@@ -185,17 +182,7 @@ def main() -> None:
     for job in jobs:
         variant, pi, seed, (sampler, m) = job
         path = out / f"{stem(job)}.png"
-        if not path.exists():
-            z = load_file(str(lat_path(job)))["latent"]
-            img = (
-                decode(z.to(device), vae)[0]
-                .float()
-                .add(1)
-                .mul(127.5)
-                .round()
-                .clamp(0, 255)
-            )
-            Image.fromarray(img.permute(1, 2, 0).byte().cpu().numpy()).save(path)
+        decoded(lat_path(job), vae, device, png=path)
         rows.append(
             {
                 "variant": variant,
@@ -229,7 +216,10 @@ def main() -> None:
                 ) + ("" if args.spectrum else "_nospec")
                 grid.save(out / f"grid_{variant}_p{pi}_s{seed}{suffix}.png")
     (out / "index.json").write_text(
-        json.dumps({"args": vars(args), "prompts": prompts, "rows": rows}, indent=2)
+        json.dumps(
+            {"args": vars(args), "tag": tag, "prompts": prompts, "rows": rows},
+            indent=2,
+        )
     )
     print(f"wrote {out}", flush=True)
 

@@ -45,6 +45,11 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
         "像素面积上限的边长——1024 表示按图片原始比例最多约 1024² 像素，"
         "两边均为 16 的倍数；不会放大",
     ),
+    "caption_format": (
+        "标注格式",
+        "文本编码器编码的内容：layout_json = 把 Anima 标注映射为 MOSS 的 layout JSON 提示词"
+        "（需要 danbooru 标签 CSV），text = 原样使用 .txt。生成时请使用相同格式",
+    ),
     "overwrite": ("覆盖", "即使缓存是最新的也重新编码"),
     "skip_text": ("跳过文本", "跳过文本编码器"),
     "skip_latents": ("跳过潜变量", "跳过 VAE 编码"),
@@ -111,6 +116,11 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
 FIELDS_CN_GENERATE: dict[str, tuple[str, str]] = {
     "prompt": ("提示词", "提示词（设置 prompts_file 或 example 时忽略）"),
     "negative_prompt": ("反向提示词", "反向提示词（管线默认为空）"),
+    "prompt_format": (
+        "提示词格式",
+        "layout_json = 把 Anima 格式的提示词映射为 MOSS 的 layout JSON（与缓存的标注格式一致）；"
+        "text = 原样使用，适用于已是 JSON 的提示词或以 text 格式缓存训练的 LoRA",
+    ),
     "lora": (
         "LoRA",
         "要测试的 LoRA（留空 = 训练输出）；Base 上训练的 LoRA 也可用于 SFT",

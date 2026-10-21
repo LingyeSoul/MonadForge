@@ -98,6 +98,53 @@ def test_ref_timestep_zero_batched_matches_reference(tiny, ref_t):
     assert torch.allclose(out, torch.cat([single[:1], r1]), atol=1e-5)
 
 
+@pytest.fixture
+def ref_iso(tiny):
+    tiny.ref_isolate = True
+    yield
+    tiny.ref_isolate = False
+
+
+@torch.no_grad()
+def test_ref_isolate_batched_matches_reference(tiny, ref_t, ref_iso):
+    x, e, mask = _inputs()
+    ref_t(0.0)
+    single = tiny(x, 500.0, e, mask, ref=_ref()).sample
+    tiny.ref_isolate = False
+    assert not torch.allclose(tiny(x, 500.0, e, mask, ref=_ref()).sample, single)
+    tiny.ref_isolate = True
+    batched = tiny.forward_batched(x, 500.0, e, mask, ref=_ref())
+    assert torch.allclose(batched, single, atol=1e-5)
+    r1 = tiny(x[1:], 500.0, e[1:], mask[1:], skip_layers=[2], ref=_ref()[1:]).sample
+    out = tiny.forward_batched(x, 500.0, e, mask, skip_layers=[(), (2,)], ref=_ref())
+    assert torch.allclose(out, torch.cat([single[:1], r1]), atol=1e-5)
+
+
+@torch.no_grad()
+def test_ref_isolate_at_t0_reference_stream_is_step_free(tiny, ref_t, ref_iso):
+    """Isolated and clean, the reference tokens' per-block state depends on the
+    reference alone: not on the noisy latent, the text or the timestep."""
+    ref_t(0.0)
+    streams = []
+
+    def hook(index, x, n_img):
+        streams[-1].append(x[:, n_img : n_img + 6].clone())
+        return x
+
+    tiny.layer_hook = hook
+    try:
+        for seed, t in ((1, 500.0), (5, 900.0)):
+            g = torch.Generator().manual_seed(seed)
+            x = torch.randn(1, 8, 4, 6, generator=g)
+            e = torch.randn(1, 5 + seed, 32, generator=g)
+            streams.append([])
+            tiny(x, t, e, ref=_ref(1))
+    finally:
+        tiny.layer_hook = None
+    for a, b in zip(*streams):
+        assert torch.allclose(a, b, atol=1e-6)
+
+
 @torch.no_grad()
 def test_ref_timestep_ignored_without_ref(tiny, ref_t):
     x, e, mask = _inputs()

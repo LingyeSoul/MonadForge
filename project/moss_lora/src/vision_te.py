@@ -9,7 +9,7 @@ pipeline's string content, byte-identical to its prompts.
 
 import torch
 
-from library.moss.loader import _offload_by_layer, _te_reserve_gb
+from library.moss.loader import offload_by_layer, te_reserve_gb
 from library.moss.requests import variant_dir
 
 
@@ -45,15 +45,17 @@ def load_te(tok, device, model_dir=""):
         variant_dir(model_dir, "base") / "text_encoder", dtype=torch.bfloat16
     ).eval()
     te.visual.to(device)
-    paged = _offload_by_layer(te, device, _te_reserve_gb(4096))
+    paged = offload_by_layer(te, device, te_reserve_gb(4096))
     print(f"[te] vision resident, {paged} decoder layers paged", flush=True)
     return te
 
 
 @torch.no_grad()
-def encode(tok, te, image, text, max_pixels, device, drop_rows=False):
+def encode(tok, te, image, text, max_pixels, device, drop_rows=False, prefix=False):
     """``(last_hidden_state (S, 4096), image token count)``; ``image=None`` is the
-    pipeline's text-only encode. ``drop_rows`` removes the image-token rows."""
+    pipeline's text-only encode. ``drop_rows`` removes the image-token rows.
+    ``prefix`` appends the row count through ``<|vision_end|>``: the rows every
+    text after the same page shares."""
     content = text
     if image is not None:
         content = [{"type": "image"}] + (
@@ -75,4 +77,8 @@ def encode(tok, te, image, text, max_pixels, device, drop_rows=False):
     is_image = inputs["mm_token_type_ids"][0] == 1
     if drop_rows:
         hidden = hidden[~is_image]
-    return hidden, int(is_image.sum())
+    if not prefix:
+        return hidden, int(is_image.sum())
+    end = int(is_image.nonzero().max()) + 1
+    assert inputs["input_ids"][0, end] == tok.convert_tokens_to_ids("<|vision_end|>")
+    return hidden, int(is_image.sum()), end + 1

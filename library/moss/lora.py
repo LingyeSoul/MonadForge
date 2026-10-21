@@ -31,14 +31,27 @@ class LoRANetwork(_LoRANetwork):
 
 
 load_network = LoRANetwork.from_file
-load_for_inference = LoRANetwork.for_inference
 
 
-def ref_timestep(path) -> float | None:
-    """The ``ref_timestep`` a reference LoRA trained with; None = the image's
-    (stamped negative, or absent: the LoRAs from before the flag)."""
+def ref_settings(path) -> tuple[float | None, bool]:
+    """``(ref_timestep, ref_isolate)`` a reference LoRA trained with, as
+    ``MOSSImageTransformer`` takes them. ``ref_timestep`` None = the image's
+    (stamped negative, or absent: the LoRAs from before the flag); ``ref_isolate``
+    is stamped ``"1"`` (``"True"`` on the first isolated LoRAs), absent = off."""
     from safetensors import safe_open
 
     with safe_open(str(path), framework="pt") as handle:
-        value = (handle.metadata() or {}).get("ref_timestep")
-    return None if value is None or float(value) < 0 else float(value)
+        meta = handle.metadata() or {}
+    t = meta.get("ref_timestep")
+    return (
+        None if t is None or float(t) < 0 else float(t),
+        meta.get("ref_isolate") in ("1", "True"),
+    )
+
+
+def load_for_inference(transformer, path, multiplier: float = 1.0) -> LoRANetwork:
+    """``LoRANetwork.for_inference``, plus the reference settings the LoRA trained
+    with (``ref_settings``) set on ``transformer``."""
+    network = LoRANetwork.for_inference(transformer, path, multiplier)
+    transformer.ref_timestep, transformer.ref_isolate = ref_settings(path)
+    return network

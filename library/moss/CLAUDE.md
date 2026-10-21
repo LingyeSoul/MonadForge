@@ -3,31 +3,34 @@
 **This is not Anima.** MOSS-Image (OpenMOSS, Apache-2.0) is a 5B single-stream DiT on a
 frozen Qwen3.5-9B text encoder and the frozen FLUX.2 VAE. The root `CLAUDE.md`
 invariants describe the Anima DiT; most of them are wrong here. Shared with Anima:
-`library.runtime.offloading` (+ `library.runtime.blockswap`, also used by `library/qwen21/`), `library.runtime.dynamo`, `library.env`, the daemon, and
-the pure Spectrum core (`networks/spectrum_forecast.py`, `networks/spectrum_sea.py`), and
-the ER-SDE sampler + CNS core (`library.inference.sampling`, `library.inference.corrections.cns_core`).
+`library.runtime.offloading` (+ `library.runtime.blockswap`, also used by `library/qwen21/`), `library.runtime.dynamo`, `library.env`, the daemon,
+the ER-SDE sampler + CNS core (`library.inference.sampling`, `library.inference.corrections.cns_core`),
+and the relational-REPA math (`library.training.repa`). `spectrum.py` imports nothing from
+`networks/`: it re-implements Anima's growing-window rule and the
+`networks/spectrum_forecast.py` estimator (`tests/test_moss_spectrum.py` checks it against the core).
 Shared with `library/qwen21/`: `library.lines` (`requests.py` request base, `adapters.py`
 LoRA / LoKr / LoHa network) and `library.runtime.blockswap.place`.
 Nothing Anima-side imports `library.moss`.
 
 | Module | Role |
 |---|---|
-| `model.py` | vendored `MOSSImageTransformer` / `MOSSImageScheduler` (Apache-2.0, attribution kept; state-dict names unchanged). Reference per-sample `forward`, `forward_batched` (masked text, per-sample `skip_layers`), `head` for Spectrum, `pack_latents` / `unpack_latents` / `encode` / `decode` |
-| `requests.py` | **torch-free** `CacheRequest` / `GenerateRequest` / `TrainRequest` / `TuneSwapRequest`, `to_argv()` / `from_argv()`, model-dir resolution |
-| `loader.py` | phase split: TE (whole decoder layers paged onto the card) → encode → free → DiT; VAE |
-| `cache.py` | TE cache (natural length, never padded) + latent cache (packed, BN-normalised) |
-| `generate.py` | `run_generate(req)`: Euler or ER-SDE (`sampler`, Anima's `ERSDESampler`), CFG + uncond skip-22, Spectrum hook-in |
-| `cns.py` | CNS noise recolor for ER-SDE on the un-patchified 32 ch grid + γ estimator; bench-only so far (`project/moss_lora/sampler.md`) |
-| `spectrum.py` | per-branch feature forecaster (cond and uncond forecast separately) |
-| `dave.py` | DAVE on the image tokens only, run through `model.layer_hook` (a post-block edit that sees only the rows that ran the block, so skip-22 is handled); τ is a step count; the massive-activation channels (`calibration/massive_channels.npz`) are left out of the mean. `auto` = `calibration/dave_alpha.npz`, blocks 19–30 from a DAVE-on pool sweep; the ComfyUI node `~/ComfyUI-Anima-DAVE` bundles the same pool + channel list; `project/moss_lora/dave.md` |
-| `lora.py` | `library.lines.adapters` bound to `layers` (held **outside** the blocks: the swapper moves every `.weight` under a block). `channel_scaling_alpha` reads `calibration/channel_stats.safetensors` and `dc_isolate` (on by default) reads `calibration/channel_mean.safetensors` (both from `bench/moss_channel_stats/probe_lora_inputs.py`); `docs/moss/channel_scaling.md` |
-| `train.py` | `run_train(req)`; `--caption_dropout` reads the shipped `asset/empty_prompt.safetensors` (the `""` TE embedding, one for every cache) |
+| `model.py` | vendored `MOSSImageTransformer` / `MOSSImageScheduler` (Apache-2.0, attribution kept; state-dict names unchanged). Reference per-sample `forward`, `forward_batched` (masked text, per-sample `skip_layers`), `head` for Spectrum, `layer_hook`, `rotate` (RoPE), `patchify` / `unpatchify`, `pack_latents` / `unpack_latents` / `encode` / `decode`. i2i probe: `ref=` clean reference latents on RoPE's `r = 1` axis (grid stretched over the image's), `ref_timestep` (their own block modulation) and `ref_isolate` (reference queries see reference keys only) as attributes, one `ref_span` through the blocks |
+| `requests.py` | **torch-free** `CacheRequest` / `GenerateRequest` / `TrainRequest` / `TuneSwapRequest`, `to_argv()` / `from_argv()`, model-dir resolution, the reference sampler's `DEFAULT_STEPS` / `DEFAULT_CFG` / `DEFAULT_UNCOND_SKIP` / `DEFAULT_SHIFT` |
+| `loader.py` | phase split: TE (whole decoder layers paged onto the card: `offload_by_layer`, `te_reserve_gb`) → encode → free → DiT; VAE; `compile_blocks` |
+| `cache.py` | TE cache (natural length, never padded) + latent cache (packed, BN-normalised). Caption variants `embeds_v{k}` (stored after a shared `variant_prefix`): `variant_entries` / `add_variants` write them, `read_te` rebuilds them, a re-encode keeps them while the caption is unchanged |
+| `generate.py` | `run_generate(req)`: Euler or ER-SDE (`sampler`, Anima's `ERSDESampler`), CFG + uncond skip-22, Spectrum hook-in. `denoise`, `cached_embeds` (on-disk TE cache by text) and `build_spectrum(req)` are what the benches and probes reuse |
+| `cns.py` | CNS noise recolor for ER-SDE on the un-patchified 32 ch grid (`model.unpatchify`) + γ estimator; bench-only so far (`project/moss_lora/sampler.md`) |
+| `spectrum.py` | per-branch feature forecaster (cond and uncond forecast separately); `MossSpectrum()` defaults are `GenerateRequest`'s (`flex_window` 0.5) |
+| `dave.py` | DAVE on the image tokens only, run through `model.layer_hook` (a post-block edit that sees only the rows that ran the block, so skip-22 is handled); τ is a step count; the massive-activation channels (`calibration/massive_channels.npz`) are left out of the mean. `auto` = `calibration/dave_alpha.npz`, blocks 19–30 from a DAVE-on pool sweep; the ComfyUI node `~/ComfyUI-Anima-DAVE` bundles the same pool + channel list; user doc `docs/moss/dave.md`, research `project/moss_lora/dave.md` |
+| `lora.py` | `library.lines.adapters` bound to `layers` (held **outside** the blocks: the swapper moves every `.weight` under a block). `channel_scaling_alpha` reads `calibration/channel_stats.safetensors` and `dc_isolate` (on by default) reads `calibration/channel_mean.safetensors` (both from `bench/moss_channel_stats/probe_lora_inputs.py`); `docs/moss/channel_scaling.md`. `load_for_inference` also sets the transformer's `ref_timestep` / `ref_isolate` from the LoRA's metadata (`ref_settings`; `ref_isolate` stamped `"1"`, `"True"` on the first isolated LoRAs) |
+| `train.py` | `run_train(req)`. Per step `choose_embeds` picks the caption: plain Anima caption (`plain_caption_rate`, layout-JSON caches), else a caption variant (`caption_variant_rate`), then the empty prompt (`--caption_dropout`, the shipped `asset/empty_prompt.safetensors`, one for every cache); one RNG each. Reference latents (`*.moss_ref` files) train with `ref_timestep` / `ref_isolate`, stamped in the LoRA. Relational REPA (`repa_weight`, parked). `--fit_report`: step 1 is the largest sample at its longest caption, no dropout, peak vs free VRAM. Above `PRELOAD_LIMIT_GB` samples stream from disk |
+| `repa.py` | relational REPA (Anima's DoG-Gram term, `library.training.repa`) on one block's image tokens via `layer_hook`, massive-activation channels dropped and tokens centered; targets are the Anima PE-Spatial sidecars of un-resampled latents. Parked: no gain over channel scaling (2026-10-20), still wired (`repa_weight` 0 = off) |
 | `tune.py` | `run_tune(req)`: one process, one arm per swap count at the largest budget that fits, timed on the largest sample → recommended `--blocks_to_swap` / `--activation_memory_budget` |
-| `scan.py` | **torch-free** cache file layout (suffixes, stem prefixing) + source/cache counts for the GUI; `cache.py` imports its constants |
+| `scan.py` | **torch-free** cache file layout (suffixes, `latent_files`, stem prefixing) + source/cache counts for the GUI; `cache.py` imports its constants. The GUI's stale count compares `source_sha256` to the `.txt`, `cache.py` the encoded caption: they can disagree (see `_te_current`) |
 
 Sidecars: `scripts/moss/{cache,generate,train,tune_swap}.py`, thin argparse over the requests,
 submitted through the daemon; `make gui-moss` (`gui/moss/`) submits the same jobs. User doc:
-`docs/experimental/moss_lora.md`. Weights: catalog packs `moss-base` / `moss-sft`
+`docs/moss/README.md` (findings under `docs/moss/findings/`). Weights: catalog packs `moss-base` / `moss-sft`
 (`library/downloads.py`) under `models/moss_image/MOSS-Image-{Base,SFT}`; SFT ships its
 DiT alone, and TE / VAE / tokenizer always load from Base.
 

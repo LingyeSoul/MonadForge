@@ -3,11 +3,15 @@
 The forecast target is the image-token hidden state after the last block (before
 ``final_norm_video``); a forecast step runs only ``time_conditioning`` + ``head``,
 skipping all 42 blocks and the text refiner (Spectrum: Han et al., CVPR 2026).
-The when-to-skip rule is Anima's growing window (``networks/spectrum.py``), precomputed in ``begin``
+The when-to-skip rule is Anima's growing window (``networks/spectrum.py``, written
+inline in its sampler loop; ``networks/spectrum_sea.window_decision_fraction``
+replays it), re-implemented here as ``window_schedule`` and precomputed in ``begin``
 because it depends on nothing but the step count.
 
 The estimator is ``networks/spectrum_forecast.py``'s (``SpectrumPredictor``: Chebyshev ridge fit over the
-step index blended with a first-order Taylor step), written in its linear form. A
+step index blended with a first-order Taylor step), re-implemented in its linear
+form (nothing here imports ``networks/``; ``tests/test_moss_spectrum.py`` checks it
+against the core). A
 ridge prediction is ``x*ᵀ (XᵀX + λI)⁻¹ Xᵀ H``, i.e. a weighted sum ``Σ c_k H_k`` of
 the stored observations, and the Taylor term is too. ``_Forecaster`` solves the
 ``K``-vector of weights in float64 and sums the bf16 history into an fp32
@@ -41,11 +45,10 @@ from dataclasses import dataclass
 import torch
 
 
-
 def window_schedule(
     num_steps: int,
     window_size: float = 2.0,
-    flex_window: float = 0.25,
+    flex_window: float = 0.5,
     warmup: int = 6,
     stop_caching_step: int = -1,
 ) -> list[bool]:
@@ -120,10 +123,11 @@ class _Forecaster:
 
 @dataclass
 class MossSpectrum:
-    """Growing-window Spectrum. Defaults are Anima's shipped ones."""
+    """Growing-window Spectrum. Defaults are ``GenerateRequest``'s (Anima's, but
+    ``flex_window`` 0.5 for 0.25)."""
 
     window_size: float = 2.0
-    flex_window: float = 0.25
+    flex_window: float = 0.5
     warmup: int = 6
     stop_caching_step: int = -1
     w: float = 0.3  # Chebyshev / Taylor blend, 1.0 = pure Chebyshev
@@ -150,7 +154,9 @@ class MossSpectrum:
     @torch.no_grad()
     def observe(self, i: int, features: torch.Tensor) -> None:
         if self._pred is None:
-            self._pred = _Forecaster(self.m, self.lam, self.w, self.num_steps, self.history)
+            self._pred = _Forecaster(
+                self.m, self.lam, self.w, self.num_steps, self.history
+            )
         elif self.calibration > 0 and len(self._pred.t) >= 2:
             self._residual = features - self._pred.predict(float(i))
         self._pred.update(float(i), features)

@@ -34,6 +34,11 @@ MODEL_DIR_ENV = "ANIMA_MOSS_MODEL_DIR"
 VARIANTS = tuple(VARIANT_DIRS)
 # LoRA alpha when the request leaves it unset (lokr / loha fall back to rank).
 LORA_ALPHA = 128.0
+# The reference sampler's defaults (``MOSSImagePipeline.__call__``).
+DEFAULT_STEPS = 50
+DEFAULT_CFG = 3.0
+DEFAULT_UNCOND_SKIP = (22,)
+DEFAULT_SHIFT = 5.0
 
 
 def default_model_dir() -> Path:
@@ -128,8 +133,10 @@ class GenerateRequest(Request):
     lora_multiplier: float = _f(1.0, "LoRA strength; 0.0 is the base model exactly")
     width: int = _f(1024, "multiple of 16")
     height: int = _f(1024, "multiple of 16")
-    steps: int = _f(50, "denoising steps (the snapped grid can return fewer)")
-    cfg: float = _f(3.0, "CFG scale; 1.0 = no uncond forward")
+    steps: int = _f(
+        DEFAULT_STEPS, "denoising steps (the snapped grid can return fewer)"
+    )
+    cfg: float = _f(DEFAULT_CFG, "CFG scale; 1.0 = no uncond forward")
     sampler: str = _f(
         "er_sde",
         "er_sde = ER-SDE-Solver-3 on the same σ grid, noise seeded by the prompt's "
@@ -137,7 +144,7 @@ class GenerateRequest(Request):
         choices=("euler", "er_sde"),
     )
     uncond_skip: str = _f(
-        "22",
+        ",".join(map(str, DEFAULT_UNCOND_SKIP)),
         "comma-separated DiT blocks the uncond branch skips ('' = plain CFG); "
         "the pipeline default replaces the negative with a block-22-skipped "
         "prediction, still two forwards per step",
@@ -160,7 +167,9 @@ class GenerateRequest(Request):
         "with the reference",
         advanced=True,
     )
-    shift: float = _f(5.0, "scheduler shift (pipeline default)", advanced=True)
+    shift: float = _f(
+        DEFAULT_SHIFT, "scheduler shift (pipeline default)", advanced=True
+    )
     decode_only: bool = _f(
         False,
         "decode every latent already in <out_dir>/latents/ to PNG and exit — no "
@@ -324,12 +333,29 @@ class TrainRequest(Request):
         "probability of training a step on the plain Anima caption instead of its "
         "layout JSON; only a caption_format=layout_json cache carries the plain one",
     )
+    caption_variant_rate: float = _f(
+        0.0,
+        "probability of training a step on one of the TE file's tag-dropped "
+        "caption variants (embeds_v1…, drawn uniformly) instead of its full "
+        "caption. Drawn only when the plain caption was not, so on a sample with "
+        "a plain caption the share of variant steps is (1 - plain_caption_rate) "
+        "x this. Only a cache built with variants carries them (colorize probe)",
+        advanced=True,
+    )
     ref_timestep: float = _f(
         0.0,
         "timestep (1000·σ) whose block modulation the reference tokens get (a "
         "cache with *.moss_ref files); 0 = clean, as the reference is. Negative = "
         "the image's timestep, as the first i2i probes trained "
         "(docs/proposal/moss_i2i.md, probe 4). Stamped in the LoRA metadata",
+        advanced=True,
+    )
+    ref_isolate: bool = _f(
+        False,
+        "the reference tokens attend only to themselves; image and text still "
+        "attend to them. With ref_timestep 0 the reference stream no longer "
+        "depends on the step, so its per-block K/V could be computed once per "
+        "image. Stamped in the LoRA metadata",
         advanced=True,
     )
     repa_weight: float = _f(

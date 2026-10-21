@@ -8,8 +8,15 @@ leaves two files per image in one flat folder.
         embeds_plain  (S', 4096) bf16 — under ``layout_json`` only: the plain Anima
                 caption the layout came from, which training swaps in at
                 ``plain_caption_rate``
-        metadata: caption, caption_sha256, caption_format, source_sha256, n_text,
-                  max_text_tokens, encoder (+ plain_caption_sha256, n_text_plain)
+        embeds_v1, embeds_v2, …  (S_k − P, 4096) bf16 — optional tag-dropped
+                caption variants (``variant_entries`` / ``add_variants``; the
+                colorize probe writes them), which training swaps in at
+                ``caption_variant_rate``. Only the rows after the first
+                ``P = variant_prefix`` (metadata) are stored: the TE is causal and
+                the variants share ``embeds``' leading rows (the page)
+        metadata: caption, caption_sha256, caption_format, source_sha256, source,
+                  n_text, max_text_tokens, encoder (+ plain_caption_sha256,
+                  n_text_plain; + caption_v{k}, variant_prefix with variants)
     {stem}_{W}x{H}.moss_latent.safetensors
         latent  (128, H/16, W/16) fp32 — packed 2×2 and BN-normalised, i.e. exactly
                 what the DiT consumes (``model.encode``, the inverse of the decode)
@@ -21,7 +28,9 @@ equals that length, so a padded cache would train an offset inference never sees
 
 Invalidation: a TE file is current while its ``caption_sha256`` (and truncation
 length, and under ``layout_json`` its ``plain_caption_sha256``) match the caption
-on disk, so a caption edit re-encodes that caption only. A latent file is current while it is newer than its source image; a latent
+on disk, so a caption edit re-encodes that caption only. Re-encoding keeps the
+file's caption variants while its caption is unchanged; after a caption edit they
+are stale and dropped, with a warning. A latent file is current while it is newer than its source image; a latent
 at a different size for the same stem is deleted when the new one is written.
 ``--overwrite`` re-encodes everything.
 
@@ -69,11 +78,14 @@ from library.moss.scan import (
     REF_SUFFIX,
     TE_SUFFIX,
     caption_sha,
+    latent_files,
     layout_sidecar,
     original_tree,
     source_pairs,
 )
-from library.moss.scan import LATENT_RE as _LATENT_RE
+
+_VARIANT_RE = re.compile(r"embeds_v[1-9][0-9]*")
+_VARIANT_META_RE = re.compile(r"caption_v[1-9][0-9]*|variant_prefix")
 
 STRIDE = 16
 AREA_TOLERANCE = 1.10
@@ -93,6 +105,8 @@ class CacheItem:
     n_text_plain: int = 0  # 0 = no plain-caption embedding in the TE file
     ref_path: Path | None = None  # clean reference latent (i2i probe)
     n_ref: int = 0
+    n_variants: int = 0  # embeds_v1 … embeds_v{n} in the TE file
+    n_text_variants: int = 0  # the longest variant, its shared prefix included
 
 
 @dataclass
@@ -111,14 +125,10 @@ def list_items(cache_dir) -> list[CacheItem]:
     """Every stem with both a latent and a TE file, sorted by stem."""
     cache_dir = Path(cache_dir)
     latents: dict[str, tuple[Path, int, int]] = {}
-    for p in cache_dir.glob(f"*{LATENT_SUFFIX}"):
-        m = _LATENT_RE.match(p.name)
-        if m is None:
-            continue
-        stem = m["stem"]
+    for stem, w, h, p in latent_files(cache_dir):
         prev = latents.get(stem)
         if prev is None or p.stat().st_mtime > prev[0].stat().st_mtime:
-            latents[stem] = (p, int(m["w"]), int(m["h"]))
+            latents[stem] = (p, w, h)
     items = []
     for stem, (path, w, h) in sorted(latents.items()):
         te = cache_dir / f"{stem}{TE_SUFFIX}"
@@ -131,6 +141,12 @@ def list_items(cache_dir) -> list[CacheItem]:
                 if "embeds_plain" in f.keys()
                 else 0
             )
+            tails = [
+                f.get_slice(k).get_shape()[0]
+                for k in f.keys()
+                if _VARIANT_RE.fullmatch(k)
+            ]
+            prefix = int((f.metadata() or {}).get("variant_prefix", 0))
         ref, n_ref = cache_dir / f"{stem}{REF_SUFFIX}", 0
         if ref.exists():
             with safe_open(ref, "pt") as f:
@@ -138,7 +154,17 @@ def list_items(cache_dir) -> list[CacheItem]:
             n_ref = rh * rw
         items.append(
             CacheItem(
-                stem, path, te, w, h, n_text, n_plain, ref if n_ref else None, n_ref
+                stem,
+                path,
+                te,
+                w,
+                h,
+                n_text,
+                n_plain,
+                ref if n_ref else None,
+                n_ref,
+                len(tails),
+                prefix + max(tails) if tails else 0,
             )
         )
     return items
@@ -154,15 +180,92 @@ def load_ref(item: CacheItem) -> torch.Tensor | None:
 def load_item(item: CacheItem) -> tuple[torch.Tensor, torch.Tensor]:
     """``latent (128, H/16, W/16)`` fp32, ``embeds (S, 4096)`` bf16, both on CPU."""
     latent = load_file(item.latent_path)["latent"].float()
-    embeds = load_file(item.te_path)["embeds"].to(torch.bfloat16)
+    embeds = read_te(item.te_path)
     return latent, embeds
+
+
+def read_te(path, key: str = "embeds") -> torch.Tensor:
+    """One embedding ``(S, 4096)`` bf16 from a TE file, only that key read; an
+    ``embeds_v{k}`` tail comes back behind its shared ``embeds`` prefix."""
+    with safe_open(str(path), "pt") as f:
+        x = f.get_tensor(key)
+        prefix = int((f.metadata() or {}).get("variant_prefix", 0))
+        if _VARIANT_RE.fullmatch(key) and prefix:
+            x = torch.cat((f.get_slice("embeds")[:prefix], x))
+    return x.to(torch.bfloat16)
+
+
+def load_variant(item: CacheItem, k: int) -> torch.Tensor:
+    """``embeds_v{k} (S_k, 4096)`` bf16 on CPU, read from disk on each call."""
+    return read_te(item.te_path, f"embeds_v{k}")
 
 
 def load_plain(item: CacheItem) -> torch.Tensor | None:
     """``embeds_plain (S', 4096)`` bf16 on CPU, or ``None`` when the file has none."""
     if not item.n_text_plain:
         return None
-    return load_file(item.te_path)["embeds_plain"].to(torch.bfloat16)
+    return read_te(item.te_path, "embeds_plain")
+
+
+# ------------------------------------------------------------------ variants
+
+
+def variant_entries(
+    variants: list[tuple[str, torch.Tensor]], prefix: int
+) -> tuple[dict[str, torch.Tensor], dict[str, str]]:
+    """TE-file tensors + metadata for ``[(caption, embeds (S_k, 4096)), …]``, each a
+    full embedding sharing its first ``prefix`` rows with ``embeds``: only the
+    rows after them are stored (``read_te`` puts the prefix back)."""
+    if not variants:
+        return {}, {}
+    tensors, meta = {}, {"variant_prefix": str(prefix)}
+    for k, (caption, embeds) in enumerate(variants, 1):
+        tensors[f"embeds_v{k}"] = embeds[prefix:].to("cpu", torch.bfloat16).contiguous()
+        meta[f"caption_v{k}"] = caption
+    return tensors, meta
+
+
+def add_variants(path, variants: list[tuple[str, torch.Tensor]], prefix: int) -> None:
+    """Replace the caption variants of the TE file at ``path`` with ``variants``
+    (``variant_entries``), in place through a temp file; a symlinked file is
+    rewritten at its target."""
+    real = Path(path).resolve()
+    tensors, meta = _without_variants(real)
+    new, new_meta = variant_entries(variants, prefix)
+    tmp = real.with_name(real.name + ".tmp")
+    save_file(tensors | new, str(tmp), metadata=meta | new_meta)
+    tmp.replace(real)
+
+
+def _without_variants(path: Path) -> tuple[dict[str, torch.Tensor], dict[str, str]]:
+    with safe_open(str(path), "pt") as f:
+        tensors = {k: f.get_tensor(k) for k in f.keys() if not _VARIANT_RE.fullmatch(k)}
+        meta = f.metadata() or {}
+    return tensors, {k: v for k, v in meta.items() if not _VARIANT_META_RE.fullmatch(k)}
+
+
+def carried_variants(
+    path: Path, caption: str
+) -> tuple[dict[str, torch.Tensor], dict[str, str]]:
+    """The caption variants (tensors, metadata) of the TE file a re-encode is about
+    to replace, while its caption is still ``caption``. After a caption edit they
+    are stale: dropped, with a warning."""
+    if not path.exists():
+        return {}, {}
+    with safe_open(str(path), "pt") as f:
+        keys = [k for k in f.keys() if _VARIANT_RE.fullmatch(k)]
+        if not keys:
+            return {}, {}
+        meta = f.metadata() or {}
+        if meta.get("caption_sha256") != caption_sha(caption):
+            print(
+                f"  warning: {path.name}: caption changed, dropping its "
+                f"{len(keys)} stale caption variants",
+                flush=True,
+            )
+            return {}, {}
+        tensors = {k: f.get_tensor(k) for k in keys}
+    return tensors, {k: v for k, v in meta.items() if _VARIANT_META_RE.fullmatch(k)}
 
 
 # ------------------------------------------------------------------ sizing
@@ -333,19 +436,6 @@ def _te_current(path: Path, caption: str, max_tokens: int, plain: str = "") -> b
     )
 
 
-def _latents_for(out_dir: Path, stem: str) -> list[Path]:
-    found = []
-    for p in out_dir.glob(f"{glob_escape(stem)}_*{LATENT_SUFFIX}"):
-        m = _LATENT_RE.match(p.name)
-        if m is not None and m["stem"] == stem:
-            found.append(p)
-    return found
-
-
-def glob_escape(text: str) -> str:
-    return re.sub(r"([\[\]*?])", r"[\1]", text)
-
-
 # ------------------------------------------------------------------ passes
 
 
@@ -391,8 +481,10 @@ def cache_text(
         n = embeds.shape[0]
         lengths.append(n)
         note = "  TRUNCATED" if n >= max_tokens else ""
-        tensors = {"embeds": embeds.contiguous()}
-        meta = {
+        path = out_dir / f"{p.stem}{TE_SUFFIX}"
+        tensors, meta = carried_variants(path, p.caption)
+        tensors["embeds"] = embeds.contiguous()
+        meta |= {
             "caption": p.caption,
             "caption_sha256": caption_sha(p.caption),
             "caption_format": caption_format,
@@ -415,7 +507,7 @@ def cache_text(
             f"  text {i}/{len(todo)} {p.stem}: {n} tokens{plain_note}{note}",
             flush=True,
         )
-        save_file(tensors, out_dir / f"{p.stem}{TE_SUFFIX}", metadata=meta)
+        save_file(tensors, path, metadata=meta)
     t_enc = time.time() - t1
     peak = torch.cuda.max_memory_allocated() / 1024**3
     print(
@@ -461,7 +553,7 @@ def cache_latents(
         fitted = fit(image, w, h)
         resampled += fitted is not image
         latent = encode(to_pixels(fitted), vae)[0].cpu().contiguous()
-        for old in _latents_for(out_dir, p.stem):
+        for *_, old in latent_files(out_dir, p.stem):
             if old != path:
                 old.unlink()
         save_file(

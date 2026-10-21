@@ -14,6 +14,7 @@ from library.moss.lora import (
     channel_scale,
     load_for_inference,
     load_network,
+    ref_settings,
 )
 from library.moss.model import MOSSImageTransformer
 from library.moss.train import checkpoint_blocks, sample_sigma, training_loss
@@ -468,3 +469,25 @@ def test_dc_isolate_localises_the_dc_direction_and_saves_plain(tmp_path):
         LoRANetwork(model, rank=4, algo="lokr", channel_mean=means, dc_isolate=True)
     with pytest.raises(ValueError, match="needs channel_mean"):
         LoRANetwork(model, rank=4, dc_isolate=True)
+
+
+@pytest.mark.parametrize(
+    "meta, want",
+    [
+        ({}, (None, False)),
+        ({"ref_timestep": "-1.0"}, (None, False)),
+        ({"ref_timestep": "0.0", "ref_isolate": "1"}, (0.0, True)),
+        ({"ref_timestep": "250.0", "ref_isolate": "True"}, (250.0, True)),
+        ({"ref_timestep": "0.0", "ref_isolate": "False"}, (0.0, False)),
+    ],
+)
+def test_load_for_inference_sets_ref_settings(tmp_path, meta, want):
+    """The reference settings a LoRA trained with land on the transformer;
+    ``ref_isolate`` reads both the current ``"1"`` and the first LoRAs' ``"True"``."""
+    path = tmp_path / "ref.safetensors"
+    LoRANetwork(_tiny(), rank=4).save(path, "fp32", **meta)
+    assert ref_settings(path) == want
+    fresh = _tiny()
+    fresh.ref_timestep, fresh.ref_isolate = 123.0, True
+    load_for_inference(fresh, path)
+    assert (fresh.ref_timestep, fresh.ref_isolate) == want

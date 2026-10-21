@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import struct
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,8 +25,24 @@ LATENT_SUFFIX = ".moss_latent.safetensors"
 # Optional clean reference latent per stem (i2i probe), key ``latent``.
 REF_SUFFIX = ".moss_ref.safetensors"
 LATENT_RE = re.compile(
-    r"^(?P<stem>.+)_(?P<w>\d+)x(?P<h>\d+)\.moss_latent\.safetensors$"
+    rf"^(?P<stem>.+)_(?P<w>\d+)x(?P<h>\d+){re.escape(LATENT_SUFFIX)}$"
 )
+
+
+def glob_escape(text: str) -> str:
+    return re.sub(r"([\[\]*?])", r"[\1]", text)
+
+
+def latent_files(
+    folder: Path, stem: str | None = None
+) -> Iterator[tuple[str, int, int, Path]]:
+    """``(stem, width, height, path)`` of each latent file in ``folder``, or of
+    ``stem``'s only."""
+    pattern = "*" if stem is None else f"{glob_escape(stem)}_*"
+    for p in folder.glob(pattern + LATENT_SUFFIX):
+        m = LATENT_RE.match(p.name)
+        if m is not None and (stem is None or m["stem"] == stem):
+            yield m["stem"], int(m["w"]), int(m["h"]), p
 
 
 def original_tree(src: Path) -> tuple[Path | None, frozenset[Path]]:
@@ -137,11 +154,7 @@ def scan(src: Path | None, out: Path | None) -> CacheScan:
     dupes = sum(1 for stem, image, _ in pairs if stem != image.stem)
     text = latents = stale = 0
     if out is not None and out.is_dir():
-        latent_stems = {
-            m["stem"]
-            for p in out.glob(f"*{LATENT_SUFFIX}")
-            if (m := LATENT_RE.match(p.name))
-        }
+        latent_stems = {stem for stem, *_ in latent_files(out)}
         for stem, _, caption in pairs:
             te = out / f"{stem}{TE_SUFFIX}"
             if te.exists():
@@ -166,9 +179,5 @@ def cache_counts(cache: Path) -> CacheCounts:
     if not cache.is_dir():
         return CacheCounts(0, 0, 0)
     text = {p.name[: -len(TE_SUFFIX)] for p in cache.glob(f"*{TE_SUFFIX}")}
-    latents = {
-        m["stem"]
-        for p in cache.glob(f"*{LATENT_SUFFIX}")
-        if (m := LATENT_RE.match(p.name))
-    }
+    latents = {stem for stem, *_ in latent_files(cache)}
     return CacheCounts(len(text), len(latents), len(text & latents))

@@ -9,7 +9,9 @@ page: the page, then one column per LoRA; ER-SDE + Spectrum, same seed.
 
 Alignment is the 128 px luma Pearson r against the page (``index.json``), the
 held-out eval's luma r with the page in place of the target; chroma is the mean CbCr
-distance from grey at 1/8 size.
+distance from grey at 1/8 size. Page TE and ref files are named by source path digest and size, the
+latents by a digest of the LoRA (path + mtime), those files, steps, cfg and sampler,
+so a rerun resumes only what matches.
 
     make daemon-run ARGS="project/moss_lora/src/colorize_wild.py \
         --pages a.png b.webp --loras output/ckpt_moss/x.safetensors output/ckpt_moss/y.safetensors"
@@ -20,29 +22,25 @@ import json
 
 import numpy as np
 import torch
-from PIL import Image, ImageDraw
+from PIL import Image
 from safetensors.torch import load_file, save_file
 
+from _render import (
+    decoded,
+    grid,
+    load_dit,
+    lora_id,
+    render,
+    save_latent,
+    settings_tag,
+    spectrum_settings,
+    uncond_embeds,
+)
 from library.env import resolve_under_home
 from library.moss import cache as moss_cache
-from library.moss.generate import (
-    _build_spectrum,
-    _cached_embeds,
-    denoise,
-    initial_noise,
-)
-from library.moss.loader import (
-    compile_blocks,
-    empty_cache,
-    load_tokenizer,
-    load_transformer,
-    load_vae,
-    pad_embeds,
-)
-from library.moss.lora import load_for_inference, ref_timestep
-from library.moss.model import decode, snapped_sigmas
+from library.moss.loader import empty_cache, load_tokenizer, load_vae
 from library.moss.model import encode as vae_encode
-from library.moss.requests import GenerateRequest
+from library.moss.model import snapped_sigmas
 from vision_te import encode, load_te
 
 
@@ -75,24 +73,35 @@ def main() -> None:
         (out / sub).mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda")
 
+    # (stem, page, w, h, ref w, ref h, source digest)
     pages = []
     for p in args.pages:
         path = resolve_under_home(p)
         image = moss_cache.load_rgb(path)
         w, h = moss_cache.target_size(*image.size, args.resolution)
+        rw = max(16, round(w / args.ref_scale / 16) * 16)
+        rh = max(16, round(h / args.ref_scale / 16) * 16)
         stem = path.stem.replace(" ", "_")
-        pages.append((stem, moss_cache.fit(image, w, h), w, h))
+        src = settings_tag(src=str(path))
+        pages.append((stem, moss_cache.fit(image, w, h), w, h, rw, rh, src))
     loras = [resolve_under_home(p) for p in args.loras]
 
-    todo = [p for p in pages if not (out / "te" / f"{p[0]}.safetensors").exists()]
+    def te_path(pg):
+        return out / "te" / f"{pg[0]}_{pg[6]}_{pg[2]}x{pg[3]}.safetensors"
+
+    def ref_path(pg):
+        return out / "ref" / f"{pg[0]}_{pg[6]}_{pg[4]}x{pg[5]}.safetensors"
+
+    todo = [pg for pg in pages if not te_path(pg).exists()]
     if todo:
         tok = load_tokenizer("")
         te = load_te(tok, device)
-        for stem, page, w, h in todo:
+        for pg in todo:
+            stem, page, w, h, _, _, _ = pg
             plain, n_img = encode(tok, te, page, "", w * h, device)
             save_file(
                 {"embeds_plain": plain.to("cpu", torch.bfloat16).contiguous()},
-                str(out / "te" / f"{stem}.safetensors"),
+                str(te_path(pg)),
             )
             print(
                 f"[te] {stem} {w}x{h}: {plain.shape[0]} rows ({n_img} image)",
@@ -101,100 +110,76 @@ def main() -> None:
         del te, tok
         empty_cache()
 
-    todo = [p for p in pages if not (out / "ref" / f"{p[0]}.safetensors").exists()]
+    todo = [pg for pg in pages if not ref_path(pg).exists()]
     if todo:
         vae = load_vae("", device=device)
-        for stem, page, w, h in todo:
-            rw = max(16, round(w / args.ref_scale / 16) * 16)
-            rh = max(16, round(h / args.ref_scale / 16) * 16)
+        for pg in todo:
+            stem, page, w, h, rw, rh, _ = pg
             latent = vae_encode(
                 moss_cache.to_pixels(moss_cache.fit(page, rw, rh)), vae
             )[0]
-            save_file(
-                {"latent": latent.cpu().contiguous()},
-                str(out / "ref" / f"{stem}.safetensors"),
-            )
+            save_file({"latent": latent.cpu().contiguous()}, str(ref_path(pg)))
             print(f"[ref] {stem} {w}x{h} -> {rw}x{rh}", flush=True)
         del vae
         empty_cache()
 
-    uncond = _cached_embeds(
-        "", [""], resolve_under_home("post_image_dataset/moss_prompt_te")
-    )[""]
-    uncond, uncond_mask = pad_embeds([uncond], device)
+    _, uncond, uncond_mask = uncond_embeds(device)
     sigmas = snapped_sigmas(args.steps)
+    spectrum = spectrum_settings()
 
-    def lat(stem, lora):
-        return out / "latents" / f"{stem}_{lora.stem}_s{args.seed}.safetensors"
+    def lat(pg, lora):
+        tag = settings_tag(
+            lora=lora_id(lora),
+            te=te_path(pg).name,
+            ref=ref_path(pg).name,
+            steps=args.steps,
+            cfg=args.cfg,
+            sampler="er_sde",
+            spectrum=spectrum,
+        )
+        return out / "latents" / f"{pg[0]}_{lora.stem}_s{args.seed}_{tag}.safetensors"
 
     for lora in loras:
-        todo = [p for p in pages if not lat(p[0], lora).exists()]
+        todo = [pg for pg in pages if not lat(pg, lora).exists()]
         if not todo:
             continue
-        # A fresh DiT per LoRA: the compiled blocks trace the attached adapter.
-        tr = load_transformer("", "base", device=device)
-        load_for_inference(tr, lora)
-        tr.ref_timestep = ref_timestep(lora)
-        compile_blocks(tr.layers)
-        for stem, _, w, h in todo:
-            cond, cond_mask = pad_embeds(
-                [load_file(str(out / "te" / f"{stem}.safetensors"))["embeds_plain"]],
-                device,
-            )
-            ref = load_file(str(out / "ref" / f"{stem}.safetensors"))["latent"]
-            z = denoise(
+        tr, _ = load_dit(lora, device)
+        for pg in todo:
+            stem, _, w, h, _, _, _ = pg
+            z = render(
                 tr,
-                initial_noise(args.seed, h, w).to(device),
-                cond,
-                cond_mask,
+                load_file(str(te_path(pg)))["embeds_plain"],
                 uncond,
                 uncond_mask,
                 sigmas,
-                cfg=args.cfg,
-                sampler="er_sde",
                 seed=args.seed,
-                spectrum=_build_spectrum(GenerateRequest(spectrum=True), {}),
-                ref=ref[None].to(device, torch.float32),
+                height=h,
+                width=w,
+                cfg=args.cfg,
+                ref=load_file(str(ref_path(pg)))["latent"][None],
             )
-            save_file({"latent": z.cpu().contiguous()}, str(lat(stem, lora)))
+            save_latent(z, lat(pg, lora))
             print(f"[dit] {stem} {lora.stem}", flush=True)
         del tr
         empty_cache()
 
     vae = load_vae("", device=device)
     rows, scores = [], {}
-    for stem, page, w, h in pages:
+    for pg in pages:
+        stem, page = pg[0], pg[1]
         cells = [("page", page)]
         for lora in loras:
-            png = lat(stem, lora).with_suffix(".png")
-            if not png.exists():
-                z = load_file(str(lat(stem, lora)))["latent"].to(device)
-                x = decode(z, vae)[0].float().add(1).mul(127.5).round().clamp(0, 255)
-                Image.fromarray(x.permute(1, 2, 0).byte().cpu().numpy()).save(png)
-            im = Image.open(png).convert("RGB")
+            im = decoded(lat(pg, lora), vae, device)
             cells.append((lora.stem, im))
             scores.setdefault(lora.stem, {})[stem] = {
                 "luma_r": round(luma_r(page, im), 4),
                 "chroma": round(chroma(im), 2),
             }
-        rows.append((stem, h / w, cells))
+        rows.append((stem, cells))
     del vae
     empty_cache()
 
-    cell_h = 640
-    cw = max(round(cell_h / aspect) for _, aspect, _ in rows)
-    ncol = 1 + len(loras)
-    grid = Image.new("RGB", (cw * ncol, (cell_h + 30) * len(rows)), "white")
-    d = ImageDraw.Draw(grid)
-    for ri, (stem, _, cells) in enumerate(rows):
-        y = ri * (cell_h + 30)
-        for ci, (label, im) in enumerate(cells):
-            th = im.resize(
-                (round(im.width * cell_h / im.height), cell_h), Image.LANCZOS
-            )
-            grid.paste(th, (ci * cw, y + 30))
-            d.text((ci * cw + 6, y + 8), f"{stem} {label}", fill="black")
-    grid.save(out / "grid.png")
+    grid(rows).save(out / "grid.png")
     for name, per in scores.items():
         r = np.mean([v["luma_r"] for v in per.values()])
         c = np.mean([v["chroma"] for v in per.values()])

@@ -212,17 +212,17 @@ def main() -> None:
     start_heartbeat(label="moss_dave_probe")
 
     from library.moss.dave import MossDAVE
-    from library.moss.generate import _cached_embeds, denoise, initial_noise
+    from library.moss.generate import cached_embeds, denoise, initial_noise
     from library.moss.loader import compile_blocks, load_transformer, pad_embeds
-    from library.moss.model import DEFAULT_UNCOND_SKIP, snapped_sigmas
-    from library.moss.requests import resolve_model_dir
+    from library.moss.model import snapped_sigmas
+    from library.moss.requests import DEFAULT_UNCOND_SKIP, resolve_model_dir
 
     keys = [k for k in args.prompts.split(",") if k]
     model_dir = resolve_model_dir(args.model_dir)
     device = torch.device("cuda")
     do_cfg = args.cfg != 1.0
 
-    embeds = _cached_embeds(
+    embeds = cached_embeds(
         model_dir, [PROMPTS[k] for k in keys] + [""], Path(args.te_cache)
     )
     uncond, uncond_mask = pad_embeds([embeds[""]], device=device)

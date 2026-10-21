@@ -17,15 +17,27 @@ flat cache ``train.py`` reads unchanged:
 tags), the EasyControl colorize text policy. The page is fitted to the latent's
 size and the vision tower sees it at that pixel count (~1k tokens at 1 MP).
 
-``--holdout`` pairs (the vision_recon images first, then random) are kept out of
-the cache; their TE files land in ``<out>/holdout/`` with ``holdout.json`` for the
+``--holdout`` pairs (``PROBE_STEMS`` first: three of the four images in
+``bench/moss_vision_reference/vision_recon.py``, the fourth has no colorize pair;
+then random) are kept out of the cache; their TE files land in ``<out>/holdout/`` with ``holdout.json`` for the
 eval.
 
 ``--ref_scale s`` (i2i probe) also writes ``{stem}.moss_ref.safetensors``: the B&W
 page VAE-encoded at 1/s of the target's sides (multiples of 16), which ``train.py``
 feeds as clean reference tokens on RoPE's ``r = 1`` axis. ``--link_from <cache>``
-symlinks an existing cache's latents, TE files and holdout into ``--out`` first, so a
-reference variant reuses them and the source cache stays as it was.
+(repeatable) symlinks an existing cache's latents, TE files and holdout into ``--out``
+first, so a reference variant reuses them and the source cache stays as it was (but for
+``--variants``, which completes the linked TE files at their target).
+
+``--variants N`` (Anima colorize's text policy: 4) adds ``embeds_v1 … embeds_v{N-1}``
+to every TE file, train and holdout: the colour caption shuffled with
+``--tag_dropout`` of its tags dropped (``generate_caption_variants``; comic tags
+protected, copyright rides the dropout), each encoded after the page. The draw is
+seeded per stem. A variant stores only its rows after the page (``variant_prefix``
+in the metadata; ``cache.variant_entries`` / ``cache.add_variants`` write it,
+``cache.read_te`` rebuilds it), and the log reports how far its
+own page rows strayed from ``embeds``'. TE files already written without them are completed in place, so a
+linked cache gains them too; ``train.py --caption_variant_rate`` reads them.
 
 ``--manga N`` adds N pages of the EasyControl ``manga_color`` slice (hitocrawl's
 full-colour works, JA / EN / KO editions; condition under ``manga_color/staging``,
@@ -49,7 +61,9 @@ import time
 from pathlib import Path
 
 import torch
+from anime_tools.captions.variants import generate_caption_variants
 from PIL import Image
+from safetensors import safe_open
 from safetensors.torch import save_file
 
 from library.env import resolve_under_home
@@ -59,7 +73,11 @@ from library.moss.scan import REF_SUFFIX, TE_SUFFIX
 from vision_te import encode, load_te
 
 sys.path.insert(0, str(resolve_under_home("easycontrol_adapters/colorization")))
-from color_caption import filter_to_colors_and_protected, load_copyright_tags  # noqa: E402
+from color_caption import (  # noqa: E402
+    filter_to_colors_and_protected,
+    is_comic_tag,
+    load_copyright_tags,
+)
 
 STAGING = "post_image_dataset/easycontrol/colorize/staging"
 RESIZED = "post_image_dataset/resized"
@@ -112,15 +130,17 @@ def main() -> None:
     ap.add_argument("--resolution", type=int, default=1024)
     ap.add_argument("--out", default="post_image_dataset/moss/colorize_te")
     ap.add_argument("--ref_scale", type=int, default=0, help="0 = no reference")
-    ap.add_argument("--link_from", default="")
+    ap.add_argument("--link_from", action="append", default=[], help="repeatable")
     ap.add_argument("--manga", type=int, default=0, help="manga_color pairs added")
     ap.add_argument("--manga_holdout", type=int, default=4, help="held-out works")
+    ap.add_argument("--variants", type=int, default=0, help="0 = none; v0 + N-1")
+    ap.add_argument("--tag_dropout", type=float, default=0.8)
     args = ap.parse_args()
     out = resolve_under_home(args.out)
     (out / "holdout").mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda")
-    if args.link_from:
-        src = resolve_under_home(args.link_from)
+    for link in args.link_from:
+        src = resolve_under_home(link)
         for f in [*src.glob("*.safetensors"), *(src / "holdout").glob("*.safetensors")]:
             if REF_SUFFIX in f.name:
                 continue
@@ -176,10 +196,38 @@ def main() -> None:
     jobs = [(s, c, t, out / f"{s}{TE_SUFFIX}") for s, c, t in train]
     jobs += [(s, c, t, out / "holdout" / f"{s}{TE_SUFFIX}") for s, c, t in holdout]
     todo = [j for j in jobs if not j[3].exists()]
+
+    def has_variants(path):
+        with safe_open(str(path), "pt") as f:
+            return "embeds_v1" in f.keys()
+
+    stale = []
+    if args.variants > 1:
+        stale = [j for j in jobs if j[3].exists() and not has_variants(j[3])]
     records = []
-    if todo:
+    if todo or stale:
         tok = load_tokenizer("")
         te = load_te(tok, device)
+
+        def variant_embeds(stem, caption, page, pixels, embeds):
+            """``[(caption, embeds)]`` of the variants, the page prefix they share
+            with ``embeds``, and the largest page-row deviation of any variant
+            from ``embeds``."""
+            if args.variants < 2:
+                return [], 0, 0.0
+            random.seed(f"{args.seed}:{stem}")
+            texts = generate_caption_variants(
+                caption, args.variants, args.tag_dropout, is_comic_tag
+            )[1:]
+            out, prefix, dev = [], 0, 0.0
+            for text in texts:
+                e, _, prefix = encode(tok, te, page, text, pixels, device, prefix=True)
+                e = e.to("cpu", torch.bfloat16)
+                shared = embeds[:prefix].to("cpu", torch.bfloat16)
+                dev = max(dev, (e[:prefix].float() - shared.float()).abs().max().item())
+                out.append((text, e))
+            return out, prefix, dev
+
         t0 = time.time()
         for i, (stem, cond, target, path) in enumerate(todo, 1):
             with Image.open(target) as im:
@@ -188,10 +236,13 @@ def main() -> None:
             caption = colour_caption(target)
             embeds, n_img = encode(tok, te, page, caption, w * h, device)
             plain, _ = encode(tok, te, page, "", w * h, device)
+            variants, prefix, dev = variant_embeds(stem, caption, page, w * h, embeds)
+            var, var_meta = moss_cache.variant_entries(variants, prefix)
             save_file(
                 {
                     "embeds": embeds.to("cpu", torch.bfloat16).contiguous(),
                     "embeds_plain": plain.to("cpu", torch.bfloat16).contiguous(),
+                    **var,
                 },
                 str(path),
                 metadata={
@@ -202,11 +253,31 @@ def main() -> None:
                     "condition": str(cond),
                     "source": str(target),
                     "encoder": "Qwen3.5-9B + vision, image then colour caption",
+                    **var_meta,
                 },
             )
             print(
                 f"  te {i}/{len(todo)} {stem}: {embeds.shape[0]} rows "
-                f"({n_img} image), {time.time() - t0:.0f}s",
+                f"({n_img} image), "
+                + (f"variant page rows ±{dev:.3g}, " if var else "")
+                + f"{time.time() - t0:.0f}s",
+                flush=True,
+            )
+        t0 = time.time()
+        for i, (stem, cond, target, path) in enumerate(stale, 1):
+            with Image.open(target) as im:
+                w, h = moss_cache.target_size(*im.size, args.resolution)
+            page = moss_cache.fit(moss_cache.load_rgb(cond), w, h)
+            with safe_open(str(path), "pt") as f:
+                caption = f.metadata()["caption"]
+                embeds = f.get_tensor("embeds")
+            variants, prefix, dev = variant_embeds(stem, caption, page, w * h, embeds)
+            # Linked files are completed at their target.
+            moss_cache.add_variants(path, variants, prefix)
+            caps = " | ".join(text for text, _ in variants)
+            print(
+                f"  variants {i}/{len(stale)} {stem}: {caps}; page rows ±{dev:.3g}, "
+                f"{time.time() - t0:.0f}s",
                 flush=True,
             )
         del te, tok

@@ -9,7 +9,7 @@ the same prompts and seeds (``--ref``); ``--arms base,lora,masked`` renders all 
 here instead.
 
 ``lora`` vs ``masked`` is what the LoRA does through the template rows
-(``docs/moss-findings/attention_sink_chat_template.md``). The uncond text is the
+(``docs/moss/findings/attention_sink_chat_template.md``). The uncond text is the
 template alone, so ``masked`` leaves uncond's text rows at Base entirely.
 
     make daemon-run ARGS="bench/moss_sinks/render_template_mask.py \\
@@ -109,7 +109,7 @@ def main() -> None:
     from diffusers.image_processor import VaeImageProcessor
 
     from library.env import resolve_under_home
-    from library.moss.generate import _cached_embeds, denoise, initial_noise
+    from library.moss.generate import cached_embeds, denoise, initial_noise
     from library.moss.loader import (
         empty_cache,
         load_tokenizer,
@@ -118,8 +118,8 @@ def main() -> None:
         pad_embeds,
     )
     from library.moss.lora import load_for_inference
-    from library.moss.model import DEFAULT_UNCOND_SKIP, decode, snapped_sigmas
-    from library.moss.requests import resolve_model_dir
+    from library.moss.model import decode, snapped_sigmas
+    from library.moss.requests import DEFAULT_UNCOND_SKIP, resolve_model_dir
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from probe_attention import template_split
@@ -142,7 +142,7 @@ def main() -> None:
     tok = load_tokenizer(model_dir)
     prefix, _, suffix = template_split(tok, "")
     del tok
-    embeds = _cached_embeds(model_dir, [*texts.values(), ""], Path(args.te_cache))
+    embeds = cached_embeds(model_dir, [*texts.values(), ""], Path(args.te_cache))
     uncond, uncond_mask = pad_embeds([embeds[""]], device=device)
     transformer = load_transformer(model_dir, args.model, device=device)
     network = load_for_inference(transformer, resolve_under_home(args.lora), 1.0)

@@ -27,7 +27,7 @@ from library.runtime.device import free_vram_gb
 MAX_SEQUENCE_LENGTH = 4096
 
 
-def _te_reserve_gb(max_tokens: int) -> float:
+def te_reserve_gb(max_tokens: int) -> float:
     """VRAM left free for the TE's activations: 2.5 GB at 4096 tokens, linear in
     length above a fixed floor."""
     return 0.75 + 1.75 * max_tokens / MAX_SEQUENCE_LENGTH
@@ -59,7 +59,7 @@ def _page_layer(layer: torch.nn.Module, device) -> None:
     layer.register_forward_hook(drop)
 
 
-def _offload_by_layer(te, device, reserve_gb):
+def offload_by_layer(te, device, reserve_gb):
     """Non-layer modules but the token embedding, and as many leading decoder layers
     as fit in free VRAM minus ``reserve_gb``, stay resident; the rest page in for
     their own forward. The vision tower stays on the CPU (unused for T2I)."""
@@ -104,8 +104,8 @@ def load_text_encoder(
     root = variant_dir(model_dir, "base")
     tok = tok or load_tokenizer(model_dir)
     te = AutoModel.from_pretrained(root / "text_encoder", dtype=torch.bfloat16).eval()
-    reserve = _te_reserve_gb(max_tokens)
-    paged = _offload_by_layer(te, torch.device(device), reserve)
+    reserve = te_reserve_gb(max_tokens)
+    paged = offload_by_layer(te, torch.device(device), reserve)
     if log:
         log(
             f"[te] {len(te.language_model.layers) - paged} decoder layers resident, "

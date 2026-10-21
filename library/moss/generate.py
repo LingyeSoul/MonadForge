@@ -4,9 +4,10 @@ Encode every distinct prompt with the layer-offloaded Qwen3.5-9B and drop it,
 denoise every job with the DiT resident, then take the DiT off the card before
 the fp32 VAE decode (at ~2 MP the decode needs more than is free beside the DiT).
 
-``denoise`` is the sampler loop on its own — Euler on the snapped shift-5 grid,
-CFG with the uncond branch skipping block 22, all combining in fp32 — and with
-``spectrum=None`` it is ``MOSSImagePipeline.__call__`` op for op.
+``denoise`` is the sampler loop on its own — Euler or ER-SDE on the snapped
+shift-5 grid, CFG with the uncond branch skipping block 22, all combining in fp32
+— and with ``sampler="euler"``, ``spectrum=None`` it is
+``MOSSImagePipeline.__call__`` op for op.
 
     make daemon-run ARGS="scripts/moss/generate.py --prompt '…' --steps 30"
 """
@@ -32,7 +33,12 @@ from library.moss.loader import (
     pad_embeds,
 )
 from library.moss.model import decode, snapped_sigmas
-from library.moss.requests import GenerateRequest, resolve_model_dir
+from library.moss.requests import (
+    DEFAULT_CFG,
+    DEFAULT_UNCOND_SKIP,
+    GenerateRequest,
+    resolve_model_dir,
+)
 
 
 def _parse_skip(value) -> tuple[int, ...]:
@@ -92,8 +98,8 @@ def denoise(
     uncond_mask,
     sigmas,
     *,
-    cfg=3.0,
-    uncond_skip=(22,),
+    cfg=DEFAULT_CFG,
+    uncond_skip=DEFAULT_UNCOND_SKIP,
     batched=False,
     spectrum=None,
     sampler="euler",
@@ -104,8 +110,9 @@ def denoise(
     progress=None,
     ref=None,
 ):
-    """Euler-integrate ``latents (B,128,h,w)`` over ``sigmas`` (``snapped_sigmas``:
-    descending, no terminal 0). Returns fp32 latents.
+    """Integrate ``latents (B,128,h,w)`` over ``sigmas`` (``snapped_sigmas``:
+    descending, no terminal 0) with Euler or ER-SDE (``sampler``). Returns fp32
+    latents.
 
     ``cond`` / ``uncond`` are ``(B,S,4096)`` embeds with bool masks; ``uncond`` is
     unused when ``cfg == 1``. ``spectrum`` (optional) is called as ``begin(sigmas)``,
@@ -254,7 +261,7 @@ def _jobs(req: GenerateRequest) -> list[dict]:
     ]
 
 
-def _cached_embeds(model_dir, texts, cache_dir: Path) -> dict[str, torch.Tensor]:
+def cached_embeds(model_dir, texts, cache_dir: Path) -> dict[str, torch.Tensor]:
     """TE outputs keyed by text, read from / written to ``cache_dir`` so a rerun of
     the same prompts skips the 17 GB text encoder."""
     from safetensors.torch import load_file, save_file
@@ -280,8 +287,8 @@ def _cached_embeds(model_dir, texts, cache_dir: Path) -> dict[str, torch.Tensor]
     return out
 
 
-def _build_spectrum(req: GenerateRequest, job: dict):
-    """Spectrum forecaster for one job, or None."""
+def build_spectrum(req: GenerateRequest):
+    """A fresh Spectrum forecaster at ``req``'s settings (one per denoise), or None."""
     if not req.spectrum:
         return None
     from library.moss.spectrum import MossSpectrum
@@ -392,7 +399,7 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
     as its denoise returns, so a killed job loses at most the one in flight."""
     texts = [j["prompt"] for j, _ in pending]
     texts += [j["negative"] for j, _ in pending if j["cfg"] != 1.0]
-    embeds = _cached_embeds(model_dir, texts, out_dir / "_te_cache")
+    embeds = cached_embeds(model_dir, texts, out_dir / "_te_cache")
 
     t0 = time.time()
     transformer = load_transformer(model_dir, req.model, device=device)
@@ -432,7 +439,7 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
             cfg=j["cfg"],
             uncond_skip=j["skip"],
             batched=req.batched,
-            spectrum=_build_spectrum(req, j),
+            spectrum=build_spectrum(req),
             sampler=req.sampler,
             seed=j["seed"],
             dave=dave,

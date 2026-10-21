@@ -14,16 +14,16 @@ Changes from the reference, all additive:
 - ``forward_batched``: every sample in one forward, text padded to the longest
   and excluded by a key mask; ``skip_layers`` per sample, so cond and the
   skip-22 uncond share a batch.
-- ``gradient_checkpointing``: per-block activation checkpointing in
-  ``run_layers`` while training.
 - ``layer_hook``: optional ``(index, x, n_img) -> x`` run on each block's output
   (rows that ran the block only), outside the compiled block. DAVE
   (``library.moss.dave``) and its probe use it; ``None`` is the reference.
 - ``ref`` (i2i probe): clean reference latents on RoPE's ``r = 1`` axis.
   ``ref_timestep`` (None = the image's timestep) gives the reference tokens their
-  own block modulation, e.g. ``0`` for a clean latent.
+  own block modulation, e.g. ``0`` for a clean latent. ``ref_isolate`` restricts
+  the reference queries to the reference keys; image and text still read it.
+  ``library.moss.lora.load_for_inference`` sets both from the LoRA's metadata.
 - ``pack_latents`` / ``unpack_latents``: the FLUX.2 VAE ↔ DiT latent boundary
-  (2×2 patchify + the VAE's BatchNorm statistics).
+  (2×2 ``patchify`` + the VAE's BatchNorm statistics).
 """
 
 from __future__ import annotations
@@ -35,13 +35,8 @@ from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
 from torch import nn
 from torch.nn import functional as F
-from torch.utils.checkpoint import checkpoint
 
-# The reference sampler's defaults (``MOSSImagePipeline.__call__``).
-DEFAULT_STEPS = 50
-DEFAULT_CFG = 3.0
-DEFAULT_UNCOND_SKIP = (22,)
-DEFAULT_SHIFT = 5.0
+from library.moss.requests import DEFAULT_SHIFT
 
 
 class _RMSNorm(nn.Module):
@@ -67,7 +62,7 @@ def _validate_skip_layers(layers, depth, name="skip_layers"):
     return frozenset(layers)
 
 
-def _rotate(x, rope):
+def rotate(x, rope):
     sin, cos = rope.chunk(2, -1)
     sin = torch.cat((sin, sin), -1).unsqueeze(-2)
     cos = torch.cat((cos, cos), -1).unsqueeze(-2)
@@ -75,20 +70,25 @@ def _rotate(x, rope):
     return x * cos + torch.cat((-b, a), -1) * sin
 
 
-def _attention(q, k, v, rope, heads, key_mask=None):
-    """``key_mask``: bool ``(B, L)``, True = attend. None = the reference path."""
+def _attention(q, k, v, rope, heads, key_mask=None, ref_span=None, ref_isolate=False):
+    """``key_mask``: bool ``(B, L)``, True = attend. None = the reference path.
+    ``ref_isolate``: the queries in ``ref_span = (start, end)`` attend only to its
+    keys."""
     shape = (*q.shape[:2], heads, q.shape[-1] // heads)
-    q = _rotate(q.reshape(shape), rope).transpose(1, 2)
-    k = _rotate(k.reshape(shape), rope).transpose(1, 2)
+    q = rotate(q.reshape(shape), rope).transpose(1, 2).to(v.dtype)
+    k = rotate(k.reshape(shape), rope).transpose(1, 2).to(v.dtype)
     v = v.reshape(shape).transpose(1, 2)
     attn_mask = None if key_mask is None else key_mask[:, None, None, :]
-    return (
-        F.scaled_dot_product_attention(
-            q.to(v.dtype), k.to(v.dtype), v, attn_mask=attn_mask
+    if not ref_isolate or ref_span is None:
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+    else:
+        s, e = ref_span
+        main = F.scaled_dot_product_attention(
+            torch.cat((q[:, :, :s], q[:, :, e:]), 2), k, v, attn_mask=attn_mask
         )
-        .transpose(1, 2)
-        .flatten(2)
-    )
+        ref = F.scaled_dot_product_attention(q[:, :, s:e], k[:, :, s:e], v[:, :, s:e])
+        out = torch.cat((main[:, :, :s], ref, main[:, :, s:]), 2)
+    return out.transpose(1, 2).flatten(2)
 
 
 class _TextBlock(nn.Module):
@@ -127,7 +127,7 @@ class _TextProjection(nn.Module):
 def _affine(y, scale, shift, ref_span):
     """``y·(1 + scale) + shift``. ``scale``/``shift`` are ``(B, D)``, or ``(B, 2, D)``
     with the second row applied to the tokens in ``ref_span = (start, end)``."""
-    if ref_span is None:
+    if scale.ndim == 2:
         return y * (1 + scale[:, None]) + shift[:, None]
     s, e = ref_span
     scale, shift = (1 + scale).unbind(1), shift.unbind(1)
@@ -139,7 +139,7 @@ def _affine(y, scale, shift, ref_span):
 
 
 def _gated(y, gate, ref_span):
-    if ref_span is None:
+    if gate.ndim == 2:
         return y * gate[:, None]
     s, e = ref_span
     main, ref = gate.unbind(1)
@@ -161,16 +161,21 @@ class _Block(nn.Module):
         self.proj["ffn_up_gate"] = nn.Linear(dim, 2 * ffn_dim, bias=False)
         self.proj["ffn_down"] = nn.Linear(ffn_dim, dim, bias=False)
 
-    def forward(self, x, rope, modulation, key_mask=None, ref_span=None):
-        """``modulation (B,6,D)``, or ``(B,6,2,D)`` with ``ref_span``: the second set
-        modulates the reference tokens."""
+    def forward(
+        self, x, rope, modulation, key_mask=None, ref_span=None, ref_isolate=False
+    ):
+        """``ref_span = (start, end)``: the reference tokens, if any. ``modulation``
+        is ``(B,6,D)``, or ``(B,6,2,D)`` with the second set modulating the
+        reference tokens. ``ref_isolate``: see ``_attention``."""
         shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
         y = _affine(self.norm1(x), scale_a, shift_a, ref_span)
         dtype = self.proj["q"].weight.dtype
         y = y.to(dtype)
         q = self.q_norm(self.proj["q"](y).unflatten(-1, (self.heads, -1))).flatten(2)
         k = self.k_norm(self.proj["k"](y).unflatten(-1, (self.heads, -1))).flatten(2)
-        attn = _attention(q, k, self.proj["v"](y), rope, self.heads, key_mask)
+        attn = _attention(
+            q, k, self.proj["v"](y), rope, self.heads, key_mask, ref_span, ref_isolate
+        )
         x = x + _gated(self.proj["o"](attn), gate_a, ref_span)
         y = _affine(self.norm2(x), scale_f, shift_f, ref_span)
         hidden, gate = self.proj["ffn_up_gate"](y.to(dtype)).chunk(2, -1)
@@ -284,9 +289,9 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         self.final_norm_video = _RMSNorm(dim)
         self.final_linear_video = nn.Linear(dim, latent_channels, bias=False)
         self.video_head_modulation = nn.Linear(dim, 2 * dim)
-        self.gradient_checkpointing = False
         self.layer_hook = None
         self.ref_timestep = None
+        self.ref_isolate = False
 
     def load_training_state_dict(self, state_dict, *, prefix=""):
         """Load a consolidated raw/EMA model mapping, strictly; no silent key drops."""
@@ -325,13 +330,16 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         return mod.view(batch, 6, -1), head.view(batch, 2, -1)
 
     def ref_modulation(self, mod, n_img, ref_hw):
-        """``(mod, ref_span)`` for the blocks: ``mod`` unchanged when the reference
-        shares the image's timestep, else ``(B,6,2,D)`` with the
-        ``ref_timestep`` set second."""
-        if ref_hw is None or self.ref_timestep is None:
+        """``(mod, ref_span)`` for the blocks: ``ref_span`` the reference tokens
+        (None without a reference); ``mod`` unchanged when the reference shares
+        the image's timestep, else ``(B,6,2,D)`` with the ``ref_timestep`` set
+        second."""
+        if ref_hw is None:
             return mod, None
-        ref_mod, _ = self.time_conditioning(self.ref_timestep, mod.shape[0])
         span = (n_img, n_img + ref_hw[0] * ref_hw[1])
+        if self.ref_timestep is None:
+            return mod, span
+        ref_mod, _ = self.time_conditioning(self.ref_timestep, mod.shape[0])
         return torch.stack((mod, ref_mod.to(mod.dtype)), 2), span
 
     def embed_sample(self, latent, context, ref=None):
@@ -371,9 +379,10 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         """The 42 blocks. ``skip_layers``: one frozenset for the whole batch, or a
         sequence of frozensets, one per sample (rows skipping a block keep ``x``).
         ``n_img`` (leading image tokens) is what ``layer_hook`` sees. ``ref_span``
-        goes with a ``(B,6,2,D)`` ``mod`` (``ref_modulation``)."""
+        and ``mod`` come from ``ref_modulation``; ``ref_isolate`` applies to that
+        span."""
         per_sample = not isinstance(skip_layers, (frozenset, set))
-        ckpt = self.gradient_checkpointing and torch.is_grad_enabled()
+        iso = self.ref_isolate and ref_span is not None
         hook = self.layer_hook
         for index, layer in enumerate(self.layers):
             if per_sample:
@@ -390,6 +399,7 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
                         mod[rows],
                         None if key_mask is None else key_mask[rows],
                         ref_span,
+                        iso,
                     )
                     if hook is not None:
                         sub = hook(index, sub, n_img)
@@ -397,12 +407,7 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
                     continue
             elif index in skip_layers:
                 continue
-            if ckpt:
-                x = checkpoint(
-                    layer, x, rope, mod, key_mask, ref_span, use_reentrant=False
-                )
-            else:
-                x = layer(x, rope, mod, key_mask, ref_span)
+            x = layer(x, rope, mod, key_mask, ref_span, iso)
             if hook is not None:
                 x = hook(index, x, n_img)
         return x
@@ -460,9 +465,8 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         )
         batch, _, height, width = hidden_states.shape
         mod, head = self.time_conditioning(timestep, batch)
-        mod, ref_span = self.ref_modulation(
-            mod, height * width, None if ref is None else ref.shape[-2:]
-        )
+        ref_hw = None if ref is None else tuple(ref.shape[-2:])
+        mod, ref_span = self.ref_modulation(mod, height * width, ref_hw)
         outputs = []
         for index in range(batch):
             context = encoder_hidden_states[index : index + 1, mask[index]]
@@ -622,12 +626,18 @@ def _bn_stats(vae, like):
     return mean, std
 
 
-def unpack_latents(z, vae):
-    """DiT latent ``(B,128,h,w)`` → FLUX.2 VAE latent ``(B,32,2h,2w)``, in the VAE's
-    dtype: BN de-normalise, then 2×2 un-patchify (the reference decode)."""
-    z = z.to(dtype=vae.dtype)
-    mean, std = _bn_stats(vae, z)
-    z = z * std + mean
+def patchify(z):
+    """``(B,32,H,W)`` → ``(B,128,H/2,W/2)``, FLUX.2's ``_patchify_latents``."""
+    b, c, h, w = z.shape
+    return (
+        z.view(b, c, h // 2, 2, w // 2, 2)
+        .permute(0, 1, 3, 5, 2, 4)
+        .reshape(b, c * 4, h // 2, w // 2)
+    )
+
+
+def unpatchify(z):
+    """Inverse of :func:`patchify`: ``(B,128,h,w)`` → ``(B,32,2h,2w)``."""
     b, c, h, w = z.shape
     return (
         z.reshape(b, c // 4, 2, 2, h, w)
@@ -636,15 +646,18 @@ def unpack_latents(z, vae):
     )
 
 
+def unpack_latents(z, vae):
+    """DiT latent ``(B,128,h,w)`` → FLUX.2 VAE latent ``(B,32,2h,2w)``, in the VAE's
+    dtype: BN de-normalise, then 2×2 un-patchify (the reference decode)."""
+    z = z.to(dtype=vae.dtype)
+    mean, std = _bn_stats(vae, z)
+    return unpatchify(z * std + mean)
+
+
 def pack_latents(z, vae):
     """FLUX.2 VAE latent ``(B,32,H,W)`` → DiT latent ``(B,128,H/2,W/2)``: the exact
-    inverse of ``unpack_latents`` (FLUX.2's ``_patchify_latents`` + BN normalise)."""
-    b, c, h, w = z.shape
-    z = (
-        z.view(b, c, h // 2, 2, w // 2, 2)
-        .permute(0, 1, 3, 5, 2, 4)
-        .reshape(b, c * 4, h // 2, w // 2)
-    )
+    inverse of ``unpack_latents`` (``patchify`` + BN normalise)."""
+    z = patchify(z)
     mean, std = _bn_stats(vae, z)
     return (z - mean) / std
 

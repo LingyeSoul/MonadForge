@@ -7,10 +7,13 @@ one file for every cache, re-encoded only if it is missing).
 
 A layout-JSON cache also holds each image's plain Anima caption
 (``embeds_plain``); a step trains on it with probability ``plain_caption_rate``,
-drawn from its own RNG, as is ``--caption_dropout``, so the shuffle matches a run
-without either.
-With ``--fit_report``, step 1 is the largest sample with the longer of the two
-captions, so the report bounds the worst case.
+else on one of the TE file's caption variants (``embeds_v{k}``) with probability
+``caption_variant_rate``, then on the empty prompt with ``caption_dropout``
+(``choose_embeds``). Each of the three draws has its own RNG, so the shuffle and
+σ sequence match a run with none of them. Samples stay in RAM up to
+``PRELOAD_LIMIT_GB``; a larger set is read from disk each step (variants always are).
+With ``--fit_report``, step 1 is the largest sample with its longest caption (full,
+plain or a variant) and no dropout, so the report bounds the worst case.
 
 Objective (report App. A.2): ``z_σ = (1−σ)·z0 + σ·ε``, the DiT predicts
 ``ε − z0`` at timestep ``1000·σ``, MSE averaged over image tokens and channels —
@@ -24,11 +27,11 @@ resolution shift is added. Median σ ≈ 0.75 — noise-heavy, matching an infer
 grid that spends most of its steps at high σ under shift 5.
 
 Default memory plan: no checkpointing, 12 blocks swapped, and the compiled
-blocks' saved set capped by ``activation_memory_budget`` (0.15), which is faster
+blocks' saved set capped by ``activation_memory_budget`` (0.1), which is faster
 than checkpointing on 16 GB (measured 2026-10-17).
-``--grad_checkpointing`` wraps each block's ``forward`` (not ``__call__``), so
-the block swapper's forward hooks fire once per step and never again during
-the recompute; ``MOSSImageTransformer.gradient_checkpointing`` is left off.
+``--grad_checkpointing`` wraps each block's ``forward`` (``checkpoint_blocks``;
+not ``__call__``), so the block swapper's forward hooks fire once per step and
+never again during the recompute.
 
     make daemon-run ARGS="scripts/moss/train.py --cache post_image_dataset/moss/<set> --epochs 8"
 """
@@ -60,6 +63,7 @@ from library.moss.requests import LORA_ALPHA, TrainRequest
 
 EMPTY_PROMPT_PATH = "library/moss/asset/empty_prompt.safetensors"
 NUM_TRAIN_TIMESTEPS = 1000
+PRELOAD_LIMIT_GB = 16  # above this the samples are read from disk each step
 PROGRESS_EVERY = 2  # steps per "  progress i/n" line (the GUI bar reads them)
 
 
@@ -77,6 +81,9 @@ class Sample:
     n_ref: int = 0
     load_ref: Callable[[], torch.Tensor] | None = None  # clean ref latent (128,h,w)
     latent_path: Path | None = None  # finds the REPA target (latent metadata)
+    n_variants: int = 0
+    load_variant: Callable[[int], torch.Tensor] | None = None  # embeds_v{k}, from disk
+    latent_hw: tuple[int, int] | None = None  # (h, w) latent tokens, from the file name
 
 
 def samples_from_cache(cache_dir: Path) -> list[Sample]:
@@ -84,12 +91,6 @@ def samples_from_cache(cache_dir: Path) -> list[Sample]:
 
     out = []
     for item in moss_cache.list_items(cache_dir):
-
-        def load(item=item):
-            # Embeds are stored at their true length (never padded).
-            latent, embeds = moss_cache.load_item(item)
-            return latent, embeds
-
         load_plain = (
             functools.partial(moss_cache.load_plain, item)
             if item.n_text_plain
@@ -99,15 +100,58 @@ def samples_from_cache(cache_dir: Path) -> list[Sample]:
             Sample(
                 item.stem,
                 (item.width // 16) * (item.height // 16),
-                max(item.n_text, item.n_text_plain),
-                load,
+                max(item.n_text, item.n_text_plain, item.n_text_variants),
+                functools.partial(moss_cache.load_item, item),
                 load_plain,
                 item.n_ref,
                 functools.partial(moss_cache.load_ref, item) if item.n_ref else None,
                 item.latent_path,
+                item.n_variants,
+                functools.partial(moss_cache.load_variant, item)
+                if item.n_variants
+                else None,
+                (item.height // 16, item.width // 16),
             )
         )
     return out
+
+
+def choose_embeds(
+    embeds: torch.Tensor,
+    plain: torch.Tensor | None = None,
+    n_variants: int = 0,
+    load_variant: Callable[[int], torch.Tensor] | None = None,
+    empty: torch.Tensor | None = None,
+    *,
+    plain_rate: float = 0.0,
+    variant_rate: float = 0.0,
+    dropout: float = 0.0,
+    plain_rng: random.Random | None = None,
+    variant_rng: random.Random | None = None,
+    drop_rng: random.Random | None = None,
+    worst_case: bool = False,
+) -> tuple[torch.Tensor, str]:
+    """The text one step trains on and its kind (``full`` / ``plain`` / ``v{k}`` /
+    ``empty``): the plain caption at ``plain_rate``, else a variant (loaded on
+    demand) at ``variant_rate``, then the empty prompt at ``dropout``. A candidate
+    that is None / 0 draws nothing from its RNG. ``worst_case`` (the fit-report
+    step) draws nothing and returns the longest of full, plain and every variant."""
+    if worst_case:
+        cands = [("full", embeds)]
+        if plain is not None:
+            cands.append(("plain", plain))
+        cands += [(f"v{k}", load_variant(k)) for k in range(1, n_variants + 1)]
+        kind, x = max(cands, key=lambda c: c[1].shape[0])
+        return x, kind
+    kind, x = "full", embeds
+    if plain is not None and plain_rng.random() < plain_rate:
+        kind, x = "plain", plain
+    elif n_variants and variant_rng.random() < variant_rate:
+        k = variant_rng.randint(1, n_variants)
+        kind, x = f"v{k}", load_variant(k)
+    if empty is not None and drop_rng.random() < dropout:
+        kind, x = "empty", empty
+    return x, kind
 
 
 def sample_sigma(
@@ -281,34 +325,71 @@ def train(
         f"{len(samples)} samples, image {img[0]}-{img[-1]} tokens, text {txt[0]}-{txt[-1]} tokens",
         flush=True,
     )
-    data = {s.stem: s.load() for s in samples}
-    refs = {s.stem: s.load_ref() for s in samples if s.load_ref is not None}
-    if refs:
+    n_refs = sum(s.load_ref is not None for s in samples)
+    if n_refs:
         ref_tok = sorted(s.n_ref for s in samples if s.load_ref is not None)
         print(
-            f"reference latents: {len(refs)}/{len(samples)} samples, "
+            f"reference latents: {n_refs}/{len(samples)} samples, "
             f"{ref_tok[0]}-{ref_tok[-1]} tokens",
             flush=True,
         )
     joint = max(s.n_img + s.n_ref + s.n_text for s in samples)
-    plain = (
-        {s.stem: s.load_plain() for s in samples if s.load_plain is not None}
-        if req.plain_caption_rate > 0
-        else {}
-    )
-    if plain:
+    use_plain = req.plain_caption_rate > 0
+    n_plain = sum(s.load_plain is not None for s in samples) if use_plain else 0
+    if n_plain:
         print(
-            f"plain Anima captions: {len(plain)}/{len(samples)} samples, "
+            f"plain Anima captions: {n_plain}/{len(samples)} samples, "
             f"rate {req.plain_caption_rate}",
             flush=True,
         )
-    plain_rng = random.Random(req.seed + 1)
-    drop_rng = random.Random(req.seed + 2)
-    plain_steps = 0
+
+    def fetch(s):
+        """``(latent, embeds, plain or None, ref or None)`` on CPU."""
+        latent, embeds = s.load()
+        alt = s.load_plain() if use_plain and s.load_plain is not None else None
+        ref = s.load_ref() if s.load_ref is not None else None
+        return latent, embeds, alt, ref
+
+    # bf16 TE rows (S×4096×2) + fp32 latents (128×4 per token): ~17 MB a colorize pair.
+    preload_bytes = sum(
+        s.n_text * 8192 * (2 if use_plain and s.load_plain else 1)
+        + (s.n_img + s.n_ref) * 512
+        for s in samples
+    )
+    if preload_bytes <= PRELOAD_LIMIT_GB * 1024**3:
+        resident = {s.stem: fetch(s) for s in samples}
+
+        def get(s):
+            return resident[s.stem]
+    else:
+        get = fetch
+        print(
+            f"data ~{preload_bytes / 1024**3:.0f} GB > {PRELOAD_LIMIT_GB} GB: "
+            "read from disk each step",
+            flush=True,
+        )
+    use_variants = req.caption_variant_rate > 0
+    n_variant_samples = sum(1 for s in samples if s.n_variants) if use_variants else 0
+    if n_variant_samples:
+        print(
+            f"caption variants: {n_variant_samples}/{len(samples)} samples, "
+            f"rate {req.caption_variant_rate}",
+            flush=True,
+        )
+    rates = dict(
+        plain_rate=req.plain_caption_rate,
+        variant_rate=req.caption_variant_rate,
+        dropout=req.caption_dropout,
+        plain_rng=random.Random(req.seed + 1),
+        drop_rng=random.Random(req.seed + 2),
+        variant_rng=random.Random(req.seed + 3),
+    )
+    kinds = {"plain": 0, "variant": 0, "empty": 0}
 
     transformer = load_transformer(req.model_dir, req.model)
     transformer.requires_grad_(False)
     transformer.ref_timestep = req.ref_timestep if req.ref_timestep >= 0 else None
+    transformer.ref_isolate = req.ref_isolate
     channel_alpha = req.channel_scaling_alpha if req.algo == "lora" else 0.0
     dc_isolate = req.dc_isolate and req.algo == "lora"
     network = LoRANetwork(
@@ -373,12 +454,10 @@ def train(
 
         pe_root = resolve_under_home(req.repa_pe_root)
         for s in samples:
-            _, h, w = data[s.stem][0].shape
-            path = (
-                pe_sidecar(s.latent_path, s.stem, w * 16, h * 16, pe_root)
-                if s.latent_path is not None
-                else None
-            )
+            if s.latent_path is None or s.latent_hw is None:
+                continue
+            h, w = s.latent_hw
+            path = pe_sidecar(s.latent_path, s.stem, w * 16, h * 16, pe_root)
             if path is not None:
                 repa_targets[s.stem] = load_target(path, h, w)
         if not repa_targets:
@@ -424,11 +503,14 @@ def train(
         "sigma": f"mu={req.sigma_mu} s={req.sigma_s} cutoff={req.sigma_cutoff} "
         f"uniform={req.sigma_uniform}",
         "caption_dropout": req.caption_dropout,
-        "plain_caption_rate": req.plain_caption_rate if plain else 0.0,
-        "reference_latents": len(refs),
+        "plain_caption_rate": req.plain_caption_rate if n_plain else 0.0,
+        "caption_variant_rate": req.caption_variant_rate if n_variant_samples else 0.0,
+        "reference_latents": n_refs,
     }
-    if refs:
+    if n_refs:
         meta["ref_timestep"] = req.ref_timestep
+        if req.ref_isolate:
+            meta["ref_isolate"] = "1"
     if repa is not None:
         meta.update(repa_weight=req.repa_weight, repa_layer=req.repa_layer)
 
@@ -459,20 +541,21 @@ def train(
         for s in order:
             if step >= total:
                 break
-            latent, embeds = data[s.stem]
-            alt = plain.get(s.stem)
-            if alt is not None and (
-                alt.shape[0] > embeds.shape[0]
-                if step == 0 and req.fit_report
-                else plain_rng.random() < req.plain_caption_rate
-            ):
-                embeds = alt
-                plain_steps += 1
-            if empty is not None and drop_rng.random() < req.caption_dropout:
-                embeds = empty
+            latent, embeds, alt, ref = get(s)
+            embeds, kind = choose_embeds(
+                embeds,
+                alt,
+                s.n_variants if use_variants else 0,
+                s.load_variant,
+                empty,
+                worst_case=step == 0 and req.fit_report,
+                **rates,
+            )
+            kind = "variant" if kind.startswith("v") else kind
+            if kind in kinds:
+                kinds[kind] += 1
             latent = latent.unsqueeze(0).to(device, torch.float32)
             embeds = embeds.unsqueeze(0).to(device)
-            ref = refs.get(s.stem)
             if ref is not None:
                 ref = ref.unsqueeze(0).to(device, torch.float32)
             sigma = sample_sigma(
@@ -566,7 +649,9 @@ def train(
         "request": {k: getattr(req, k) for k in req.__dataclass_fields__},
         "fit": fit,
         "steps": step,
-        "plain_steps": plain_steps,
+        "plain_steps": kinds["plain"],
+        "variant_steps": kinds["variant"],
+        "dropout_steps": kinds["empty"],
         "minutes": seconds / 60,
         "s_per_step": seconds / max(1, step - 1),
         "peak_allocated_gb": torch.cuda.max_memory_allocated() / 1024**3,

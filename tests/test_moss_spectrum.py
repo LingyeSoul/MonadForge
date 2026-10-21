@@ -6,11 +6,27 @@ from library.moss.spectrum import MossSpectrum, window_schedule
 
 
 def test_window_schedule_matches_anima_counts():
-    full = window_schedule(50)
+    full = window_schedule(50, flex_window=0.25)  # Anima's default
     assert all(full[:6]) and all(full[-3:])
     assert sum(full) == 22
-    assert sum(window_schedule(30)) == 17
+    assert sum(window_schedule(30, flex_window=0.25)) == 17
     assert sum(window_schedule(20, flex_window=1.0)) == 12
+
+
+def test_default_schedule_is_the_generators():
+    """``MossSpectrum()`` plans what ``GenerateRequest``'s defaults run: 19 full
+    forwards of 50 at flex_window 0.5."""
+    from library.moss.requests import GenerateRequest
+
+    req = GenerateRequest()
+    sp = MossSpectrum()
+    assert (sp.window_size, sp.flex_window, sp.warmup) == (
+        req.spectrum_window_size,
+        req.spectrum_flex_window,
+        req.spectrum_warmup,
+    )
+    sp.begin(torch.linspace(1, 0, 51))
+    assert sp.planned_full_steps == sum(window_schedule(50)) == 19
 
 
 def test_begin_drops_terminal_zero():
@@ -78,12 +94,17 @@ def test_matches_core_predictor():
     ts = [0, 1, 2, 3, 4, 5, 7, 10, 13, 17]
     hs = [torch.randn(3, 7).to(torch.bfloat16) * 0.1 + i / n for i in ts]
     for w in (0.3, 1.0):
-        core = SpectrumPredictor(3, 0.1, w, torch.device("cpu"), hs[0].shape, total_steps=n)
+        core = SpectrumPredictor(
+            3, 0.1, w, torch.device("cpu"), hs[0].shape, total_steps=n
+        )
         ours = _Forecaster(3, 0.1, w, n, 100)
         for t, h in zip(ts, hs):
             core.update(float(t), h)
             ours.update(float(t), h)
         for t_star in (18.0, 20.0):
             torch.testing.assert_close(
-                ours.predict(t_star).float(), core.predict(t_star).float(), atol=0.03, rtol=0.03
+                ours.predict(t_star).float(),
+                core.predict(t_star).float(),
+                atol=0.03,
+                rtol=0.03,
             )

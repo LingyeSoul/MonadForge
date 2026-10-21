@@ -49,3 +49,20 @@ def test_scan_counts_prefixed_stems_and_stale_captions(tmp_path):
     assert (s.text_cached, s.stale_text, s.latents_cached) == (1, 1, 1)
     c = cache_counts(out)
     assert (c.text, c.latents, c.samples) == (2, 1, 1)
+
+
+def test_every_basic_field_has_chinese():
+    """The GUI's basic (non-advanced) fields all carry a Chinese label + help."""
+    import dataclasses
+
+    from gui.moss.app import SPEC
+
+    missing = [
+        f"{cls.__name__}.{f.name}"
+        for cls in (SPEC.cache_cls, SPEC.train_cls, SPEC.test_cls)
+        for f in dataclasses.fields(cls)
+        if not f.metadata.get("advanced")
+        and f.name not in SPEC.fields_cn
+        and not (cls is SPEC.test_cls and f.name in SPEC.fields_cn_test)
+    ]
+    assert not missing
