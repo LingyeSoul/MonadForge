@@ -21,6 +21,11 @@ feeding the next (sequential); within a layer every linear's ``H`` comes from on
 pass at bf16. Per linear the log gives the output error
 ``tr(Δ H Δᵀ) / tr(W H Wᵀ)`` of round-to-nearest and of GPTQ.
 
+``--manifest`` (``te_calib.py``'s) calibrates on its ``calib`` split instead: every
+category weighs the same in ``H`` (each sample's ``xᵀx`` scaled by the mean category
+token count over its own category's), and the empty prompt enters once at
+``--empty_mass`` of one category.
+
     make daemon-run ARGS="--stall-timeout 1800 project/moss_lora/src/te_gptq.py"
 """
 
@@ -108,6 +113,40 @@ def calib_pages(cache: Path, n: int, seed: int) -> list[tuple[Image.Image, str, 
     return out
 
 
+def manifest_inputs(tok, path: Path, empty_mass: float, device):
+    """The manifest's calib entries (+ the empty prompt) as TE inputs, with the
+    per-sample ``H`` weights that give every category the same token mass."""
+    entries = [
+        e for e in json.loads(path.read_text())["entries"] if e["split"] == "calib"
+    ]
+    per_cat = {}
+    for e in entries:
+        per_cat[e["category"]] = per_cat.get(e["category"], 0) + e["tokens"]
+    mean = sum(per_cat.values()) / len(per_cat)
+    inputs, weights = [], []
+    for e in entries:
+        if e["image"]:
+            w, h = e["width"], e["height"]
+            page = moss_cache.fit(moss_cache.load_rgb(e["image"]), w, h)
+            inputs.append(te_inputs(tok, page, e["text"], w * h, device))
+        else:
+            inputs.append(te_inputs(tok, None, e["text"], 0, device))
+        weights.append(mean / per_cat[e["category"]])
+    empty = te_inputs(tok, None, "", 0, device)
+    inputs.append(empty)
+    weights.append(empty_mass * mean / int(empty["input_ids"].shape[1]))
+    for cat, n in sorted(per_cat.items()):
+        print(f"[calib] {cat:14s} {n:6d} tokens, weight {mean / n:.3f}", flush=True)
+    print(
+        f"[calib] {len(entries)} entries + '' at {empty_mass} of a category", flush=True
+    )
+    return (
+        inputs,
+        weights,
+        {"manifest": str(path), "tokens": per_cat, "empty_mass": empty_mass},
+    )
+
+
 def qdq(w: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return (w / scale).clamp(-FP8_MAX, FP8_MAX).to(FP8).float() * scale
 
@@ -190,6 +229,8 @@ def main() -> None:
     ap.add_argument("--block", type=int, default=128)
     ap.add_argument("--damp", type=float, default=0.01)
     ap.add_argument("--no_act_order", action="store_true")
+    ap.add_argument("--manifest", default="", help="te_calib.py manifest (calib split)")
+    ap.add_argument("--empty_mass", type=float, default=0.25)
     ap.add_argument("--out", default=OUT)
     args = ap.parse_args()
     torch.set_grad_enabled(False)
@@ -201,19 +242,31 @@ def main() -> None:
 
     src = variant_dir("", "base") / "text_encoder"
     tok = load_tokenizer("")
-    captions = calib_captions(args.per_dir, args.seed, bench_caption_files())
-    pages = calib_pages(resolve_under_home(args.pages_cache), args.pages, args.seed)
-    inputs = [te_inputs(tok, None, c, 0, device) for c in captions]
-    inputs += [te_inputs(tok, None, "", 0, device)] * args.empty_repeat
-    n_cap = len(inputs)
-    inputs += [te_inputs(tok, p, c, px, device) for p, c, px in pages]
-    n_txt = sum(int(i["input_ids"].shape[1]) for i in inputs[:n_cap])
-    n_img = sum(int(i["input_ids"].shape[1]) for i in inputs[n_cap:])
-    print(
-        f"[calib] {len(captions)} captions + {args.empty_repeat}x '' ({n_txt} tokens), "
-        f"{len(pages)} pages ({n_img} tokens)",
-        flush=True,
-    )
+    if args.manifest:
+        inputs, weights, calib_info = manifest_inputs(
+            tok, resolve_under_home(args.manifest), args.empty_mass, device
+        )
+    else:
+        captions = calib_captions(args.per_dir, args.seed, bench_caption_files())
+        pages = calib_pages(resolve_under_home(args.pages_cache), args.pages, args.seed)
+        inputs = [te_inputs(tok, None, c, 0, device) for c in captions]
+        inputs += [te_inputs(tok, None, "", 0, device)] * args.empty_repeat
+        n_cap = len(inputs)
+        inputs += [te_inputs(tok, p, c, px, device) for p, c, px in pages]
+        weights = [1.0] * len(inputs)
+        n_txt = sum(int(i["input_ids"].shape[1]) for i in inputs[:n_cap])
+        n_img = sum(int(i["input_ids"].shape[1]) for i in inputs[n_cap:])
+        calib_info = {
+            "captions": len(captions),
+            "pages": len(pages),
+            "text_tokens": n_txt,
+            "page_tokens": n_img,
+        }
+        print(
+            f"[calib] {len(captions)} captions + {args.empty_repeat}x '' ({n_txt} tokens), "
+            f"{len(pages)} pages ({n_img} tokens)",
+            flush=True,
+        )
 
     te = AutoModel.from_pretrained(src, dtype=torch.bfloat16).eval()
     lm = te.language_model
@@ -241,15 +294,18 @@ def main() -> None:
             for n, m in lins.items()
         }
 
+        weight = [1.0]
+
         def acc(h):
             def hook(_m, a):
                 x = a[0].reshape(-1, a[0].shape[-1]).float()
-                h.addmm_(x.T, x)
+                h.addmm_(x.T, x, alpha=weight[0])
 
             return hook
 
         hooks = [m.register_forward_pre_hook(acc(H[n])) for n, m in lins.items()]
-        for h, kw in samples:
+        for (h, kw), w in zip(samples, weights):
+            weight[0] = w
             layer(h, **kw[types[i]])
         for hk in hooks:
             hk.remove()
@@ -292,10 +348,7 @@ def main() -> None:
         json.dumps(
             {
                 "args": vars(args),
-                "captions": len(captions),
-                "pages": len(pages),
-                "text_tokens": n_txt,
-                "page_tokens": n_img,
+                "calib": calib_info,
                 "linears": report,
             },
             indent=1,
