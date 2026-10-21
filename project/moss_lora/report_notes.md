@@ -3,7 +3,7 @@
 Source: `MOSS_Image_Technical_Report.pdf` (35 pp., HF Space `assets/`). Page numbers in
 parentheses. *Italic* = our inference, not the report's.
 
-## (a) Which checkpoint is Base (open question 4)
+## (a) Which checkpoint is Base
 
 - The text says the release is the **Stage 3 EMA checkpoint at step 310,000** (p.14
   §A.2). Table 6's Stage 3 schedule ends at 310k (p.15); Table 5 gives the final text

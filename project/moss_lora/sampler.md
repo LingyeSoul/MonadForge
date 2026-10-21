@@ -22,10 +22,11 @@ about as close to its own p50 as under Euler: rel-L2 0.42 / 0.61 / 0.58 vs Euler
 ## CNS
 
 γ is calibrated from 10 Euler trajectories (5 bench prompts × seeds 0, 1), with the FFT
-on the un-patchified 32 ch /8 grid (`bench/moss_spectrum/cns_calibrate.py` →
-`networks/calibration/moss_cns_gamma.npz`). **The precondition holds**: σ at γ = 0.5 falls
-monotonically from 0.94 for the lowest band to 0.41 for the highest. Spread +0.53,
-aggregate σ50 0.61 (Anima: +0.41…+0.52, ≈0.45–0.49).
+on the un-patchified 32 ch /8 grid (`bench/moss_spectrum/cns_calibrate.py`). This run
+made the Base cfg-3 file; the six γ files now shipped (Base and SFT × cfg) and how
+`MossCNS` picks one by variant + cfg are in `docs/inference/cns.md`.
+**The precondition holds**: σ at γ = 0.5 falls monotonically from 0.94 for the lowest
+band to 0.41 for the highest. Spread +0.53, aggregate σ50 0.61 (Anima: +0.41…+0.52, ≈0.45–0.49).
 
 A/B against er_sde white noise with the same white draw (5 prompts, p50 and s50 fw 0.5):
 composition is kept and details move (rel-L2 0.43). By eye, at grid scale plus full-res
@@ -43,12 +44,6 @@ crops of the zh note and the ja_manga face:
 Net: a near-tie with one defect and two or three cleanups at one seed. Not enough to
 ship. The calibration prompts overlap the eval prompts (different seeds).
 
-## Open
-
-- CNS over more seeds and prompts held out from calibration, before it gets a
-  request field.
-- er_sde on SFT (already the glossier model). With a LoRA: see below.
-
 ## With the caststation LoRA (Base, `caststation_r16` ×1.0, 30 steps, eager)
 
 `project/moss_lora/src/lora_ab.py --arms euler:0.0,euler:1.0,er_sde:1.0,cns:1.0`, 3 prompts ×
@@ -65,3 +60,9 @@ seeds 1–2. The two Euler columns are the existing floor. Grids:
   showed.
 - CNS vs er_sde white is again a wash. It removed a stray signature scribble (p1 s2) and
   garbled the "01" arm tattoo into "0C" (p0 s1). Everything else is near-identical.
+
+## Open
+
+- CNS over more seeds and prompts held out from calibration, before it gets a
+  request field.
+- er_sde on SFT (already the glossier model). With a LoRA: see above.

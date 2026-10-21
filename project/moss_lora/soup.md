@@ -25,7 +25,7 @@ ER-SDE + Spectrum, 50 steps. `output/tests/ab_caststation_soup/`: one dir per ar
 
 ## Reads
 
-- **ΔW cos** (`src/dw_cos.py`): every pair has a per-module mean of 0.14–0.15, a
+- **ΔW cos** (`python -m scripts.soup.dw_cos`): every pair has a per-module mean of 0.14–0.15, a
   median of ≈0.035 and a full-sum of 0.17–0.18. The per-module max is ≈0.75. Energy is
   even (32 / 34 / 34 %).
 - **Rank-32 truncation** keeps 98.2 % of the averaged ΔW's energy on average (min 94.7 %,
@@ -44,8 +44,8 @@ ER-SDE + Spectrum, 50 steps. `output/tests/ab_caststation_soup/`: one dir per ar
 The style lives in the shared component of ΔW. Averaging cancels each seed's own
 component and leaves the shared part, so a low full-sum cos does not mean dilution. The
 sincos soup more likely failed because its ingredients' energy was unbalanced (the 1e-4
-run carried ~82 %), not because their cos was low. The cos gate in `plan.md` is
-replaced by an energy-balance check.
+run carried ~82 %), not because their cos was low. The earlier cos gate is replaced by
+an energy-balance check (`scripts/soup/dw_cos.py`, before building).
 
 Not shown: that the soup beats a single seed (8 renders by eye only), and how strong the
 style is against a no-LoRA render (this set has none).

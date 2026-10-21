@@ -8,30 +8,36 @@
 3. Vendored DiT + ``generate.denoise`` unbatched (expect bit-exact) and batched
    (max|Δ| / mean|Δ|), plus wall-clock per image for all three.
 
-    make daemon-run ARGS="project/moss_lora/src/parity.py"
+Writes ``result.json`` (the bench envelope, the report under ``metrics``) and the
+final latents (``{i}_{reference,unbatched,batched}.pt``) into
+``bench/moss_parity/results/<ts>[-label]/``.
+
+    make daemon-run ARGS="bench/moss_parity/parity.py"
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
+import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
-import torch
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+import torch  # noqa: E402
 
-from library.env import resolve_under_home
-from library.moss.generate import denoise, initial_noise
-from library.moss.loader import (
+from bench._common import make_run_dir, write_result  # noqa: E402
+from library.moss.generate import denoise, initial_noise  # noqa: E402
+from library.moss.loader import (  # noqa: E402
     empty_cache,
     encode_prompt,
     load_text_encoder,
     load_transformer,
     pad_embeds,
 )
-from library.moss.model import snapped_sigmas
-from library.moss.requests import variant_dir
+from library.moss.model import snapped_sigmas  # noqa: E402
+from library.moss.requests import variant_dir  # noqa: E402
 
 PROMPTS = [
     "An anime illustration of a girl with long silver hair and red eyes, wearing a black "
@@ -70,14 +76,13 @@ def main():
     ap.add_argument("--steps", type=int, default=50)
     ap.add_argument("--size", default="1024x1024")
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--out", default="output/ckpt_moss/parity")
+    ap.add_argument("--label", default=None)
     args = ap.parse_args()
     w, h = map(int, args.size.split("x"))
-    out = resolve_under_home(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out = make_run_dir("moss_parity", args.label)
     dev = torch.device("cuda")
     ref = _reference_module(args.model_dir)
-    report = {"args": vars(args), "te": [], "images": []}
+    report = {"te": [], "images": []}
 
     # --- TE parity
     tok, te = load_text_encoder(args.model_dir, dev)
@@ -162,8 +167,16 @@ def main():
             torch.save(lat, out / f"{i}_{key}.pt")
             print(f"[{key}] {i}: {sec:.1f}s {rec[key]}", flush=True)
         torch.save(ref_lat[i], out / f"{i}_reference.pt")
-    (out / "parity.json").write_text(json.dumps(report, indent=2))
-    print(json.dumps(report, indent=2), flush=True)
+    write_result(
+        out,
+        script=__file__,
+        args=args,
+        metrics=report,
+        label=args.label,
+        artifacts=sorted(p.name for p in out.glob("*.pt")),
+        device=dev,
+    )
+    print(f"wrote {out}", flush=True)
 
 
 if __name__ == "__main__":

@@ -18,21 +18,28 @@ Qwen3.5-9B's own processor settings (patch 16, merge 2, mean/std 0.5). Writes
 ``<out>/grid.png`` (source column first) and ``index.json`` with a 64 px luma PSNR
 against the source per cell.
 
-    make daemon-run ARGS="--stall-timeout 900 project/moss_lora/src/vision_recon.py"
+The vision-tower TE call is ``project/moss_lora/src/vision_te.py`` (the colorize
+probes share it), put on ``sys.path`` below. Finding:
+``docs/moss/findings/vision_tower_reference.md``.
+
+    make daemon-run ARGS="--stall-timeout 900 bench/moss_vision_reference/vision_recon.py"
 """
 
 import argparse
 import json
+import sys
+from pathlib import Path
 
-import numpy as np
-import torch
-from PIL import Image, ImageDraw
-from safetensors.torch import load_file, save_file
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "project/moss_lora/src"))
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from PIL import Image, ImageDraw  # noqa: E402
+from safetensors.torch import load_file, save_file  # noqa: E402
 
-from library.env import resolve_under_home
-from library.moss.cache import caption_converter
-from library.moss.generate import _build_spectrum, denoise, initial_noise
-from library.moss.loader import (
+from library.env import resolve_under_home  # noqa: E402
+from library.moss.cache import caption_converter  # noqa: E402
+from library.moss.generate import build_spectrum, denoise, initial_noise  # noqa: E402
+from library.moss.loader import (  # noqa: E402
     compile_blocks,
     empty_cache,
     load_tokenizer,
@@ -40,9 +47,9 @@ from library.moss.loader import (
     load_vae,
     pad_embeds,
 )
-from library.moss.model import decode, snapped_sigmas
-from library.moss.requests import GenerateRequest
-from vision_te import encode, load_te
+from library.moss.model import decode, snapped_sigmas  # noqa: E402
+from library.moss.requests import GenerateRequest  # noqa: E402
+from vision_te import encode, load_te  # noqa: E402
 
 IMAGES = [
     "post_image_dataset/resized/ningen_mame/dan_6768037.png",
@@ -166,7 +173,7 @@ def main() -> None:
                 cfg=args.cfg,
                 sampler="er_sde",
                 seed=args.seed,
-                spectrum=_build_spectrum(GenerateRequest(spectrum=True), {}),
+                spectrum=build_spectrum(GenerateRequest(spectrum=True)),
             )
             save_file({"latent": z.cpu().contiguous()}, str(lat[(stem, arm)]))
             print(f"[dit] {stem} {arm} -> {lat[(stem, arm)].name}", flush=True)

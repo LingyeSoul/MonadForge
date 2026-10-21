@@ -66,7 +66,7 @@ def _split_key(key: str) -> tuple[str, str]:
     return head, key[len(head) + 1 :]
 
 
-def _group_modules(sd: dict, path: str) -> dict[str, dict[str, torch.Tensor]]:
+def group_modules(sd: dict, path: str) -> dict[str, dict[str, torch.Tensor]]:
     modules: dict[str, dict[str, torch.Tensor]] = {}
     for key, value in sd.items():
         if key in _REFUSED_TOP_LEVEL or "." not in key:
@@ -85,7 +85,7 @@ def _group_modules(sd: dict, path: str) -> dict[str, dict[str, torch.Tensor]]:
     return modules
 
 
-def _effective_factors(
+def effective_factors(
     mod: dict[str, torch.Tensor], module: str, path: str
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """(down', up') in float32 such that ΔW = up' @ down' exactly.
@@ -127,7 +127,7 @@ def _grouped_factors(
     if len(weights) != n:
         raise ValueError(f"{len(weights)} weights for {n} checkpoints.")
     paths = paths or [f"<sd {i}>" for i in range(n)]
-    grouped = [_group_modules(sd, p) for sd, p in zip(sds, paths)]
+    grouped = [group_modules(sd, p) for sd, p in zip(sds, paths)]
     module_names = set(grouped[0])
     for g, p in zip(grouped[1:], paths[1:]):
         if set(g) != module_names:
@@ -160,7 +160,7 @@ def soup_state_dicts(
     for module in sorted(module_names):
         downs, ups = [], []
         for g, w, p in zip(grouped, weights, paths):
-            down, up = _effective_factors(g[module], module, p)
+            down, up = effective_factors(g[module], module, p)
             downs.append(down)
             ups.append(up * w)
         soup_down = torch.cat(downs, dim=0)
@@ -193,7 +193,7 @@ def truncated_soup(
     for module in sorted(module_names):
         downs, ups = [], []
         for g, w, p in zip(grouped, weights, paths):
-            down, up = _effective_factors(g[module], module, p)
+            down, up = effective_factors(g[module], module, p)
             downs.append(down)
             ups.append(up * w)
         # dW = U_cat @ V_cat, U_cat: (out, R), V_cat: (R, in)

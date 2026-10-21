@@ -185,26 +185,14 @@ lr". That control is the next run.
 `dc_isolate` off → on, `lr` 1e-4 → 5e-5 (α 0.5, rank 32 / alpha 128 unchanged). Revert path:
 `--no-dc_isolate --lr 1e-4`.
 
+## Open
 
-1. **Second seed** — train seed 1 for both arms at lr 1e-4 and check the eyeball verdict
-   holds; a metric for it would need prompt adherence (tagger / VLM on the off-prompt
-   items above), not distance to no-LoRA.
-2. **lr 1e-4 + cs05 vs lr 2e-5 plain** on the two complex gallery prompts (ten-character
-   ensemble, 4:1 banner) that set the earlier 2e-5 default — the new default has not been
-   read on them.
-3. **α sweep** — 0.25 / 0.5 / 1.0.
-4. **Calibration** — sample saturation (re-probe on `sincos_layout`, compare `s`) and SFT
+1. **α 0.5 alone at lr 5e-5** — the control the `dc_isolate` default flip went ahead
+   without; it separates "dc at half the lr" from "half the lr". Then a second seed;
+   α 0 + `dc_isolate` separates the down side from the up side. (Isolation rather than
+   centering `x`: the FFT reference puts half the bias in the loss itself, so closing
+   the bias path would fight the target; centering would also need a bias key or a bake
+   through ch 42, which is only approximately constant.)
+2. **α sweep** — 0.25 / 0.5 / 1.0.
+3. **Calibration** — sample saturation (re-probe on `sincos_layout`, compare `s`) and SFT
    (`--model sft`); both 2-min jobs, low priority.
-5. If (1) or (2) goes against cs05, revert the defaults to lr 2e-5 + α 0.
-6. **Up-side arm: DC isolation** — built and measured (above). At lr 1e-4 it is not better
-   than α 0.5 (text artifacts); at lr 5e-5 it is clean with lr 1e-4-like style strength. Next:
-   **α 0.5 alone at lr 5e-5** (the missing control), then a second seed; α 0 + dc_isolate
-   separates the two sides. Original note: not centering. The FFT reference says the bias is half
-   the loss's own, so closing the bias path (centering `x`) would fight the target;
-   isolating it keeps the path and frees the other rank directions. Output-neutral at init
-   (`up` is zero): project `x̄` (or the massive channels' columns) into one row of `down`,
-   zero that direction from the other r−1 rows, and keep the row from re-mixing (gradient
-   mask on the column block, or the existing column damping). Measure the same probe on
-   the new init (DC share should collapse on r−1 of the `up` columns), then the lr 1e-4
-   image A/B against α 0.5 on the same seeds. Centering would also need a bias key or a
-   bake through ch 42, which is only approximately constant (peak-to-mean 2.7).

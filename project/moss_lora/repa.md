@@ -1,5 +1,8 @@
 # REPA on MOSS-Image
 
+**Verdict: parked.** Between-training-seed variance swamps any effect (blind 3-seed
+judge, REPA 8 / control 11 / tie 5; [below](#three-training-seeds-blind-judge-2026-10-20)).
+
 Anima's relational REPA (`docs/methods/repa.md`) ported to the MOSS trainer:
 `library/moss/repa.py`, `--repa_weight` / `--repa_layer` / `--repa_pe_root` on
 `TrainRequest` (off by default). Targets are the Anima PE-Spatial sidecars of the

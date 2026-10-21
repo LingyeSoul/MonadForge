@@ -62,5 +62,10 @@ Active projects:
   `reseed/` package. Home: `README.md`. Its live work is on the `cjk-ko`
   branch.
 
+- [`moss_lora/`](moss_lora/) — opened 2026-10-16: the MOSS-Image line (not Anima;
+  `library/moss/CLAUDE.md`). Port, Spectrum and LoRA done; channel scaling, DAVE, CNS
+  and the GUI / ComfyUI surface shipped; REPA parked; i2i / colorize active. Home:
+  `plan.md` (status table).
+
 - [`qwen21_lora/`](qwen21_lora/) — the Qwen-Image-2.1 LoRA line (not Anima;
   `library/qwen21/CLAUDE.md`).

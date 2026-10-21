@@ -17,6 +17,14 @@ Three stages, submitted as one daemon command job (attach-by-default; `--queue` 
 2. **Fine-tunes** — 3 seeded fine-tunes on `PATH_PATTERN` starting from that init.
 3. **Soup** — exact ΔW average, SVD-truncated back to `network_dim` → `anima_soup_<slug>.safetensors` + snapshot (slug derived from the pattern or `NAME`).
 
+## Ingredient check
+
+`python -m scripts.soup.dw_cos a.safetensors b.safetensors [c ...]` (CPU, plain-LoRA
+files) prints each ingredient's ΔW energy share and the pairwise ΔW cos. Run it before a
+manual `scripts.soup.build`: the shares should be roughly even. A low cos alone is not a
+gate — a MOSS 3-seed soup at cos ~0.17 kept the style, while an LR-diverse soup with one
+ingredient at ~82 % of the energy washed out (`project/moss_lora/soup.md`).
+
 ## Selection
 
 `make soup PATH_PATTERN="<glob>"`, or the `TARGET=<dir>` shorthand ⇒
