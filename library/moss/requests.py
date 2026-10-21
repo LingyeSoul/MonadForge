@@ -385,7 +385,8 @@ class TrainRequest(Request):
         11,
         "block whose output REPA aligns; the gradient reaches the LoRA in blocks "
         "<= it. 11: the start of the early plateau in the base model's "
-        "PE-alignment (bench/moss_repa/probe_layer_sigma_cka.py, 2026-10-20)",
+        "PE-alignment (_archive/bench/moss_repa/probe_layer_sigma_cka.py, "
+        "2026-10-20)",
         advanced=True,
     )
     repa_pe_root: str = _f(

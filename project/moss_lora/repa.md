@@ -9,7 +9,7 @@ Anima's relational REPA (`docs/methods/repa.md`) ported to the MOSS trainer:
 resized PNG each latent was encoded from (MOSS latents are not resampled, so the crop
 matches). (2026-10-20)
 
-## Layer probe (`bench/moss_repa/probe_layer_sigma_cka.py`)
+## Layer probe (`_archive/bench/moss_repa/probe_layer_sigma_cka.py`)
 
 Anima's zero-training probe (`_archive/bench/repa/results.md`): centered CKA of each
 block's image tokens, pooled to the PE grid, vs the image's PE-Spatial tokens; minus a

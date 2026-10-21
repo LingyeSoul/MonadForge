@@ -194,7 +194,7 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
 
 - Channel scaling and `--dc_isolate`, with the lr / alpha history:
   `docs/moss/channel_scaling.md`. DAVE: `docs/moss/dave.md`.
-- Findings (attention sink, vision-tower reference): `docs/moss/findings/`.
+- Findings (attention sink, vision-tower reference, σ staircase): `docs/moss/findings/`.
 - Proposals: `docs/proposal/moss_i2i.md` (VAE reference, colorize probes),
   `docs/proposal/moss_anima_negatives_revisit.md`.
 - GUI walkthrough: `docs/guidelines/moss-guidebook.md`.

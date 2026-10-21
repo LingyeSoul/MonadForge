@@ -18,8 +18,8 @@ tags), the EasyControl colorize text policy. The page is fitted to the latent's
 size and the vision tower sees it at that pixel count (~1k tokens at 1 MP).
 
 ``--holdout`` pairs (``PROBE_STEMS`` first: three of the four images in
-``bench/moss_vision_reference/vision_recon.py``, the fourth has no colorize pair;
-then random) are kept out of the cache; their TE files land in ``<out>/holdout/`` with ``holdout.json`` for the
+``_archive/bench/moss_vision_reference/vision_recon.py``, the fourth has no colorize
+pair; then random) are kept out of the cache; their TE files land in ``<out>/holdout/`` with ``holdout.json`` for the
 eval.
 
 ``--ref_scale s`` (i2i probe) also writes ``{stem}.moss_ref.safetensors``: the B&W
