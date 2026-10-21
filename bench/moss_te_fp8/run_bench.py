@@ -11,7 +11,7 @@ token embedding (CPU, as in ``loader``) and the vision tower are left alone. Arm
   w8a8_tensor  per-tensor weight + per-tensor dynamic activation, ``torch._scaled_mm``
   w8a8_row     per-channel weight + per-token dynamic activation, ``torch._scaled_mm``
   <name>       ``--fp8_file <name>=<path>``: an fp8 file in ``library/moss/fp8.py``'s
-               format (e.g. ``gptq.py``'s), through ``load_fp8_text_encoder``
+               format (e.g. ``project/moss_lora/src/te_gptq.py``'s), through ``load_fp8_text_encoder``
 
 Text: cached ``*.moss_te.safetensors`` captions sampled across
 ``post_image_dataset/moss/*`` (their ``embeds`` is the on-disk bf16 reference; the

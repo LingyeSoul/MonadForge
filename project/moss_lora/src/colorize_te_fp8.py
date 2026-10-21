@@ -5,7 +5,7 @@ Each holdout TE file (``embeds``, ``embeds_plain``, the ``embeds_v{k}`` caption
 variants) is encoded again from its own metadata (caption, variant captions,
 condition page, size) through ``vision_te.load_te(precision="fp8")``: decoder
 linears fp8, vision tower bf16 (``--te_file``: another fp8 file in the same format,
-e.g. ``bench/moss_te_fp8/gptq.py``'s). Files land in ``<out>/holdout/`` with a
+e.g. ``te_gptq.py``'s). Files land in ``<out>/holdout/`` with a
 ``holdout.json`` whose ``te`` points there (``ref`` still points at the source
 cache's reference latents), so
 

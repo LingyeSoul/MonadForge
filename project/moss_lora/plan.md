@@ -27,7 +27,9 @@ Spectrum and a light LoRA onto the 5070 Ti and grew from there. Code map:
 | Technical-report digest | reference | `report_notes.md` |
 
 `src/`: the colorize probes, `lora_ab.py` (LoRA A/B grids), `vision_te.py` (TE call with
-an image in the user turn) and `_render.py` (their shared render loop). `space/`: the two
+an image in the user turn), `_render.py` (their shared render loop), `colorize_te_fp8.py`
+(colorize holdout through an fp8 TE) and `te_gptq.py` (GPTQ-rounded fp8 TE, written in
+`library/moss/fp8.py`'s format; bench `bench/moss_te_fp8`). `space/`: the two
 Space prompts every A/B renders.
 
 ## Open questions

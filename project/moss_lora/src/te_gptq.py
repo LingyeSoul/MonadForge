@@ -11,16 +11,17 @@ output error ``‖(W − Q) x‖`` is minimised on the calibration inputs, not t
 weight error.
 
 Calibration is MOSS's own TE traffic, kept apart from what the evals read:
-cached captions from ``post_image_dataset/moss/*`` (``--seed``, minus the
-captions ``run_bench.py`` samples at its default seed) and colorize training pages
-from ``--pages_cache`` (page through the vision tower + colour caption, never a
-holdout page), plus the empty prompt — the uncond of every sampling step —
-repeated ``--empty_repeat`` times so its few rows carry weight in ``H``. Layers run in order on the calibration hidden states, each
-quantized layer feeding the next (sequential); within a layer every linear's ``H``
-comes from one pass at bf16. Per linear the log gives the output error
+cached captions from ``post_image_dataset/moss/*`` (``--seed``, minus the captions
+``bench/moss_te_fp8/run_bench.py`` samples at its default seed) and colorize
+training pages from ``--pages_cache`` (page through the vision tower + colour
+caption, never a holdout page), plus the empty prompt — the uncond of every
+sampling step — repeated ``--empty_repeat`` times so its few rows carry weight in
+``H``. Layers run in order on the calibration hidden states, each quantized layer
+feeding the next (sequential); within a layer every linear's ``H`` comes from one
+pass at bf16. Per linear the log gives the output error
 ``tr(Δ H Δᵀ) / tr(W H Wᵀ)`` of round-to-nearest and of GPTQ.
 
-    make daemon-run ARGS="--stall-timeout 1800 bench/moss_te_fp8/gptq.py"
+    make daemon-run ARGS="--stall-timeout 1800 project/moss_lora/src/te_gptq.py"
 """
 
 from __future__ import annotations
@@ -31,23 +32,20 @@ import importlib.util
 import json
 import random
 import shutil
-import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "project/moss_lora/src"))
-import torch  # noqa: E402
-from PIL import Image  # noqa: E402
-from safetensors import safe_open  # noqa: E402
+import torch
+from PIL import Image
+from safetensors import safe_open
 
-from library.env import resolve_under_home  # noqa: E402
-from library.moss import cache as moss_cache  # noqa: E402
-from library.moss.fp8 import FP8, LINEARS, N_LINEARS, quantize_te  # noqa: E402
-from library.moss.loader import _embed_on_cpu, load_tokenizer  # noqa: E402
-from library.moss.requests import variant_dir  # noqa: E402
-from library.moss.scan import TE_SUFFIX, caption_sha  # noqa: E402
-from vision_te import te_inputs  # noqa: E402
+from library.env import resolve_under_home
+from library.moss import cache as moss_cache
+from library.moss.fp8 import FP8, LINEARS, N_LINEARS, quantize_te
+from library.moss.loader import _embed_on_cpu, load_tokenizer
+from library.moss.requests import variant_dir
+from library.moss.scan import TE_SUFFIX, caption_sha
+from vision_te import te_inputs
 
 FP8_MAX = torch.finfo(FP8).max
 OUT = "models/moss_image/fp8_gptq/qwen35_9b_fp8_e4m3fn_gptq.safetensors"
@@ -82,9 +80,10 @@ def calib_captions(per_dir: int, seed: int, exclude: set[str]) -> list[str]:
 
 
 def bench_caption_files() -> set[str]:
-    """The files ``run_bench.py`` reads at its defaults (per_dir 4, seed 42)."""
+    """The files ``bench/moss_te_fp8/run_bench.py`` reads at its defaults (per_dir 4,
+    seed 42)."""
     spec = importlib.util.spec_from_file_location(
-        "moss_te_fp8_bench", Path(__file__).with_name("run_bench.py")
+        "moss_te_fp8_bench", resolve_under_home("bench/moss_te_fp8/run_bench.py")
     )
     bench = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bench)
