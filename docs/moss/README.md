@@ -6,7 +6,8 @@ the FLUX.2 VAE. This repo trains LoRAs for it and samples it with Spectrum on a 
 card. It is a separate line (`library/moss/`): Anima configs, presets, `make lora`,
 caches and LoRAs do not apply to it, and a MOSS LoRA does not load on Anima.
 
-Status: **alpha**. One real style run so far (below). Expect flags and defaults to move.
+Status: **alpha**. One style set so far (caststation, 30 images of one artist), with many
+A/Bs on it; each number below names the run it comes from. Expect flags and defaults to move.
 
 ## Setup
 
@@ -55,13 +56,9 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
 
 - **Defaults**: `--rank 32`, alpha 128 for `lora` (scale 4; `lokr` / `loha` fall back
   to alpha = rank), `--lr 5e-5`, `--channel_scaling_alpha 0.5`, `--dc_isolate`. On the
-  caststation set (20 epochs, `weight_svd`, layout_json, artist tag injected), rank 32 /
-  alpha 128 at lr 1e-4 without channel scaling pushed the style hard (white backgrounds,
-  flat pale fills) but lost details on two complex gallery prompts (wrong bag holder,
-  missing plush); lr 2e-5 held the details with a milder style shift. With channel
-  scaling, lr 1e-4 kept the style strength and stayed on-prompt; adding `dc_isolate`
-  (one LoRA rank row for the input's DC) over-fit at lr 1e-4 and is clean at lr 5e-5 with
-  the same style strength, hence the current pair (`docs/moss/channel_scaling.md`).
+  caststation set (20 epochs) this combination stayed clean and on-prompt at the style
+  strength of lr 1e-4, where a plain LoRA at lr 1e-4 added things the prompt never asked
+  for. How the lr, alpha and both flags got here: `docs/moss/channel_scaling.md`.
 - **Training** (earlier default: 5070 Ti, Base, rank 16, alpha 16, lr 1e-4, compiled, checkpointed, no block swap): 30
   images × 20 epochs took 21 min at about 2.1 s/step, with an 11.8 GiB peak. The LoRA
   moved line work and palette toward the set. Character identity held, including
@@ -115,6 +112,13 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   The LoHa lr above is the next arm to try, not a measured setting.
 - **A LoRA trained on Base also works on SFT.** It removes most of SFT's glossy look and
   lands close to Base + LoRA.
+- **Checkpoints**: `--save_every_epochs N` also saves every N epochs as
+  `<name>/<name>_eN.safetensors` in the output's folder, beside the final file (the last
+  epoch is the final file itself). A `.json` run report (per-step loss) lands beside the
+  LoRA.
+- **`--fit_report`** (off): trains the largest sample (longest caption) at step 1 and
+  reports its peak against free VRAM, with a `--blocks_to_swap` suggestion. Off, epoch 1
+  is shuffled like the others.
 - **Captions**: Anima-style tag captions trained and prompted fine. MOSS itself was
   trained on natural language, and long or character-heavy captions are untested.
   By default (`caption_format` on the cache, `prompt_format` on generate, both
@@ -136,6 +140,10 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   form (`text` on both for plain captions); switching it re-encodes the TE cache. In
   ComfyUI, the **Anima Caption → MOSS Layout JSON** node (in the Anima Tagger pack,
   `anime_tools`) does the same conversion in front of the text encoder.
+- **Caption dropout** (`--caption_dropout`, default 0): the share of steps trained on the
+  empty prompt. Keep 0: on caststation, 0.05 and 0.1 weakened the style under CFG, because
+  the LoRA's uncond prediction picks up the style and CFG cancels part of it
+  (`project/moss_lora/caption_dropout.md`).
 - **Spectrum** (`--spectrum`, Test panel): 2.6× at 50 steps with the default
   `flex_window 0.5`. At grid scale it is hard to tell apart from the full 50 steps.
 - **`--compile`** (generate, on by default; `--no-compile` for eager): about 1.37× more
@@ -148,12 +156,35 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   Anima's ER-SDE-Solver-3 on the same σ grid, same speed, and it composes with Spectrum. Base, 3 prompts, one seed: sharper line work and denser
   detail, but it drifts from some prompt details (sunset light, hair colour). It is
   a different sample from Euler's at the same seed.
+- **DAVE** (`--dave auto`, off by default): more same-prompt variety across seeds;
+  `docs/moss/dave.md`.
+- **CNS** has no `generate.py` flag. The six MOSS γ files
+  (`networks/calibration/moss_cns_gamma*.npz`, `docs/inference/cns.md`) are used by the
+  bench and by the ComfyUI Spectrum node's `er_sde_cns`, which picks one by variant and
+  cfg.
+
+## ComfyUI and research flags
+
+- **ComfyUI**: LoRA files use the kohya `lora_unet_` key layout, so a MOSS LoRA loads
+  through ComfyUI's LoRA loader on a model from the `moss-image` loader nodes (files
+  saved before 2026-10-17 used another layout and do not). The Spectrum node pack's
+  **KSampler (Spectrum for MOSS)** carries the pipeline's sampler defaults and Spectrum;
+  `ComfyUI-Anima-DAVE` 0.2.0 and later runs DAVE on MOSS.
+- **Research flags** (advanced, not recommended): `--repa_weight` / `--repa_layer` /
+  `--repa_pe_root` (relational REPA, parked: no gain over channel scaling,
+  `project/moss_lora/repa.md`); `--ref_timestep` / `--ref_isolate` /
+  `--caption_variant_rate` (the i2i / colorize probes, `docs/proposal/moss_i2i.md`).
 
 ## More
 
-Logs and open items for the parts still moving are in `project/moss_lora/`
-(`plan.md`, `sampler.md`, `channel_scaling.md`, `dave.md`, `caption_dropout.md`); the finished phase logs
-(reference parity, caches, Spectrum, LoRA training) were removed on 2026-10-18 and are
-in git history. Channel scaling (`--channel_scaling_alpha`, 0.5 by default) and
-`--dc_isolate` (on by default): `docs/moss/channel_scaling.md`.
-Code map: `library/moss/CLAUDE.md`.
+- Channel scaling and `--dc_isolate`, with the lr / alpha history:
+  `docs/moss/channel_scaling.md`. DAVE: `docs/moss/dave.md`.
+- Findings (attention sink, vision-tower reference): `docs/moss/findings/`.
+- Proposals: `docs/proposal/moss_i2i.md` (VAE reference, colorize probes),
+  `docs/proposal/moss_anima_negatives_revisit.md`.
+- GUI walkthrough: `docs/guidelines/moss-guidebook.md`.
+- Run logs and open items: `project/moss_lora/` (plan, sampler, channel scaling, DAVE,
+  caption dropout, REPA, seed soup, technical-report notes). The finished phase logs
+  (reference parity, caches, Spectrum, LoRA training) were removed on 2026-10-18 and are
+  in git history.
+- Code map: `library/moss/CLAUDE.md`.

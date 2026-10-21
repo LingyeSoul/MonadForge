@@ -21,7 +21,7 @@ second flag). `--channel_scaling_alpha 0` turns it off. GUI: Train step →
 
 MOSS's residual stream carries a handful of massive-activation channels (1356, 42, …) that
 hold almost all of the image tokens' DC offset, the same on every prompt and seed
-(`project/moss_lora/dave.md`). RMSNorm and the adaLN modulation damp them before the LoRA
+(`docs/moss/dave.md`). RMSNorm and the adaLN modulation damp them before the LoRA
 targets see them, but not away: at the FFN input, channel 42 is the loudest of 3072 channels
 on blocks 11–41, 11 to 26× the median, and its peak-to-mean is only 2.7, so it is loud on
 every token rather than on a few. It behaves like a constant input: a bias line.
@@ -72,7 +72,8 @@ and the loss curves match.
 - **lr 1e-4**: by eye clearly better. Plain LoRA at this lr adds things the prompt never
   asked for (glasses and a garbled-text sign, a street with a car in place of the park, a
   broken hand pose); the channel-scaled twin stays on-prompt at the same style strength.
-  That is the result the defaults moved on, from lr 2e-5 + α 0 to lr 1e-4 + α 0.5.
+  The defaults moved on this result, from lr 2e-5 + α 0 to lr 1e-4 + α 0.5; lr 5e-5 +
+  `dc_isolate` (below) replaced that pair the same day.
 
 ![lr 1e-4 twins on the four cells named above: no LoRA | α 0 | α 0.5](assets/channel_scaling_lr1e4_ab.webp)
 
@@ -108,6 +109,25 @@ with style strength close to lr 1e-4, which fits "the centered gradient learns f
 That pair, dc_isolate + lr 5e-5, is the default. The α 0.5-only control at lr 5e-5 has not
 been run yet, so the lr and the flag are not separated. Log and next steps:
 `project/moss_lora/channel_scaling.md`.
+
+## How the defaults got here
+
+All on the caststation set (30 images, Base, `weight_svd`, 20 epochs), compared by eye.
+Under AdamW, raising the scale (alpha / rank) raises the effective lr of the `up` matrix
+by the same factor.
+
+1. **Rank 16, alpha 16, lr 1e-4**, the first default. Alpha 90 (scale 5.6) at lr 1e-4
+   matched its style but started copying the set's signature (one sample carried the
+   artist's watermark and handle); alpha 90 at lr 5e-5 gave a softer, partial transfer.
+2. **Rank 32, alpha 128, no channel scaling.** On the two complex gallery prompts (a
+   ten-character ensemble, a 4:1 banner), lr 1e-4 pushed the style hard (white
+   backgrounds, flat pale fills) but lost prompt details (the wrong character held the
+   bag, a plush was missing); lr 2e-5 kept them with a milder style shift and became the
+   default.
+3. **Channel scaling α 0.5 at lr 1e-4** kept the strong style and stayed on-prompt
+   (twin runs above).
+4. **Plus `dc_isolate`, lr 5e-5**: over-fit at lr 1e-4, clean at 5e-5 (above). The current
+   default.
 
 ## Calibration
 

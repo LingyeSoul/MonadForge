@@ -2,7 +2,7 @@
 
 A guide to training and testing LoRAs for MOSS-Image in the GUI. Open it with `make gui` and set the top-bar **Model** dropdown to **MOSS-Image** (`make gui-moss` opens the same panel in its own window). The panel is in English, or in Chinese when the GUI language is Chinese.
 
-The MOSS line is **alpha**: one real style run has been measured so far (a 30-image artist set), and flags and defaults may still move. Every number below comes from that run and its benchmarks on a 16 GB RTX 5070 Ti.
+The MOSS line is **alpha**: one style set so far (30 images of one artist), with many A/Bs on it, and flags and defaults may still move. The numbers below come from those A/Bs and from benchmarks on a 16 GB RTX 5070 Ti.
 
 ---
 
@@ -109,7 +109,7 @@ Renders the prompt twice with the same seed: once with the LoRA at `lora_multipl
 
 ## 4. Recommended Settings
 
-The measured run: 30 images of one artist (`@channel (caststation)`), Base, LoRA rank 16, alpha 16, lr 1e-4 (the earlier defaults), `weight_svd`, 20 epochs = 600 steps, about 18–21 minutes. Of the variants tried, this one carried the most of the artist's cues with no leakage. The current defaults (rank 32, alpha 128, lr 5e-5, channel scaling 0.5, DC isolation) came from later comparisons, below.
+The comparisons ran on 30 images of one artist (`@channel (caststation)`), Base, `weight_svd`, 20 epochs = 600 steps (about 18–21 minutes).
 
 | Field | Default | Notes |
 |---|---|---|
@@ -122,11 +122,9 @@ The measured run: 30 images of one artist (`@channel (caststation)`), Base, LoRA
 | `down_init` | `weight_svd` | `weight_svd` or `kaiming` |
 | `epochs` | `8` | the measured run used 20 |
 | `caption_dropout` | `0` | keep 0: 0.05 and 0.1 weakened the style under CFG (the uncond picks up the style) — `project/moss_lora/caption_dropout.md` |
+| `plain_caption_rate` | `0.2` | `layout_json` caches only: share of steps trained on the plain Anima caption instead of its layout JSON |
 
-- **alpha and lr**: under AdamW, raising the scale is the same as raising the lr of the LoRA's up matrix by that factor. Rank 16 with alpha 90 (scale 5.6) at lr 1e-4 puts the up matrix at ~5.6e-4. That arm matched the default's style but started copying the set's signature: one sample carried the artist's watermark and handle. Alpha 90 at lr 5e-5 gave a softer, partial transfer. That comparison ranked alpha = rank at lr 1e-4 first, and it was the default until the later comparison below.
-- **Rank 32, alpha 128: lr 1e-4 vs 2e-5 (without channel scaling)**: on the caststation set (20 epochs, `weight_svd`, layout_json) with the artist tag injected, the two complex gallery prompts (a ten-character ensemble, a 4:1 banner) behaved differently. Rank 32 / alpha 128 at lr 1e-4 pushed the style hard (white backgrounds, flat pale fills) but lost prompt details (the wrong character held the bag, a plush was missing). At lr 2e-5 the details held (right bag holder, plush present) with a milder style shift, judged much better, and it was the default until channel scaling came in. Under AdamW the effective lr at scale 4 and lr 2e-5 is 8e-5 for the up matrix and 2e-5 for the down matrix.
-- **Channel scaling 0.5 at lr 1e-4** (the default until the next bullet): channel scaling rebalances the LoRA's per-channel updates so that a few very loud input channels (on MOSS, one channel feeding every FFN) stop taking the largest share; the output at the start is unchanged and the saved file is an ordinary LoRA. At lr 1e-4 it kept the strong style while staying on-prompt, where the same run without it added things the prompt never asked for (glasses, garbled-text signs, a street instead of a park). Details: `docs/moss/channel_scaling.md`. Set `channel_scaling_alpha 0` and `lr 2e-5` for the behaviour before it.
-- **Current defaults (lr 5e-5, channel scaling 0.5, DC isolation)**: the same loud channel also feeds a constant offset into the LoRA's `up` matrix on every token, which pulls most of the `up` update toward a global shift. `dc_isolate` gives that offset one LoRA rank row and keeps the other rows clear of it; output at the start is unchanged and the file is still an ordinary LoRA. It learns faster, so lr 1e-4 over-fit (the artist tag appeared as text in 3 of 12 test images); at lr 5e-5 all 12 were clean and on-prompt with the style strength of lr 1e-4. The α 0.5-only run at lr 5e-5 has not been made yet, so the lr and the flag are not separated. `--no-dc_isolate` and `lr 1e-4` give the previous default.
+- **lr, channel scaling, DC isolation**: one input channel is far louder than the rest at the FFN input; channel scaling and `dc_isolate` keep the LoRA from spending its updates on a global shift through it (the output at the start is unchanged, and the file is an ordinary LoRA). At lr 5e-5 the two stayed clean and on-prompt at the style strength of lr 1e-4. Earlier defaults and the comparisons behind each change: `docs/moss/channel_scaling.md`.
 - **down_init**: `weight_svd` starts the LoRA's down projection on the base weight's top singular vectors; `kaiming` is the random init. `weight_svd` kept the artist's style better by eye. The two inits give different samples at the same seed, about as different as a seed change.
 - **epochs**: at 10 of 20 epochs the results were looser and more varied; at 20 they were cleaner and more uniform, with a mild drift toward frontal, centred upper bodies. Set `save_every_epochs` to compare both from one run.
 - **sigma_\*** (Advanced): the defaults are MOSS's final pretraining noise schedule. Anima's schedule (`sigma_mu 0`, `sigma_s 1`, `sigma_cutoff 1.0`, `sigma_uniform 0`) gave the weakest transfer of every arm.
@@ -177,6 +175,8 @@ The sampler defaults come from MOSS's reference pipeline; Anima's sampler habits
 | `sampler` | `er_sde` | `er_sde` or `euler` |
 | `width` / `height` | `1024` | Multiples of 16 |
 | `negative_prompt` | empty | The pipeline default |
+| `dave` | empty | `auto` = DAVE: more variety across seeds for one prompt (framing, pose, layout), with slightly looser hands; `docs/moss/dave.md` |
+| `dave_strength` | `0.3` | How much DAVE removes; `dave_tau` (Advanced, `0.10`) = the share of early steps it runs on |
 
 - **er_sde vs euler**: `euler` is the reference pipeline's sampler. `er_sde` costs the same and gives sharper line work and denser detail; with the LoRA, hands came out cleaner. It also drifts from some prompt details (sunset light, hair colour, "sitting on a bench") and gave up a little of the set's look. The two give different images at the same seed, so compare LoRA against base within one sampler.
 - **Spectrum** (checkbox): most steps forecast the model's output instead of running all 42 blocks. At 50 steps with the default `spectrum_flex_window 0.5` (Advanced) it is 2.6× faster for +0.85 GiB, and hard to tell apart from the full 50 steps at grid scale. `0.25` is 2.2× and more conservative; `1.0` is 3.1× and loses fine detail.
@@ -187,6 +187,8 @@ The sampler defaults come from MOSS's reference pipeline; Anima's sampler habits
 | Plain, uncompiled | 72 s |
 | Plain, compiled | 52 s |
 | Spectrum, compiled | 20 s |
+
+- **ComfyUI**: a MOSS LoRA loads through ComfyUI's LoRA loader on a model from the `moss-image` nodes (files saved before 2026-10-17 do not). **KSampler (Spectrum for MOSS)** (Spectrum node pack) carries these sampler defaults and Spectrum, and `ComfyUI-Anima-DAVE` 0.2.0 or later runs DAVE on MOSS.
 
 **Comparing**: the Test button already renders LoRA and no-LoRA at the same seed. To compare two LoRAs or epochs, keep the prompt, seed, sampler and compile setting the same and change only `lora`.
 
@@ -225,4 +227,4 @@ make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<se
 make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
 ```
 
-More measurements: [`docs/experimental/moss_lora.md`](../experimental/moss_lora.md).
+More measurements: [`docs/moss/README.md`](../moss/README.md).

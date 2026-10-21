@@ -148,6 +148,8 @@ self-contained `configs/<method>/<method>.toml` layout, gui-methods rules:
   siblings.
 - **`library/qwen21/`** is the Qwen-Image-2.1 LoRA line's core — **not Anima**, none of
   the invariants below apply; read `library/qwen21/CLAUDE.md` and **load the `qwen21` skill** before touching it.
+- **`library/moss/`** is the MOSS-Image LoRA line — **not Anima**, none of the invariants
+  below apply; read `library/moss/CLAUDE.md` before touching it. User doc: `docs/moss/README.md`.
 - **Strategy pattern** for tokenization/encoding (`library/anima/strategy.py`,
   `library/anima/text_strategies.py`).
 - **Pluggable adapters** under `networks/`, selected via `network_module` + (LoRA family)

@@ -2,7 +2,7 @@
 
 Sketch of what it would take to add a second image-generation model (e.g. Z-Image-Base) alongside Anima in this repo. This is a repo-wide architectural note, not a method deep-dive — it lives at the top of `docs/` rather than under `docs/methods/`.
 
-Status: exploratory. Nothing here has been implemented; this is a terrain map and a recommended boundary so the conversation about "should we do it" can be concrete.
+Status: exploratory terrain map, written before any second model existed. Two non-Anima lines now ship, each its own subpackage over the shared `library/lines/` (request base, adapters): Qwen-Image-2.1 (`library/qwen21/CLAUDE.md`) and MOSS-Image (`library/moss/CLAUDE.md`).
 
 ## Current coupling
 

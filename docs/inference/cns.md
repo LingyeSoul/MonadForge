@@ -140,7 +140,7 @@ One implementation divergence worth noting: Alg. 1 renormalizes by a single glob
 | `networks/calibration/cns_gamma.npz` | Shipped completion matrix (`--cns auto`). |
 | `networks/calibration/moss_cns_gamma*.npz` | MOSS-Image γ (`bench/moss_spectrum/cns_calibrate.py`, 50 steps). `library.moss.cns.GAMMA_PATHS` maps (variant, cfg) → file; `MossCNS.from_spec("auto", variant, cfg)` takes the nearest calibrated cfg. Table below. |
 
-MOSS-Image γ files (aggregate σ50 / low−high spread at 1344×768):
+MOSS-Image γ files (aggregate σ50 / low−high spread at 1344×768; the Base cfg-3 file at 1024², its only size). `scripts/moss/generate.py` has no CNS flag: the files are used by `bench/moss_spectrum/` and by the ComfyUI Spectrum node's `er_sde_cns`, which picks one by variant and cfg.
 
 | File | Variant, cfg | Sizes | σ50 | spread |
 |---|---|---|---|---|

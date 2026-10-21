@@ -4,7 +4,7 @@ Attention sinks / registers on MOSS-Image: does a small set of keys take most of
 attention, and if so, where is it? Tier 1 §1 of
 `docs/proposal/moss_anima_negatives_revisit.md`; started 2026-10-18.
 
-Summary of what the runs found: `docs/moss-findings/attention_sink_chat_template.md`.
+Summary of what the runs found: `docs/moss/findings/attention_sink_chat_template.md`.
 This file is the run log.
 
 ```bash

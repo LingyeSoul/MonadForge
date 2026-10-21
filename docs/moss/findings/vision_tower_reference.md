@@ -1,7 +1,7 @@
 # Qwen3.5's vision tower conditions MOSS-Image zero-shot
 
-Measured 2026-10-19 on MOSS-Image Base. Probe: `project/moss_lora/src/vision_recon.py`
-(TE call in `vision_te.py`); grid and per-cell numbers land in
+Measured 2026-10-19 on MOSS-Image Base. Probe: `bench/moss_vision_reference/vision_recon.py`
+(TE call in `project/moss_lora/src/vision_te.py`); grid and per-cell numbers land in
 `output/tests/moss_vision_recon/` (`grid.png`, `index.json`).
 
 ## Setting

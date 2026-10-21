@@ -1,6 +1,7 @@
 # MOSS-Image — which Anima negatives are worth re-opening
 
-Status: PROPOSED 2026-10-18. Nothing here has been measured on MOSS. Each entry is
+Status: proposed 2026-10-18. Tier 1 is measured: §1 (sinks) has a finding, §2 (2:4
+sparsity) is closed. Tier 2 is unmeasured. Each entry is
 an Anima negative result whose recorded cause is checked against MOSS-Image's
 architecture (`library/moss/CLAUDE.md`, `project/moss_lora/plan.md`). An entry is
 re-opened only when the recorded cause depends on an Anima-specific fact that MOSS
@@ -23,7 +24,9 @@ any port.
 
 ### 1. Attention sinks / registers
 
-Started 2026-10-18. Motivation, probe, gate and readings: `bench/moss_sinks/README.md`.
+Measured 2026-10-18: the 10 chat-template tokens are MOSS's attention sink
+(`docs/moss/findings/attention_sink_chat_template.md`). Probe, gate and run log:
+`bench/moss_sinks/README.md`.
 
 ### 2. 2:4 activation sparsity (RT-Lynx)
 
@@ -71,7 +74,7 @@ Low expectation for CTCal, SSC and MIST; they are listed because the probes are 
 
 ## Order
 
-1. Tier 1 §1 (sinks / registers, started). §2 is closed.
+1. Tier 1: §1 measured (finding above), §2 closed.
 2. Tier 2 in any order.
 
 Each probe drops a `result.json` under `bench/moss_<item>/results/` and its reading is

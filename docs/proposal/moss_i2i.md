@@ -1,22 +1,22 @@
 # MOSS-Image i2i — a VAE reference on RoPE's `r` axis
 
-Status: PROPOSED 2026-10-19. Two probes measured (colorize, and colorize with manga pages,
-below). Code on branch
-`i2i_probe`.
+Status: probing, proposed 2026-10-19. Four probes measured (below). The code is on main;
+there is no ship surface yet (`GenerateRequest` takes no reference).
 
 ## Premise
 
 MOSS-Image has no image conditioning. Its 4D RoPE `(r, f, h, w)` keeps an `r` axis that
 training always sets to 0 (`project/moss_lora/plan.md`). Qwen3.5's vision tower conditions
 MOSS zero-shot, but at 32 px per token it brings back content, not line placement
-(`docs/moss-findings/vision_tower_reference.md`). This proposal puts a clean VAE latent of
+(`docs/moss/findings/vision_tower_reference.md`). This proposal puts a clean VAE latent of
 the condition image into the single-stream sequence on `r = 1`, and trains a plain LoRA to
 read it.
 
-## Mechanism (as built on `i2i_probe`)
+## Mechanism
 
 - **Sequence** `[image | ref | text]`. The ref tokens go through the same `video_embedder`
-  as the image. They get no noise and share the step's timestep modulation.
+  as the image. They get no noise. Their block modulation is the t = 0 one
+  (`--ref_timestep`, default 0; negative = the step's, as probes 1–3 trained; probe 4).
 - **RoPE**: ref tokens are at `r = 1`, the image's `f` (= text length). Their `h, w`
   coordinates are stretched onto the target grid, `(i + 0.5)·H/h_ref − 0.5`, centred like
   the image's. So a half-size ref lines up with the target position for position.
@@ -30,7 +30,7 @@ read it.
     `forward_batched(ref=)`.
   - `generate.py`: `denoise(ref=)`.
   - `cache.py` / `scan.py` (`*.moss_ref.safetensors`), `train.py`, `tune.py`.
-  - Probe scripts: `project/moss_lora/src/colorize_{cache,eval}.py`.
+  - Probe scripts: `project/moss_lora/src/colorize_{cache,eval,wild,scale}.py` (shared render loop in `_render.py`, page encode in `vision_te.py`).
 
 ## Probe: EasyControl colorize, 1-hour budget
 
@@ -166,8 +166,11 @@ CbCr distance to the target.
 - **Limits**: one seed, 12 pages.
 - **Default**: `--ref_timestep` is now 0 by default; `-1` opts out. LoRAs from before
   the flag carry no stamp and load with the old, shared timestep.
-- **Then**: masking the ref to attend only to itself. With t = 0, that makes the ref's
-  per-block K/V one computation per image, reused across steps and CFG branches.
+- **Built, not measured**: `--ref_isolate` (off by default) makes the ref tokens attend
+  only to themselves; image and text still attend to them. With t = 0 the ref's per-block
+  K/V then no longer depends on the step, so it could be computed once per image and
+  reused across steps and CFG branches. Stamped in the LoRA metadata like
+  `ref_timestep`; no arm has trained with it.
 
 ## Open questions, in order
 

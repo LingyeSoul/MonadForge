@@ -2,7 +2,7 @@
 
 在 GUI 中为 MOSS-Image 训练和测试 LoRA 的指南。用 `make gui` 打开，把顶栏的 **模型** 下拉框切换到 **MOSS-Image** 即可（`make gui-moss` 会在独立窗口中打开同一个面板）。GUI 语言为中文时面板显示中文，其他语言时显示英文。下文的界面名称按中文面板书写，括号中是字段名；面板未翻译的字段直接显示字段名。
 
-MOSS 线目前处于 **alpha** 阶段：迄今只实测过一次真实风格训练（30 张图的画师数据集），参数和默认值仍可能变化。下文所有数字都来自这次训练以及在 16 GB RTX 5070 Ti 上的基准测试。
+MOSS 线目前处于 **alpha** 阶段：迄今只有一个风格数据集（同一画师的 30 张图），并在其上做了大量 A/B，参数和默认值仍可能变化。下文的数字来自这些 A/B 以及在 16 GB RTX 5070 Ti 上的基准测试。
 
 ---
 
@@ -109,7 +109,7 @@ make download-model ARGS=moss-sft
 
 ## 4. 推荐设置
 
-实测的训练：同一画师（`@channel (caststation)`）的 30 张图，Base，LoRA 秩 16，alpha 16，学习率 1e-4（此前的默认值），`weight_svd`，20 轮 = 600 步，约 18–21 分钟。在尝试过的各种设置中，它保留的画师特征最多，且没有泄漏。当前默认值（秩 32、alpha 128、学习率 5e-5、通道缩放 0.5、DC 隔离）来自之后的对比，见下文。
+对比在同一画师（`@channel (caststation)`）的 30 张图上进行，Base，`weight_svd`，20 轮 = 600 步（约 18–21 分钟）。
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
@@ -122,11 +122,9 @@ make download-model ARGS=moss-sft
 | down 初始化（`down_init`） | `weight_svd` | `weight_svd` 或 `kaiming` |
 | 轮数（`epochs`） | `8` | 实测训练用 20 |
 | 标注丢弃率（`caption_dropout`） | `0` | 保持 0：0.05 和 0.1 在 CFG 下都削弱了风格（uncond 吸收了风格）— `project/moss_lora/caption_dropout.md` |
+| `plain_caption_rate` | `0.2` | 仅 `layout_json` 缓存：用普通 Anima 标注而非 layout JSON 训练的步数占比 |
 
-- **alpha 与学习率**：在 AdamW 下，提高缩放等同于把 LoRA up 矩阵的学习率提高同样的倍数。秩 16、alpha 90（缩放 5.6）、学习率 1e-4 时，up 矩阵相当于约 5.6e-4。这一组的风格与默认设置相同，但开始复制数据集的签名：一张样图上出现了画师的水印和账号名。alpha 90、学习率 5e-5 的迁移更弱、不完整。该对比中 alpha = 秩、学习率 1e-4 排名第一，在下面的后续对比之前一直是默认值。
-- **秩 32，alpha 128：学习率 1e-4 与 2e-5（无通道缩放）**：在 caststation 数据集上（20 轮，`weight_svd`，layout_json），注入画师标签后，两条复杂的画廊提示词（十人群像、4:1 横幅）表现不同。秩 32 / alpha 128、学习率 1e-4 把风格推得很重（白色背景、平涂的浅色填充），却丢了提示词细节（拿包的角色错了，缺少玩偶）。学习率 2e-5 时细节保住了（拿包的角色正确，玩偶在），风格偏移较温和，被判定为“好得多”，在引入通道缩放之前一直是默认值。在 AdamW 下，缩放 4、学习率 2e-5 的有效学习率为：up 矩阵 8e-5，down 矩阵 2e-5。
-- **学习率 1e-4 下的通道缩放 0.5**（在下一条之前的默认值）：通道缩放会重新平衡 LoRA 各通道的更新，使少数非常强的输入通道（在 MOSS 上是供给所有 FFN 的一个通道）不再占据最大份额；起始时输出不变，保存的文件就是普通 LoRA。在学习率 1e-4 下，它既保持了强烈的风格，又贴合提示词；而不用它的同一次训练会加入提示词没要求的内容（眼镜、乱码招牌、街道而不是公园）。详情见 `docs/moss/channel_scaling.md`。如需在此之前的行为，设置 `channel_scaling_alpha 0` 和 `lr 2e-5`。
-- **当前默认值（学习率 5e-5，通道缩放 0.5，DC 隔离）**：同一个强通道还会在每个 token 上向 LoRA 的 `up` 矩阵送入一个恒定偏移，使 `up` 的大部分更新被拉向全局平移。`dc_isolate` 为这个偏移单独分配一行 LoRA 秩，让其余各行不受它影响；起始时输出不变，文件仍是普通 LoRA。它学得更快，所以学习率 1e-4 会过拟合（12 张测试图中有 3 张出现了文字形式的画师标签）；学习率 5e-5 时 12 张都干净且贴合提示词，风格强度与学习率 1e-4 相当。尚未做学习率 5e-5 下仅用 α 0.5 的对照，因此学习率与该开关的作用还没有分开。设置 `--no-dc_isolate` 和 `lr 1e-4` 即可回到之前的默认值。
+- **学习率、通道缩放、DC 隔离**：FFN 输入处有一个输入通道比其余通道强得多；通道缩放和 `dc_isolate` 避免 LoRA 通过它把更新浪费在全局平移上（起始时输出不变，文件是普通 LoRA）。在学习率 5e-5 下，这两者做到了干净、贴合提示词，风格强度与学习率 1e-4 相当。此前的默认值以及每次改动背后的对比见 `docs/moss/channel_scaling.md`。
 - **down 初始化**：`weight_svd` 用基础权重的前几个奇异向量初始化 LoRA 的 down 矩阵，`kaiming` 是随机初始化。目测 `weight_svd` 更好地保留了画师风格。两种初始化在同一种子下得到不同的样图，差异约等于换一个种子。
 - **轮数**：20 轮训练中，第 10 轮的结果更松散、更多样；第 20 轮更干净、更统一，但略微偏向正面居中的半身构图。设置 每 N 轮保存（`save_every_epochs`）即可在一次训练中比较两者。
 - **sigma_\***（高级）：默认值是 MOSS 最终预训练阶段的噪声分布。Anima 的分布（`sigma_mu 0`、`sigma_s 1`、`sigma_cutoff 1.0`、`sigma_uniform 0`）在所有设置中迁移最弱。
@@ -177,6 +175,8 @@ make download-model ARGS=moss-sft
 | 采样器（`sampler`） | `er_sde` | `er_sde` 或 `euler` |
 | 宽度 / 高度（`width` / `height`） | `1024` | 16 的倍数 |
 | 反向提示词（`negative_prompt`） | 空 | 管线默认值 |
+| `dave` | 空 | `auto` = DAVE：同一提示词在不同种子下变化更多（构图、姿势、布局），代价是手部略松；见 `docs/moss/dave.md` |
+| `dave_strength` | `0.3` | DAVE 去除的程度；`dave_tau`（高级，`0.10`）= 其生效的前期步数占比 |
 
 - **er_sde 与 euler**：`euler` 是参考管线的采样器。`er_sde` 耗时相同，线条更锐利、细节更密；加载 LoRA 时手部也更干净。但它会偏离部分提示词细节（夕阳光、发色、"sitting on a bench"），也会损失一点数据集的画风。两者在同一种子下生成不同的图，所以 LoRA 与基础模型的比较要在同一采样器内进行。
 - **Spectrum**（复选框）：大部分步数预测模型输出，而不是运行全部 42 个块。50 步、默认 `spectrum_flex_window 0.5`（高级）时快 2.6 倍，多用 0.85 GiB 显存，在网格尺寸下与完整 50 步难以区分。`0.25` 为 2.2 倍，更保守；`1.0` 为 3.1 倍，但会丢失细节。
@@ -187,6 +187,8 @@ make download-model ARGS=moss-sft
 | 普通，未编译 | 72 秒 |
 | 普通，编译 | 52 秒 |
 | Spectrum，编译 | 20 秒 |
+
+- **ComfyUI**：MOSS LoRA 通过 ComfyUI 的 LoRA 加载器加载到由 `moss-image` 节点得到的模型上（2026-10-17 之前保存的文件无法加载）。**KSampler (Spectrum for MOSS)**（Spectrum 节点包）带有这些采样默认值和 Spectrum，`ComfyUI-Anima-DAVE` 0.2.0 及以上版本可在 MOSS 上运行 DAVE。
 
 **比较方法**：测试按钮本身就会用同一种子生成加载与不加载 LoRA 的两张图。比较两个 LoRA 或不同轮数时，固定提示词、种子、采样器和 compile 设置，只改 `lora`。
 
@@ -225,4 +227,4 @@ make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<se
 make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
 ```
 
-更多实测数据：[`docs/experimental/moss_lora.md`](../experimental/moss_lora.md)。
+更多实测数据：[`docs/moss/README.md`](../moss/README.md)。
