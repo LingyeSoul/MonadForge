@@ -13,7 +13,7 @@ Spectrum and a light LoRA onto the 5070 Ti and grew from there. Code map:
 | Relational REPA | parked: seed variance swamps any effect | `repa.md` |
 | Anima negatives revisit (sinks, 2:4 sparsity) | Tier 1 measured, Tier 2 unmeasured | `docs/proposal/moss_anima_negatives_revisit.md` |
 | i2i / colorize (VAE reference on RoPE `r`) | **active** | `docs/proposal/moss_i2i.md`, `src/colorize_{cache,eval,wild,scale}.py` |
-| Colorize OCR caption (layout + bbox, fp8 TE) | **read**: OCR-read lines letter right; colour metrics down on every arm, page-only included (cause open) | `colorize_ocr.md`, `src/colorize_ocr.py` |
+| Colorize OCR caption (layout + bbox, fp8 TE) | **read**: OCR-read lines letter right; colour even by eye, 64 px luma PSNR −1.7 dB on illus. (uneven, cause open) | `colorize_ocr.md`, `src/colorize_ocr.py` |
 | Correction training (arXiv 2610.14136) as a dual LoRA | **active**: joint D + C holds to K 8; CFG 1.5 + K 2 ≈ CFG 3 at 2× the forwards (one seed) | `correction.md`, `src/correction*.py` |
 | Technical-report digest | reference | `report_notes.md` |
 

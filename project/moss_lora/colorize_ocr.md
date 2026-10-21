@@ -68,8 +68,8 @@ ER-SDE + Spectrum, 30 steps, CFG 3.
   "H-HEY, WAIT! NOT HERE!", "THE STAFF WOULD SEE US…") stay as garbled as A, or worse.
 - Layout reads closer than text + bbox on every page.
 
-**Colorization: down, page-only arm included.** 64 px luma PSNR / luma r (128 px) /
-chroma error against the target:
+**Colorization: even by eye; the luma metric drops.** 64 px luma PSNR / luma r
+(128 px) / chroma error against the target:
 
 | Arm | 8 illus. | 4 manga | 5 with OCR | 7 without |
 |---|---|---|---|---|
@@ -79,22 +79,26 @@ chroma error against the target:
 | C, text + bbox | 25.47 / 0.947 / 15.1 | 25.45 / 0.932 / 13.7 | 25.67 / 0.937 / 12.1 | 25.32 / 0.946 / 16.5 |
 | C, page only | 25.48 / 0.949 / 17.5 | 25.74 / 0.937 / 14.0 | 25.91 / 0.942 / 12.8 | 25.32 / 0.947 / 18.8 |
 
-- The drop sits on the 7 pages without OCR lines and on C's page-only arm, where no
-  OCR text is in the prompt. So the OCR clause does not cause it; the TE switch, the
-  caption-format mix or run-to-run variance does. One training run cannot tell them
-  apart.
-- By eye it is a tone shift: C renders brighter and warmer (`yomu` 31.3 → 24.7, warmer
-  skin and more saturated bedding; `ru_zhai` 25.8 → 22.6, a lighter, lower-contrast
-  room, though its brown sofa matches the target better than A's blue one).
-- Chroma error on the 5 OCR pages is lower for C (12.1 vs 12.9).
+- The luma drop is uneven: 8 of 12 pages lose, most of the mean is `yomu` (31.3 →
+  24.7, warmer skin, more saturated bedding) and `ru_zhai` (25.8 → 22.6); `moursho`
+  gains 1.9. It also holds on the 7 pages without OCR lines and on C's page-only arm,
+  so the OCR clause does not cause it.
+- Hue (chroma error with caption, per page) splits 6 / 5 / 1: C is closer on `ru_zhai`
+  (brown sofa as the target, A blue), `oldsickkim` (grey background, A magenta),
+  `ama_mitsuki` (grey hoodie, A blue), and three more; A is closer on `eight_tohyama`
+  (C 25.2 vs 16.8, over-saturated green hair), `yomu`, `ningen_mame` and two more. Mean
+  luma does not shift either way.
+- Side by side (target | A | C, all 12 pages) neither arm reads as the better
+  colorizer. The metric gap is within what a different training run can move; one run
+  cannot tell the TE switch, the caption-format mix and run variance apart.
 - An earlier read (`moss_colorize_3k`, a bf16-trained LoRA) moved only 34.6 dB PSNR
   between a bf16 and an RTN fp8 TE at eval, so an fp8 TE at eval alone is small. This
   run also trained on fp8.
 
 ## Open
 
-- What dropped the colour: a t0 rerun on an fp8 cache without OCR (TE only), or a
-  second bf16 seed of t0 (run variance).
+- Whether the luma gap is real: a second bf16 seed of t0 (run variance), or a t0 rerun
+  on an fp8 cache without OCR (TE only).
 - OCR recall on EN pages: the reader missed most English balloons. Lines it reads are
   rendered; lines it misses are not.
 
