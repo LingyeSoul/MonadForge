@@ -41,10 +41,12 @@ def settings_tag(**settings) -> str:
     return hashlib.sha1(blob.encode()).hexdigest()[:8]
 
 
-def uncond_embeds(device, texts=("",)):
+def uncond_embeds(device, texts=("",), precision="bf16"):
     """The empty prompt (plus ``texts``) through the on-disk prompt TE cache.
     Returns ``(embeds by text, padded uncond, uncond mask)``."""
-    embeds = cached_embeds("", ["", *texts], resolve_under_home(PROMPT_TE))
+    embeds = cached_embeds(
+        "", ["", *texts], resolve_under_home(PROMPT_TE), precision=precision
+    )
     uncond, mask = pad_embeds([embeds[""]], device)
     return embeds, uncond, mask
 

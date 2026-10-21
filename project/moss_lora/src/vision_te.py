@@ -36,26 +36,31 @@ def processor(tok, max_pixels):
     )
 
 
-def load_te(tok, device, model_dir=""):
+def load_te(tok, device, model_dir="", precision="bf16", fp8_path=None):
     """``load_text_encoder`` with the vision tower on the card too (placed before the
-    layer budget is taken, so the paging plan accounts for it)."""
+    layer budget is taken, so the paging plan accounts for it). ``precision="fp8"``
+    reads an fp8 file (``fp8_path``, else the catalog's): decoder linears fp8, the
+    vision tower bf16."""
     from transformers import AutoModel
 
-    te = AutoModel.from_pretrained(
-        variant_dir(model_dir, "base") / "text_encoder", dtype=torch.bfloat16
-    ).eval()
+    if precision == "fp8":
+        from library.moss.fp8 import load_fp8_text_encoder
+
+        te = load_fp8_text_encoder(fp8_path)
+    else:
+        te = AutoModel.from_pretrained(
+            variant_dir(model_dir, "base") / "text_encoder", dtype=torch.bfloat16
+        ).eval()
     te.visual.to(device)
     paged = offload_by_layer(te, device, te_reserve_gb(4096))
-    print(f"[te] vision resident, {paged} decoder layers paged", flush=True)
+    print(
+        f"[te] {precision}, vision resident, {paged} decoder layers paged", flush=True
+    )
     return te
 
 
-@torch.no_grad()
-def encode(tok, te, image, text, max_pixels, device, drop_rows=False, prefix=False):
-    """``(last_hidden_state (S, 4096), image token count)``; ``image=None`` is the
-    pipeline's text-only encode. ``drop_rows`` removes the image-token rows.
-    ``prefix`` appends the row count through ``<|vision_end|>``: the rows every
-    text after the same page shares."""
+def te_inputs(tok, image, text, max_pixels, device):
+    """The TE's model inputs for ``text`` after ``image`` (``None``: text only)."""
     content = text
     if image is not None:
         content = [{"type": "image"}] + (
@@ -68,11 +73,21 @@ def encode(tok, te, image, text, max_pixels, device, drop_rows=False, prefix=Fal
         enable_thinking=True,
     )
     if image is None:
-        inputs = tok(formatted, return_tensors="pt").to(device)
-        return te(**inputs, use_cache=False, return_dict=True).last_hidden_state[0], 0
-    inputs = processor(tok, max_pixels)(
+        return tok(formatted, return_tensors="pt").to(device)
+    return processor(tok, max_pixels)(
         text=[formatted], images=[image], return_tensors="pt"
     ).to(device)
+
+
+@torch.no_grad()
+def encode(tok, te, image, text, max_pixels, device, drop_rows=False, prefix=False):
+    """``(last_hidden_state (S, 4096), image token count)``; ``image=None`` is the
+    pipeline's text-only encode. ``drop_rows`` removes the image-token rows.
+    ``prefix`` appends the row count through ``<|vision_end|>``: the rows every
+    text after the same page shares."""
+    inputs = te_inputs(tok, image, text, max_pixels, device)
+    if image is None:
+        return te(**inputs, use_cache=False, return_dict=True).last_hidden_state[0], 0
     hidden = te(**inputs, use_cache=False, return_dict=True).last_hidden_state[0]
     is_image = inputs["mm_token_type_ids"][0] == 1
     if drop_rows:
