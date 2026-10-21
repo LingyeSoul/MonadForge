@@ -53,6 +53,7 @@ The GUI submits these. Run them through the daemon:
 
 ```bash
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'post_image_dataset/moss/<set>'"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --config configs/moss/cache.toml"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
@@ -60,8 +61,9 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
 
 `--help` on each script lists every flag (one definition: `library/moss/requests.py`).
 
-`--config <file.toml>` sets any flag from a flat TOML of field names (`configs/moss/lora.toml`
-holds the shipped defaults; copy it for a recipe). Order: field default → `--config` → CLI flags.
+`--config <file.toml>` sets any flag from a flat TOML of field names (`configs/moss/cache.toml`
+and `configs/moss/lora.toml` hold the shipped defaults; copy one for a recipe; `text_encoder = "fp8"`
+in `cache.toml` caches with the fp8 TE). Order: field default → `--config` → CLI flags.
 Unknown keys, wrong types and values outside a flag's choices are an error.
 
 ## What to expect

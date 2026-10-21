@@ -105,8 +105,8 @@ fields; the `[half]` / `[quarter]` presets are CLI shorthand for the same key.
 
 ## `moss/` — not the merge chain
 
-`configs/moss/lora.toml` is a flat table of `library.moss.requests.TrainRequest` field
-names, read by `scripts/moss/train.py --config` (`Request.load_config` in
+`configs/moss/lora.toml` / `cache.toml` are flat tables of `library.moss.requests`
+`TrainRequest` / `CacheRequest` field names, read by `scripts/moss/{train,cache}.py --config` (`Request.load_config` in
 `library/lines/requests.py`): field default → TOML → CLI. None of the chain above applies.
 
 ## Subset knobs
