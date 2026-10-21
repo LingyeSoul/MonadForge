@@ -10,7 +10,9 @@ lengths (< ~1k tokens) all 32 decoder layers (12.9 GB) fit on the card. Layers
 that still do not fit are paged in whole, one at a time, from pinned memory; the
 encode is PCIe-bound while any are (7 paged ran at ~20 % GPU, 2.3 s per caption).
 Leaf-level offload hooks break on Qwen3.5's gated-DeltaNet layers, which read
-``conv1d.weight`` functionally instead of calling the module.
+``conv1d.weight`` functionally instead of calling the module. The fp8 TE
+(``precision="fp8"``, ``library/moss/fp8.py``) puts the decoder layers at 6.5 GiB,
+so none page at any prompt length.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from library.runtime.device import clean_memory as empty_cache
 from library.runtime.device import free_vram_gb
 
 MAX_SEQUENCE_LENGTH = 4096
+TE_PRECISIONS = ("bf16", "fp8")
 
 
 def te_reserve_gb(max_tokens: int) -> float:
@@ -94,21 +97,31 @@ def load_text_encoder(
     max_tokens=MAX_SEQUENCE_LENGTH,
     log=print,
     tok=None,
+    precision="bf16",
 ):
     """``(tokenizer, text_encoder)`` on ``device``, layers that do not fit paged in
     per forward. ``max_tokens`` is the longest prompt the caller will encode (it
     sizes the activation reserve). TE and tokenizer are byte-identical between
-    Base and SFT; Base's are used."""
+    Base and SFT; Base's are used. ``precision="fp8"`` loads the catalog's fp8
+    file (``library/moss/fp8.py``, fetched on first use) instead of the bf16
+    shards; the tokenizer still comes from Base."""
     from transformers import AutoModel
 
-    root = variant_dir(model_dir, "base")
+    if precision not in TE_PRECISIONS:
+        raise ValueError(f"text encoder precision {precision!r}, not one of {TE_PRECISIONS}")
     tok = tok or load_tokenizer(model_dir)
-    te = AutoModel.from_pretrained(root / "text_encoder", dtype=torch.bfloat16).eval()
+    if precision == "fp8":
+        from library.moss.fp8 import load_fp8_text_encoder
+
+        te = load_fp8_text_encoder(log=log)
+    else:
+        root = variant_dir(model_dir, "base")
+        te = AutoModel.from_pretrained(root / "text_encoder", dtype=torch.bfloat16).eval()
     reserve = te_reserve_gb(max_tokens)
     paged = offload_by_layer(te, torch.device(device), reserve)
     if log:
         log(
-            f"[te] {len(te.language_model.layers) - paged} decoder layers resident, "
+            f"[te] {precision}: {len(te.language_model.layers) - paged} decoder layers resident, "
             f"{paged} paged (reserve {reserve:.2f} GB for {max_tokens} tokens)"
         )
     return tok, te
@@ -136,13 +149,20 @@ def encode_prompt(tok, te, text: str, device="cuda", max_length=MAX_SEQUENCE_LEN
 
 
 def encode_prompts(
-    model_dir, texts, device="cuda", max_length=MAX_SEQUENCE_LENGTH, log=print
+    model_dir,
+    texts,
+    device="cuda",
+    max_length=MAX_SEQUENCE_LENGTH,
+    log=print,
+    precision="bf16",
 ):
     """Load the TE, encode each distinct text once, free it → ``{text: (S,4096) cpu}``."""
     texts = list(dict.fromkeys(texts))
     tok = load_tokenizer(model_dir)
     longest = max(prompt_ids(tok, t, max_length).input_ids.shape[1] for t in texts)
-    tok, te = load_text_encoder(model_dir, device, longest, log=log, tok=tok)
+    tok, te = load_text_encoder(
+        model_dir, device, longest, log=log, tok=tok, precision=precision
+    )
     out = {}
     for text in texts:
         out[text] = encode_prompt(tok, te, text, device, max_length).cpu()

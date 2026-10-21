@@ -100,6 +100,14 @@ class CacheRequest(Request):
     max_text_tokens: int = _f(
         4096, "TE truncation length (the model's own limit)", advanced=True
     )
+    text_encoder: str = _f(
+        "bf16",
+        "Qwen3.5-9B weights for the text pass: bf16 (the reference) or fp8 (decoder linears in "
+        "float8_e4m3fn, ~9.2 GB, fetched on first use; embedding rel. L2 ~0.10 vs "
+        "bf16, bench/moss_te_fp8). Switching re-encodes the TE cache",
+        choices=("bf16", "fp8"),
+        advanced=True,
+    )
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
 
 
@@ -217,6 +225,14 @@ class GenerateRequest(Request):
     )
     dave_tau: float = _f(
         0.10, "attenuate the first tau of the steps (at least one)", advanced=True
+    )
+    text_encoder: str = _f(
+        "bf16",
+        "Qwen3.5-9B weights for the prompts: bf16 (the reference) or fp8 (decoder "
+        "linears in float8_e4m3fn, ~9.2 GB, fetched on first use; embedding rel. L2 "
+        "~0.10 vs bf16, bench/moss_te_fp8)",
+        choices=("bf16", "fp8"),
+        advanced=True,
     )
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
 

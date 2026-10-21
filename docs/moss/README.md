@@ -19,6 +19,17 @@ make download-model ARGS=moss-sft    # optional: the SFT DiT alone, ~10 GB (reus
 Weights land in `models/moss_image/MOSS-Image-{Base,SFT}/`. Another location:
 `ANIMA_MOSS_MODEL_DIR` in `.env`, or `model_dir` in the GUI.
 
+**fp8 text encoder** (optional): `text_encoder=fp8` (Advanced, on both caching and
+generation; `--text_encoder fp8` on the CLI) loads
+[`sorryhyun/MOSS-Image-Qwen3.5-9B-fp8`](https://huggingface.co/sorryhyun/MOSS-Image-Qwen3.5-9B-fp8)
+instead of the bf16 shards: 9.2 GB instead of 16.8 GB, and all 32 layers fit on a 16 GB
+card (peak 6.7 GiB instead of 13.0 GiB). The first use downloads it, or run
+`make download-model ARGS=moss-te-fp8`. The tokenizer still comes from Base. Its
+embeddings differ from bf16 by ~10 % (relative L2), and images on the same seed keep
+their composition and text but change in small details (`bench/moss_te_fp8`). Cache and
+generate with the same setting: the TE cache records which one encoded it, and
+switching re-encodes it.
+
 ## GUI
 
 ```bash
@@ -169,7 +180,8 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   through ComfyUI's LoRA loader on a model from the `moss-image` loader nodes (files
   saved before 2026-10-17 used another layout and do not). The Spectrum node pack's
   **KSampler (Spectrum for MOSS)** carries the pipeline's sampler defaults and Spectrum;
-  `ComfyUI-Anima-DAVE` 0.2.0 and later runs DAVE on MOSS.
+  `ComfyUI-Anima-DAVE` 0.2.0 and later runs DAVE on MOSS. The fp8 text encoder file
+  loads in **MOSS-Image Load Qwen3.5** as-is (put it in `models/text_encoders/`).
 - **Research flags** (advanced, not recommended): `--repa_weight` / `--repa_layer` /
   `--repa_pe_root` (relational REPA, parked: no gain over channel scaling,
   `project/moss_lora/repa.md`); `--ref_timestep` / `--ref_isolate` /

@@ -88,6 +88,12 @@ MOSS_REPOS = {
 }
 _MOSS_DIT_SHARDS = 3
 _MOSS_TE_SHARDS = 4
+# The same TE as one fp8 file (``library/moss/fp8.py``, ComfyUI's mixed-precision
+# format) plus its ``config.json``; ``text_encoder=fp8`` loads it instead of the
+# bf16 shards. Tokenizer still comes from Base.
+MOSS_TE_FP8_REPO = "sorryhyun/MOSS-Image-Qwen3.5-9B-fp8"
+MOSS_TE_FP8_FILE = "qwen35_9b_fp8_e4m3fn.safetensors"
+MOSS_TE_FP8_DIR = "fp8"
 
 
 def default_pe_core_path() -> Path:
@@ -99,6 +105,11 @@ def default_moss_dir() -> Path:
     """``<models_dir>/moss_image`` — holds ``MOSS-Image-Base/`` and
     ``MOSS-Image-SFT/``; ``library/moss/requests.py`` resolves variants under it."""
     return models_dir() / MOSS_DIR
+
+
+def default_moss_te_fp8_dir() -> Path:
+    """``<models_dir>/moss_image/fp8`` — ``config.json`` + the fp8 TE file."""
+    return default_moss_dir() / MOSS_TE_FP8_DIR
 
 
 def default_vocab_pack_dir() -> Path:
@@ -148,6 +159,13 @@ TRAINER_PACKS: tuple[Pack, ...] = (
         "MOSS-Image SFT",
         "MOSS-Image-SFT's DiT alone (~10 GB); it reuses the Base pack's text "
         "encoder, VAE and tokenizer.",
+    ),
+    Pack(
+        "moss-te-fp8",
+        "MOSS-Image fp8 text encoder",
+        "The Qwen3.5-9B text encoder in fp8 (~9.2 GB instead of 16.8 GB) for "
+        "text_encoder=fp8: all 32 layers fit on a 16 GB card. The tokenizer "
+        "still comes from the Base pack.",
     ),
 )
 
@@ -236,6 +254,19 @@ def _moss_rows() -> tuple[Asset, ...]:
                   f"{used} · TE caching and prompt encoding"),
         _moss_row("base", "scheduler", "MOSS-Image scheduler config",
                   ("scheduler_config.json",), used),
+        Asset(
+            id="moss_te_fp8",
+            pack="moss-te-fp8",
+            title="Qwen3.5-9B text encoder, fp8 (MOSS)",
+            repo=MOSS_TE_FP8_REPO,
+            files=("config.json", MOSS_TE_FP8_FILE),
+            optional=("README.md",),
+            dest=default_moss_te_fp8_dir(),
+            used_by=f"{used} · text_encoder=fp8 (TE caching and prompt encoding)",
+            notes="~9.2 GB. Decoder linears float8_e4m3fn (per-tensor scale), the "
+            "rest as in Base; embedding rel. L2 ~0.10 vs bf16 (bench/moss_te_fp8). "
+            "Also loads in ComfyUI's MOSS-Image Load Qwen3.5.",
+        ),
         _moss_row("sft", "", "MOSS-Image SFT — index + reference pipeline", root,
                   used, optional=("LICENSE", "README.md")),
         _moss_row("sft", "transformer", "MOSS-Image SFT DiT (5B)", dit,

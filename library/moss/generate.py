@@ -261,15 +261,18 @@ def _jobs(req: GenerateRequest) -> list[dict]:
     ]
 
 
-def cached_embeds(model_dir, texts, cache_dir: Path) -> dict[str, torch.Tensor]:
-    """TE outputs keyed by text, read from / written to ``cache_dir`` so a rerun of
-    the same prompts skips the 17 GB text encoder."""
+def cached_embeds(
+    model_dir, texts, cache_dir: Path, precision="bf16"
+) -> dict[str, torch.Tensor]:
+    """TE outputs keyed by text (and TE precision), read from / written to
+    ``cache_dir`` so a rerun of the same prompts skips the text encoder."""
     from safetensors.torch import load_file, save_file
 
     def path(text):
-        digest = hashlib.sha1(f"{MAX_SEQUENCE_LENGTH}\0{text}".encode()).hexdigest()[
-            :16
-        ]
+        key = f"{MAX_SEQUENCE_LENGTH}\0{text}"
+        if precision != "bf16":
+            key = f"{precision}\0{key}"
+        digest = hashlib.sha1(key.encode()).hexdigest()[:16]
         return cache_dir / f"{digest}.safetensors"
 
     out, missing = {}, []
@@ -280,7 +283,7 @@ def cached_embeds(model_dir, texts, cache_dir: Path) -> dict[str, torch.Tensor]:
             missing.append(text)
     if missing:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        for text, emb in encode_prompts(model_dir, missing).items():
+        for text, emb in encode_prompts(model_dir, missing, precision=precision).items():
             save_file({"embeds": emb.contiguous()}, path(text))
             out[text] = emb
     print(f"[te] {len(out) - len(missing)} cached, {len(missing)} encoded", flush=True)
@@ -326,8 +329,11 @@ def _fingerprint(req: GenerateRequest, job: dict) -> dict:
     spectrum = {
         k: v for k, v in dataclasses.asdict(req).items() if k.startswith("spectrum")
     }
+    # Stamped only off the bf16 default, so latents saved before the field resume.
+    te = {} if req.text_encoder == "bf16" else {"text_encoder": req.text_encoder}
     return dict(
         {k: v for k, v in job.items() if k != "skip"},
+        **te,
         uncond_skip=list(job["skip"]),
         model=req.model,
         lora=str(resolve_under_home(req.lora)) if req.lora else None,
@@ -399,7 +405,7 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
     as its denoise returns, so a killed job loses at most the one in flight."""
     texts = [j["prompt"] for j, _ in pending]
     texts += [j["negative"] for j, _ in pending if j["cfg"] != 1.0]
-    embeds = cached_embeds(model_dir, texts, out_dir / "_te_cache")
+    embeds = cached_embeds(model_dir, texts, out_dir / "_te_cache", req.text_encoder)
 
     t0 = time.time()
     transformer = load_transformer(model_dir, req.model, device=device)

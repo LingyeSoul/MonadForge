@@ -10,6 +10,10 @@ tower keep their checkpoint dtype. Key names are the HF checkpoint's (``language
 
 bench/moss_te_fp8 (20261021-1113): per-tensor and per-channel scales give the same
 embedding error (rel L2 ~0.10), w8a8 is worse and no faster.
+
+``load_fp8_text_encoder`` reads that file back into the HF ``Qwen3_5Model``: the
+quantized linears become :class:`FP8Linear` (fp8 resident, dequantised to bf16 per
+forward, as ComfyUI runs it), so the 32 decoder layers take 6.5 GiB on the card.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import json
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from safetensors import safe_open
 from safetensors.torch import save_file
 
@@ -90,3 +95,66 @@ def quantize_te(src_dir: str | Path, out_path: str | Path, log=print) -> dict:
     size = out_path.stat().st_size / 2**30
     log(f"[fp8] {n_q} linears quantized -> {out_path} ({size:.2f} GiB)")
     return {"quantized": n_q, "tensors": len(out), "gib": round(size, 2)}
+
+
+class FP8Linear(torch.nn.Module):
+    """A bias-free Linear whose weight stays ``float8_e4m3fn``; each forward
+    dequantises it (``q · weight_scale`` in the input dtype) for the matmul."""
+
+    def __init__(self, weight: torch.Tensor, scale: torch.Tensor):
+        super().__init__()
+        self.out_features, self.in_features = weight.shape
+        self.weight = torch.nn.Parameter(weight, requires_grad=False)
+        self.register_buffer("weight_scale", scale.float().reshape(()))
+
+    def forward(self, x):
+        w = self.weight.to(x.dtype) * self.weight_scale.to(x.dtype)
+        return F.linear(x, w)
+
+
+def fp8_te_path(path: str | Path | None = None, log=print) -> Path:
+    """The fp8 TE file: ``path``, else the catalog row's (``moss_te_fp8``),
+    fetched on first use."""
+    if path:
+        return Path(path)
+    from library import downloads
+
+    asset = downloads.by_id()["moss_te_fp8"]
+    target = asset.dest / downloads.MOSS_TE_FP8_FILE
+    if not target.is_file() or not (asset.dest / "config.json").is_file():
+        log(f"[te] fetching {asset.repo} -> {asset.dest}")
+        downloads.fetch(asset, log=log)
+    return target
+
+
+def load_fp8_text_encoder(path: str | Path | None = None, log=print):
+    """The fp8 file (with ``config.json`` beside it) → ``Qwen3_5Model`` on the CPU,
+    eval mode, quantized linears as :class:`FP8Linear`."""
+    from accelerate import init_empty_weights
+    from safetensors.torch import load_file
+    from transformers import AutoConfig, AutoModel
+
+    path = fp8_te_path(path, log)
+    config = AutoConfig.from_pretrained(path.parent)
+    with init_empty_weights(include_buffers=False):
+        te = AutoModel.from_config(config, dtype=torch.bfloat16)
+    state = load_file(str(path))
+    n = 0
+    for name, module in list(te.named_modules()):
+        for cname, child in list(module.named_children()):
+            key = f"{name}.{cname}.weight" if name else f"{cname}.weight"
+            if isinstance(child, torch.nn.Linear) and is_quantized_linear(key):
+                prefix = key[: -len("weight")]
+                state.pop(f"{prefix}comfy_quant", None)
+                q = FP8Linear(state.pop(key), state.pop(f"{prefix}weight_scale"))
+                setattr(module, cname, q)
+                n += 1
+    if n != N_LINEARS:
+        raise ValueError(f"{path}: {n} fp8 linears, expected {N_LINEARS}")
+    _, unexpected = te.load_state_dict(state, strict=False, assign=True)
+    if unexpected:
+        raise ValueError(f"{path}: unexpected keys {unexpected[:5]}")
+    meta = [k for k, p in te.named_parameters() if p.is_meta]
+    if meta:
+        raise ValueError(f"{path}: weights missing for {meta[:5]}")
+    return te.eval()

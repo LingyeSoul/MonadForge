@@ -94,6 +94,11 @@ ENCODER_ID = (
 )
 
 
+def encoder_id(precision: str = "bf16") -> str:
+    """The ``encoder`` stamp of a TE cache file; bf16 keeps the original string."""
+    return ENCODER_ID if precision == "bf16" else f"{ENCODER_ID}, {precision} weights"
+
+
 @dataclass
 class CacheItem:
     stem: str
@@ -420,7 +425,9 @@ def _tag_knowledge_base():
     return load_tag_knowledge_base(csv)
 
 
-def _te_current(path: Path, caption: str, max_tokens: int, plain: str = "") -> bool:
+def _te_current(
+    path: Path, caption: str, max_tokens: int, plain: str = "", encoder: str = ENCODER_ID
+) -> bool:
     if not path.exists():
         return False
     try:
@@ -431,6 +438,7 @@ def _te_current(path: Path, caption: str, max_tokens: int, plain: str = "") -> b
     return (
         meta.get("caption_sha256") == caption_sha(caption)
         and meta.get("max_text_tokens") == str(max_tokens)
+        and meta.get("encoder", ENCODER_ID) == encoder
         and meta.get("plain_caption_sha256", "")
         == (caption_sha(plain) if plain else "")
     )
@@ -440,7 +448,14 @@ def _te_current(path: Path, caption: str, max_tokens: int, plain: str = "") -> b
 
 
 def cache_text(
-    pairs, out_dir, model_dir, device, max_tokens, overwrite, caption_format="text"
+    pairs,
+    out_dir,
+    model_dir,
+    device,
+    max_tokens,
+    overwrite,
+    caption_format="text",
+    precision="bf16",
 ) -> dict:
     from library.moss.loader import (
         empty_cache,
@@ -450,12 +465,13 @@ def cache_text(
         prompt_ids,
     )
 
+    encoder = encoder_id(precision)
     todo = [
         p
         for p in pairs
         if overwrite
         or not _te_current(
-            out_dir / f"{p.stem}{TE_SUFFIX}", p.caption, max_tokens, p.plain
+            out_dir / f"{p.stem}{TE_SUFFIX}", p.caption, max_tokens, p.plain, encoder
         )
     ]
     if not todo:
@@ -469,7 +485,7 @@ def cache_text(
         for text in (p.caption, p.plain)
         if text
     )
-    tok, te = load_text_encoder(model_dir, device, longest, tok=tok)
+    tok, te = load_text_encoder(model_dir, device, longest, tok=tok, precision=precision)
     t_load = time.time() - t0
     torch.cuda.reset_peak_memory_stats()
     t1 = time.time()
@@ -491,7 +507,7 @@ def cache_text(
             "source_sha256": p.source_sha,
             "n_text": str(n),
             "max_text_tokens": str(max_tokens),
-            "encoder": ENCODER_ID,
+            "encoder": encoder,
             "source": str(p.image),
         }
         plain_note = ""
@@ -643,6 +659,7 @@ def run_cache(req) -> Path:
             req.max_text_tokens,
             req.overwrite,
             req.caption_format,
+            req.text_encoder,
         )
     if not req.skip_latents:
         report["latents"] = cache_latents(
