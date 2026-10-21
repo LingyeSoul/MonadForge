@@ -86,6 +86,7 @@ dependencies = [
     "anime-tools",
     # LyCORIS LoKr / LoHa weight math for the MOSS adapters (library/moss/lora.py).
     "lycoris-lora==4.0.0",
+    "flash-linear-attention>=0.5.2 ; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
