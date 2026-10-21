@@ -263,8 +263,9 @@ def _moss_rows() -> tuple[Asset, ...]:
             optional=("README.md",),
             dest=default_moss_te_fp8_dir(),
             used_by=f"{used} · text_encoder=fp8 (TE caching and prompt encoding)",
-            notes="~9.2 GB. Decoder linears float8_e4m3fn (per-tensor scale), the "
-            "rest as in Base; embedding rel. L2 ~0.10 vs bf16 (bench/moss_te_fp8). "
+            notes="~9.2 GB. Decoder linears float8_e4m3fn (per-tensor scale, "
+            "GPTQ-rounded), the rest as in Base; embedding rel. L2 ~0.05 vs bf16 "
+            "(bench/moss_te_fp8). "
             "Also loads in ComfyUI's MOSS-Image Load Qwen3.5.",
         ),
         _moss_row("sft", "", "MOSS-Image SFT — index + reference pipeline", root,

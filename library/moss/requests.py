@@ -103,7 +103,7 @@ class CacheRequest(Request):
     text_encoder: str = _f(
         "bf16",
         "Qwen3.5-9B weights for the text pass: bf16 (the reference) or fp8 (decoder linears in "
-        "float8_e4m3fn, ~9.2 GB, fetched on first use; embedding rel. L2 ~0.10 vs "
+        "float8_e4m3fn, ~9.2 GB, fetched on first use; embedding rel. L2 ~0.05 vs "
         "bf16, bench/moss_te_fp8). Switching re-encodes the TE cache",
         choices=("bf16", "fp8"),
         advanced=True,
@@ -230,7 +230,7 @@ class GenerateRequest(Request):
         "bf16",
         "Qwen3.5-9B weights for the prompts: bf16 (the reference) or fp8 (decoder "
         "linears in float8_e4m3fn, ~9.2 GB, fetched on first use; embedding rel. L2 "
-        "~0.10 vs bf16, bench/moss_te_fp8)",
+        "~0.05 vs bf16, bench/moss_te_fp8)",
         choices=("bf16", "fp8"),
         advanced=True,
     )

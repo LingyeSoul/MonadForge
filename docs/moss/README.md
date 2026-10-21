@@ -25,7 +25,8 @@ generation; `--text_encoder fp8` on the CLI) loads
 instead of the bf16 shards: 9.2 GB instead of 16.8 GB, and all 32 layers fit on a 16 GB
 card (peak 6.7 GiB instead of 13.0 GiB). The first use downloads it, or run
 `make download-model ARGS=moss-te-fp8`. The tokenizer still comes from Base. Its
-embeddings differ from bf16 by ~10 % (relative L2), and images on the same seed keep
+embeddings differ from bf16 by ~5 % (relative L2; the fp8 rounding is GPTQ-calibrated
+on MOSS prompts and pages), and images on the same seed keep
 their composition and text but change in small details (`bench/moss_te_fp8`). Cache and
 generate with the same setting: the TE cache records which one encoded it, and
 switching re-encodes it.

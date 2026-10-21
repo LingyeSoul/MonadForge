@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """MOSS-Image's Qwen3.5-9B text encoder → one fp8 safetensors (ComfyUI mixed-precision
-format, ``library/moss/fp8.py``). CPU only.
+format, ``library/moss/fp8.py``), rounded to nearest. CPU only. The published file
+(catalog row ``moss_te_fp8``) is GPTQ-rounded instead: ``project/moss_lora/src/te_gptq.py``.
 
     python scripts/moss/quantize_te_fp8.py --out models/moss_image/fp8/qwen35_9b_fp8_e4m3fn.safetensors
 """
