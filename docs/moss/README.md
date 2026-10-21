@@ -138,8 +138,8 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   cache also stores the plain Anima caption, and training uses it on
   `plain_caption_rate` (default 0.2) of the steps. Train and prompt in the same
   form (`text` on both for plain captions); switching it re-encodes the TE cache. In
-  ComfyUI, the **Anima Caption → MOSS Layout JSON** node (in the Anima Tagger pack,
-  `anime_tools`) does the same conversion in front of the text encoder.
+  ComfyUI, the **Anima Caption → MOSS Layout JSON** node (in the [MOSS Toolkit](https://github.com/sorryhyun/ComfyUI-MOSS-Toolkit)
+  pack, needs `anime_tools`) does the same conversion in front of the text encoder.
 - **Caption dropout** (`--caption_dropout`, default 0): the share of steps trained on the
   empty prompt. Keep 0: on caststation, 0.05 and 0.1 weakened the style under CFG, because
   the LoRA's uncond prediction picks up the style and CFG cancels part of it

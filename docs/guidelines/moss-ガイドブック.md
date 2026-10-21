@@ -70,7 +70,7 @@ make download-model ARGS=moss-sft
 - **学習とプロンプトは同じ形式で**: `caption_format`（Preprocess）と `prompt_format`（Test）を一致させます。両方 `layout_json`、または通常のキャプションなら両方 `text` です。どちらの場合もプロンプトは Anima のタグ形式で入力し、`layout_json` が変換します。
 - **トリガーはキャプションに書かれているとおりの絵師タグです。** 例: `@channel (caststation)`。プロンプトにも同じ書き方で入れます。
 - 自然言語のプロンプトは `layout_json` を通っても 1 つの caption 文字列として渡され、テキストのままのプロンプトと同じように動作します。
-- ComfyUI では、**Anima Caption → MOSS Layout JSON** ノード（Anima Tagger パック）がテキストエンコーダーの前で同じ変換を行います。
+- ComfyUI では、**Anima Caption → MOSS Layout JSON** ノード（[MOSS Toolkit](https://github.com/sorryhyun/ComfyUI-MOSS-Toolkit) パック）がテキストエンコーダーの前で同じ変換を行います。
 
 ### 3.2 前処理（Preprocess）
 

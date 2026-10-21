@@ -70,7 +70,7 @@ make download-model ARGS=moss-sft
 - **학습과 프롬프트는 같은 형식으로**: `caption_format` (Preprocess)과 `prompt_format` (Test)이 일치해야 합니다. 둘 다 `layout_json` 이거나, 일반 캡션이면 둘 다 `text` 입니다. 프롬프트는 어느 쪽이든 Anima 태그 형식으로 입력하며, `layout_json` 이 변환해 줍니다.
 - **트리거는 캡션에 적힌 그대로의 작가 태그입니다.** 예: `@channel (caststation)`. 프롬프트에도 같은 형태로 넣습니다.
 - 자연어 프롬프트는 `layout_json` 을 거쳐도 하나의 caption 문자열로 들어가며, 일반 텍스트 프롬프트와 똑같이 동작합니다.
-- ComfyUI에서는 **Anima Caption → MOSS Layout JSON** 노드(Anima Tagger 팩)가 텍스트 인코더 앞에서 같은 변환을 합니다.
+- ComfyUI에서는 **Anima Caption → MOSS Layout JSON** 노드([MOSS Toolkit](https://github.com/sorryhyun/ComfyUI-MOSS-Toolkit) 팩)가 텍스트 인코더 앞에서 같은 변환을 합니다.
 
 ### 3.2 전처리 (Preprocess)
 

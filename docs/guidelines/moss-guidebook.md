@@ -70,7 +70,7 @@ Images with same-name `.txt` captions, subfolders included. The default source i
 - **Train and prompt in the same format**: `caption_format` (Preprocess) and `prompt_format` (Test) must match — both `layout_json`, or both `text` for plain captions. Prompts are typed in Anima tag format either way; `layout_json` converts them.
 - **The trigger is the artist tag as it appears in the captions**, e.g. `@channel (caststation)`. Put it in the prompt the same way.
 - A natural-language prompt passes through `layout_json` as one caption string and behaves like the plain-text prompt.
-- In ComfyUI, the **Anima Caption → MOSS Layout JSON** node (Anima Tagger pack) does the same conversion in front of the text encoder.
+- In ComfyUI, the **Anima Caption → MOSS Layout JSON** node ([MOSS Toolkit](https://github.com/sorryhyun/ComfyUI-MOSS-Toolkit) pack) does the same conversion in front of the text encoder.
 
 ### 3.2 Preprocess
 

@@ -70,7 +70,7 @@ make download-model ARGS=moss-sft
 - **训练和提示词使用同一格式**：`caption_format`（预处理）与 `prompt_format`（测试）必须一致——都用 `layout_json`，或普通标注都用 `text`。无论哪种，提示词都按 Anima 标签格式输入，`layout_json` 会自动转换。
 - **触发词就是标注中原样出现的画师标签**，例如 `@channel (caststation)`。在提示词中按同样的写法使用。
 - 自然语言提示词经过 `layout_json` 后作为一整段 caption 字符串传入，效果与纯文本提示词相同。
-- 在 ComfyUI 中，**Anima Caption → MOSS Layout JSON** 节点（Anima Tagger 包）会在文本编码器前做同样的转换。
+- 在 ComfyUI 中，**Anima Caption → MOSS Layout JSON** 节点（[MOSS Toolkit](https://github.com/sorryhyun/ComfyUI-MOSS-Toolkit) 包）会在文本编码器前做同样的转换。
 
 ### 3.2 预处理
 
