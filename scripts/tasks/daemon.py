@@ -195,6 +195,41 @@ def _job_line(job: dict) -> str:
     )
 
 
+def cmd_daemon_status(extra):
+    """Daemon health in one line, then every unfinished job (running, paused,
+    queued) as ``daemon-jobs`` lines. ``JOB=<id>``: that job's full record +
+    result envelope (``python -m anima_daemon status <id>``). Exit 1 when the
+    daemon is down."""
+    from anima_daemon import cli as _cli
+
+    job = _job_arg(extra)
+    if job:
+        sys.exit(_cli.main(["status", job]))
+    cl = _client.DaemonClient()
+    health = cl.health()
+    if health is None:
+        print("daemon down")
+        sys.exit(1)
+    stale = (
+        " · STALE code (next submit restarts it)"
+        if _client.daemon_is_stale(health)
+        else ""
+    )
+    print(
+        f"daemon up · pid {health.get('pid')} · {cl.base}"
+        f" · active {health.get('active_job') or '-'}"
+        f"{' · queue PAUSED' if health.get('paused') else ''}{stale}"
+    )
+    jobs = [
+        j for j in cl.list_jobs() if j.get("state") in ("running", "paused", "queued")
+    ]
+    jobs.sort(key=lambda j: j.get("submitted_at") or 0)
+    for job in jobs:
+        print(_job_line(job))
+    if not jobs:
+        print("no unfinished jobs")
+
+
 def cmd_daemon_jobs(extra):
     """The job history as **lines, oldest first** — the newest row is the last
     one printed.

@@ -111,6 +111,12 @@ COMMANDS = {
         "on-disk records when the daemon is down. One job's full record + its "
         "result envelope: python -m anima_daemon status <id>.",
     ),
+    "daemon-status": (
+        daemon.cmd_daemon_status,
+        "Daemon health in one line, then the running / paused / queued jobs "
+        "(exit 1 = daemon down). JOB=<id>: that job's full record + result "
+        "envelope as JSON.",
+    ),
     "daemon-log": (
         daemon.cmd_daemon_log,
         "Dump a job's captured stdout from disk: JOB=<id> (default: the most "
