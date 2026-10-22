@@ -75,6 +75,8 @@ from color_caption import (  # noqa: E402
 STAGING = "post_image_dataset/easycontrol/colorize/staging"
 RESIZED = "post_image_dataset/resized"
 MANGA = "post_image_dataset/easycontrol/colorize/manga_color"
+# ComfyUI-MOSS-Toolkit's MOSSCaptionHelper copies these floors, readable, dedupe and
+# ocr_caption to build the same prompt at inference: change both together.
 LOW_DET_SCORE = 0.9  # reader score a box under LINE_MIN_DET needs
 LATIN_MIN_GLYPH = 12.0
 
