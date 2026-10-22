@@ -45,7 +45,9 @@ rotated and rounded per token):
 - ``--act_aware``: ``H`` is taken from the rotated, per-token int8-rounded inputs
   ``X̃``, and GPTQ rounds ``W* = W_r·Gᵀ·(H̃ + λI)⁻¹`` (``G = X̃ᵀX_r``), the least-squares
   weight from ``X̃`` to the exact output ``X_r W_rᵀ``, so the activation rounding is
-  partly compensated. The layer's output for the next layer runs W8A8
+  partly compensated. ``λ`` is ``--ls_damp`` of ``H̃``'s mean diagonal, not GPTQ's
+  ``--damp``: at 1e-2 the ridge shrinks ``W*`` and its own W8A8 error is ~6x round to
+  nearest's. The layer's output for the next layer runs W8A8
   (``int8.Int8ConvRotLinear``). The log's ``rtn`` / ``gptq`` errors are then the
   W8A8 output error ``‖X̃Qᵀ − X_r W_rᵀ‖² / ‖X_r W_rᵀ‖²``.
 
@@ -337,6 +339,7 @@ def main() -> None:
     ap.add_argument("--grid", default="fp8", choices=tuple(OUT))
     ap.add_argument("--smooth", type=float, default=0.0, help="SmoothQuant α; 0 off")
     ap.add_argument("--act_aware", action="store_true")
+    ap.add_argument("--ls_damp", type=float, default=1e-4, help="--act_aware's ridge")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
     if (args.smooth or args.act_aware) and args.grid != "int8_convrot":
@@ -444,7 +447,7 @@ def main() -> None:
             if args.grid == "int8_convrot":
                 if args.act_aware:
                     Wr = int8.rotate(W)
-                    A = Hn + args.damp * Hn.diagonal().mean() * torch.eye(
+                    A = Hn + args.ls_damp * Hn.diagonal().mean() * torch.eye(
                         Hn.shape[0], device=device
                     )
                     W = torch.cholesky_solve(G[n] @ Wr.T, torch.linalg.cholesky(A)).T
