@@ -47,17 +47,14 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import sys
 import warnings
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "moss_spectrum"))
-import numpy as np  # noqa: E402
-import torch  # noqa: E402
+import numpy as np
+import torch
 
-from bench._common import make_run_dir, start_heartbeat, write_result  # noqa: E402
-from run_bench import PROMPTS  # noqa: E402
+from bench._common import make_run_dir, start_heartbeat, write_result
+from bench._moss import PROMPTS
 
 CLASSES = ("image", "tok0", "prefix", "caption", "suffix")
 BRANCHES = ("cond", "uncond")
@@ -314,7 +311,7 @@ def main() -> None:
     ap.add_argument(
         "--prompts",
         default="anime_sunset,ja_manga",
-        help="keys of moss_spectrum PROMPTS",
+        help="keys of bench/_moss.py PROMPTS",
     )
     ap.add_argument("--seeds", type=int, default=4)
     ap.add_argument("--seed0", type=int, default=1000)

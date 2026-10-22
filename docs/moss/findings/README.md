@@ -2,7 +2,7 @@
 
 Measurements of MOSS-Image (`library/moss/`) that are not a shipped feature. Each doc
 separates what was measured (with its run) from untested hypotheses. Run logs, probe code
-and raw numbers live in the matching `bench/moss_*/` folder.
+and raw numbers live in the matching `bench/moss_*/` or `_archive/bench/moss_*/` folder.
 
 | Doc | What it covers |
 |---|---|

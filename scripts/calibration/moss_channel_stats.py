@@ -17,8 +17,8 @@ Per (block, target):
   * for the residual-indexed inputs (q, ffn_up_gate), the rank, ``mean|x|/median``
     and signed image mean of every massive channel
 
-    make daemon-run ARGS="bench/moss_channel_stats/probe_lora_inputs.py"
-    make daemon-run ARGS="bench/moss_channel_stats/probe_lora_inputs.py --model sft --label sft"
+    make daemon-run ARGS="scripts/calibration/moss_channel_stats.py"
+    make daemon-run ARGS="scripts/calibration/moss_channel_stats.py --model sft --label sft"
 
 Writes ``channel_stats.safetensors`` (``mean|x|`` per target, keyed
 ``layers.N.proj.{q,k,v,o,ffn_up_gate,ffn_down}``), ``channel_mean.safetensors`` (the
@@ -34,7 +34,6 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
@@ -181,7 +180,7 @@ def main() -> None:
     if attached is not None:
         attached.detach()
 
-    run_dir = make_run_dir("moss_channel_stats", args.label)
+    run_dir = make_run_dir("moss_channel_stats", args.label, root=Path(__file__).resolve().parents[2] / "output/calibration/moss_channel_stats")
     dump, dump_mean, dom, lev, p2m = {}, {}, {}, {}, {}
     arrays = {}
     massive_rows = {}

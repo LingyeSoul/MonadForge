@@ -19,8 +19,7 @@ duplicate code or bench tables — canonical sources stay where they live.
 Grep / Glob / Explore stay on live code; the `archive-explorer` agent searches
 it (`rg --no-ignore-dot`). What stays visible is what code outside
 `finished/` reads or runs: `sr/`, `mod_guidance/` and `cjk_aware_anima/{assets,
-probes}/` (the reseed line's eval prompts, `bench/cjk_adapter`'s residual
-prompts, `bench/grad_init`'s `blind_pairs.py`). Live code (`library/`, `scripts/`,
+probes}/` (the reseed line's eval prompts, `bench/grad_init`'s `blind_pairs.py`). Live code (`library/`, `scripts/`,
 `tests/`, `configs/`) reads nothing under `project/`; a line's own tests sit in
 its `tests/`. A new outside reference
 into a hidden path means narrowing that line's `.ignore`.
@@ -56,8 +55,8 @@ Finished lines:
   content-free tables tie the trained pack for unmask training; the DiT-side
   question continued in [`cjk_aware_anima_dit/`](cjk_aware_anima_dit/) →
   [`cjk_renderable_anima/`](cjk_renderable_anima/).
-  The pack recipe stays operational in `scripts/distill_cjk/` (corpus builders
-  under `corpus/`; `docs/methods/cjk_vocab_pack.md` § Rebuilding a pack).
+  The pack recipe (`scripts/distill_cjk/`, `bench/cjk_adapter/`) was archived to
+  `_archive/` on 2026-10-22 (`docs/methods/cjk_vocab_pack.md` § Rebuilding a pack).
   Verdicts: [`cjk_aware_anima/findings.md`](cjk_aware_anima/findings.md);
   digest: [`cjk_aware_anima/README.md`](cjk_aware_anima/README.md).
 - [`cjk_aware_anima_dit/`](cjk_aware_anima_dit/) — the DiT-side CJK line: ext

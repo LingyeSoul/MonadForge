@@ -96,40 +96,39 @@ import argparse
 import gc
 import logging
 import math
-import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-import numpy as np  # noqa: E402
-import torch  # noqa: E402
-from PIL import Image, ImageDraw  # noqa: E402
+import numpy as np
+import torch
+from PIL import Image, ImageDraw
 
-from anima_lora import decode_to_pil, load_vae  # noqa: E402
-from bench._anima import (  # noqa: E402
+from anima_lora import decode_to_pil, load_vae
+from bench._anima import (
     DEFAULT_NEG,
     add_common_args,
     add_model_args,
     build_anima,
 )
-from bench._common import make_run_dir, write_result  # noqa: E402
-from bench.frontload_text_boost.prompts import PROMPTS  # noqa: E402
-from bench.fsg.probe_golden_path import _velocity  # noqa: E402
-from library.anima import models as anima_models  # noqa: E402
-from library.anima import text_strategies  # noqa: E402
-from library.inference.adapters import (  # noqa: E402
+from bench._common import make_run_dir, write_result
+from bench.frontload_text_boost.prompts import PROMPTS
+from bench.fsg.probe_golden_path import _velocity
+from library.anima import models as anima_models
+from library.anima import text_strategies
+from library.inference.adapters import (
     set_xattn_gain,
     set_xattn_kbias,
     set_xattn_renorm,
 )
-from library.inference.models import load_text_encoder  # noqa: E402
-from library.inference.sampling import (  # noqa: E402
+from library.inference.models import load_text_encoder
+from library.inference.sampling import (
     ERSDESampler,
     get_timesteps_sigmas,
 )
-from library.inference.text import prepare_text_inputs, process_escape  # noqa: E402
-from library.runtime.device import clean_memory_on_device  # noqa: E402
+from library.inference.text import prepare_text_inputs, process_escape
+from library.runtime.device import clean_memory_on_device
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 log = logging.getLogger("bench.frontload_text_boost.render")
 logging.basicConfig(level=logging.INFO, format="%(message)s")

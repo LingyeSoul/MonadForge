@@ -44,7 +44,6 @@ import argparse
 import json
 import logging
 import os
-import sys
 import threading
 import time
 import urllib.error
@@ -55,8 +54,6 @@ from pathlib import Path
 # scripts/ is not an installed package — put the repo root on sys.path so
 # `import anima_lora` / `library` resolve when run as `python scripts/...`.
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 logger = logging.getLogger("anima.inference_server")
 
@@ -381,7 +378,7 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     # quiet — route our own logging through the module logger instead of stderr
-    def log_message(self, *args) -> None:  # noqa: D401
+    def log_message(self, *args) -> None:
         pass
 
     def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
@@ -429,7 +426,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             try:
                 self._json(200, self.engine.generate(req))
-            except Exception as e:  # noqa: BLE001 — report, keep serving
+            except Exception as e:
                 logger.exception("generation failed")
                 self._json(500, {"ok": False, "error": str(e)})
         else:
@@ -516,7 +513,7 @@ def _client_call(method: str, path: str, payload: dict | None = None) -> dict:
     except urllib.error.HTTPError as e:
         try:
             return json.loads(e.read())
-        except Exception:  # noqa: BLE001
+        except Exception:
             return {"ok": False, "error": f"HTTP {e.code}"}
     except urllib.error.URLError as e:
         return {"ok": False, "error": f"unreachable: {e.reason}"}

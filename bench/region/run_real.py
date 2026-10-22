@@ -54,15 +54,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # run_bench sibling
 
-import numpy as np  # noqa: E402
-import torch  # noqa: E402
-from PIL import Image  # noqa: E402
+import numpy as np
+import torch
+from PIL import Image
 
-from bench._common import REPO_ROOT, make_run_dir, write_result  # noqa: E402
-from run_bench import (  # noqa: E402
+from bench._common import REPO_ROOT, make_run_dir, write_result
+from bench.region.run_bench import (
     PAINT_COLOR,
     _centroid,
     _decode_pending,

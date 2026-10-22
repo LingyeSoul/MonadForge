@@ -1,6 +1,6 @@
 # MOSS Spectrum's full-step schedule: the growing window stays
 
-Measured 2026-10-21 on MOSS-Image Base. Probe, runs and grids: `bench/moss_spectrum/`
+Measured 2026-10-21 on MOSS-Image Base. Probe, runs and grids: `_archive/bench/moss_spectrum/`
 (`probe_skip_cost.py`, `run_bench.py` with `full=` / `--example`; runs
 `20261021-2300-skipcost-base5`, `20261021-2321-sched19`, `20261021-2329-space_ba`).
 Follows `sigma_staircase.md`: given the layout knee at σ 0.87–0.80 (steps 22–28 of 50),

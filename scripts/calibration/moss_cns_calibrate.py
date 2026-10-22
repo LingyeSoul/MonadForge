@@ -9,7 +9,7 @@ in aspect ratio, so the sizes must have distinct aspect ratios. Also prints the
 precondition per size: σ at γ = 0.5 per band (the "staircase" — low bands must
 resolve at higher σ than high bands, or CNS has nothing to reallocate).
 
-    make daemon-run ARGS="bench/moss_spectrum/cns_calibrate.py --compile"
+    make daemon-run ARGS="scripts/calibration/moss_cns_calibrate.py --compile"
 
 Writes the npz ``library.moss.cns.MossCNS.from_npz`` reads (default
 ``networks/calibration/moss_cns_gamma.npz``) plus a copy and ``result.json`` in the run dir.
@@ -22,13 +22,11 @@ import shutil
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling run_bench
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from bench._common import make_run_dir, start_heartbeat, write_result  # noqa: E402
-from run_bench import PROMPTS  # noqa: E402
+from bench._moss import PROMPTS  # noqa: E402
 
 
 def sigma_at_half(col: np.ndarray, sig: np.ndarray) -> float:
@@ -82,7 +80,7 @@ def main() -> None:
     if len(set(ars)) != len(ars):
         raise SystemExit(f"--sizes need distinct aspect ratios (W/H {ars})")
     model_dir = resolve_model_dir(args.model_dir)
-    run_dir = make_run_dir("moss_cns", label=args.label)
+    run_dir = make_run_dir("moss_cns", label=args.label, root=Path(__file__).resolve().parents[2] / "output/calibration/moss_cns")
     device = torch.device("cuda")
 
     embeds = cached_embeds(

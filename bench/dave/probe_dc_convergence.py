@@ -61,16 +61,13 @@ Usage
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root (anima_lora/)
-
-from anima_lora import (  # noqa: E402
+from anima_lora import (
     GenerationRequest,
     default_checkpoints,
     generate,
@@ -78,12 +75,12 @@ from anima_lora import (  # noqa: E402
     load_dit_model,
     prepare_text_inputs,
 )
-from bench._common import make_run_dir, write_result  # noqa: E402
 
 # Mirror the `make test` prompt (scripts/tasks/_common.py::INFERENCE_BASE) so the
 # probe reads on the same distribution we eyeball test images on.
-from bench._anima import DEFAULT_NEG as DEFAULT_NEGATIVE  # noqa: E402
-from bench._anima import DEFAULT_PROMPT  # noqa: E402
+from bench._anima import DEFAULT_NEG as DEFAULT_NEGATIVE
+from bench._anima import DEFAULT_PROMPT
+from bench._common import make_run_dir, write_result
 
 
 # --------------------------------------------------------------------------- #

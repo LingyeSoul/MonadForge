@@ -29,23 +29,23 @@ from __future__ import annotations
 
 import argparse
 import csv
-import sys
-from pathlib import Path
 
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import sink_probe as sp  # noqa: E402  (sibling; reuses recorder + hooks + helpers)
-from anima_lora import GenerationRequest, load_vae  # noqa: E402
-from bench._anima import add_common_args, add_model_args  # noqa: E402
-from bench._common import make_run_dir, write_result  # noqa: E402
-from library.inference.generation import generate_body  # noqa: E402
-from library.inference.models import load_dit_model, load_text_encoder  # noqa: E402
-from library.inference.output import decode_latent, pixels_to_pil  # noqa: E402
-from library.inference.text import ensure_text_strategies, prepare_text_inputs  # noqa: E402
-from library.runtime.device import clean_memory_on_device  # noqa: E402
+from bench.headroom import sink_probe as sp
+
+from anima_lora import GenerationRequest, load_vae
+from bench._anima import add_common_args, add_model_args
+from bench._common import make_run_dir, write_result
+from library.inference.generation import generate_body
+from library.inference.models import load_dit_model, load_text_encoder
+from library.inference.output import decode_latent, pixels_to_pil
+from library.inference.text import (
+    ensure_text_strategies,
+    prepare_text_inputs,
+)
+from library.runtime.device import clean_memory_on_device
 
 _BORDER_NEG = "border, black border, white border, black bars, letterbox, letterboxed, pillarboxed, framed, frame, bordered"
 _BORDER_POS_SUFFIX = ", black border, letterboxed, pillarboxed, framed"

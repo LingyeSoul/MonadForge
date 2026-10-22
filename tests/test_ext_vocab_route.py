@@ -15,7 +15,7 @@ import pytest
 from library.anima import ext_vocab as ev
 
 REPO = Path(__file__).resolve().parents[1]
-EXT_PREFIX = REPO / "bench" / "cjk_adapter" / "assets" / "ext_embed"
+EXT_PREFIX = REPO / "_archive" / "bench" / "cjk_adapter" / "assets" / "ext_embed"
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ def test_encoder_routes_uses_the_pack_rule_and_defaults_to_cjk():
 
 def _tok_and_mapping():
     if not EXT_PREFIX.with_suffix(".json").exists():
-        pytest.skip("ext_embed assets not built (bench/cjk_adapter/build_ext.py)")
+        pytest.skip("ext_embed assets not present (_archive/bench/cjk_adapter/assets)")
     from anima_lora import default_checkpoints
     from library.anima import strategy as strategy_anima
 

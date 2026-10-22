@@ -42,40 +42,39 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import sys
 from pathlib import Path
 from random import Random
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-import numpy as np  # noqa: E402
-import torch  # noqa: E402
-from PIL import Image  # noqa: E402
+import numpy as np
+import torch
+from PIL import Image
 
-from anima_lora import (  # noqa: E402
+from anima_lora import (
     GenerationRequest,
     default_checkpoints,
     generate,
     get_generation_settings,
     load_vae,
 )
-from bench._common import make_run_dir, write_result  # noqa: E402
-from bench.memorization.eyeball import _caption_for, _pick  # noqa: E402
-from bench.memorization.loss_gap import (  # noqa: E402
+from bench._common import make_run_dir, write_result
+from bench.memorization.eyeball import _caption_for, _pick
+from bench.memorization.loss_gap import (
     _read_snapshot_knobs,
     build_items,
     setup_strategies,
 )
-from bench.memorization.probe import build_training_args  # noqa: E402
-from library.inference import load_shared_models  # noqa: E402
-from library.inference.output import decode_latent  # noqa: E402
-from library.runtime.device import clean_memory_on_device  # noqa: E402
-from library.training.cmmd import cmmd_from_pools, pool_and_normalize  # noqa: E402
-from library.vision.encoder import (  # noqa: E402
+from bench.memorization.probe import build_training_args
+from library.inference import load_shared_models
+from library.inference.output import decode_latent
+from library.runtime.device import clean_memory_on_device
+from library.training.cmmd import cmmd_from_pools, pool_and_normalize
+from library.vision.encoder import (
     encode_pe_from_imageminus1to1,
     load_pe_encoder,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 GEN_SEED_BASE = 20_000  # held-out noise; disjoint from eyeball's 0..2 draws
 

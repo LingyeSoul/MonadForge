@@ -35,7 +35,6 @@ import argparse
 import csv
 import json
 import logging
-import sys
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -43,11 +42,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-from bench._common import make_run_dir, write_result  # noqa: E402
-from library.log import setup_logging  # noqa: E402
+from bench._common import make_run_dir, write_result
+from library.log import setup_logging
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 setup_logging()
 logger = logging.getLogger(__name__)

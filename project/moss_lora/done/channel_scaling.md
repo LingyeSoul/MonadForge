@@ -7,12 +7,12 @@ this file is the log and the open items.
 alpha 128 (`weight_svd`). α is passed only for `algo = lora`. Revert path
 `--no-dc_isolate --lr 1e-4`. Calibration: `library/moss/calibration/channel_stats.safetensors`
 (α) and `channel_mean.safetensors` (signed token mean `x̄`, `dc_isolate`), both from
-`bench/moss_channel_stats/probe_lora_inputs.py` on Base. Code `library/lines/adapters.py`
+`scripts/calibration/moss_channel_stats.py` on Base. Code `library/lines/adapters.py`
 (shared with qwen21; scale on the down weight, inert at α 0).
 
 ## Findings
 
-**Massive channels reach the LoRA inputs** (`bench/moss_channel_stats/results/20261018-1120-base`,
+**Massive channels reach the LoRA inputs** (`_archive/bench/moss_channel_stats/results/20261018-1120-base`,
 Base, `_calib_mixed` 16 × σ {0.1 … 0.9}). The massive channels (1356, 42, …) hold ~99 % of
 the residual's DC (`dave.md`); after the norm they arrive at ≤ 26× median (from ~1900×). The one that
 matters is ch 42 into `ffn_up_gate` (top channel on blocks 11–41, 11→26×). Leverage α 0 →
@@ -34,7 +34,7 @@ whether it is right. **User verdict: cs05 much better.** α 0 adds off-prompt co
 (glasses + garbled sign, a street instead of the park, a broken hand); cs05 stays on-prompt
 at the same style strength. Defaults flipped to α 0.5, lr 1e-4.
 
-**Up-gradient decomposition** (`bench/moss_channel_stats/probe_up_gradient.py`,
+**Up-gradient decomposition** (`_archive/bench/moss_channel_stats/probe_up_gradient.py`,
 `results/20261018-1355-upgrad-fftref`). Channel scaling does not touch `∂L/∂up` (`h = down·x`
 is unchanged), and that is where the bias learner lives: medians, LoRA vs full fine-tune:
 

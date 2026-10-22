@@ -7,7 +7,7 @@ noise. The shipped γ files (Base and SFT × cfg) and how `MossCNS` picks one:
 `docs/inference/cns.md`.
 
 All runs: Base, 1024², CFG 3, uncond skip 22, 50 steps, compiled, seed 42; results
-`bench/moss_spectrum/results/20261017-00{48,105}-cmp_compile/`, images
+`_archive/bench/moss_spectrum/results/20261017-00{48,105}-cmp_compile/`, images
 `/media/sorryhyun/data/moss_image/bench/cmp_compile/`.
 
 ## ER-SDE vs Euler
@@ -21,7 +21,7 @@ its own p50 0.42 / 0.61 / 0.58 vs Euler 0.35 / 0.36 / 0.66.
 ## CNS
 
 γ from 10 Euler trajectories (5 bench prompts × seeds 0, 1), FFT on the un-patchified 32 ch
-/8 grid (`bench/moss_spectrum/cns_calibrate.py`). Precondition holds: σ at γ = 0.5 falls
+/8 grid (`scripts/calibration/moss_cns_calibrate.py`). Precondition holds: σ at γ = 0.5 falls
 monotonically 0.94 → 0.41 from lowest to highest band (spread +0.53, aggregate σ50 0.61;
 Anima +0.41…+0.52, ≈0.45–0.49).
 

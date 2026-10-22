@@ -25,15 +25,12 @@ from __future__ import annotations
 
 import argparse
 import csv
-import sys
 import time
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
-import torch  # noqa: E402
+import torch
 
-from bench._anima import add_common_args, add_model_args, build_anima  # noqa: E402
-from bench._common import make_run_dir, write_result  # noqa: E402
+from bench._anima import add_common_args, add_model_args, build_anima
+from bench._common import make_run_dir, write_result
 
 
 def main() -> None:

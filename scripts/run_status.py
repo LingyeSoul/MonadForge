@@ -30,10 +30,8 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from library.env import resolve_under_home  # noqa: E402
-from library.training.progress import read_status  # noqa: E402
+from library.env import resolve_under_home
+from library.training.progress import read_status
 
 _SUFFIX = ".progress.jsonl"
 # The daemon points every train job's sink here (manager._build_cmd), one dir

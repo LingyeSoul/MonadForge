@@ -76,7 +76,7 @@ Channel scaling only reaches the `down` side. The `up` gradient is `Σ_t g_t · 
 from `h = down · x`, which the reparameterisation leaves as it was. Because every token
 carries the same DC offset, `h` has a constant component on every token, so much of each
 step's `up` gradient is "shift every token's output the same way", spread over all 32 rank
-directions. Measured with the trainer's loss (`bench/moss_channel_stats/probe_up_gradient.py`):
+directions. Measured with the trainer's loss (`_archive/bench/moss_channel_stats/probe_up_gradient.py`):
 that bias share is 80–90 % of the `up` gradient at the FFN and attention inputs, against
 40–50 % in the full-fine-tune gradient. Per step the `up` gradient is ~0.8 rank-1, and
 channel 42's share of it is 3–6× its share of the full gradient (the entanglement GraLoRA,
@@ -109,7 +109,7 @@ raising the scale (alpha / rank) raises the effective lr of `up` by the same fac
 ## Calibration
 
 Two files under `library/moss/calibration/`, both from
-`bench/moss_channel_stats/probe_lora_inputs.py` on Base (`_calib_mixed`, 16 samples ×
+`scripts/calibration/moss_channel_stats.py` on Base (`_calib_mixed`, 16 samples ×
 σ {0.1, 0.3, 0.5, 0.7, 0.9}, the training forward), keyed
 `layers.N.proj.{q,k,v,o,ffn_up_gate,ffn_down}` (k / v share q's input):
 
@@ -117,8 +117,8 @@ Two files under `library/moss/calibration/`, both from
 - `channel_mean.safetensors`: the signed token mean `x̄`, for `dc_isolate`.
 
 ```bash
-make daemon-run ARGS="bench/moss_channel_stats/probe_lora_inputs.py --label <name>"
-cp bench/moss_channel_stats/results/<run>/channel_{stats,mean}.safetensors library/moss/calibration/
+make daemon-run ARGS="scripts/calibration/moss_channel_stats.py --label <name>"
+cp _archive/bench/moss_channel_stats/results/<run>/channel_{stats,mean}.safetensors library/moss/calibration/
 ```
 
 The probe also writes `stats.npz` (per-block dominance, leverage, peak-to-mean),
@@ -134,8 +134,8 @@ the σ grid need not match training. Regenerate only if the base DiT changes.
   `LoRANetwork(channel_stats=, channel_scaling_alpha=, channel_mean=, dc_isolate=)`.
 - `library/moss/requests.py`: `TrainRequest.channel_scaling_alpha` / `channel_stats` /
   `dc_isolate` / `channel_mean`.
-- `bench/moss_channel_stats/probe_lora_inputs.py`: the calibration probe (both files).
-- `bench/moss_channel_stats/probe_up_gradient.py`: the `up`-gradient decomposition
+- `scripts/calibration/moss_channel_stats.py`: the calibration probe (both files).
+- `_archive/bench/moss_channel_stats/probe_up_gradient.py`: the `up`-gradient decomposition
   (`--dc_isolate` to measure the isolated init).
 - `tests/test_moss_lora.py`: output equality, gradient `= g · s⁻¹`, plain-LoRA round
   trip; the `dc_isolate` orthogonality / re-projection / round-trip test.

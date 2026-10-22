@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """MOSS massive-activation channels that DAVE must leave alone, from a probe run.
 
-Reads ``channels.npz`` from ``probe_dc_convergence.py`` (per-block channel ranking
+Reads ``channels.npz`` from ``moss_dc_probe.py`` (per-block channel ranking
 by early DC energy) and writes the union of every block's top-k as one channel
 list. CPU only, no model load.
 
-    uv run python bench/moss_dave/derive_massive_channels.py \
-        --probe bench/moss_dave/results/<run>/channels.npz
+    .venv/bin/python scripts/calibration/moss_massive_channels.py \
+        --probe output/calibration/moss_dave/<run>/channels.npz
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 import numpy as np  # noqa: E402
 
 from library.env import resolve_under_home  # noqa: E402

@@ -61,30 +61,27 @@ Decision rule (printed at the end):
 
 import argparse
 import logging
-import sys
 from collections import defaultdict
-from pathlib import Path
 
 import numpy as np
 import torch
 from safetensors.torch import load_file
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling collector import
 
-from anima_lora import default_checkpoints  # noqa: E402
-from library.io.cache import (  # noqa: E402
+from anima_lora import default_checkpoints
+from library.io.cache import (
     load_cached_crossattn_emb,
     load_cached_latents,
 )
-from library.log import setup_logging  # noqa: E402
-from library.runtime.harness import build_anima  # noqa: E402
-from networks.methods import easycontrol  # noqa: E402
+from library.log import setup_logging
+from library.runtime.harness import build_anima
+from networks.methods import easycontrol
 
 # Reuse the base collector's selection + dump helpers — same stems, same
 # key/fused-mirror convention, so the cond dump is drop-in swappable with the
 # shipped main-stream file. (Latent/TE loading uses the shared library.io.cache
 # helpers directly.)
-from analyze_lora_input_channels import (  # noqa: E402
+from scripts.calibration.analyze_lora_input_channels import (
     classify_module,
     dump_channel_stats_safetensors,
     find_sample_stems,

@@ -3,7 +3,7 @@
 The runtime surface (``segment_runs`` / ``HybridT5Encoder`` /
 ``load_ext_assets``) is what the vocab-pack loaders (in-repo shim, ComfyUI
 node vendor tree) consume; the ``build_*`` / ``fit_anchor_map`` helpers are
-build-time only (``bench/cjk_adapter/build_ext.py``).
+build-time only (``_archive/bench/cjk_adapter/build_ext.py``).
 
 The adapter's target vocab is the old t5-v1_1-xxl spiece (32128 rows, no CJK).
 Instead of training a new SentencePiece, we borrow the CJK subset of Qwen3's

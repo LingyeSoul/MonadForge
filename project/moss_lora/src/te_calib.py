@@ -25,9 +25,8 @@ each balanced by TE tokens rather than entries:
 
 The calib / eval split is per source image (per work for manga, per book for
 Manga109-s), a seeded hash shared by every category, so no image is on both sides
-in any form. Kept out of both: the captions ``bench/moss_te_fp8/run_bench.py``
-evaluates (``sample_cached(4, 42)``, by source image), ``bench/moss_spectrum``
-PROMPTS, the empty prompt, and the colorize holdout (its works, for manga).
+in any form. Kept out of both: the TE-bench eval captions
+(``bench/_moss.py`` ``sample_cached(4, 42)``, by source image), its PROMPTS, the empty prompt, and the colorize holdout (its works, for manga).
 
 ``tokens`` is the TE input length, chat template included; an image entry's is
 counted by the processor at ``width × height`` (``cache.target_size`` of the
@@ -345,10 +344,10 @@ def colorize_key(stem: str) -> str:
 
 
 def excluded() -> tuple[set[str], set[str]]:
-    """``(keys, texts)`` no entry may use: the run_bench eval captions (by source
+    """``(keys, texts)`` no entry may use: the TE-bench eval captions (by source
     image), PROMPTS, the empty prompt, the colorize holdout."""
     spec = importlib.util.spec_from_file_location(
-        "moss_te_fp8_bench", resolve_under_home("bench/moss_te_fp8/run_bench.py")
+        "bench_moss", resolve_under_home("bench/_moss.py")
     )
     bench = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bench)
@@ -462,7 +461,7 @@ def main() -> None:
     )
     args = ap.parse_args()
     torch.set_num_threads(2)
-    os.chdir(anima_home())  # run_bench.sample_cached globs relative paths
+    os.chdir(anima_home())  # sample_cached globs relative paths
 
     tok = load_tokenizer("")
     bad_keys, bad_texts = excluded()

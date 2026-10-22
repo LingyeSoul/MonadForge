@@ -37,7 +37,6 @@ import json
 import logging
 import random
 import re
-import sys
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean, pstdev
@@ -45,15 +44,15 @@ from statistics import mean, pstdev
 import numpy as np
 import torch
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
 
-from bench._anima import (  # noqa: E402
+from bench._anima import (
     discover_latents_by_stem,
     parse_latent_cache_name,
 )
-from bench._common import make_run_dir, write_result  # noqa: E402
-from library.runtime.fei import compute_fei_2band  # noqa: E402
+from bench._common import make_run_dir, write_result
+from library.runtime.fei import compute_fei_2band
+
+ROOT = Path(__file__).resolve().parents[2]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("fera-artist-probe")

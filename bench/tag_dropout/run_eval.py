@@ -46,17 +46,16 @@ import argparse
 import copy
 import json
 import logging
-import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+
+import torch
+
+from bench._common import make_run_dir, write_result
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
-
-import torch  # noqa: E402
-
-from bench._common import make_run_dir, write_result  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
@@ -252,10 +251,9 @@ def _winrate(pairs: List[Tuple[float, float]]) -> Tuple[float, int]:
 
 def score_manifest(args, prompt_sets: dict, manifest: dict) -> dict:
     """Score every render; return per-arm/per-family score tables + paired gates."""
-    from PIL import Image
-
-    from anime_tools.tagger.tagger import AnimaTagger
     from anime_tools.tagger.readback import AGG_LOGSIGMOID, AGG_RECALL, TagReadback
+    from anime_tools.tagger.tagger import AnimaTagger
+    from PIL import Image
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # general-only judge — matches how the characteristic/prompted sets were typed.

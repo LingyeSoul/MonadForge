@@ -36,17 +36,14 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import sys
 from pathlib import Path
 from random import Random
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-import torch  # noqa: E402
-from PIL import Image, ImageDraw, ImageFont  # noqa: E402
+import torch
+from PIL import Image, ImageDraw, ImageFont
 
-from anima_lora import (  # noqa: E402
+from anima_lora import (
     GenerationRequest,
     decode_to_pil,
     default_checkpoints,
@@ -54,15 +51,17 @@ from anima_lora import (  # noqa: E402
     get_generation_settings,
     load_vae,
 )
-from bench._common import make_run_dir, write_result  # noqa: E402
-from bench.memorization.loss_gap import (  # noqa: E402
+from bench._common import make_run_dir, write_result
+from bench.memorization.loss_gap import (
     _read_snapshot_knobs,
     build_items,
     setup_strategies,
 )
-from bench.memorization.probe import build_training_args  # noqa: E402
-from library.inference import load_shared_models  # noqa: E402
-from library.runtime.device import clean_memory_on_device  # noqa: E402
+from bench.memorization.probe import build_training_args
+from library.inference import load_shared_models
+from library.runtime.device import clean_memory_on_device
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 RESIZED_DIR = REPO_ROOT / "post_image_dataset" / "resized"
 

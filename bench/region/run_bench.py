@@ -69,13 +69,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+import numpy as np
+import torch
+from PIL import Image, ImageDraw
 
-import numpy as np  # noqa: E402
-import torch  # noqa: E402
-from PIL import Image, ImageDraw  # noqa: E402
-
-from bench._common import REPO_ROOT, make_run_dir, write_result  # noqa: E402
+from bench._common import REPO_ROOT, make_run_dir, write_result
 
 # Booru-style prompts matching the training caption register: generic solo
 # girls with distinct scenes so placement isn't prompt-forced.

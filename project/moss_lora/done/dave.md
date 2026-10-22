@@ -17,19 +17,19 @@ seed variety, at the cost of text / hand coherence when the window is too wide.
 - **Massive channels are left out** of the subtracted mean:
   `library/moss/calibration/massive_channels.npz` (18 channels, the union of each block's
   top 4, 1356 and 42 among them), written by
-  `bench/moss_dave/derive_massive_channels.py --probe <run>/channels.npz --k 4`.
+  `scripts/calibration/moss_massive_channels.py --probe <run>/channels.npz --k 4`.
 - **Pool from a DAVE-on sweep**, not `derive_alpha_mask.py` (its `DC_sim` cut does not
   separate MOSS blocks): `library/moss/calibration/dave_alpha.npz`.
 
 ## Findings
 
-**Premise probe** (`bench/moss_dave/results/20261018-1048-vanilla`, anime_sunset + ja_manga ×
+**Premise probe** (`_archive/bench/moss_dave/results/20261018-1048-vanilla`, anime_sunset + ja_manga ×
 8 seeds × 30 steps, CFG 3, skip 22, 1024²). Gate passes (early DC 0.998, AC 0.474, gap
 +0.52) but saturated: DC sim ≥ 0.99 on blocks 0–40 and ≈ 1.000 on 0–20 from step 0; the DC
 holds 0.98–0.99 of image-token energy on blocks 0–18. AC sim falls over the run (block 20:
 0.96 → 0.27).
 
-**Channel probe** (`bench/moss_dave/results/20261018-1106-channels`, + danbooru_tags). The
+**Channel probe** (`_archive/bench/moss_dave/results/20261018-1106-channels`, + danbooru_tags). The
 DC is massive activations: ch **1356** holds 0.87–0.93 of the early DC energy on blocks
 0–21 (|μ| ~1900× median at block 0, ~210× at 30); 1356 and **42** are top 4 on 41–42 of 42
 blocks. Cross-prompt DC cosine 1.00 with all channels in (no conditioning). Top 4 out: power
@@ -37,7 +37,7 @@ ratio 0.18 (block 0) → 0.29–0.37 (8–30) → 0.47–0.80 (36–41), DC−AC
 premise holds on the rest. Prompt specificity: 0.01–0.03 on blocks 0–3, 0.08–0.09 on 8–12,
 0.05–0.07 on 13–36, 0.09–0.11 on 38–40.
 
-**Pool sweep** (`bench/moss_dave/results/20261018-{1915-dave-8-18,1958-dave-19-30,1928-dave-8-30,1942-dave-8-40}`,
+**Pool sweep** (`_archive/bench/moss_dave/results/20261018-{1915-dave-8-18,1958-dave-19-30,1928-dave-8-30,1942-dave-8-40}`,
 s 0.3, τ 0.10 = 3 steps). Cross-seed AC sim (lower = more diverse):
 
 | | vanilla | 8-18 | 19-30 | 8-30 | 8-40 |

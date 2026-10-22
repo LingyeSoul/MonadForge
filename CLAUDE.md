@@ -143,9 +143,10 @@ self-contained `configs/<method>/<method>.toml` layout, gui-methods rules:
   **orchestration** (`library/preprocess/`, `library/runtime/harness.py` — drive
   primitives over a whole dataset/run) → **entry points** (`scripts/preprocess/*.py`,
   `bench/**/run_bench.py`, `scripts/**`, `tasks.py` — thin argparse wrappers).
-  `bench/`, `scripts/` are **not** installed packages (only
-  `anima_lora`/`library`/`networks` are) — they keep a `sys.path` bootstrap to import
-  siblings.
+  `bench/` and `scripts/` are packages of the editable install (`uv sync`), so they
+  import as `bench.<dir>.<mod>` / `scripts.<dir>.<mod>` from anywhere — no `sys.path`
+  bootstrap; import a sibling by its package path. Repo-root modules (`train.py`,
+  `inference.py`, `tasks.py`) and `easycontrol_adapters/` are not installed.
 - **`library/qwen21/`** is the Qwen-Image-2.1 LoRA line's core — **not Anima**, none of
   the invariants below apply; read `library/qwen21/CLAUDE.md` and **load the `qwen21` skill** before touching it.
 - **`library/moss/`** is the MOSS-Image LoRA line — **not Anima**, none of the invariants

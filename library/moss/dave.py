@@ -15,7 +15,7 @@ What differs from ``library.inference.corrections.dave``:
   tokens' mean is almost entirely one channel (1356) plus a few more, identical
   across seeds and prompts; removing a fraction of it would shift the block output
   instead of unlocking it. The list is ``DEFAULT_CHANNELS_PATH``, from
-  ``bench/moss_dave/derive_massive_channels.py``.
+  ``scripts/calibration/moss_massive_channels.py``.
 
 The pool is a ``{0,1}`` vector over the 42 blocks: a ``dave_alpha.npz`` (``auto`` =
 the shipped one, blocks 19–30), or a block range ``"lo-hi"``.
@@ -66,7 +66,7 @@ def massive_channels(path: str = DEFAULT_CHANNELS_PATH) -> np.ndarray:
     if not Path(resolved).is_file():
         raise FileNotFoundError(
             f"MOSS massive-channel list not found: {resolved}. Derive it with "
-            "bench/moss_dave/derive_massive_channels.py."
+            "scripts/calibration/moss_massive_channels.py."
         )
     return np.load(resolved)["channels"].astype(np.int64)
 

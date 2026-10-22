@@ -24,8 +24,8 @@ kept on the host (fp16 AC, ~125 MB per seed at 30 steps).
 ``--dave SPEC`` turns on DAVE (``library.moss.dave``) for the run; captures stay
 the block's own output before the edit.
 
-    make daemon-run ARGS="bench/moss_dave/probe_dc_convergence.py --compile"
-    make daemon-run ARGS="bench/moss_dave/probe_dc_convergence.py --compile --dave 8-18 --label dave"
+    make daemon-run ARGS="scripts/calibration/moss_dc_probe.py --compile"
+    make daemon-run ARGS="scripts/calibration/moss_dc_probe.py --compile --dave 8-18 --label dave"
 
 Writes ``per_block.npz`` (``dc_sim`` / ``ac_sim`` / ``power_ratio`` /
 ``heavy_blocks``, the schema ``bench/dave/derive_alpha_mask.py --probe`` reads) and
@@ -39,14 +39,12 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "moss_spectrum"))
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
 from bench._common import make_run_dir, start_heartbeat, write_result  # noqa: E402
-from run_bench import PROMPTS  # noqa: E402
+from bench._moss import PROMPTS  # noqa: E402
 
 
 class Probe:
@@ -285,7 +283,7 @@ def main() -> None:
         1, keepdims=True
     )
 
-    run_dir = make_run_dir("moss_dave", label=args.label)
+    run_dir = make_run_dir("moss_dave", label=args.label, root=Path(__file__).resolve().parents[2] / "output/calibration/moss_dave")
     artifacts = ["channels.npz"]
     np.savez(
         run_dir / "channels.npz",

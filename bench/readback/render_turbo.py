@@ -38,19 +38,18 @@ import argparse
 import copy
 import json
 import logging
-import sys
 from pathlib import Path
 from typing import Dict, List
 
+
+import torch
+
+from anima_lora import GenerationRequest, generate, load_vae
+from library.inference import get_generation_settings
+from library.inference.output import decode_to_pil
+from library.runtime.device import clean_memory_on_device
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
-
-import torch  # noqa: E402
-
-from anima_lora import GenerationRequest, generate, load_vae  # noqa: E402
-from library.inference import get_generation_settings  # noqa: E402
-from library.inference.output import decode_to_pil  # noqa: E402
-from library.runtime.device import clean_memory_on_device  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)

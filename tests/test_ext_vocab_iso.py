@@ -18,7 +18,7 @@ import torch
 from library.anima import ext_vocab as ev
 
 REPO = Path(__file__).resolve().parents[1]
-EXT_PREFIX = REPO / "bench" / "cjk_adapter" / "assets" / "ext_embed"
+EXT_PREFIX = REPO / "_archive" / "bench" / "cjk_adapter" / "assets" / "ext_embed"
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ def test_quote_spans_need_both_halves_of_the_partition_and_cut_runs():
 
 def _tok_and_mappings():
     if not EXT_PREFIX.with_suffix(".json").exists():
-        pytest.skip("ext_embed assets not built (bench/cjk_adapter/build_ext.py)")
+        pytest.skip("ext_embed assets not present (_archive/bench/cjk_adapter/assets)")
     from anima_lora import default_checkpoints
     from library.anima import strategy as strategy_anima
 

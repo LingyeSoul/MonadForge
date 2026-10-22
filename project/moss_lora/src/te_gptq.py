@@ -7,8 +7,8 @@ decoder linears as ``float8_e4m3fn``, per-tensor ``weight_scale`` amax / 448,
 rounding changes (GPTQ against ``H = Σ xᵀx`` of each linear's inputs).
 
 Calibration is MOSS's own TE traffic, kept apart from what the evals read:
-cached captions from ``post_image_dataset/moss/*`` (``--seed``, minus the captions
-``bench/moss_te_fp8/run_bench.py`` samples at its default seed), colorize training
+cached captions from ``post_image_dataset/moss/*`` (``--seed``, minus the TE-bench eval
+captions, ``bench/_moss.py`` ``sample_cached(4, 42)``), colorize training
 pages from ``--pages_cache`` (never a holdout page), and the empty prompt (the
 uncond of every sampling step) repeated ``--empty_repeat`` times so its few rows
 carry weight in ``H``. Layers are quantized sequentially, each quantized layer
@@ -81,7 +81,7 @@ OUT = {
 
 
 def calib_captions(per_dir: int, seed: int, exclude: set[str]) -> list[str]:
-    """Cached captions (``run_bench.sample_cached``'s filter), ``per_dir`` per cache
+    """Cached captions (``bench/_moss.py`` ``sample_cached``'s filter), ``per_dir`` per cache
     dir, none of ``exclude``'s files."""
     rng = random.Random(seed)
     out = []
@@ -109,10 +109,9 @@ def calib_captions(per_dir: int, seed: int, exclude: set[str]) -> list[str]:
 
 
 def bench_caption_files() -> set[str]:
-    """The files ``bench/moss_te_fp8/run_bench.py`` reads at its defaults (per_dir 4,
-    seed 42)."""
+    """The TE-bench eval captions' files: ``bench/_moss.py`` ``sample_cached(4, 42)``."""
     spec = importlib.util.spec_from_file_location(
-        "moss_te_fp8_bench", resolve_under_home("bench/moss_te_fp8/run_bench.py")
+        "bench_moss", resolve_under_home("bench/_moss.py")
     )
     bench = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bench)

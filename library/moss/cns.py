@@ -25,7 +25,7 @@ from library.env import resolve_under_home
 from library.inference.corrections.cns_core import CNSRecolorer, radial_bins
 from library.moss.model import patchify, unpatchify
 
-# (variant, cfg) → γ from bench/moss_spectrum/cns_calibrate.py (50 steps).
+# (variant, cfg) → γ from scripts/calibration/moss_cns_calibrate.py (50 steps).
 GAMMA_PATHS = {
     ("base", 3.0): "networks/calibration/moss_cns_gamma.npz",
     ("base", 4.0): "networks/calibration/moss_cns_gamma_cfg4.npz",

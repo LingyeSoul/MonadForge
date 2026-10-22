@@ -40,14 +40,18 @@ from __future__ import annotations
 
 import argparse
 import gc
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling gamma_probe
 
 import numpy as np
 import torch
+from scripts.calibration.gamma_probe import (
+    DEFAULT_PROMPTS,
+    _gamma_for_trajectory,
+    _radial_bins,
+    _sigma_at_gamma_half,
+    _StepCapture,
+)
 
 from anima_lora import GenerationRequest, default_checkpoints, get_generation_settings
 from library.datasets.buckets import DCW_ASPECT_BUCKETS
@@ -56,14 +60,6 @@ from library.inference.generation import generate
 from library.inference.models import load_dit_model, load_text_encoder
 from library.inference.text import prepare_text_inputs
 from library.runtime.device import clean_memory_on_device
-
-from gamma_probe import (  # noqa: E402  (sibling import after sys.path bootstrap)
-    DEFAULT_PROMPTS,
-    _StepCapture,
-    _gamma_for_trajectory,
-    _radial_bins,
-    _sigma_at_gamma_half,
-)
 
 _ckpts = default_checkpoints()
 DIT, VAE, TEXT_ENCODER = _ckpts.dit, _ckpts.vae, _ckpts.text_encoder

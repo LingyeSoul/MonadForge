@@ -37,20 +37,18 @@ import datetime as _dt
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import torch
 
-REPO = Path(__file__).resolve().parents[2]
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
 
-from library.anima.ext_vocab import (  # noqa: E402
+from library.anima.ext_vocab import (
     T5_TABLE_SIZE,
     pack_digest,
 )
-from library.env import resolve_under_home  # noqa: E402
+from library.env import resolve_under_home
+
+REPO = Path(__file__).resolve().parents[2]
 
 PROVENANCE_TIER = "render"
 
@@ -159,7 +157,7 @@ def _git_rev() -> str:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"], cwd=REPO, text=True
         ).strip()
-    except Exception:  # noqa: BLE001 — provenance is best effort
+    except Exception:
         return ""
 
 
@@ -179,7 +177,7 @@ def _row_texts(mapping: dict, ids: list[int]) -> dict[int, str]:
 
             tok, _ = ensure_text_strategies(default_checkpoints().text_encoder)
             qtok = tok.qwen3_tokenizer
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"(qwen piece names unavailable: {e})", flush=True)
     out = {}
     for e in ids:

@@ -36,27 +36,25 @@ import csv
 import json
 import os
 import re
-import sys
 import time
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 # the per-layer sketches + a 4k-token backward sit close to 16 GB; avoid
 # fragmentation-driven OOM (1.7 GB reserved-unallocated was observed).
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-import torch  # noqa: E402
-from safetensors.torch import save_file  # noqa: E402
+import torch
+from safetensors.torch import save_file
 
-from bench._anima import add_common_args, add_model_args, build_anima  # noqa: E402
-from bench._common import make_run_dir, start_heartbeat, write_result  # noqa: E402
-from library.env import resolve_under_home  # noqa: E402
-from library.io.cache import (  # noqa: E402
+from bench._anima import add_common_args, add_model_args, build_anima
+from bench._common import make_run_dir, start_heartbeat, write_result
+from library.env import resolve_under_home
+from library.io.cache import (
     discover_cached_pairs,
     load_cached_latents,
     load_cached_text_features,
 )
-from networks.lora_anima.network import LoRANetwork  # noqa: E402
+from networks.lora_anima.network import LoRANetwork
 
 _BLOCK_RE = re.compile(r"^blocks\.(\d+)\.")
 

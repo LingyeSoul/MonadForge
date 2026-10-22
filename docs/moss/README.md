@@ -54,7 +54,7 @@ tokenizer always comes from Base. A quantized file downloads on first use, or vi
 Both quantized files are GPTQ-calibrated on MOSS prompts and pages. Their embeddings differ
 from bf16 by ~4–5 % (relative L2) on captions and ~10 % on long JSON prompts and on pages
 through the vision tower; fp8 images on the same seed keep composition and text and change
-in small details (`bench/moss_te_fp8`). **Cache and generate with the same setting**: the TE
+in small details (`_archive/bench/moss_te_fp8`). **Cache and generate with the same setting**: the TE
 cache records which encoder wrote it and switching re-encodes it, so a cache made before
 int8 became the default re-encodes on the next `cache` run unless it passes
 `--text_encoder bf16` (or `text_encoder = "bf16"` in a copy of `cache.toml`).

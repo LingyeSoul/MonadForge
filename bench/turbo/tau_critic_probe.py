@@ -41,45 +41,44 @@ from __future__ import annotations
 import argparse
 import copy
 import logging
-import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-import torch  # noqa: E402
-import torch.nn as nn  # noqa: E402
-from tqdm import tqdm  # noqa: E402
+import torch
+import torch.nn as nn
+from tqdm import tqdm
 
-from bench._common import make_run_dir, write_result  # noqa: E402
-from library.anima import weights as anima_utils  # noqa: E402
-from library.config.resolved import load_toml  # noqa: E402
-from library.datasets.cache import CachedDataset  # noqa: E402
-from library.inference.sampling import get_timesteps_sigmas  # noqa: E402
-from library.runtime.dynamo import pin_dynamo_limit  # noqa: E402
-from library.runtime.harness import (  # noqa: E402
+from bench._common import make_run_dir, write_result
+from library.anima import weights as anima_utils
+from library.config.resolved import load_toml
+from library.datasets.cache import CachedDataset
+from library.inference.sampling import get_timesteps_sigmas
+from library.runtime.dynamo import pin_dynamo_limit
+from library.runtime.harness import (
     compile_dit_blocks,
     compile_signature,
     enable_training_grad_ckpt,
     isolate_compile_cache,
     place_dit_for_training,
 )
-from library.training.distill_runtime import (  # noqa: E402
+from library.training.distill_runtime import (
     ensure_dynamic_seq_for_freefit,
     resolve_device_dtype,
 )
-from networks.lora_anima.factory import create_network  # noqa: E402
-from networks.methods.turbo_dmd import (  # noqa: E402
+from networks.lora_anima.factory import create_network
+from networks.methods.turbo_dmd import (
     TurboDMDNetwork,
     warm_start_plain_lora,
 )
-from scripts.distill_turbo.distill import _cached_token_counts  # noqa: E402
-from scripts.distill_turbo.primitives import (  # noqa: E402
+from scripts.distill_turbo.distill import _cached_token_counts
+from scripts.distill_turbo.primitives import (
     PadCache,
     make_collate,
     renoise,
 )
-from scripts.distill_turbo.resume import load_resume_state  # noqa: E402
+from scripts.distill_turbo.resume import load_resume_state
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 logger = logging.getLogger("tau_critic_probe")
 logging.basicConfig(

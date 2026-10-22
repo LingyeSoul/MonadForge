@@ -14,7 +14,7 @@ output/
 # checkpoint. Regenerate via `bench/channel_stats/analyze_lora_input_channels.py`.
 !networks/calibration/channel_stats.safetensors
 !networks/calibration/cond_channel_stats.safetensors
-# MOSS-Image's (bench/moss_channel_stats/probe_lora_inputs.py), same role.
+# MOSS-Image's (scripts/calibration/moss_channel_stats.py), same role.
 !library/moss/calibration/channel_stats.safetensors
 !library/moss/calibration/channel_mean.safetensors
 # The empty prompt's MOSS TE embedding (caption dropout's uncond); train.py re-encodes it if missing.

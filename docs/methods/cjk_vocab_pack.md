@@ -12,8 +12,8 @@ off (stock tokenizer).
 
 Public pack: <https://huggingface.co/sorryhyun/anima-vocab-pack-cjk>
 (`anima_cjk_vocab_pack_jp_v1.{safetensors,json}`, ~285 MB; the model card carries the
-training label). The builder is `bench/cjk_adapter/build_ext.py` (ext table) +
-`scripts/distill_cjk/` (corpus builders under `corpus/`, cache, distill) — see
+training label). The builder is `_archive/bench/cjk_adapter/build_ext.py` (ext table) +
+`_archive/scripts/distill_cjk/` (corpus builders under `corpus/`, cache, distill) — see
 [Rebuilding a pack](#rebuilding-a-pack).
 
 ## Intended use
@@ -153,19 +153,21 @@ merged file; it uses `vocab_pack` with the stock DiT.
 
 ## Rebuilding a pack
 
+**Archived 2026-10-22.** The builder code is in the gitignored `_archive/` tree (`_archive/bench/cjk_adapter/`, `_archive/scripts/distill_cjk/`, outputs in `_archive/bench/cjk_distill/`) and the `exp-distill-cjk` / `exp-cjk-corpus` targets are gone; the commands below are the record of what ran, not a runnable recipe.
+
 Four stages, all from the repo root; GPU stages go through the daemon. Every
 argv below is what actually ran (daemon `job.json` records and the distill
-`result.json` envelopes under `bench/cjk_distill/results/`), except where a
+`result.json` envelopes under `_archive/bench/cjk_distill/results/`), except where a
 line says the flags were not recorded.
 
-1. **Ext table** — `bench/cjk_adapter/build_ext.py` →
-   `bench/cjk_adapter/assets/ext_embed.{safetensors,json}`. The id mapping is
+1. **Ext table** — `_archive/bench/cjk_adapter/build_ext.py` →
+   `_archive/bench/cjk_adapter/assets/ext_embed.{safetensors,json}`. The id mapping is
    tokenizer-deterministic, so a rebuild changes row *values* only; distill
    caches (keyed on ids) survive it. Loads the Qwen3 encoder for the contextual
-   char init, so: `make daemon-run ARGS="bench/cjk_adapter/build_ext.py"` (the
+   char init, so: `make daemon-run ARGS="_archive/bench/cjk_adapter/build_ext.py"` (the
    v2 default, `--map procrustes-mix --char-init contextual`, symbol block on —
    69,558 rows). `--no-symbols` reproduces the 58,968-row table.
-2. **Corpus** — `scripts/distill_cjk/corpus/` (`make exp-cjk-corpus
+2. **Corpus** — `_archive/scripts/distill_cjk/corpus/` (`make exp-cjk-corpus
    ARGS='<stage> [flags]'`, or `python -m scripts.distill_cjk.corpus.<stage>`).
    Pair files land in `post_image_dataset/cjk_distill/`, intermediates
    (glossaries, Wikidata lexicon, the danbooru wiki dump, MT caches) in
@@ -202,7 +204,7 @@ make daemon-run ARGS="-m scripts.distill_cjk.distill --pairs $P --cache_dir $C \
   --register_sampling names_synth_ja:0.2,names_synth:0.5 --register_span_scale names_synth:en_pinned=0.3 \
   --param global --rank 64 --loss span --trust provenance --min_visits 5 --holdout 500 \
   --steps 12000 --batch_size 32 --lr 0.001 --eval_every 250 --eval_limit 256 \
-  --ext_prefix bench/cjk_adapter/assets/ext_embed \
+  --ext_prefix _archive/bench/cjk_adapter/assets/ext_embed \
   --out output/ckpt/cjk_vocab_pack_synthja_v4 --label 2c-synthja-v4-kanjifilter"
 ```
 
@@ -254,7 +256,7 @@ make daemon-run ARGS="-m scripts.distill_cjk.distill --pairs $D/pairs_tags.jsonl
   --train_registers tags,tags_alt,names,tags_synth_ja,tags_ko,tags_alt_ko,names_ko,names_synth_ko,desc_ko,tags_zh,tags_alt_zh,names_zh,tags_zh_hant,tags_synth_zh \
   --holdout 500 --param global --rank 256 --min_visits 5 --loss span --trust provenance \
   --attn_blocks 0,13,27 --attn_queries 64 --mode train --steps 12000 --batch_size 32 --lr 0.001 \
-  --eval_every 250 --eval_limit 1200 --ext_prefix bench/cjk_adapter/assets/ext_embed \
+  --eval_every 250 --eval_limit 1200 --ext_prefix _archive/bench/cjk_adapter/assets/ext_embed \
   --out output/ckpt/cjk_vocab_pack_synthjakozh1sym_r256 --label 2c-synthjakozh1sym-r256"
 ```
 

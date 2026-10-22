@@ -62,7 +62,7 @@ Low expectation for CTCal, SSC and MIST; the probes are cheap. DCW moved to §5.
 | CJK distillation-target, eval-instrument, reward and curriculum failures (`_archive/shelved_benches.md`, CJK findings) | Data / objective / instrument causes |
 | σ-demoted training (`docs/optimizations/sigma_lowres.md`, archived) | Cuts high-σ tokens; MOSS training is PCIe-bound, so fewer tokens do not shorten the step |
 | Embedding inversion (`_archive/bench/inversion/analyze_inversion_and_proposal.md`) | The cause flips, but the use (image as condition) is covered zero-shot by the vision tower (`docs/moss/findings/vision_tower_reference.md`) |
-| `channel_stats` dominance metric (`docs/findings/channel_stats_content_independence.md`) | Already re-derived on MOSS (`bench/moss_channel_stats/probe_lora_inputs.py`, `docs/moss/channel_scaling.md`) |
+| `channel_stats` dominance metric (`docs/findings/channel_stats_content_independence.md`) | Already re-derived on MOSS (`scripts/calibration/moss_channel_stats.py`, `docs/moss/channel_scaling.md`) |
 | Null-TTA, tag-readback reward, seed-floor / paired-eval, tagger ceiling, PE registers (`_archive/shelved_benches.md`, `docs/findings/`) | Causes are the objective, the instrument or the PE tower |
 
 Ported and closed on MOSS itself (logged with their sub-line): relational REPA
@@ -87,7 +87,7 @@ these are unmeasured on MOSS rather than negative.
   σ 0.75 is step 14 of 28).
 - **Consequences**: DAVE τ and Spectrum are step-defined (nothing to move); the REPA σ 0.85
   taper matches MOSS's shape; §4 reads its window over σ ≥ 0.80.
-  `docs/moss/findings/sigma_staircase.md`; run log `bench/moss_sigma_staircase/README.md`.
+  `docs/moss/findings/sigma_staircase.md`; run log `_archive/bench/moss_sigma_staircase/README.md`.
 
 ### 4. Text drive across σ, and an `xattn_boost` analogue
 

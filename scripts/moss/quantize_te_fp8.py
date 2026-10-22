@@ -12,14 +12,10 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
-
-from library.env import resolve_under_home  # noqa: E402
-from library.moss.fp8 import quantize_te  # noqa: E402
-from library.moss.requests import resolve_model_dir, variant_dir  # noqa: E402
+from library.env import resolve_under_home
+from library.moss.fp8 import quantize_te
+from library.moss.requests import resolve_model_dir, variant_dir
 
 
 def main():

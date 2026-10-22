@@ -43,22 +43,21 @@ import argparse
 import csv
 import json
 import logging
-import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-import torch  # noqa: E402
-
-from bench._common import make_run_dir, write_result  # noqa: E402
-from anime_tools.tagger.readback import (  # noqa: E402
+import torch
+from anime_tools.tagger.readback import (
     AGG_LOGSIGMOID,
     AGG_RECALL,
     CONTENT_CATEGORIES,
     TagReadback,
 )
+
+from bench._common import make_run_dir, write_result
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
@@ -140,14 +139,13 @@ def _collect_logits_dbv4(
     hidden feature for every ``dataset.json`` stem; sidecar rows are recomputed
     from the hidden feature so the logits match ``AnimaTagger.tag_logits``.
     """
-    from safetensors import safe_open
-    from safetensors.torch import load_file as st_load
-
     from anime_tools.tagger.dbv4_backend import (
         UNSUPPORTED_LOGIT,
         SidecarHead,
         probs_to_logits,
     )
+    from safetensors import safe_open
+    from safetensors.torch import load_file as st_load
 
     device = torch.device(args.device or "cpu")
     arch = cfg_d["dbv4"]["arch"]

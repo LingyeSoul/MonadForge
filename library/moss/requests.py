@@ -311,7 +311,7 @@ class TrainRequest(Request):
     channel_stats: str = _f(
         "library/moss/calibration/channel_stats.safetensors",
         "per-target mean|x| calibration for channel_scaling_alpha (from "
-        "bench/moss_channel_stats/probe_lora_inputs.py on Base)",
+        "scripts/calibration/moss_channel_stats.py on Base)",
         advanced=True,
     )
     dc_isolate: bool = _f(
@@ -326,7 +326,7 @@ class TrainRequest(Request):
     channel_mean: str = _f(
         "library/moss/calibration/channel_mean.safetensors",
         "per-target signed token-mean x̄ for dc_isolate (from "
-        "bench/moss_channel_stats/probe_lora_inputs.py on Base)",
+        "scripts/calibration/moss_channel_stats.py on Base)",
         advanced=True,
     )
     lr: float = _f(

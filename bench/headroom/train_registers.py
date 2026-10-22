@@ -25,20 +25,19 @@ import json
 import os
 import random
 import re
-import sys
-from pathlib import Path
 
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from anima_lora import GenerationRequest  # noqa: E402
-from bench._anima import add_common_args, add_model_args  # noqa: E402
-from bench._common import make_run_dir, write_result  # noqa: E402
-from bench.headroom.register_adapter import RegisterAdapter  # noqa: E402
-from library.io.cache import load_cached_latents, load_cached_text_features  # noqa: E402
-from library.runtime.noise import fm_training_batch  # noqa: E402
-from library.inference.models import load_dit_model  # noqa: E402
+from anima_lora import GenerationRequest
+from bench._anima import add_common_args, add_model_args
+from bench._common import make_run_dir, write_result
+from bench.headroom.register_adapter import RegisterAdapter
+from library.inference.models import load_dit_model
+from library.io.cache import (
+    load_cached_latents,
+    load_cached_text_features,
+)
+from library.runtime.noise import fm_training_batch
 
 _LORA_CACHE = "post_image_dataset/lora"
 

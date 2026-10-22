@@ -58,11 +58,11 @@ from pathlib import Path
 
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-from bench._common import make_run_dir, write_result  # noqa: E402
-from bench.memorization.loss_gap import _auc, _perm_p  # noqa: E402
+from bench._common import make_run_dir, write_result
+from bench.memorization.loss_gap import _auc, _perm_p
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # arm -> extra train.py argv. base.toml carries the stacked-router combolate
 # values (routes + thresholds); the arms only clear pieces of that surface.

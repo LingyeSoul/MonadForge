@@ -24,10 +24,8 @@ from pathlib import Path
 import torch
 
 # soup.py lives in the same directory (extracted from PR #70).
-import sys
 
-sys.path.insert(0, str(Path(__file__).parent))
-from soup import _effective_factors, _group_modules  # noqa: E402
+from bench.uncond_soup.soup import _effective_factors, _group_modules
 
 
 def truncated_soup(
