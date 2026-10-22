@@ -749,7 +749,10 @@ class JobManager:
         if job.stop_requested:
             self._finalize(job, STATE_STOPPED)
             return
-        if ev and ev.get("ev") == "run_end":
+        # A command job can run a training loop and then more work (train →
+        # eval chains): its nonzero exit outranks that loop's run_end "ok".
+        ok_but_failed = job.kind == "command" and rc not in (0, None)
+        if ev and ev.get("ev") == "run_end" and not ok_but_failed:
             status = ev.get("status")
             if status == "paused":
                 self._park_released(job, ev)

@@ -125,7 +125,7 @@ unaffected).
 `step N/total`, it/s, ETA, last losses, last ckpt, and `RUNNING`/`OK`/`ERROR`/`DEAD` (no
 `run_end` + dead pid), digested from the run's `progress.jsonl`
 (`library/training/progress.py::read_status` — importable; `scripts/run_status.py` is the
-CLI). Covers train.py methods **and** `make turbo`; a bespoke loop that writes no
+CLI). Covers train.py methods, `make turbo` **and** moss train (`scripts/moss/train.py`); a bespoke loop that writes no
 `progress.jsonl` (e.g. `project/cjk_anima_reseed/run.py`) shows nothing here — read the
 step off `make daemon-log JOB=<id>`.
 

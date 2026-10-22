@@ -40,6 +40,7 @@ from __future__ import annotations
 import functools
 import json
 import math
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -59,6 +60,7 @@ from library.moss.loader import (
 )
 from library.moss.lora import LoRANetwork, load_channel_stats
 from library.moss.requests import LORA_ALPHA, TrainRequest
+from library.training.progress import ProgressSink, command_job_path, run_scope
 
 EMPTY_PROMPT_PATH = "library/moss/asset/empty_prompt.safetensors"
 NUM_TRAIN_TIMESTEPS = 1000
@@ -524,143 +526,167 @@ def train(
         network.save(path, req.lora_dtype, **meta)
         return path
 
+    sink_path = command_job_path(
+        str(out_path.parent.parent / "logs" / f"{out_path.stem}.progress.jsonl")
+    )
+    sink = ProgressSink(sink_path, run=out_path.stem, method="moss", preset=None)
+    sink.run_start(total_steps=total, total_epochs=epochs, pid=os.getpid())
+    print(f"progress sink: {sink_path}", flush=True)
+
     largest = max(samples, key=lambda s: s.n_img + s.n_ref + s.n_text)
     history, losses_all, fit = [], [], None
     step = 0
     torch.cuda.reset_peak_memory_stats()
     t_start = time.time()
-    for epoch in range(epochs):
-        order = random.sample(samples, len(samples))
-        if epoch == 0 and req.fit_report:
-            # Only the largest sample moves to step 1, the worst case the fit
-            # report bounds; the rest of epoch 1 stays shuffled.
-            order.remove(largest)
-            order.insert(0, largest)
-        losses, aligns, t_epoch = [], [], time.time()
-        for s in order:
-            if step >= total:
-                break
-            latent, embeds, alt, ref = get(s)
-            embeds, kind = choose_embeds(
-                embeds,
-                alt,
-                s.n_variants if use_variants else 0,
-                s.load_variant,
-                empty,
-                worst_case=step == 0 and req.fit_report,
-                **rates,
-            )
-            kind = "variant" if kind.startswith("v") else kind
-            if kind in kinds:
-                kinds[kind] += 1
-            latent = latent.unsqueeze(0).to(device, torch.float32)
-            embeds = embeds.unsqueeze(0).to(device)
-            if ref is not None:
-                ref = ref.unsqueeze(0).to(device, torch.float32)
-            sigma = sample_sigma(
-                gen, req.sigma_mu, req.sigma_s, req.sigma_cutoff, req.sigma_uniform
-            )
-            if repa is not None:
-                target, grid = repa_targets.get(s.stem, (None, None))
-                repa.prime(
-                    None if target is None else target.to(device),
-                    grid,
-                    tuple(latent.shape[-2:]),
+    with run_scope(sink, final_step=lambda: step):
+        for epoch in range(epochs):
+            order = random.sample(samples, len(samples))
+            if epoch == 0 and req.fit_report:
+                # Only the largest sample moves to step 1, the worst case the fit
+                # report bounds; the rest of epoch 1 stays shuffled.
+                order.remove(largest)
+                order.insert(0, largest)
+            losses, aligns, t_epoch = [], [], time.time()
+            for s in order:
+                if step >= total:
+                    break
+                latent, embeds, alt, ref = get(s)
+                embeds, kind = choose_embeds(
+                    embeds,
+                    alt,
+                    s.n_variants if use_variants else 0,
+                    s.load_variant,
+                    empty,
+                    worst_case=step == 0 and req.fit_report,
+                    **rates,
                 )
-            loss = training_loss(transformer, latent, embeds, sigma, ref=ref)
-            align = repa.loss() if repa is not None else None
-            if align is not None:
-                (loss + req.repa_weight * align).backward()
-                aligns.append(align.item())
-            else:
-                loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(params, req.max_grad_norm)
-            optimizer.step()
-            network.reproject_dc()
-            lr_sched.step()
-            optimizer.zero_grad(set_to_none=True)
-            step += 1
-            value = loss.item()
-            losses.append(value)
-            losses_all.append(
-                {"step": step, "loss": value, "sigma": sigma}
-                | ({"repa": aligns[-1]} if align is not None else {})
-            )
-            if step == 1:
-                if req.fit_report:
-                    fit = report_fit(transformer, attached, s.n_img, embeds.shape[1])
-                t_start = time.time()  # s/step excludes step 1's allocator warm-up
-                t_window, step_window, per_step = t_start, 1, None
-            eta_rate = (
-                (time.time() - t_start) / max(1, step - 1)
-                if per_step is None
-                else per_step
-            )
-            eta = int(eta_rate * (total - step))
-            if step % PROGRESS_EVERY == 0 or step == total:
-                print(
-                    f"  progress {step}/{total} epoch {epoch + 1}/{epochs} "
-                    f"loss {sum(losses) / len(losses):.4f} "
-                    f"eta {eta // 3600}:{eta % 3600 // 60:02d}:{eta % 60:02d}",
-                    flush=True,
+                kind = "variant" if kind.startswith("v") else kind
+                if kind in kinds:
+                    kinds[kind] += 1
+                latent = latent.unsqueeze(0).to(device, torch.float32)
+                embeds = embeds.unsqueeze(0).to(device)
+                if ref is not None:
+                    ref = ref.unsqueeze(0).to(device, torch.float32)
+                sigma = sample_sigma(
+                    gen, req.sigma_mu, req.sigma_s, req.sigma_cutoff, req.sigma_uniform
                 )
-            if step % req.log_every == 0:
-                # s/step over the steps since the last log line, so a recompile
-                # stays in the window it landed in. Step 1 (compile) has none.
-                now = time.time()
-                if step > step_window:
-                    per_step = (now - t_window) / (step - step_window)
-                    t_window, step_window = now, step
-                rate = f" {per_step:.2f}s/step" if per_step is not None else ""
+                if repa is not None:
+                    target, grid = repa_targets.get(s.stem, (None, None))
+                    repa.prime(
+                        None if target is None else target.to(device),
+                        grid,
+                        tuple(latent.shape[-2:]),
+                    )
+                loss = training_loss(transformer, latent, embeds, sigma, ref=ref)
+                align = repa.loss() if repa is not None else None
                 if align is not None:
-                    rate += f" repa {aligns[-1]:.4f}"
-                print(
-                    f"  step {step}/{total} loss {value:.4f} |g| {grad_norm.item():.3f} "
-                    f"sigma {sigma:.3f} lr {lr_sched.get_last_lr()[0]:.2e} "
-                    f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB"
-                    f"{rate}",
-                    flush=True,
+                    (loss + req.repa_weight * align).backward()
+                    aligns.append(align.item())
+                else:
+                    loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(params, req.max_grad_norm)
+                optimizer.step()
+                network.reproject_dc()
+                lr_sched.step()
+                optimizer.zero_grad(set_to_none=True)
+                step += 1
+                value = loss.item()
+                sink.log(
+                    {
+                        "loss": value,
+                        "sigma": sigma,
+                        "grad_norm": grad_norm.item(),
+                        "lr": lr_sched.get_last_lr()[0],
+                    }
+                    | ({"repa": aligns[-1]} if align is not None else {}),
+                    global_step=step,
+                    epoch=epoch + 1,
                 )
-        if not losses:
-            break
-        mean = sum(losses) / len(losses)
-        history.append(
-            {"epoch": epoch + 1, "loss": mean, "seconds": time.time() - t_epoch}
-            | ({"repa": sum(aligns) / len(aligns)} if aligns else {})
-        )
-        repa_mean = f" repa {sum(aligns) / len(aligns):.4f}" if aligns else ""
-        print(
-            f"epoch {epoch + 1}/{epochs}: loss {mean:.4f}{repa_mean} {time.time() - t_epoch:.0f}s "
-            f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB",
-            flush=True,
-        )
-        if (
-            req.save_every_epochs
-            and (epoch + 1) % req.save_every_epochs == 0
-            and epoch + 1 < epochs
-        ):
-            print(f"  saved {save(f'e{epoch + 1}')}", flush=True)
+                losses.append(value)
+                losses_all.append(
+                    {"step": step, "loss": value, "sigma": sigma}
+                    | ({"repa": aligns[-1]} if align is not None else {})
+                )
+                if step == 1:
+                    if req.fit_report:
+                        fit = report_fit(
+                            transformer, attached, s.n_img, embeds.shape[1]
+                        )
+                    t_start = time.time()  # s/step excludes step 1's allocator warm-up
+                    t_window, step_window, per_step = t_start, 1, None
+                eta_rate = (
+                    (time.time() - t_start) / max(1, step - 1)
+                    if per_step is None
+                    else per_step
+                )
+                eta = int(eta_rate * (total - step))
+                if step % PROGRESS_EVERY == 0 or step == total:
+                    print(
+                        f"  progress {step}/{total} epoch {epoch + 1}/{epochs} "
+                        f"loss {sum(losses) / len(losses):.4f} "
+                        f"eta {eta // 3600}:{eta % 3600 // 60:02d}:{eta % 60:02d}",
+                        flush=True,
+                    )
+                if step % req.log_every == 0:
+                    # s/step over the steps since the last log line, so a recompile
+                    # stays in the window it landed in. Step 1 (compile) has none.
+                    now = time.time()
+                    if step > step_window:
+                        per_step = (now - t_window) / (step - step_window)
+                        t_window, step_window = now, step
+                    rate = f" {per_step:.2f}s/step" if per_step is not None else ""
+                    if align is not None:
+                        rate += f" repa {aligns[-1]:.4f}"
+                    print(
+                        f"  step {step}/{total} loss {value:.4f} |g| {grad_norm.item():.3f} "
+                        f"sigma {sigma:.3f} lr {lr_sched.get_last_lr()[0]:.2e} "
+                        f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB"
+                        f"{rate}",
+                        flush=True,
+                    )
+            if not losses:
+                break
+            mean = sum(losses) / len(losses)
+            history.append(
+                {"epoch": epoch + 1, "loss": mean, "seconds": time.time() - t_epoch}
+                | ({"repa": sum(aligns) / len(aligns)} if aligns else {})
+            )
+            repa_mean = f" repa {sum(aligns) / len(aligns):.4f}" if aligns else ""
+            print(
+                f"epoch {epoch + 1}/{epochs}: loss {mean:.4f}{repa_mean} {time.time() - t_epoch:.0f}s "
+                f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB",
+                flush=True,
+            )
+            if (
+                req.save_every_epochs
+                and (epoch + 1) % req.save_every_epochs == 0
+                and epoch + 1 < epochs
+            ):
+                saved = save(f"e{epoch + 1}")
+                sink.ckpt(global_step=step, path=str(saved))
+                print(f"  saved {saved}", flush=True)
 
-    final = save()
-    seconds = time.time() - t_start
-    summary = {
-        "output": str(final),
-        "request": {k: getattr(req, k) for k in req.__dataclass_fields__},
-        "fit": fit,
-        "steps": step,
-        "plain_steps": kinds["plain"],
-        "variant_steps": kinds["variant"],
-        "dropout_steps": kinds["empty"],
-        "minutes": seconds / 60,
-        "s_per_step": seconds / max(1, step - 1),
-        "peak_allocated_gb": torch.cuda.max_memory_allocated() / 1024**3,
-        "peak_reserved_gb": torch.cuda.max_memory_reserved() / 1024**3,
-        "history": history,
-        "losses": losses_all,
-    }
-    report = out_path.with_suffix(".json")
-    report.write_text(json.dumps(summary, indent=2))
-    print(f"wrote {final} and {report} — {seconds / 60:.1f} min", flush=True)
+        final = save()
+        sink.ckpt(global_step=step, path=str(final))
+        seconds = time.time() - t_start
+        summary = {
+            "output": str(final),
+            "request": {k: getattr(req, k) for k in req.__dataclass_fields__},
+            "fit": fit,
+            "steps": step,
+            "plain_steps": kinds["plain"],
+            "variant_steps": kinds["variant"],
+            "dropout_steps": kinds["empty"],
+            "minutes": seconds / 60,
+            "s_per_step": seconds / max(1, step - 1),
+            "peak_allocated_gb": torch.cuda.max_memory_allocated() / 1024**3,
+            "peak_reserved_gb": torch.cuda.max_memory_reserved() / 1024**3,
+            "history": history,
+            "losses": losses_all,
+        }
+        report = out_path.with_suffix(".json")
+        report.write_text(json.dumps(summary, indent=2))
+        print(f"wrote {final} and {report} — {seconds / 60:.1f} min", flush=True)
     if attached is not None:
         attached.detach()
     return final

@@ -87,7 +87,7 @@ back to the on-disk records, so they answer with the daemon down.
 | kind | what it runs | how it finalizes |
 |------|--------------|------------------|
 | `train` (default) | a `train.py` run built from `method` + `preset` + `overrides` + `extra` | `progress.jsonl` stream + exit code |
-| `command` | a plain `python <argv>` task (preprocess, mask, a distill loop) | exit code only |
+| `command` | a plain `python <argv>` task (preprocess, mask, a distill loop) | exit code; a loop that writes `$ANIMA_DAEMON_JOB_DIR/progress.jsonl` (moss train, via `library.training.progress.command_job_path`) is read like a train job's, but a nonzero exit outranks its `run_end` "ok" |
 
 A train job's record keeps `method`/`preset`/`overrides`/`extra` and builds its
 launch argv at spawn, so its `argv` field stays empty; a command job's `argv` is
@@ -167,14 +167,14 @@ paused | done | error | stopped`.
 ### `GET /jobs/{id}` — status
 
 The job record plus two live fields:
-- `latest` — last event from `progress.jsonl` (`null` for command jobs)
+- `latest` — last event from `progress.jsonl` (`null` for a command job that writes none)
 - `stale_for` — seconds since the last progress tick
 
 plus `result_path` / `result_summary` once terminal.
 
 ### `GET /jobs/{id}/progress` — query the structured progress stream
 
-Filtered view of the job's `progress.jsonl` (train jobs only): loss/lr/metric
+Filtered view of the job's `progress.jsonl` (train jobs, and command jobs that write one): loss/lr/metric
 curves (`step`), validation CMMD (`val`), checkpoint saves (`ckpt`), mirrored
 WARNING+ log records (`log`), run outcome (`run_start`/`run_end`). Query params,
 all optional:
@@ -352,7 +352,7 @@ output/daemon/
     job.json             the full Job record (atomic-replaced on each change;
                          carries `returncode` once the job process exits)
     stdout.log           the subprocess's captured stdout+stderr
-    progress.jsonl       structured training progress (train jobs only)
+    progress.jsonl       structured training progress (train jobs; command jobs that write one)
 ```
 
 `job.json` → `state` is the fast, dependency-free check; the GUI reads these

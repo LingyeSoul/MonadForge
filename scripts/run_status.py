@@ -45,8 +45,8 @@ def _find_streams(logs_dir: Path, jobs_dir: Path | None = None) -> list[Path]:
     if logs_dir.is_dir():
         streams += [p for p in logs_dir.rglob(f"*{_SUFFIX}") if p.is_file()]
     if jobs_dir is not None and jobs_dir.is_dir():
-        # Only train jobs get a sink; a command job's progress.jsonl never
-        # materializes, so is_file() is the filter.
+        # Train jobs always get a sink; a command job has one only when its
+        # loop writes it (``command_job_path``), so is_file() is the filter.
         streams += [p for p in jobs_dir.glob(f"*/{_DAEMON_NAME}") if p.is_file()]
 
     def _mtime(p: Path) -> float:

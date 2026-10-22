@@ -15,6 +15,7 @@ import pytest
 from library.training.progress import (
     ProgressSink,
     _find_cmmd,
+    command_job_path,
     _flatten_logs,
     read_status,
 )
@@ -61,6 +62,15 @@ def test_resolve_path_explicit_override(tmp_path):
         progress_jsonl=explicit, output_dir="/ignored", output_name="r"
     )
     assert ProgressSink.resolve_path(args) == explicit
+
+
+def test_command_job_path_prefers_the_daemon_job_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANIMA_DAEMON_JOB_DIR", raising=False)
+    assert command_job_path("logs/run.progress.jsonl") == "logs/run.progress.jsonl"
+    monkeypatch.setenv("ANIMA_DAEMON_JOB_DIR", str(tmp_path))
+    assert command_job_path("logs/run.progress.jsonl") == str(
+        tmp_path / "progress.jsonl"
+    )
 
 
 def test_full_lifecycle_schema(tmp_path):

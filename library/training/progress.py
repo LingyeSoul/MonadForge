@@ -289,6 +289,14 @@ class ProgressSink:
         self._closed = True
 
 
+def command_job_path(fallback: Optional[str]) -> Optional[str]:
+    """The stream path for a loop the daemon runs as a command job: the job
+    dir's ``progress.jsonl`` (``ANIMA_DAEMON_JOB_DIR``, where the daemon and
+    ``make run-status`` read it) under the daemon, else ``fallback``."""
+    job_dir = os.environ.get("ANIMA_DAEMON_JOB_DIR")
+    return os.path.join(job_dir, "progress.jsonl") if job_dir else fallback
+
+
 def _pid_alive(pid: Optional[int]) -> Optional[bool]:
     """``True``/``False`` if the pid is/isn't running, ``None`` if unknowable."""
     if not pid:
