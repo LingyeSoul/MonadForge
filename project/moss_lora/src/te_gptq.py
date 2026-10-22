@@ -26,6 +26,12 @@ category weighs the same in ``H`` (each sample's ``xᵀx`` scaled by the mean ca
 token count over its own category's), and the empty prompt enters once at
 ``--empty_mass`` of one category.
 
+``--grid int8_convrot`` rounds onto ``library/moss/int8.py``'s grid instead: the
+weight and ``H`` are taken into the group-Hadamard basis (``W·R``, ``R·H·R``), the
+per-row int8 scale is fixed at the rotated weight's amax / 127, and GPTQ runs there;
+the layer's own forward (for the next layer's inputs) uses the rotated-back weight.
+Activation rounding (ComfyUI's W8A8) is not modelled.
+
     make daemon-run ARGS="--stall-timeout 1800 project/moss_lora/src/te_gptq.py"
 """
 
@@ -46,6 +52,7 @@ from safetensors import safe_open
 
 from library.env import resolve_under_home
 from library.moss import cache as moss_cache
+from library.moss import int8
 from library.moss.fp8 import FP8, LINEARS, N_LINEARS, quantize_te
 from library.moss.loader import _embed_on_cpu, load_tokenizer
 from library.moss.requests import variant_dir
@@ -53,7 +60,10 @@ from library.moss.scan import TE_SUFFIX, caption_sha
 from vision_te import te_inputs
 
 FP8_MAX = torch.finfo(FP8).max
-OUT = "models/moss_image/fp8_gptq/qwen35_9b_fp8_e4m3fn_gptq.safetensors"
+OUT = {
+    "fp8": "models/moss_image/fp8_gptq/qwen35_9b_fp8_e4m3fn_gptq.safetensors",
+    "int8_convrot": "models/moss_image/int8_convrot_gptq/qwen35_9b_int8_convrot_gptq.safetensors",
+}
 
 
 def calib_captions(per_dir: int, seed: int, exclude: set[str]) -> list[str]:
@@ -156,11 +166,10 @@ def out_err(delta: torch.Tensor, H: torch.Tensor, W: torch.Tensor) -> float:
     return ((delta @ H) * delta).sum().item() / ((W @ H) * W).sum().item()
 
 
-def gptq(
-    W: torch.Tensor, H: torch.Tensor, scale, block: int, damp: float, act_order: bool
-):
-    """``W`` (out, in) fp32 rounded onto the fp8 grid at ``scale``; returns the
-    dequantised weight. Columns no calibration input reached keep plain rounding."""
+def gptq(W: torch.Tensor, H: torch.Tensor, q, block: int, damp: float, act_order: bool):
+    """``W`` (out, in) fp32 rounded column by column with ``q`` (a column → its
+    dequantised rounding); returns the dequantised weight. Columns no calibration
+    input reached keep plain rounding."""
     W, H = W.clone(), H.clone()
     n = W.shape[1]
     dead = torch.diag(H) == 0
@@ -179,9 +188,9 @@ def gptq(
         W1, Hi = W[:, i1:i2].clone(), Hinv[i1:i2, i1:i2]
         Q1, E1 = torch.zeros_like(W1), torch.zeros_like(W1)
         for j in range(i2 - i1):
-            q = qdq(W1[:, j], scale)
-            e = (W1[:, j] - q) / Hi[j, j]
-            Q1[:, j], E1[:, j] = q, e
+            qj = q(W1[:, j])
+            e = (W1[:, j] - qj) / Hi[j, j]
+            Q1[:, j], E1[:, j] = qj, e
             W1[:, j:] -= e[:, None] * Hi[j, j:][None, :]
         Q[:, i1:i2] = Q1
         W[:, i2:] -= E1 @ Hinv[i1:i2, i2:]
@@ -231,11 +240,12 @@ def main() -> None:
     ap.add_argument("--no_act_order", action="store_true")
     ap.add_argument("--manifest", default="", help="te_calib.py manifest (calib split)")
     ap.add_argument("--empty_mass", type=float, default=0.25)
-    ap.add_argument("--out", default=OUT)
+    ap.add_argument("--grid", default="fp8", choices=tuple(OUT))
+    ap.add_argument("--out", default="")
     args = ap.parse_args()
     torch.set_grad_enabled(False)
     device = torch.device("cuda")
-    out = resolve_under_home(args.out)
+    out = resolve_under_home(args.out or OUT[args.grid])
     t0 = time.time()
 
     from transformers import AutoModel
@@ -311,17 +321,43 @@ def main() -> None:
             hk.remove()
 
         for n, m in lins.items():
-            W = m.weight.data.float()
-            scale = W.abs().amax().clamp(min=1e-12) / FP8_MAX
-            Q = gptq(W, H[n], scale, args.block, args.damp, not args.no_act_order)
-            rtn, err = out_err(qdq(W, scale) - W, H[n], W), out_err(Q - W, H[n], W)
+            W, Hn = m.weight.data.float(), H[n]
+            if args.grid == "int8_convrot":
+                W, Hn = int8.rotate(W), int8.rotate(int8.rotate(Hn).T)
+                scale = int8.row_scale(W)
+                Q = gptq(
+                    W,
+                    Hn,
+                    lambda c, s=scale: int8.qdq(c, s),
+                    args.block,
+                    args.damp,
+                    not args.no_act_order,
+                )
+                rtn = out_err(int8.qdq(W, scale) - W, Hn, W)
+                q = (Q / scale[:, None]).round().clamp(-128, 127).to(torch.int8)
+                quantized_w = (q.cpu(), scale[:, None].cpu())
+                restored = int8.rotate(Q)
+            else:
+                scale = W.abs().amax().clamp(min=1e-12) / FP8_MAX
+                Q = gptq(
+                    W,
+                    Hn,
+                    lambda c, s=scale: qdq(c, s),
+                    args.block,
+                    args.damp,
+                    not args.no_act_order,
+                )
+                rtn = out_err(qdq(W, scale) - W, Hn, W)
+                quantized_w = (
+                    (Q / scale).clamp(-FP8_MAX, FP8_MAX).to(FP8).cpu(),
+                    scale.cpu(),
+                )
+                restored = Q
+            err = out_err(Q - W, Hn, W)
             key = f"language_model.layers.{i}.{n}.weight"
             report[key] = {"rtn": rtn, "gptq": err}
-            quantized[key] = (
-                (Q / scale).clamp(-FP8_MAX, FP8_MAX).to(FP8).cpu(),
-                scale.cpu(),
-            )
-            m.weight.data = Q.to(m.weight.dtype)
+            quantized[key] = quantized_w
+            m.weight.data = restored.to(m.weight.dtype)
         del H
         samples = [(layer(h, **kw[types[i]]), kw) for h, kw in samples]
         layer.to("cpu")
@@ -343,7 +379,7 @@ def main() -> None:
 
     out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(src / "config.json", out.parent / "config.json")
-    quantize_te(src, out, quantized=quantized)
+    quantize_te(src, out, quantized=quantized, fmt=args.grid)
     (out.parent / "gptq_report.json").write_text(
         json.dumps(
             {

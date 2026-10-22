@@ -16,6 +16,8 @@ GPTQ-rounded on the same grid and scale (``quantized=``, from
 ``load_fp8_text_encoder`` reads that file back into the HF ``Qwen3_5Model``: the
 quantized linears become :class:`FP8Linear` (fp8 resident, dequantised to bf16 per
 forward, as ComfyUI runs it), so the 32 decoder layers take 6.5 GiB on the card.
+The same writer and loader take the INT8 ConvRot format (``library/moss/int8.py``),
+told apart by each linear's ``comfy_quant``.
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ import torch
 import torch.nn.functional as F
 from safetensors import safe_open
 from safetensors.torch import save_file
+
+from library.moss import int8
 
 FP8 = torch.float8_e4m3fn
 LINEARS = (
@@ -62,22 +66,31 @@ def quantize_weight(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def quantize_te(
-    src_dir: str | Path, out_path: str | Path, log=print, quantized: dict | None = None
+    src_dir: str | Path,
+    out_path: str | Path,
+    log=print,
+    quantized: dict | None = None,
+    fmt: str = "fp8",
 ) -> dict:
     """``text_encoder/`` (sharded HF safetensors) → ``out_path``. Returns counts.
-    ``quantized`` maps a linear's weight key to an already quantized ``(fp8, scale)``
-    (a calibrated rounding) in place of ``quantize_weight``'s."""
+    ``quantized`` maps a linear's weight key to an already quantized ``(q, scale)``
+    (a calibrated rounding) in place of round to nearest. ``fmt``: ``fp8`` or
+    ``int8_convrot``."""
     src_dir, out_path = Path(src_dir), Path(out_path)
     index = json.loads((src_dir / "model.safetensors.index.json").read_text())
     shards = sorted(set(index["weight_map"].values()))
-    conf = torch.tensor(list(json.dumps(QUANT_CONF).encode()), dtype=torch.uint8)
+    quant_conf, rtn = {
+        "fp8": (QUANT_CONF, quantize_weight),
+        "int8_convrot": (int8.QUANT_CONF, int8.quantize_weight),
+    }[fmt]
+    conf = torch.tensor(list(json.dumps(quant_conf).encode()), dtype=torch.uint8)
     out, n_q = {}, 0
     for shard in shards:
         with safe_open(str(src_dir / shard), "pt") as f:
             for key in f.keys():
                 t = f.get_tensor(key)
                 if is_quantized_linear(key):
-                    q, scale = (quantized or {}).get(key) or quantize_weight(t)
+                    q, scale = (quantized or {}).get(key) or rtn(t)
                     prefix = key[: -len("weight")]
                     out[key] = q
                     out[f"{prefix}weight_scale"] = scale
@@ -85,7 +98,7 @@ def quantize_te(
                     n_q += 1
                 else:
                     out[key] = t
-        log(f"[fp8] {shard}: {len(out)} tensors so far, {n_q} quantized")
+        log(f"[{fmt}] {shard}: {len(out)} tensors so far, {n_q} quantized")
     if n_q != N_LINEARS:
         raise ValueError(f"quantized {n_q} linears, expected {N_LINEARS}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,11 +108,11 @@ def quantize_te(
         metadata={
             "format": "pt",
             "source": "OpenMOSS-Team/MOSS-Image-Base text_encoder (Qwen3.5-9B)",
-            "quantization": json.dumps(QUANT_CONF),
+            "quantization": json.dumps(quant_conf),
         },
     )
     size = out_path.stat().st_size / 2**30
-    log(f"[fp8] {n_q} linears quantized -> {out_path} ({size:.2f} GiB)")
+    log(f"[{fmt}] {n_q} linears quantized -> {out_path} ({size:.2f} GiB)")
     return {"quantized": n_q, "tensors": len(out), "gib": round(size, 2)}
 
 
@@ -133,9 +146,13 @@ def fp8_te_path(path: str | Path | None = None, log=print) -> Path:
     return target
 
 
-def load_fp8_text_encoder(path: str | Path | None = None, log=print):
+def load_fp8_text_encoder(
+    path: str | Path | None = None, log=print, int8_act: bool = True
+):
     """The fp8 file (with ``config.json`` beside it) → ``Qwen3_5Model`` on the CPU,
-    eval mode, quantized linears as :class:`FP8Linear`."""
+    eval mode, quantized linears as :class:`FP8Linear`. An INT8 ConvRot file loads
+    as :class:`int8.Int8ConvRotLinear`, W8A8 as ComfyUI runs it unless ``int8_act``
+    is off."""
     from accelerate import init_empty_weights
     from safetensors.torch import load_file
     from transformers import AutoConfig, AutoModel
@@ -151,8 +168,16 @@ def load_fp8_text_encoder(path: str | Path | None = None, log=print):
             key = f"{name}.{cname}.weight" if name else f"{cname}.weight"
             if isinstance(child, torch.nn.Linear) and is_quantized_linear(key):
                 prefix = key[: -len("weight")]
-                state.pop(f"{prefix}comfy_quant", None)
-                q = FP8Linear(state.pop(key), state.pop(f"{prefix}weight_scale"))
+                conf = state.pop(f"{prefix}comfy_quant", None)
+                conf = json.loads(conf.numpy().tobytes()) if conf is not None else {}
+                w, scale = state.pop(key), state.pop(f"{prefix}weight_scale")
+                if conf.get("format") == "int8_tensorwise":
+                    group = (
+                        conf.get("convrot_groupsize", 0) if conf.get("convrot") else 0
+                    )
+                    q = int8.Int8ConvRotLinear(w, scale, group, int8_act)
+                else:
+                    q = FP8Linear(w, scale)
                 setattr(module, cname, q)
                 n += 1
     if n != N_LINEARS:

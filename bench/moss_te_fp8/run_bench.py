@@ -10,8 +10,10 @@ token embedding (CPU, as in ``loader``) and the vision tower are left alone. Arm
   w8_row       fp8 weight, one scale per output channel, dequantised
   w8a8_tensor  per-tensor weight + per-tensor dynamic activation, ``torch._scaled_mm``
   w8a8_row     per-channel weight + per-token dynamic activation, ``torch._scaled_mm``
-  <name>       ``--fp8_file <name>=<path>``: an fp8 file in ``library/moss/fp8.py``'s
-               format (e.g. ``project/moss_lora/src/te_gptq.py``'s), through ``load_fp8_text_encoder``
+  <name>       ``--fp8_file <name>=<path>``: an fp8 or INT8 ConvRot file in
+               ``library/moss/fp8.py``'s format (e.g. ``project/moss_lora/src/te_gptq.py``'s),
+               through ``load_fp8_text_encoder``; an INT8 arm runs W8A8 as ComfyUI does,
+               or weight-only (dequantised, bf16 activations) when named in ``--w8_only``
 
 Text: cached ``*.moss_te.safetensors`` captions sampled across
 ``post_image_dataset/moss/*`` (their ``embeds`` is the on-disk bf16 reference; the
@@ -223,12 +225,13 @@ def run_te(args, run_dir, device):
         torch.cuda.empty_cache()
 
     files = dict(f.split("=", 1) for f in args.fp8_file)
+    w8_only = set(filter(None, args.w8_only.split(",")))
     for arm in [a for a in arms if a in files]:
         from library.moss.fp8 import load_fp8_text_encoder
         from library.moss.loader import offload_by_layer, te_reserve_gb
 
         t0 = time.time()
-        te = load_fp8_text_encoder(files[arm])
+        te = load_fp8_text_encoder(files[arm], int8_act=arm not in w8_only)
         offload_by_layer(te, device, te_reserve_gb(4096))
         speed[arm] = {"load_s": round(time.time() - t0, 1)}
         e, s = encode_all(tok, te, texts, device)
@@ -427,6 +430,9 @@ def main():
     p.add_argument("--image_arms", default=",".join(ARMS))
     p.add_argument(
         "--fp8_file", action="append", default=[], help="name=path, repeatable"
+    )
+    p.add_argument(
+        "--w8_only", default="", help="INT8 file arms run weight-only (comma list)"
     )
     p.add_argument("--per_dir", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
