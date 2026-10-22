@@ -14,7 +14,10 @@ The uncond is the cache's ``uncond.safetensors`` when it has one
 the target (128 px), chroma (mean CbCr distance from grey at 1/8 size) and chroma
 error (mean CbCr distance to the target at 1/8 size).
 Latent names carry a digest of the LoRA (path + mtime), cache, steps, cfg and
-sampler, so a rerun resumes only what matches.
+sampler, so a rerun resumes only what matches. The base arm (multiplier 0, no
+reference) does not depend on the LoRA: its latents live under
+``output/tests/colorize_base/<cache>/``, digested without it, so every checkpoint
+evaluated on one cache shares them.
 
     make daemon-run ARGS="project/moss_lora/src/colorize_eval.py --lora output/ckpt_moss/<name>.safetensors"
 """
@@ -104,8 +107,7 @@ def main() -> None:
     te = {} if args.te_precision == "bf16" else {"te_precision": args.te_precision}
     if uncond_src != args.te_precision:
         te["uncond"] = uncond_src
-    tag = settings_tag(
-        lora=lora_id(lora),
+    settings = dict(
         cache=str(cache),
         steps=args.steps,
         cfg=args.cfg,
@@ -113,8 +115,14 @@ def main() -> None:
         spectrum=spectrum_settings(),
         **te,
     )
+    tag = settings_tag(lora=lora_id(lora), **settings)
+    base_tag = settings_tag(**settings)
+    base_dir = resolve_under_home(f"output/tests/colorize_base/{cache.name}")
+    base_dir.mkdir(parents=True, exist_ok=True)
 
     def lat(item, arm):
+        if arm == "base":
+            return base_dir / f"{item['stem']}_base_s{args.seed}_{base_tag}.safetensors"
         return out / "latents" / f"{item['stem']}_{arm}_s{args.seed}_{tag}.safetensors"
 
     todo = [(it, a) for it in items for a in arms if not lat(it, a).exists()]
@@ -180,6 +188,7 @@ def main() -> None:
             {
                 "args": vars(args),
                 "tag": tag,
+                "base_tag": base_tag,
                 "items": [it["stem"] for it in items],
                 "scores": scores,
             },

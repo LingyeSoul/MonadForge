@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The colorize scaling run as one daemon job: cache → train → eval per epoch save.
+"""The colorize scaling run as one daemon job: cache → train → eval of the final LoRA.
 
 Each stage is a subprocess and the run stops at the first that fails, so a broken
 cache never trains. The cache links ``colorize_te`` and ``colorize_manga`` (the
@@ -58,10 +58,7 @@ def main() -> None:
         blocks_to_swap=28,
     )
     run(["scripts/moss/train.py", *train.to_argv()])
-    epoch_dir = f"output/ckpt_moss/{args.name}"
-    loras = [f"{epoch_dir}/{args.name}_e{e}.safetensors" for e in range(1, args.epochs)]
-    for lora in [*loras, out]:
-        run([f"{SRC}/colorize_eval.py", "--lora", lora, "--cache", cache])
+    run([f"{SRC}/colorize_eval.py", "--lora", out, "--cache", cache])
 
 
 if __name__ == "__main__":
