@@ -1,7 +1,30 @@
 # Colorize with an OCR caption
 
 Status: arm C trained and read 2026-10-21. Sub-line of the i2i / colorize probe
-(`docs/proposal/moss_i2i.md`). Code: `src/colorize_ocr.py` (cache), `src/colorize_eval.py`.
+(`docs/proposal/moss_i2i.md`). Code: `src/colorize_cache.py`, `src/colorize_eval.py`,
+`src/colorize_run.py` (both chained).
+
+## Current recipe
+
+`moss_colorize_3k_ocr` (2026-10-22) is the kept run: 3.3k pairs (half manga), fp8 TE,
+lr 5e-5, 3 epochs, page alone on 30 % of steps, of the rest the layout caption 70 %.
+Its checkpoint, eval (`output/tests/colorize_moss_colorize_3k_ocr`) and cache stay;
+every earlier colorize checkpoint, eval arm and cache (`colorize_te`, `_ref`,
+`_manga`, `_ocr`, `moss_colorize_3k` and its fp8 / GPTQ holdouts) was deleted, so the
+runs below are record only.
+
+A cache from `colorize_cache.py` holds two captions after the page, plus the page
+alone, and the eval renders one arm per kind:
+
+| TE key | Caption | Eval arm |
+|---|---|---|
+| `embeds` | OCR: layout JSON, the colour caption + one text item per OCR line | `lora_ocr` (and `base`, no LoRA) |
+| `embeds_v{1..3}` | sparse: tag-dropped colour caption, no OCR | `lora_sparse` (`v1`) |
+| `embeds_plain` | the page alone | `lora_page` |
+
+`moss_colorize_3k_ocr`'s own cache predates this: its `embeds_v*` carry the text +
+bbox OCR clause after the sparse caption. A `colorize_run.py` run draws its own pairs
+and holdout, so its numbers do not line up page for page with that run.
 
 ## Why
 

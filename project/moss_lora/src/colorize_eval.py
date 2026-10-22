@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
-"""Held-out eval for the TE-only colorize LoRA (``colorize_cache.py``'s holdout).
+"""Held-out eval for a colorize LoRA on a ``colorize_cache.py`` cache.
 
-Per held-out page, same seed: base with page + colour caption (the zero-shot
-floor), the LoRA with page + colour caption, the LoRA with the page alone. Grid
-columns: B&W page | colour target | base | lora+caption | lora page-only; ER-SDE
-with Spectrum, blocks compiled after the LoRA is attached. A holdout record with a
-``ref`` (``--ref_scale`` cache) feeds that reference latent to the LoRA arms. When
-every holdout TE file carries ``embeds_v1`` (``colorize_cache.py --variants``), a
-``lora_sparse`` arm adds the LoRA with page + that tag-dropped colour caption.
-The uncond is the cache's ``uncond.safetensors`` when it has one
-(``colorize_te_fp8.py`` writes it with the cache's own TE), else the empty prompt at
-``--te_precision``; ``--uncond bf16`` forces the bf16 empty prompt. ``index.json`` scores each arm: luma r against
-the target (128 px), chroma (mean CbCr distance from grey at 1/8 size) and chroma
-error (mean CbCr distance to the target at 1/8 size).
-Latent names carry a digest of the LoRA (path + mtime), cache, steps, cfg and
-sampler, so a rerun resumes only what matches. The base arm (multiplier 0, no
-reference) does not depend on the LoRA: its latents live under
-``output/tests/colorize_base/<cache>/``, digested without it, so every checkpoint
-evaluated on one cache shares them.
+Per held-out page, same seed, one arm per caption the LoRA trained on:
 
-    make daemon-run ARGS="project/moss_lora/src/colorize_eval.py --lora output/ckpt_moss/<name>.safetensors"
+    base         no LoRA, no reference, the OCR caption (the zero-shot floor)
+    lora_ocr     ``embeds``: the layout JSON with the page's OCR lines
+    lora_sparse  ``embeds_v1``: a tag-dropped colour caption, no OCR
+    lora_page    ``embeds_plain``: the page alone
+
+The LoRA arms get the page's reference latent. Grid columns: B&W page | colour
+target | the arms; ER-SDE with Spectrum, blocks compiled after the LoRA is
+attached, the cache's ``uncond.safetensors`` as the empty prompt. ``index.json``
+scores each arm: luma r against the target (128 px), chroma (mean CbCr distance
+from grey at 1/8 size) and chroma error (mean CbCr distance to the target at 1/8
+size). Latent names carry a digest of the LoRA (path + mtime), cache, steps, cfg
+and sampler, so a rerun resumes only what matches. The base arm does not depend on
+the LoRA: its latents live under ``output/tests/colorize_base/<cache>/``, shared by
+every LoRA evaluated on that cache.
+
+    make daemon-run ARGS="project/moss_lora/src/colorize_eval.py --lora output/ckpt_moss/<name>.safetensors --cache post_image_dataset/moss/<name>"
 """
 
 import argparse
@@ -28,7 +27,6 @@ import json
 import numpy as np
 import torch
 from PIL import Image
-from safetensors import safe_open
 from safetensors.torch import load_file
 
 from colorize_wild import chroma, luma_r
@@ -41,7 +39,6 @@ from _render import (
     save_latent,
     settings_tag,
     spectrum_settings,
-    uncond_embeds,
 )
 from library.env import resolve_under_home
 from library.moss.cache import read_te
@@ -51,7 +48,8 @@ from library.moss.model import snapped_sigmas
 # name: (TE key, LoRA multiplier)
 ARMS = {
     "base": ("embeds", 0.0),
-    "lora_cap": ("embeds", 1.0),
+    "lora_ocr": ("embeds", 1.0),
+    "lora_sparse": ("embeds_v1", 1.0),
     "lora_page": ("embeds_plain", 1.0),
 }
 
@@ -70,13 +68,11 @@ def chroma_error(im: Image.Image, target: Image.Image) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--lora", required=True)
-    ap.add_argument("--cache", default="post_image_dataset/moss/colorize_te")
+    ap.add_argument("--cache", required=True)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--steps", type=int, default=30)
     ap.add_argument("--cfg", type=float, default=3.0)
     ap.add_argument("--out", default="")
-    ap.add_argument("--te_precision", default="bf16", choices=("bf16", "fp8"))
-    ap.add_argument("--uncond", default="auto", choices=("auto", "bf16"))
     args = ap.parse_args()
     lora = resolve_under_home(args.lora)
     cache = resolve_under_home(args.cache)
@@ -84,36 +80,16 @@ def main() -> None:
     (out / "latents").mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda")
     items = json.loads((cache / "holdout.json").read_text())
-    arms = dict(ARMS)
-
-    def te_keys(path):
-        with safe_open(path, "pt") as f:
-            return set(f.keys())
-
-    if all("embeds_v1" in te_keys(it["te"]) for it in items):
-        arms["lora_sparse"] = ("embeds_v1", 1.0)
-
-    own = cache / "uncond.safetensors"
-    if args.uncond == "auto" and own.is_file():
-        uncond, uncond_mask = pad_embeds([load_file(str(own))["embeds"]], device)
-        uncond_src = "cache"
-    else:
-        precision = "bf16" if args.uncond == "bf16" else args.te_precision
-        _, uncond, uncond_mask = uncond_embeds(device, precision=precision)
-        uncond_src = precision
-    print(f"[uncond] {uncond_src}", flush=True)
+    uncond, uncond_mask = pad_embeds(
+        [load_file(str(cache / "uncond.safetensors"))["embeds"]], device
+    )
     sigmas = snapped_sigmas(args.steps)
-    # bf16 leaves the tag as it was, so earlier latents still resume.
-    te = {} if args.te_precision == "bf16" else {"te_precision": args.te_precision}
-    if uncond_src != args.te_precision:
-        te["uncond"] = uncond_src
     settings = dict(
         cache=str(cache),
         steps=args.steps,
         cfg=args.cfg,
         sampler="er_sde",
         spectrum=spectrum_settings(),
-        **te,
     )
     tag = settings_tag(lora=lora_id(lora), **settings)
     base_tag = settings_tag(**settings)
@@ -125,16 +101,13 @@ def main() -> None:
             return base_dir / f"{item['stem']}_base_s{args.seed}_{base_tag}.safetensors"
         return out / "latents" / f"{item['stem']}_{arm}_s{args.seed}_{tag}.safetensors"
 
-    todo = [(it, a) for it in items for a in arms if not lat(it, a).exists()]
+    todo = [(it, a) for it in items for a in ARMS if not lat(it, a).exists()]
     if todo:
         tr, net = load_dit(lora, device)
         for it, arm in todo:
-            key, mult = arms[arm]
+            key, mult = ARMS[arm]
             net.set_multiplier(mult)
-            # The reference rides with the LoRA arms only: base never saw one.
-            ref = None
-            if "ref" in it and mult:
-                ref = load_file(it["ref"])["latent"][None]
+            ref = load_file(it["ref"])["latent"][None] if mult else None
             z = render(
                 tr,
                 read_te(it["te"], key),
@@ -160,7 +133,7 @@ def main() -> None:
             ("page", Image.open(it["condition"]).convert("RGB")),
             ("target", target),
         ]
-        for arm in arms:
+        for arm in ARMS:
             im = decoded(lat(it, arm), vae, device)
             cells.append((arm, im))
             scores.setdefault(arm, {})[it["stem"]] = {

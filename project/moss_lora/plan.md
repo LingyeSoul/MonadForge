@@ -12,14 +12,15 @@ Spectrum and a light LoRA onto the 5070 Ti and grew from there. Code map:
 |---|---|---|
 | Relational REPA | parked: seed variance swamps any effect | `repa.md` |
 | Anima negatives revisit (sinks, 2:4 sparsity) | Tier 1 measured, Tier 2 unmeasured | `docs/proposal/moss_anima_negatives_revisit.md` |
-| i2i / colorize (VAE reference on RoPE `r`) | **active** | `docs/proposal/moss_i2i.md`, `src/colorize_{cache,eval,wild,scale}.py` |
-| Colorize OCR caption (layout + bbox, fp8 TE) | **read**: OCR-read lines letter right; colour even by eye, 64 px luma PSNR −1.7 dB on illus. (uneven, cause open) | `colorize_ocr.md`, `src/colorize_ocr.py` |
+| i2i / colorize (VAE reference on RoPE `r`) | **active**: `moss_colorize_3k_ocr` is the kept run; `colorize_run.py` reproduces its recipe | `docs/proposal/moss_i2i.md`, `colorize_ocr.md`, `src/colorize_{cache,eval,run,wild}.py` |
+| Colorize OCR caption (layout + bbox, fp8 TE) | **read**: OCR-read lines letter right; colour even by eye, 64 px luma PSNR −1.7 dB on illus. (uneven, cause open) | `colorize_ocr.md`, `src/colorize_cache.py` |
 | Correction training (arXiv 2610.14136) as a dual LoRA | **active**: joint D + C holds to K 8; CFG 1.5 + K 2 ≈ CFG 3 at 2× the forwards (one seed) | `correction.md`, `src/correction*.py` |
 | Technical-report digest | reference | `report_notes.md` |
 
-`src/`: the colorize probes, `lora_ab.py` (LoRA A/B grids), `vision_te.py` (TE call with
-an image in the user turn), `_render.py` (their shared render loop), `colorize_te_fp8.py`
-(colorize holdout through an fp8 TE) and `te_gptq.py` (GPTQ-rounded fp8 TE, written in
+`src/`: the colorize pipeline (`colorize_cache.py` → `scripts/moss/train.py` →
+`colorize_eval.py`, chained by `colorize_run.py`; `colorize_wild.py` for real pages),
+`lora_ab.py` (LoRA A/B grids), `vision_te.py` (TE call with
+an image in the user turn), `_render.py` (their shared render loop) and `te_gptq.py` (GPTQ-rounded fp8 TE, written in
 `library/moss/fp8.py`'s format; bench `bench/moss_te_fp8`), `correction.py` /
 `correction_train.py` / `correction_ab.py` (corrector LoRA, its trainer over
 `library/moss/train.py`, CFG × K grids). `space/`: the two

@@ -13,7 +13,7 @@ weight error.
 Calibration is MOSS's own TE traffic, kept apart from what the evals read:
 cached captions from ``post_image_dataset/moss/*`` (``--seed``, minus the captions
 ``bench/moss_te_fp8/run_bench.py`` samples at its default seed) and colorize
-training pages from ``--pages_cache`` (page through the vision tower + colour
+training pages from ``--pages_cache`` (page through the vision tower + its OCR
 caption, never a holdout page), plus the empty prompt — the uncond of every
 sampling step — repeated ``--empty_repeat`` times so its few rows carry weight in
 ``H``. Layers run in order on the calibration hidden states, each quantized layer
@@ -232,7 +232,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--per_dir", type=int, default=12, help="captions per cache dir")
     ap.add_argument("--pages", type=int, default=12)
-    ap.add_argument("--pages_cache", default="post_image_dataset/moss/moss_colorize_3k")
+    ap.add_argument("--pages_cache", default="post_image_dataset/moss/moss_colorize_3k_ocr")
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--empty_repeat", type=int, default=32)
     ap.add_argument("--block", type=int, default=128)

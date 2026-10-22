@@ -19,7 +19,7 @@ tokens rather than entries:
                  (translated tag bags, CJK names in English bags, artist commentary,
                  quoted sign text, tag definitions), and handwritten prompts on a
                  quarter of the language's budget
-  page_colorize  B&W page + colour caption, ``moss_colorize_3k`` training pairs,
+  page_colorize  B&W page + OCR caption, ``moss_colorize_3k_ocr`` training pairs,
                  half manga
   page_only      a page with no text: Manga109-s pages with lettering
                  (``ANIMA_MANGA109S_ROOT``) and the colorize cache's manga pages
@@ -64,7 +64,7 @@ from vision_te import te_inputs
 OUT = "post_image_dataset/moss/_te_calib_v2/manifest.json"
 MOSS = "post_image_dataset/moss"
 RESIZED = "post_image_dataset/resized"
-COLORIZE = "post_image_dataset/moss/moss_colorize_3k"
+COLORIZE = "post_image_dataset/moss/moss_colorize_3k_ocr"
 CJK = "post_image_dataset/cjk_distill"
 CATEGORIES = (
     "tags",
@@ -424,7 +424,7 @@ def cjk_rows(lang: str) -> dict[str, list]:
 
 
 def colorize_pairs() -> list[dict]:
-    """``moss_colorize_3k`` training TE files (``holdout/`` is a subdirectory)."""
+    """``moss_colorize_3k_ocr`` training TE files (``holdout/`` is a subdirectory)."""
     out = []
     for f in sorted(resolve_under_home(COLORIZE).glob(f"*{TE_SUFFIX}")):
         with safe_open(str(f), "pt") as s:

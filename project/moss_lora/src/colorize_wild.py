@@ -3,7 +3,7 @@
 
 The training conditions are synthetic (EasyControl's Mangafy pass over colour
 originals); this checks the ref LoRAs on pages that never went through it. Per page,
-the vision-tower TE of the page alone (``embeds_plain``, as ``colorize_cache.py``
+the fp8 vision-tower TE of the page alone (``embeds_plain``, as ``colorize_cache.py``
 writes it) and a VAE reference at 1/``ref_scale`` of the target's sides. One row per
 page: the page, then one column per LoRA; ER-SDE + Spectrum, same seed.
 
@@ -95,7 +95,7 @@ def main() -> None:
     todo = [pg for pg in pages if not te_path(pg).exists()]
     if todo:
         tok = load_tokenizer("")
-        te = load_te(tok, device)
+        te = load_te(tok, device, precision="fp8")
         for pg in todo:
             stem, page, w, h, _, _, _ = pg
             plain, n_img = encode(tok, te, page, "", w * h, device)
@@ -123,7 +123,7 @@ def main() -> None:
         del vae
         empty_cache()
 
-    _, uncond, uncond_mask = uncond_embeds(device)
+    _, uncond, uncond_mask = uncond_embeds(device, precision="fp8")
     sigmas = snapped_sigmas(args.steps)
     spectrum = spectrum_settings()
 
