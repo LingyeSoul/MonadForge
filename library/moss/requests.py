@@ -39,6 +39,16 @@ DEFAULT_STEPS = 50
 DEFAULT_CFG = 3.0
 DEFAULT_UNCOND_SKIP = (22,)
 DEFAULT_SHIFT = 5.0
+# Qwen3.5-9B weights for the text pass (``library/moss/loader.py::TE_PRECISIONS``):
+# the INT8 W8A8 catalog file, ~1.7x fp8's encode speed at fp8's error.
+DEFAULT_TEXT_ENCODER = "int8"
+TEXT_ENCODERS = ("int8", "fp8", "bf16")
+_TE_HELP = (
+    "int8 (the default: decoder linears INT8 W8A8, ~9.2 GB, fetched on first use), fp8 "
+    "(float8_e4m3fn weight-only, ~9.2 GB, fetched on first use) or bf16 (the reference "
+    "shards). Embedding rel. L2 vs bf16 ~0.10 for both quantized files on the "
+    "calibration eval split; int8 encodes ~1.7x faster than fp8"
+)
 
 
 def default_model_dir() -> Path:
@@ -101,11 +111,9 @@ class CacheRequest(Request):
         4096, "TE truncation length (the model's own limit)", advanced=True
     )
     text_encoder: str = _f(
-        "bf16",
-        "Qwen3.5-9B weights for the text pass: bf16 (the reference) or fp8 (decoder linears in "
-        "float8_e4m3fn, ~9.2 GB, fetched on first use; embedding rel. L2 ~0.05 vs "
-        "bf16, bench/moss_te_fp8). Switching re-encodes the TE cache",
-        choices=("bf16", "fp8"),
+        DEFAULT_TEXT_ENCODER,
+        f"Qwen3.5-9B weights for the text pass: {_TE_HELP}. Switching re-encodes the TE cache",
+        choices=TEXT_ENCODERS,
         advanced=True,
     )
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
@@ -227,11 +235,9 @@ class GenerateRequest(Request):
         0.10, "attenuate the first tau of the steps (at least one)", advanced=True
     )
     text_encoder: str = _f(
-        "bf16",
-        "Qwen3.5-9B weights for the prompts: bf16 (the reference) or fp8 (decoder "
-        "linears in float8_e4m3fn, ~9.2 GB, fetched on first use; embedding rel. L2 "
-        "~0.05 vs bf16, bench/moss_te_fp8)",
-        choices=("bf16", "fp8"),
+        DEFAULT_TEXT_ENCODER,
+        f"Qwen3.5-9B weights for the prompts: {_TE_HELP}",
+        choices=TEXT_ENCODERS,
         advanced=True,
     )
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)

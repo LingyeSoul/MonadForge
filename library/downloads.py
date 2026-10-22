@@ -88,12 +88,16 @@ MOSS_REPOS = {
 }
 _MOSS_DIT_SHARDS = 3
 _MOSS_TE_SHARDS = 4
-# The same TE as one fp8 file (``library/moss/fp8.py``, ComfyUI's mixed-precision
-# format) plus its ``config.json``; ``text_encoder=fp8`` loads it instead of the
-# bf16 shards. Tokenizer still comes from Base.
+# The same TE as one quantized file (``library/moss/fp8.py`` / ``int8.py``, ComfyUI's
+# mixed-precision format) plus its ``config.json``; ``text_encoder=int8`` (the
+# default) / ``fp8`` loads it instead of the bf16 shards. Tokenizer still comes
+# from Base.
 MOSS_TE_FP8_REPO = "sorryhyun/MOSS-Image-Qwen3.5-9B-fp8"
 MOSS_TE_FP8_FILE = "qwen35_9b_fp8_e4m3fn.safetensors"
 MOSS_TE_FP8_DIR = "fp8"
+MOSS_TE_INT8_REPO = "sorryhyun/MOSS-Image-Qwen3.5-9B-int8"
+MOSS_TE_INT8_FILE = "qwen35_9b_int8_convrot.safetensors"
+MOSS_TE_INT8_DIR = "int8"
 
 
 def default_pe_core_path() -> Path:
@@ -110,6 +114,11 @@ def default_moss_dir() -> Path:
 def default_moss_te_fp8_dir() -> Path:
     """``<models_dir>/moss_image/fp8`` — ``config.json`` + the fp8 TE file."""
     return default_moss_dir() / MOSS_TE_FP8_DIR
+
+
+def default_moss_te_int8_dir() -> Path:
+    """``<models_dir>/moss_image/int8`` — ``config.json`` + the INT8 TE file."""
+    return default_moss_dir() / MOSS_TE_INT8_DIR
 
 
 def default_vocab_pack_dir() -> Path:
@@ -159,6 +168,13 @@ TRAINER_PACKS: tuple[Pack, ...] = (
         "MOSS-Image SFT",
         "MOSS-Image-SFT's DiT alone (~10 GB); it reuses the Base pack's text "
         "encoder, VAE and tokenizer.",
+    ),
+    Pack(
+        "moss-te-int8",
+        "MOSS-Image INT8 text encoder",
+        "The Qwen3.5-9B text encoder in INT8 W8A8 (~9.2 GB instead of 16.8 GB), "
+        "the default text_encoder=int8: all 32 layers fit on a 16 GB card. The "
+        "tokenizer still comes from the Base pack.",
     ),
     Pack(
         "moss-te-fp8",
@@ -234,26 +250,74 @@ def _moss_rows() -> tuple[Asset, ...]:
     root = ("model_index.json", "pipeline_moss_image.py")
     used = "library/moss (scripts/moss/*)"
     return (
-        _moss_row("base", "", "MOSS-Image Base — index + reference pipeline", root,
-                  used, optional=("LICENSE", "README.md"),
-                  notes="pipeline_moss_image.py is the reference library/moss/model.py "
-                  "is vendored from; nothing loads it at run time."),
-        _moss_row("base", "transformer", "MOSS-Image Base DiT (5B)", dit,
-                  f"{used} · the LoRA training substrate", notes="~10.2 GB bf16."),
-        _moss_row("base", "text_encoder", "Qwen3.5-9B text encoder (MOSS)", (
-            "config.json", "model.safetensors.index.json",
-            *(f"model-{i:05d}-of-{_MOSS_TE_SHARDS:05d}.safetensors"
-              for i in range(1, _MOSS_TE_SHARDS + 1)),
-        ), f"{used} · TE caching and prompt encoding (Base and SFT)",
-                  notes="~16.8 GB bf16, layer-offloaded onto the card."),
-        _moss_row("base", "vae", "FLUX.2 VAE (MOSS)",
-                  ("config.json", "diffusion_pytorch_model.safetensors"),
-                  f"{used} · latent caching and decoding (Base and SFT)"),
-        _moss_row("base", "tokenizer", "Qwen3.5 tokenizer (MOSS)",
-                  ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja"),
-                  f"{used} · TE caching and prompt encoding"),
-        _moss_row("base", "scheduler", "MOSS-Image scheduler config",
-                  ("scheduler_config.json",), used),
+        _moss_row(
+            "base",
+            "",
+            "MOSS-Image Base — index + reference pipeline",
+            root,
+            used,
+            optional=("LICENSE", "README.md"),
+            notes="pipeline_moss_image.py is the reference library/moss/model.py "
+            "is vendored from; nothing loads it at run time.",
+        ),
+        _moss_row(
+            "base",
+            "transformer",
+            "MOSS-Image Base DiT (5B)",
+            dit,
+            f"{used} · the LoRA training substrate",
+            notes="~10.2 GB bf16.",
+        ),
+        _moss_row(
+            "base",
+            "text_encoder",
+            "Qwen3.5-9B text encoder (MOSS)",
+            (
+                "config.json",
+                "model.safetensors.index.json",
+                *(
+                    f"model-{i:05d}-of-{_MOSS_TE_SHARDS:05d}.safetensors"
+                    for i in range(1, _MOSS_TE_SHARDS + 1)
+                ),
+            ),
+            f"{used} · TE caching and prompt encoding (Base and SFT)",
+            notes="~16.8 GB bf16, layer-offloaded onto the card.",
+        ),
+        _moss_row(
+            "base",
+            "vae",
+            "FLUX.2 VAE (MOSS)",
+            ("config.json", "diffusion_pytorch_model.safetensors"),
+            f"{used} · latent caching and decoding (Base and SFT)",
+        ),
+        _moss_row(
+            "base",
+            "tokenizer",
+            "Qwen3.5 tokenizer (MOSS)",
+            ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja"),
+            f"{used} · TE caching and prompt encoding",
+        ),
+        _moss_row(
+            "base",
+            "scheduler",
+            "MOSS-Image scheduler config",
+            ("scheduler_config.json",),
+            used,
+        ),
+        Asset(
+            id="moss_te_int8",
+            pack="moss-te-int8",
+            title="Qwen3.5-9B text encoder, INT8 W8A8 (MOSS)",
+            repo=MOSS_TE_INT8_REPO,
+            files=("config.json", MOSS_TE_INT8_FILE),
+            optional=("README.md",),
+            dest=default_moss_te_int8_dir(),
+            used_by=f"{used} · text_encoder=int8, the default (TE caching and prompt encoding)",
+            notes="~9.2 GB. Decoder linears INT8 ConvRot (Hadamard-rotated, per-row "
+            "scale; SmoothQuant 0.5 + activation-aware GPTQ), int8 activations; "
+            "embedding rel. L2 ~0.10 vs bf16 on the calibration eval split, as fp8 "
+            "(project/moss_lora/src/te_calib_eval.py), ~1.7x fp8's encode speed.",
+        ),
         Asset(
             id="moss_te_fp8",
             pack="moss-te-fp8",
@@ -268,11 +332,22 @@ def _moss_rows() -> tuple[Asset, ...]:
             "(bench/moss_te_fp8). "
             "Also loads in ComfyUI's MOSS-Image Load Qwen3.5.",
         ),
-        _moss_row("sft", "", "MOSS-Image SFT — index + reference pipeline", root,
-                  used, optional=("LICENSE", "README.md")),
-        _moss_row("sft", "transformer", "MOSS-Image SFT DiT (5B)", dit,
-                  f"{used} · --model sft",
-                  notes="~10.2 GB bf16. TE / VAE / tokenizer come from the Base pack."),
+        _moss_row(
+            "sft",
+            "",
+            "MOSS-Image SFT — index + reference pipeline",
+            root,
+            used,
+            optional=("LICENSE", "README.md"),
+        ),
+        _moss_row(
+            "sft",
+            "transformer",
+            "MOSS-Image SFT DiT (5B)",
+            dit,
+            f"{used} · --model sft",
+            notes="~10.2 GB bf16. TE / VAE / tokenizer come from the Base pack.",
+        ),
     )
 
 

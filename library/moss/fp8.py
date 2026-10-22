@@ -133,15 +133,23 @@ class FP8Linear(torch.nn.Module):
         return F.linear(x, w)
 
 
-def fp8_te_path(path: str | Path | None = None, log=print) -> Path:
-    """The fp8 TE file: ``path``, else the catalog row's (``moss_te_fp8``),
-    fetched on first use."""
+def fp8_te_path(
+    path: str | Path | None = None, log=print, precision: str = "fp8"
+) -> Path:
+    """The quantized TE file: ``path``, else the catalog row of ``precision``
+    (``moss_te_fp8`` / ``moss_te_int8``), fetched on first use."""
     if path:
         return Path(path)
     from library import downloads
 
-    asset = downloads.by_id()["moss_te_fp8"]
-    target = asset.dest / downloads.MOSS_TE_FP8_FILE
+    asset = downloads.by_id()[f"moss_te_{precision}"]
+    target = (
+        asset.dest
+        / {
+            "fp8": downloads.MOSS_TE_FP8_FILE,
+            "int8": downloads.MOSS_TE_INT8_FILE,
+        }[precision]
+    )
     if not target.is_file() or not (asset.dest / "config.json").is_file():
         log(f"[te] fetching {asset.repo} -> {asset.dest}")
         downloads.fetch(asset, log=log)
@@ -149,17 +157,20 @@ def fp8_te_path(path: str | Path | None = None, log=print) -> Path:
 
 
 def load_fp8_text_encoder(
-    path: str | Path | None = None, log=print, int8_act: bool = True
+    path: str | Path | None = None,
+    log=print,
+    int8_act: bool = True,
+    precision: str = "fp8",
 ):
     """The fp8 file (with ``config.json`` beside it) → ``Qwen3_5Model`` on the CPU,
     eval mode, quantized linears as :class:`FP8Linear`. An INT8 ConvRot file loads
     as :class:`int8.Int8ConvRotLinear`: W8A8 with ``int8_act`` (the default),
-    weight-only without."""
+    weight-only without. Without ``path``, ``precision`` picks the catalog file."""
     from accelerate import init_empty_weights
     from safetensors.torch import load_file
     from transformers import AutoConfig, AutoModel
 
-    path = fp8_te_path(path, log)
+    path = fp8_te_path(path, log, precision)
     config = AutoConfig.from_pretrained(path.parent)
     with init_empty_weights(include_buffers=False):
         te = AutoModel.from_config(config, dtype=torch.bfloat16)

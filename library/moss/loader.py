@@ -10,8 +10,9 @@ lengths (< ~1k tokens) all 32 decoder layers (12.9 GB) fit on the card. Layers
 that still do not fit are paged in whole, one at a time, from pinned memory; the
 encode is PCIe-bound while any are (7 paged ran at ~20 % GPU, 2.3 s per caption).
 Leaf-level offload hooks break on Qwen3.5's gated-DeltaNet layers, which read
-``conv1d.weight`` functionally instead of calling the module. The fp8 TE
-(``precision="fp8"``, ``library/moss/fp8.py``) puts the decoder layers at 6.5 GiB,
+``conv1d.weight`` functionally instead of calling the module. The quantized TEs
+(``precision="int8"``, the default request setting, W8A8 ``library/moss/int8.py``;
+``precision="fp8"``, ``library/moss/fp8.py``) put the decoder layers at 6.5 GiB,
 so none page at any prompt length.
 """
 
@@ -27,7 +28,7 @@ from library.runtime.device import clean_memory as empty_cache
 from library.runtime.device import free_vram_gb
 
 MAX_SEQUENCE_LENGTH = 4096
-TE_PRECISIONS = ("bf16", "fp8")
+TE_PRECISIONS = ("bf16", "fp8", "int8")
 
 
 def te_reserve_gb(max_tokens: int) -> float:
@@ -102,21 +103,25 @@ def load_text_encoder(
     """``(tokenizer, text_encoder)`` on ``device``, layers that do not fit paged in
     per forward. ``max_tokens`` is the longest prompt the caller will encode (it
     sizes the activation reserve). TE and tokenizer are byte-identical between
-    Base and SFT; Base's are used. ``precision="fp8"`` loads the catalog's fp8
-    file (``library/moss/fp8.py``, fetched on first use) instead of the bf16
-    shards; the tokenizer still comes from Base."""
+    Base and SFT; Base's are used. ``precision="int8"`` / ``"fp8"`` loads the
+    catalog's quantized file (``library/moss/fp8.py``, fetched on first use)
+    instead of the bf16 shards; the tokenizer still comes from Base."""
     from transformers import AutoModel
 
     if precision not in TE_PRECISIONS:
-        raise ValueError(f"text encoder precision {precision!r}, not one of {TE_PRECISIONS}")
+        raise ValueError(
+            f"text encoder precision {precision!r}, not one of {TE_PRECISIONS}"
+        )
     tok = tok or load_tokenizer(model_dir)
-    if precision == "fp8":
+    if precision != "bf16":
         from library.moss.fp8 import load_fp8_text_encoder
 
-        te = load_fp8_text_encoder(log=log)
+        te = load_fp8_text_encoder(log=log, precision=precision)
     else:
         root = variant_dir(model_dir, "base")
-        te = AutoModel.from_pretrained(root / "text_encoder", dtype=torch.bfloat16).eval()
+        te = AutoModel.from_pretrained(
+            root / "text_encoder", dtype=torch.bfloat16
+        ).eval()
     reserve = te_reserve_gb(max_tokens)
     paged = offload_by_layer(te, torch.device(device), reserve)
     if log:

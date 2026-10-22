@@ -1,5 +1,5 @@
-"""MOSS fp8 text encoder: the export's key set and scale, the dequantising Linear,
-the file round trip, and the TE cache's encoder stamp."""
+"""MOSS quantized text encoders: the export's key set and scale, the dequantising
+Linear, the file round trip, the TE cache's encoder stamp, the int8 default."""
 
 from __future__ import annotations
 
@@ -102,7 +102,9 @@ def test_quantize_te_writes_comfy_mixed_precision(tmp_path, monkeypatch):
     conf = json.loads(state[f"{prefix}comfy_quant"].numpy().tobytes())
     assert conf == {"format": "float8_e4m3fn", "full_precision_matrix_mult": True}
     # Everything else keeps its checkpoint dtype and value.
-    a_log = shards["model-00001-of-00002.safetensors"]["language_model.layers.0.linear_attn.A_log"]
+    a_log = shards["model-00001-of-00002.safetensors"][
+        "language_model.layers.0.linear_attn.A_log"
+    ]
     assert torch.equal(state["language_model.layers.0.linear_attn.A_log"], a_log)
     assert state["language_model.embed_tokens.weight"].dtype == torch.bfloat16
     with safe_open(str(out), "pt") as f:
@@ -145,7 +147,32 @@ def test_encoder_stamp_reencodes_on_a_switch(tmp_path, monkeypatch):
 
 
 def test_text_encoder_field_round_trips():
+    from library.moss.loader import TE_PRECISIONS
+
     for cls in (CacheRequest, GenerateRequest):
-        assert cls().text_encoder == "bf16"
-        argv = cls(text_encoder="fp8").to_argv()
-        assert cls.from_argv(argv).text_encoder == "fp8"
+        assert cls().text_encoder == "int8"
+        for precision in TE_PRECISIONS:
+            argv = cls(text_encoder=precision).to_argv()
+            assert cls.from_argv(argv).text_encoder == precision
+
+
+def test_quantized_precisions_have_catalog_rows(tmp_path, monkeypatch):
+    import dataclasses
+
+    from library import downloads
+    from library.moss import fp8
+
+    rows = dict(downloads.by_id())
+    monkeypatch.setattr(downloads, "by_id", lambda: rows)
+    for precision, name in (
+        ("fp8", downloads.MOSS_TE_FP8_FILE),
+        ("int8", downloads.MOSS_TE_INT8_FILE),
+    ):
+        asset = rows[f"moss_te_{precision}"]
+        assert name in asset.files and "config.json" in asset.files
+        dest = tmp_path / precision
+        dest.mkdir()
+        for f in asset.files:
+            (dest / f).touch()
+        rows[asset.id] = dataclasses.replace(asset, dest=dest)
+        assert fp8.fp8_te_path(precision=precision) == dest / name

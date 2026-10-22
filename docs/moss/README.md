@@ -19,17 +19,22 @@ make download-model ARGS=moss-sft    # optional: the SFT DiT alone, ~10 GB (reus
 Weights land in `models/moss_image/MOSS-Image-{Base,SFT}/`. Another location:
 `ANIMA_MOSS_MODEL_DIR` in `.env`, or `model_dir` in the GUI.
 
-**fp8 text encoder** (optional): `text_encoder=fp8` (Advanced, on both caching and
-generation; `--text_encoder fp8` on the CLI) loads
+**Text encoder precision**: `text_encoder` (Advanced, on both caching and generation;
+`--text_encoder` on the CLI) picks the Qwen3.5-9B weights. The default `int8` loads
+[`sorryhyun/MOSS-Image-Qwen3.5-9B-int8`](https://huggingface.co/sorryhyun/MOSS-Image-Qwen3.5-9B-int8):
+9.2 GB instead of 16.8 GB, all 32 layers on a 16 GB card (peak 6.5 GiB instead of
+13.0 GiB), int8 weights and activations (W8A8). `fp8` loads
 [`sorryhyun/MOSS-Image-Qwen3.5-9B-fp8`](https://huggingface.co/sorryhyun/MOSS-Image-Qwen3.5-9B-fp8)
-instead of the bf16 shards: 9.2 GB instead of 16.8 GB, and all 32 layers fit on a 16 GB
-card (peak 6.7 GiB instead of 13.0 GiB). The first use downloads it, or run
-`make download-model ARGS=moss-te-fp8`. The tokenizer still comes from Base. Its
-embeddings differ from bf16 by ~5 % (relative L2; the fp8 rounding is GPTQ-calibrated
-on MOSS prompts and pages), and images on the same seed keep
-their composition and text but change in small details (`bench/moss_te_fp8`). Cache and
-generate with the same setting: the TE cache records which one encoded it, and
-switching re-encodes it.
+(float8 weights, bf16 matmul): same size and about the same error, ~1.7× slower to
+encode. `bf16` uses Base's shards, the reference. The first use downloads the quantized
+file, or run `make download-model ARGS=moss-te-int8` (`moss-te-fp8`). The tokenizer
+still comes from Base. Both quantized files are GPTQ-calibrated on MOSS prompts and
+pages; their embeddings differ from bf16 by ~4–5 % (relative L2) on captions and
+~10 % on long JSON prompts and pages through the vision tower. fp8 images on the same
+seed keep their composition and text but change in small details (`bench/moss_te_fp8`).
+Cache and generate with the same setting: the TE cache records which one encoded it,
+and switching re-encodes it, so caches made before int8 became the default re-encode
+on the next `cache` run unless it passes `--text_encoder bf16`.
 
 ## GUI
 
@@ -62,8 +67,8 @@ make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output
 `--help` on each script lists every flag (one definition: `library/moss/requests.py`).
 
 `--config <file.toml>` sets any flag from a flat TOML of field names (`configs/moss/cache.toml`
-and `configs/moss/lora.toml` hold the shipped defaults; copy one for a recipe; `text_encoder = "fp8"`
-in `cache.toml` caches with the fp8 TE). Order: field default → `--config` → CLI flags.
+and `configs/moss/lora.toml` hold the shipped defaults; copy one for a recipe; `text_encoder = "bf16"`
+in a copy of `cache.toml` caches with the reference TE). Order: field default → `--config` → CLI flags.
 Unknown keys, wrong types and values outside a flag's choices are an error.
 
 ## What to expect
@@ -184,7 +189,8 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   saved before 2026-10-17 used another layout and do not). The Spectrum node pack's
   **KSampler (Spectrum for MOSS)** carries the pipeline's sampler defaults and Spectrum;
   `ComfyUI-Anima-DAVE` 0.2.0 and later runs DAVE on MOSS. The fp8 text encoder file
-  loads in **MOSS-Image Load Qwen3.5** as-is (put it in `models/text_encoders/`).
+  loads in **MOSS-Image Load Qwen3.5** as-is (put it in `models/text_encoders/`); the
+  INT8 file is in ComfyUI's `int8_tensorwise` + `convrot` format for the same loader.
 - **Research flags** (advanced, not recommended): `--repa_weight` / `--repa_layer` /
   `--repa_pe_root` (relational REPA, parked: no gain over channel scaling,
   `project/moss_lora/repa.md`); `--ref_timestep` / `--ref_isolate` /

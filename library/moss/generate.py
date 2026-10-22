@@ -283,7 +283,9 @@ def cached_embeds(
             missing.append(text)
     if missing:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        for text, emb in encode_prompts(model_dir, missing, precision=precision).items():
+        for text, emb in encode_prompts(
+            model_dir, missing, precision=precision
+        ).items():
             save_file({"embeds": emb.contiguous()}, path(text))
             out[text] = emb
     print(f"[te] {len(out) - len(missing)} cached, {len(missing)} encoded", flush=True)
@@ -329,7 +331,7 @@ def _fingerprint(req: GenerateRequest, job: dict) -> dict:
     spectrum = {
         k: v for k, v in dataclasses.asdict(req).items() if k.startswith("spectrum")
     }
-    # Stamped only off the bf16 default, so latents saved before the field resume.
+    # Stamped only off bf16, so latents saved before the field resume.
     te = {} if req.text_encoder == "bf16" else {"text_encoder": req.text_encoder}
     return dict(
         {k: v for k, v in job.items() if k != "skip"},

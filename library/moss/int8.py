@@ -14,7 +14,11 @@ calls ``comfy_kitchen.int8_linear(convrot=True)``, which also rounds the rotated
 activation to int8 per token — faster, plus that rounding's error. bench/moss_te_fp8
 20261022-1300, GPTQ-rounded: rel L2 0.035 weight-only, 0.058 W8A8 (fp8 GPTQ v2,
 weight-only: 0.048). ``library/moss/fp8.py`` writes the file
-(``quantize_te(fmt="int8_convrot")``) and loads it back."""
+(``quantize_te(fmt="int8_convrot")``) and loads it back. The catalog file
+(``moss_te_int8``, the default ``text_encoder=int8``) is
+``te_gptq.py --smooth 0.5 --act_aware``: its RMSNorm weights carry SmoothQuant
+scales, so W8A8 reads as fp8 on the te_calib_eval split (rel L2 0.097 vs 0.095)
+at 1.7x fp8's encode speed."""
 
 from __future__ import annotations
 

@@ -20,10 +20,11 @@ save_crops = false             # also write the exact pixels each latent was enc
 
 # Text encoder (Qwen3.5-9B)
 max_text_tokens = 4096         # truncation length (the model's own limit)
-text_encoder = "bf16"          # bf16 | fp8
-# fp8 works too: decoder linears in float8_e4m3fn (~9.2 GB),
-# catalog row moss_te_fp8, fetched on first use. Embedding rel. L2 ~0.05 vs bf16
-# (bench/moss_te_fp8). Caches stamp the encoder, so switching re-encodes the TE
-# cache; scripts/moss/generate.py takes the same text_encoder flag.
+text_encoder = "int8"          # int8 | fp8 | bf16
+# int8: decoder linears INT8 W8A8 (~9.2 GB, catalog row moss_te_int8, fetched on
+# first use). fp8: float8_e4m3fn weight-only (moss_te_fp8), same error, ~1.7x
+# slower. bf16: the reference shards from the Base pack. Caches stamp the encoder,
+# so switching re-encodes the TE cache; scripts/moss/generate.py takes the same
+# text_encoder flag.
 
 # model_dir = ""
