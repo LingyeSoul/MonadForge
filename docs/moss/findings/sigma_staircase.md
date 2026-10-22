@@ -71,7 +71,7 @@ For the levers set against Anima's shape:
   number sits in them. The shipped DAVE τ 0.10 covers steps 0–4, which is σ 1.0 → 0.983.
   Over those steps the pooled error goes from 0.65 to 0.58; the layout knee at σ 0.87 is
   step 22.
-- **The REPA σ 0.85 taper** (`project/moss_lora/repa.md`) fits MOSS's own shape: at
+- **The REPA σ 0.85 taper** (`_archive/moss_lora/repa.md`) fits MOSS's own shape: at
   σ 0.85, `x0_pred` is still at 0.52 of the σ 0.95 error, and the layout becomes
   recognisable only at 0.87.
 - **Tier 3 §4 (text drive across σ)** should read its front-loaded window over

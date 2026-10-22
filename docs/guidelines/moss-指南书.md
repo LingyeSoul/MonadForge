@@ -121,7 +121,6 @@ make download-model ARGS=moss-sft
 | `dc_isolate` | 开启 | 仅 `lora`；为输入的恒定偏移单独分配一行 LoRA 秩 |
 | down 初始化（`down_init`） | `weight_svd` | `weight_svd` 或 `kaiming` |
 | 轮数（`epochs`） | `8` | 实测训练用 20 |
-| 标注丢弃率（`caption_dropout`） | `0` | 保持 0：0.05 和 0.1 在 CFG 下都削弱了风格（uncond 吸收了风格）— `project/moss_lora/caption_dropout.md` |
 | `plain_caption_rate` | `0.2` | 仅 `layout_json` 缓存：用普通 Anima 标注而非 layout JSON 训练的步数占比 |
 
 - **学习率、通道缩放、DC 隔离**：FFN 输入处有一个输入通道比其余通道强得多；通道缩放和 `dc_isolate` 避免 LoRA 通过它把更新浪费在全局平移上（起始时输出不变，文件是普通 LoRA）。在学习率 5e-5 下，这两者做到了干净、贴合提示词，风格强度与学习率 1e-4 相当。此前的默认值以及每次改动背后的对比见 `docs/moss/channel_scaling.md`。

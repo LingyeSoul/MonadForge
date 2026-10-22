@@ -81,7 +81,7 @@ formed within the first ~22–28 steps. Everything after step ~39 is the detail 
   (`project/moss_lora/dave.md`), not something this probe answers.
 - **Spectrum `flex_window`** grows the forecast window per full step. It has no σ
   boundary, so there is nothing to move.
-- **REPA σ taper** (`project/moss_lora/repa.md` § Open: "no target above σ ≈ 0.85"):
+- **REPA σ taper** (`_archive/moss_lora/repa.md` § Open: "no target above σ ≈ 0.85"):
   this matches MOSS's own shape. At σ 0.85, `x0_pred` is still at 0.52 of the σ 0.95
   error, and the layout only becomes recognisable at 0.87. A taper at σ 0.85 cuts ~33 % of
   training draws.

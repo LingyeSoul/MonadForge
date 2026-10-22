@@ -165,8 +165,8 @@ Reading: the up-side mechanism is real and the init fixes it as measured, but on
 seed it does not improve the images over α 0.5 and brings back the off-prompt text that
 decided the earlier A/B. `dc_isolate` stays opt-in (default off); defaults unchanged.
 
-**2026-10-18 — DC isolation at lr 5e-5** (`caststation_layout_at_r32a128_lr5e5_svd_cs05_dc`,
-the dc arm with lr halved and nothing else changed; grid `output/tests/ab_…_lr5e5_svd_cs05_dc_50st`).
+**2026-10-18 — DC isolation at lr 5e-5** (`caststation_layout_at_r32a128_lr5e5`,
+the dc arm with lr halved and nothing else changed; grid `output/tests/ab_…_lr5e5_50st`).
 Hypothesis: the centered up gradient learns faster, so lr 1e-4 × 20 epochs over-fits with
 it (the text artifacts).
 

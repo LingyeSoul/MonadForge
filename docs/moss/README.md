@@ -162,7 +162,7 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
 - **Caption dropout** (`--caption_dropout`, default 0): the share of steps trained on the
   empty prompt. Keep 0: on caststation, 0.05 and 0.1 weakened the style under CFG, because
   the LoRA's uncond prediction picks up the style and CFG cancels part of it
-  (`project/moss_lora/caption_dropout.md`).
+  (`_archive/moss_lora/caption_dropout.md`).
 - **Spectrum** (`--spectrum`, Test panel): 2.6× at 50 steps with the default
   `flex_window 0.5`. At grid scale it is hard to tell apart from the full 50 steps.
 - **`--compile`** (generate, on by default; `--no-compile` for eager): about 1.37× more
@@ -193,7 +193,7 @@ Unknown keys, wrong types and values outside a flag's choices are an error.
   INT8 file is in ComfyUI's `int8_tensorwise` + `convrot` format for the same loader.
 - **Research flags** (advanced, not recommended): `--repa_weight` / `--repa_layer` /
   `--repa_pe_root` (relational REPA, parked: no gain over channel scaling,
-  `project/moss_lora/repa.md`); `--ref_timestep` / `--ref_isolate` /
+  `_archive/moss_lora/repa.md`); `--ref_timestep` / `--ref_isolate` /
   `--caption_variant_rate` (the i2i / colorize probes, `docs/proposal/moss_i2i.md`).
 
 ## More

@@ -35,7 +35,7 @@ times per step before CFG; the uncond branch is not corrected, since C never tra
 caststation (`channel_(caststation)_layout`, 30 images), the shipped recipe for each LoRA:
 Base, r32 / α128, `weight_svd`, lr 5e-5, channel scaling 0.5, `dc_isolate`, 20 epochs
 = 600 steps, seed 0, `--plain_caption_rate 0`. The frozen D is the floor
-`caststation_layout_at_r32a128_lr5e5_svd_cs05_dc`.
+`caststation_layout_at_r32a128_lr5e5`.
 
 | Run | D | Form | γ init | Steps | γ end | L_corr vs L_denoise | s/step |
 |---|---|---|---|---|---|---|---|

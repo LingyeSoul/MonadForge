@@ -7,7 +7,7 @@ low (~0.17), but the soup does not wash out the way the LR-diverse sincos soup d
 ## Setup
 
 caststation (`channel_(caststation)_layout`, 30 images), the caption-dropout A recipe
-(`caption_dropout.md`): Base, rank 32 / alpha 128, `weight_svd`, lr 5e-5, channel
+(`_archive/moss_lora/caption_dropout.md`): Base, rank 32 / alpha 128, `weight_svd`, lr 5e-5, channel
 scaling 0.5, `dc_isolate`, 20 epochs = 600 steps, `--plain_caption_rate 0`,
 `--caption_dropout 0`. Seeds 0 / 1001 / 1002. Seed 0 was retrained on the current TE
 cache rather than reusing A.

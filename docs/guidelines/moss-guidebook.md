@@ -121,7 +121,6 @@ The comparisons ran on 30 images of one artist (`@channel (caststation)`), Base,
 | `dc_isolate` | on | `lora` only; one LoRA rank row for the input's constant offset |
 | `down_init` | `weight_svd` | `weight_svd` or `kaiming` |
 | `epochs` | `8` | the measured run used 20 |
-| `caption_dropout` | `0` | keep 0: 0.05 and 0.1 weakened the style under CFG (the uncond picks up the style) — `project/moss_lora/caption_dropout.md` |
 | `plain_caption_rate` | `0.2` | `layout_json` caches only: share of steps trained on the plain Anima caption instead of its layout JSON |
 
 - **lr, channel scaling, DC isolation**: one input channel is far louder than the rest at the FFN input; channel scaling and `dc_isolate` keep the LoRA from spending its updates on a global shift through it (the output at the start is unchanged, and the file is an ordinary LoRA). At lr 5e-5 the two stayed clean and on-prompt at the style strength of lr 1e-4. Earlier defaults and the comparisons behind each change: `docs/moss/channel_scaling.md`.

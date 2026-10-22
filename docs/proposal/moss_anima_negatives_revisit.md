@@ -90,7 +90,7 @@ else hangs off the answer.
   third of the steps above 0.85) and the sampler runs shift 5 on a snapped grid, so
   the sampler spends a different share of its steps on each side of the knee.
 - **What hangs off it**: every σ-gated lever on the line reads an Anima number —
-  DAVE's τ window, Spectrum's `flex_window`, the REPA σ taper (`project/moss_lora/repa.md`
+  DAVE's τ window, Spectrum's `flex_window`, the REPA σ taper (`_archive/moss_lora/repa.md`
   § Open: "no target above σ ≈ 0.85" is Anima's shape), and §4's band.
 - **Probe**: noise 16 cached latents at the sampler's own snapped σ grid
   (`model.snapped_sigmas`), one bare-DiT forward each (CFG 1, no LoRA), decode
@@ -172,8 +172,8 @@ at CFG 1 and 3, square and 3:4.
 | Null-TTA, tag-readback reward, seed-floor / paired-eval, tagger ceiling, PE registers (`_archive/shelved_benches.md`, `docs/findings/`) | Causes are the objective, the instrument or the PE tower, not the DiT |
 
 Anima ideas ported and closed on MOSS itself (not Anima negatives; logged with their
-sub-line): relational REPA (`project/moss_lora/repa.md`), mixed-lr soup
-(`project/moss_lora/soup.md`), caption dropout (`project/moss_lora/caption_dropout.md`),
+sub-line): relational REPA (`_archive/moss_lora/repa.md`), mixed-lr soup
+(`project/moss_lora/soup.md`), caption dropout (`_archive/moss_lora/caption_dropout.md`),
 the dual-LoRA corrector's speed claim (`project/moss_lora/correction.md`).
 
 ## Order

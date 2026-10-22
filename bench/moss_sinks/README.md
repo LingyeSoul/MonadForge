@@ -170,7 +170,7 @@ on most blocks, up to ~20 % on a handful with the stronger LoRA.
    keys changes how far each head shuts off. That is a cheap global lever, the token-axis
    counterpart of what `dc_isolate` removes on the channel axis. First read done (LoRA
    arms above): the shift is small (3–5 % mean, ≤ 20 % on a few blocks, write cosine
-   ≥ 0.9). Masked renders (`render_template_mask.py`, 2026-10-18): style stays, content
+   ≥ 0.9). Masked renders (`_archive/bench/moss_sinks/render_template_mask.py`, 2026-10-18): style stays, content
    details change on 4 / 8 seeds. Open: is masking better or worse, read on
    layout-JSON prompts and more seeds.
 5. Test-time registers: dropped. The model already ships fixed registers.

@@ -121,7 +121,6 @@ make download-model ARGS=moss-sft
 | `dc_isolate` | オン | `lora` のみ。入力の定数オフセット用に LoRA のランク 1 行を割り当てる |
 | `down_init` | `weight_svd` | `weight_svd` または `kaiming` |
 | `epochs` | `8` | 計測した学習は 20 |
-| `caption_dropout` | `0` | 0 のまま: 0.05・0.1 とも CFG 下でスタイルが弱まる (uncond がスタイルを取り込む) — `project/moss_lora/caption_dropout.md` |
 | `plain_caption_rate` | `0.2` | `layout_json` キャッシュのみ: layout JSON の代わりに通常の Anima キャプションで学習するステップの割合 |
 
 - **lr、チャンネルスケーリング、DC 分離**: FFN の入力では 1 つの入力チャンネルだけが他よりはるかに大きくなっています。チャンネルスケーリングと `dc_isolate` は、LoRA がそのチャンネルを通じて全体的なシフトに更新を使ってしまうのを防ぎます（開始時の出力は変わらず、ファイルは通常の LoRA です）。lr 5e-5 ではこの 2 つにより、lr 1e-4 と同等のスタイル強度でクリーンかつプロンプトに沿った結果になりました。以前のデフォルトと各変更の根拠となった比較: `docs/moss/channel_scaling.md`。

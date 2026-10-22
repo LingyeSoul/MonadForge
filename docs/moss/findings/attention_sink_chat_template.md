@@ -91,7 +91,7 @@ scaling and dc_isolate at once, and a LoRA edits both the template rows' K / V a
 image rows' Q, so neither the gap between them nor the source of the shift is
 attributed.
 
-Renders (`bench/moss_sinks/render_template_mask.py`, lr5e5 LoRA, raw-text prompts,
+Renders (`_archive/bench/moss_sinks/render_template_mask.py`, lr5e5 LoRA, raw-text prompts,
 seeds 1000–1003; `output/tests/sinks_lr5e5dc_30st/`): keeping the LoRA delta off the 10
 template rows leaves the LoRA's style (faces, line work) in place but changes content
 details on 4 of 8 seeds (collar, ribbon colour, pose, expression), some back toward
