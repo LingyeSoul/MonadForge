@@ -12,6 +12,10 @@ the cache job succeeds, so a failed cache pass never trains on a stale folder,
 and a Test with several passes (``LineSpec.test_runs``) submits them one after
 another. Closing the window mid-chain drops the pending jobs (the running one
 keeps going — the daemon outlives the GUI).
+
+A line can add its own tabs after Train (``LineSpec.extra_pages``, each a
+``LinePage``): they submit through the panel (``LinePanel.submit``), so they
+share its log, progress bar, Stop button and one-job-at-a-time state.
 """
 
 from __future__ import annotations
@@ -97,6 +101,8 @@ class LineSpec:
     fields_cn: dict[str, tuple[str, str]] = dataclasses.field(default_factory=dict)
     # Test-request fields whose name means something else on another request.
     fields_cn_test: dict[str, tuple[str, str]] = dataclasses.field(default_factory=dict)
+    # Panel → the ``LinePage`` tabs to add after Train.
+    extra_pages: Callable[[Any], list] | None = None
 
     @property
     def labels(self) -> tuple[str, str, str]:
@@ -110,6 +116,18 @@ _PROGRESS_RE = re.compile(r"^\s+(progress|step|text|latents|image) (\d+)/(\d+)(.
 
 _lang = "en"
 _spec: LineSpec | None = None
+
+
+@dataclass
+class LineJob:
+    """One daemon command job: ``req.SCRIPT`` + ``req.to_argv()`` under ``label``,
+    with ``env`` added to the job's environment; ``note`` is logged when it starts
+    as the next job of a chain."""
+
+    req: Any
+    label: str
+    env: dict | None = None
+    note: str = ""
 
 
 def tr(key: str, **kwargs) -> str:
@@ -347,6 +365,24 @@ class _LineProgress:
         self.bar.setVisible(False)
 
 
+class LinePage(QWidget):
+    """A tab after Train (``LineSpec.extra_pages``). It submits with
+    ``panel.submit`` and gets the panel's job events for its own labels."""
+
+    title = ""
+    labels: tuple[str, ...] = ()  # job labels this page submits
+    scripts: dict[str, str] = {}  # sidecar script → label, for a job started elsewhere
+
+    def set_busy(self, busy: bool) -> None:
+        pass
+
+    def job_finished(self, label: str, ok: bool) -> None:
+        """A job of this page's ``labels`` ended and no chained job follows it."""
+
+    def persist(self) -> None:
+        pass
+
+
 class LinePanel(DaemonJobMixin, QWidget):
     """The line's Preprocess / Train / Test forms, log and job observer.
 
@@ -363,8 +399,8 @@ class LinePanel(DaemonJobMixin, QWidget):
         self.label_cache, self.label_train, self.label_test = spec.labels
         self._init_job_observer()
         self._job_label: str | None = None
-        # (request, label) submitted one by one as each job succeeds.
-        self._pending: list[tuple[Any, str]] = []
+        # Submitted one by one as each job succeeds.
+        self._pending: list[LineJob] = []
 
         root = QVBoxLayout(self)
 
@@ -438,6 +474,12 @@ class LinePanel(DaemonJobMixin, QWidget):
             ),
             tr("tab_train"),
         )
+
+        self._pages: list[LinePage] = (
+            spec.extra_pages(self) if spec.extra_pages else []
+        )
+        for page in self._pages:
+            self.tabs.addTab(page, page.title)
 
         self.status = QLabel(tr("idle"))
         self.btn_stop = action_button(tr("stop"), variant="danger", on_click=self._stop)
@@ -611,12 +653,16 @@ class LinePanel(DaemonJobMixin, QWidget):
                 "test": self.test_form.changed_values(),
             },
         )
+        for page in self._pages:
+            page.persist()
 
     def _set_busy(self, busy: bool) -> None:
         for b in (self.btn_cache, self.btn_train, self.btn_chain, self.btn_test):
             b.setEnabled(not busy)
         self.btn_stop.setEnabled(busy)
         apply_variant(self.btn_stop, "danger" if busy else "busy")
+        for page in self._pages:
+            page.set_busy(busy)
 
     # ── jobs ─────────────────────────────────────────────────────────────
 
@@ -635,11 +681,23 @@ class LinePanel(DaemonJobMixin, QWidget):
         QMessageBox.warning(self, tr("window_title"), tr("scan_no_src"))
         return False
 
-    def _submit(self, req, label: str) -> bool:
+    def submit(self, jobs: list[LineJob]) -> bool:
+        """Submit ``jobs[0]``; the rest follow one by one while each succeeds."""
+        first, *rest = jobs
+        if not self._submit(first.req, first.label, first.env):
+            return False
+        self._pending = rest
+        return True
+
+    def _submit(self, req, label: str, env: dict | None = None) -> bool:
         argv = [req.SCRIPT, *req.to_argv()]
         job_id = self._submit_job(
             lambda: gui_daemon.ensure_daemon().submit_command(
-                label=label, argv=argv, stall_timeout=STALL_TIMEOUT, start=True
+                label=label,
+                argv=argv,
+                extra_env=env,
+                stall_timeout=STALL_TIMEOUT,
+                start=True,
             ),
             on_fail=lambda: self._set_busy(False),
         )
@@ -685,8 +743,12 @@ class LinePanel(DaemonJobMixin, QWidget):
         self.log.appendPlainText(
             tr("chain_cache", path=resolve_under_home(cache_req.out))
         )
-        if self._submit(cache_req, self.label_cache):
-            self._pending = [(train_req, self.label_train)]
+        self.submit(
+            [
+                LineJob(cache_req, self.label_cache),
+                LineJob(train_req, self.label_train, note=tr("chain_next")),
+            ]
+        )
 
     def _run_test(self) -> None:
         req = self.test_form.request()
@@ -701,8 +763,12 @@ class LinePanel(DaemonJobMixin, QWidget):
         out = resolve_under_home(req.out_dir) / time.strftime("%Y%m%d-%H%M%S")
         req = dataclasses.replace(req, lora=str(lora), out_dir=str(out))
         first, *rest = self.spec.test_runs(req)
-        if self._submit(first, self.label_test):
-            self._pending = [(r, self.label_test) for r in rest]
+        if self.submit(
+            [
+                LineJob(first, self.label_test),
+                *(LineJob(r, self.label_test, note=tr("test_next")) for r in rest),
+            ]
+        ):
             self._test_out = out
 
     def _show_test(self, out: Path | None) -> None:
@@ -757,30 +823,37 @@ class LinePanel(DaemonJobMixin, QWidget):
         if label == self.label_test and ok and nxt is None:
             self._show_test(self._test_out or self._latest_test_dir())
             self._test_out = None
-        if nxt is not None:
-            req, next_label = nxt
-            self.log.appendPlainText(
-                tr("test_next" if next_label == self.label_test else "chain_next")
-            )
-            self._submit(req, next_label)
+        if nxt is None:
+            for page in self._pages:
+                if label in page.labels:
+                    page.job_finished(label, ok)
+            return
+        if nxt.note:
+            self.log.appendPlainText(nxt.note)
+        self._submit(nxt.req, nxt.label, nxt.env)
 
     def _job_line_label(self, job_id: str) -> str | None:
         """This line's label for ``job_id``: the label the panel submitted it
         under, or the one its sidecar script maps to (a CLI submit labels it
         ``train`` / ``generate``). ``None`` for another line's job."""
         label = gui_daemon.read_job_label(job_id)
-        if label in self.spec.labels:
+        if label in self.spec.labels or any(label in p.labels for p in self._pages):
             return label
         argv = gui_daemon.read_job_argv(job_id)
-        scripts = [
-            c.SCRIPT
-            for c in (self.spec.cache_cls, self.spec.train_cls, self.spec.test_cls)
-        ]
+        scripts = {
+            c.SCRIPT: lb
+            for c, lb in zip(
+                (self.spec.cache_cls, self.spec.train_cls, self.spec.test_cls),
+                self.spec.labels,
+            )
+        }
+        for page in reversed(self._pages):
+            scripts = {**page.scripts, **scripts}
         if argv:
             script = Path(argv[0]).as_posix()
-            for i, s in enumerate(scripts):
+            for s, lb in scripts.items():
                 if script == s or script.endswith("/" + s):
-                    return self.spec.labels[i]
+                    return lb
         return None
 
     def _claim_tick(self) -> None:

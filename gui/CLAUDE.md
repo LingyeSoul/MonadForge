@@ -40,7 +40,11 @@ must not appear.
   `LineSpec` built in `gui/<line>/app.py` (request classes, scan helpers, test passes,
   strings). Reuses `theme`, `jobs.daemon`, `DaemonJobMixin`, `widgets` only; strings
   live in `gui/lines/strings.py` + `gui/<line>/strings.py`, not `gui/i18n/`. The same
-  MOSS panel also runs inside `make gui` (MOSS mode, below).
+  MOSS panel also runs inside `make gui` (MOSS mode, below). `LineSpec.extra_pages` adds
+  `LinePage` tabs after Train that submit through `LinePanel.submit([LineJob…])`, sharing
+  the log, Stop and chain queue (unlike `add_tab`, which hides them); MOSS's is the i2i
+  tab (`gui/moss/i2i.py`: per-task stage → preprocess → train → test, forms seeded from
+  `configs/moss/i2i/<task>/`, deltas saved as `moss_gui_i2i`).
 - `make lora-gui GUI_PRESETS=<variant>` trains from `gui-methods/` configs; it does not
   launch the GUI.
 

@@ -56,7 +56,7 @@ from library.env import anima_home, resolve_under_home
 from library.moss import cache as moss_cache
 from library.moss.loader import load_tokenizer
 from library.moss.scan import TE_SUFFIX, caption_sha
-from vision_te import te_inputs
+from library.moss.vision_te import te_inputs
 
 OUT = "post_image_dataset/moss/_te_calib_v2/manifest.json"
 MOSS = "post_image_dataset/moss"

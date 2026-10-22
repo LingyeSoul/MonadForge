@@ -39,7 +39,7 @@ from library.moss import cache as moss_cache
 from library.moss.loader import empty_cache, load_tokenizer, load_vae
 from library.moss.model import encode as vae_encode
 from library.moss.model import snapped_sigmas
-from vision_te import encode, load_te
+from library.moss.vision_te import encode, load_te
 
 
 def luma_r(a: Image.Image, b: Image.Image) -> float:

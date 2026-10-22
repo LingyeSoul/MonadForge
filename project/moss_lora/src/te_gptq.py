@@ -71,7 +71,7 @@ from library.moss.fp8 import FP8, LINEARS, N_LINEARS, quantize_te
 from library.moss.loader import _embed_on_cpu, load_tokenizer
 from library.moss.requests import variant_dir
 from library.moss.scan import TE_SUFFIX, caption_sha
-from vision_te import te_inputs
+from library.moss.vision_te import te_inputs
 
 FP8_MAX = torch.finfo(FP8).max
 OUT = {

@@ -1,0 +1,11 @@
+# MOSS i2i test for the sanitize task — GenerateRequest fields.
+#
+#   make daemon-run ARGS="scripts/moss/generate.py --config configs/moss/i2i/sanitize/generate.toml \
+#       --lora output/ckpt_moss/moss_i2i_sanitize.safetensors --ref_image <page> --prompt '<caption>'"
+#
+# The prompt is the page's Anima caption without its text tags (the clean twin's
+# caption, as the cache trained on); the texted page is the full-size reference.
+
+prompt = ""
+ref_scale = 1
+out_dir = "output/tests/moss_i2i_sanitize"

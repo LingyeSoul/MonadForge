@@ -56,10 +56,12 @@ def test_every_basic_field_has_chinese():
     import dataclasses
 
     from gui.moss.app import SPEC
+    from library.moss.requests import I2I_CACHE
 
+    classes = {SPEC.cache_cls, SPEC.train_cls, SPEC.test_cls, *I2I_CACHE.values()}
     missing = [
         f"{cls.__name__}.{f.name}"
-        for cls in (SPEC.cache_cls, SPEC.train_cls, SPEC.test_cls)
+        for cls in classes
         for f in dataclasses.fields(cls)
         if not f.metadata.get("advanced")
         and f.name not in SPEC.fields_cn

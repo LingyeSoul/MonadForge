@@ -131,6 +131,69 @@ class CacheRequest(Request):
 
 
 @dataclass
+class ColorizeCacheRequest(Request):
+    """Build the colorize cache: the B&W page enters through the TE's vision tower
+    and as a VAE reference, the colour original is the target."""
+
+    SCRIPT: ClassVar[str] = "scripts/moss/colorize_cache.py"
+
+    out: str = _f(
+        "post_image_dataset/moss/i2i_colorize",
+        "cache folder (flat; held-out pairs in <out>/holdout/ with holdout.json)",
+    )
+    n: int = _f(1667, "illustration pairs to train on (staging page + resized target)")
+    manga: int = _f(1667, "manga_color pages to add (0 = illustrations only)")
+    holdout: int = _f(8, "illustration pairs held out for the eval")
+    manga_holdout: int = _f(
+        4, "manga works held out, one page each; no edition of them trains"
+    )
+    resolution: int = _f(
+        1024,
+        "pixel-area cap as a square edge (native aspect, multiples of 16, never "
+        "upscaled)",
+    )
+    ref_scale: int = _f(
+        2,
+        "the reference latent's sides are the target's divided by this, rounded to "
+        "multiples of 16 (generate with the same value)",
+    )
+    variants: int = _f(
+        4,
+        "sparse captions + 1: embeds_v1 … embeds_v{variants-1} hold tag-dropped "
+        "colour captions (at least 2)",
+    )
+    tag_dropout: float = _f(0.8, "share of the colour caption's tags a sparse caption drops")
+    seed: int = _f(0, "RNG seed of the pair draw, holdout and sparse captions")
+    staging: str = _f(
+        "post_image_dataset/i2i/colorize/staging",
+        "the mangafied pages (make i2i-stage TASK=colorize); each pairs with the same "
+        "path under resized",
+        advanced=True,
+    )
+    resized: str = _f(
+        "post_image_dataset/resized",
+        "colour targets with their .txt captions",
+        advanced=True,
+    )
+    manga_dir: str = _f(
+        "post_image_dataset/i2i/colorize/manga_color",
+        "manga pages as {staging,resized}/<lang>/{anchor}_{lang}_{page}.png",
+        advanced=True,
+    )
+    text_encoder: str = _f(
+        "fp8",
+        f"Qwen3.5-9B weights for every encode, with the vision tower in bf16: {_TE_HELP}. "
+        "The shipped colorize recipe is fp8; generate with the same",
+        choices=TEXT_ENCODERS,
+        advanced=True,
+    )
+    te_file: str = _f(
+        "", "quantized TE file instead of the catalog's (fp8 / int8 only)", advanced=True
+    )
+    model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
+
+
+@dataclass
 class GenerateRequest(Request):
     """Render prompts with MOSS-Image (Base or SFT), optionally with a LoRA."""
 
@@ -180,6 +243,24 @@ class GenerateRequest(Request):
         42, "seed of the first prompt (+1 per prompt); fp32 noise from a CPU generator"
     )
     out_dir: str = _f("output/tests", "images + manifest.json land here")
+    ref_image: str = _f(
+        "",
+        "i2i reference: an image, or a folder of images (one job per image and "
+        "prompt). The output keeps its aspect, area capped at width x height; the "
+        "LoRA's stamped ref_timestep / ref_isolate apply",
+    )
+    ref_scale: int = _f(
+        1,
+        "with ref_image: the reference latent's sides are the output's divided by "
+        "this, multiples of 16. Match the cache the LoRA trained on (sanitize 1, "
+        "colorize 2)",
+    )
+    ref_vision: bool = _f(
+        False,
+        "with ref_image: the reference also enters the TE through its vision tower, "
+        "ahead of the prompt, as a colorize cache encodes the page. An empty prompt "
+        "is then the page alone",
+    )
     prompts_file: str = _f("", "one prompt per line; overrides prompt", advanced=True)
     example: str = _f(
         "",
@@ -462,6 +543,13 @@ class TrainRequest(Request):
         "--no-compile for a quick smoke",
         advanced=True,
     )
+    expandable_segments: bool = _f(
+        False,
+        "set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True before CUDA starts "
+        "(an existing setting wins): long captions that vary per step, such as "
+        "colorize's OCR layouts, fragment the allocator's pool without it",
+        advanced=True,
+    )
     log_every: int = _f(10, "full log line every N steps", advanced=True)
     seed: int = _f(0, "RNG seed", advanced=True)
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
@@ -513,3 +601,18 @@ class TuneSwapRequest(Request):
     )
     seed: int = _f(0, "RNG seed", advanced=True)
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
+
+
+# i2i tasks with a MOSS recipe in ``configs/moss/i2i/<task>/`` (``cache.toml``,
+# ``train.toml``, ``generate.toml``): the cache request per task; training and
+# generation are the shared ``TrainRequest`` / ``GenerateRequest``.
+I2I_CONFIG_DIR = "configs/moss/i2i"
+I2I_CACHE: dict[str, type[Request]] = {
+    "colorize": ColorizeCacheRequest,
+    "sanitize": CacheRequest,
+}
+
+
+def i2i_config(task: str, kind: str) -> Path:
+    """``configs/moss/i2i/<task>/<kind>.toml`` under the repo home."""
+    return resolve_under_home(f"{I2I_CONFIG_DIR}/{task}/{kind}.toml")

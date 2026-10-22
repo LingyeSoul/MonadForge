@@ -1330,7 +1330,7 @@ def cmd_i2i_stage(extra):
     task. Staging is model-agnostic: ``i2i_tasks/<task>`` materializes the
     condition / pair tree under ``post_image_dataset/i2i/<name>/``, which the
     EasyControl encode (``easycontrol-preprocess``) and the MOSS i2i cache
-    (``project/moss_lora/src/colorize_cache.py``) both read. Knobs come from
+    (``make i2i-preprocess MODEL=moss``) both read. Knobs come from
     the ``[staging]`` table of ``configs/easycontrol/<task>.toml``; extra CLI
     args override them, e.g.::
 
@@ -1361,11 +1361,13 @@ def cmd_i2i_preprocess(extra):
     """Cache a staged i2i task for one model line: ``TASK=<task> MODEL=anima|moss``.
 
     ``MODEL=anima`` (default) is the EasyControl encode
-    (``easycontrol-preprocess EASYADAPTER=<task>``). ``MODEL=moss`` submits
-    ``scripts/moss/cache.py --config configs/moss/i2i/<task>/cache.toml`` as a
-    daemon command job: the staging tree's ``pairs.jsonl`` → target latents + TE
-    + ``{stem}.moss_ref``. ``--queue`` detaches, ``--inline`` bypasses the
-    daemon; other ARGS reach ``CacheRequest``.
+    (``easycontrol-preprocess EASYADAPTER=<task>``). ``MODEL=moss`` submits the
+    task's cache sidecar (``library.moss.requests.I2I_CACHE``) with
+    ``--config configs/moss/i2i/<task>/cache.toml`` as a daemon command job:
+    target latents + TE + ``{stem}.moss_ref`` (``scripts/moss/cache.py`` over the
+    staging tree's ``pairs.jsonl``; colorize: ``scripts/moss/colorize_cache.py``).
+    ``--queue`` detaches, ``--inline`` bypasses the daemon; other ARGS reach the
+    request.
     """
     task = _i2i_task("i2i-preprocess")
     model = (os.environ.get("MODEL") or "anima").strip()
@@ -1375,13 +1377,15 @@ def cmd_i2i_preprocess(extra):
         return
     if model != "moss":
         raise SystemExit(f"i2i-preprocess: MODEL={model!r}; known: anima, moss.")
-    config = Path("configs") / "moss" / "i2i" / task / "cache.toml"
-    if not (ROOT / config).is_file():
+    from library.moss.requests import I2I_CACHE, I2I_CONFIG_DIR
+
+    config = Path(I2I_CONFIG_DIR) / task / "cache.toml"
+    if task not in I2I_CACHE or not (ROOT / config).is_file():
         raise SystemExit(f"{config} not found: MOSS has no i2i cache for {task!r} yet.")
     mode, extra = _resolve_run_mode(extra)
     run_command(
         f"moss_i2i_cache_{task}",
-        ["scripts/moss/cache.py", "--config", config.as_posix(), *extra],
+        [I2I_CACHE[task].SCRIPT, "--config", config.as_posix(), *extra],
         mode=mode,
         stall_timeout=1800,
     )

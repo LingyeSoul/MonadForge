@@ -18,6 +18,40 @@ UI: dict[str, dict[str, str]] = {
         "preprocessing run re-encodes them.",
         "scan_dupes": "{n} images share a file name with one in another subfolder — "
         "their cache files are prefixed with the folder name.",
+        "tab_i2i": "i2i",
+        "i2i_task": "Task",
+        "i2i_no_tasks": "No i2i task configs under configs/moss/i2i/.",
+        "i2i_guide": "An i2i LoRA learns to turn a reference image into a target: the "
+        "reference rides every forward as clean latent tokens. Stage builds the "
+        "pairs, Preprocess caches each target with its reference (and caption), Train "
+        "fits the LoRA, Test renders new references with it. Each form starts from "
+        "configs/moss/i2i/<task>/; only your changes are saved.",
+        "i2i_task_colorize": "colorize: B&W manga page → colour. Staging mangafies the "
+        "colour corpus; the page enters the text encoder through its vision tower, "
+        "with its OCR'd lines in the caption, and as a half-size reference. Test with "
+        "an empty prompt: the page alone.",
+        "i2i_task_sanitize": "sanitize: removes text and speech bubbles. Staging mines "
+        "in-artist near-twin pairs (texted / clean); the texted page is a full-size "
+        "reference. Test with the page's caption minus its text tags.",
+        "i2i_stage_group": "1 · Stage",
+        "i2i_stage_hint": "Builds the task's pair tree under post_image_dataset/i2i/ "
+        "from the dataset (make i2i-stage TASK={task}; knobs in the [staging] table "
+        "of configs/easycontrol/{task}.toml). EasyControl reads the same tree.",
+        "run_stage": "Stage",
+        "i2i_cache_group": "2 · Preprocess",
+        "i2i_train_group": "3 · Train",
+        "i2i_chain": "Stage, preprocess, then train",
+        "i2i_test_group": "4 · Test",
+        "i2i_test_hint": "Renders each reference with the LoRA, shown beside it. "
+        "ref_image is one image or a folder of images; ref_scale and ref_vision must "
+        "match the cache the LoRA trained on.",
+        "i2i_staged": "{n} staged pairs.",
+        "i2i_not_staged": "Not staged yet: {path} is missing. Run Stage first.",
+        "i2i_stage_next": "Staging done — preprocessing.",
+        "i2i_need_ref": "Set ref_image to an image or a folder of images.",
+        "i2i_need_prompt": "With ref_vision off, the test needs a prompt: the page's "
+        "caption.",
+        "test_ref": "reference",
     },
     "cn": {
         "window_title": "MOSS-Image LoRA（alpha）",
@@ -27,6 +61,36 @@ UI: dict[str, dict[str, str]] = {
         "scan_stale": "{stale} 条标注在文本缓存之后被修改——下次预处理会自动重新编码。",
         "scan_dupes": "有 {n} 张图片与其他子文件夹中的图片同名——"
         "它们的缓存文件名会加上文件夹前缀。",
+        "tab_i2i": "图生图",
+        "i2i_task": "任务",
+        "i2i_no_tasks": "configs/moss/i2i/ 下没有图生图任务配置。",
+        "i2i_guide": "图生图 LoRA 学习把参考图变成目标图：参考图以干净的潜变量 token "
+        "参与每次前向。「准备配对」生成配对，「预处理」缓存每个目标及其参考图（和标注），"
+        "「训练」拟合 LoRA，「测试」用它处理新的参考图。各表单从 "
+        "configs/moss/i2i/<任务>/ 开始，只保存你的修改。",
+        "i2i_task_colorize": "colorize：黑白漫画页 → 彩色。准备配对时把彩色语料漫画化；"
+        "漫画页经视觉塔进入文本编码器（标注中带有 OCR 识别出的文字行），"
+        "并作为半尺寸参考图。测试时提示词留空：只输入漫画页。",
+        "i2i_task_sanitize": "sanitize：去除文字和对话框。准备配对时挖掘同一画师的"
+        "近似图对（有字 / 无字）；有字的页面作为全尺寸参考图。"
+        "测试时提示词用该页的标注，去掉文字相关标签。",
+        "i2i_stage_group": "1 · 准备配对",
+        "i2i_stage_hint": "从数据集在 post_image_dataset/i2i/ 下生成该任务的配对目录"
+        "（make i2i-stage TASK={task}；参数在 configs/easycontrol/{task}.toml 的 "
+        "[staging] 表中）。EasyControl 读取同一目录。",
+        "run_stage": "准备配对",
+        "i2i_cache_group": "2 · 预处理",
+        "i2i_train_group": "3 · 训练",
+        "i2i_chain": "准备配对、预处理后训练",
+        "i2i_test_group": "4 · 测试",
+        "i2i_test_hint": "用 LoRA 处理每张参考图，并与参考图并排显示。ref_image "
+        "为一张图片或图片文件夹；ref_scale 和 ref_vision 须与 LoRA 训练所用的缓存一致。",
+        "i2i_staged": "已准备 {n} 个配对。",
+        "i2i_not_staged": "尚未准备配对：找不到 {path}。请先运行「准备配对」。",
+        "i2i_stage_next": "配对准备完成——开始预处理。",
+        "i2i_need_ref": "请把 ref_image 设为一张图片或图片文件夹。",
+        "i2i_need_prompt": "ref_vision 关闭时，测试需要提示词：该页的标注。",
+        "test_ref": "参考图",
     },
 }
 
@@ -109,6 +173,19 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
     ),
     "grad_checkpointing": ("梯度检查点", "按块的激活检查点"),
     "seed": ("随机种子", "随机数种子"),
+    "n": ("插画配对数", "用于训练的插画配对数（准备好的漫画化页 + resized 中的彩色目标）"),
+    "manga": ("漫画页数", "追加的 manga_color 漫画页数（0 = 只用插画）"),
+    "holdout": ("留出插画数", "留作评估的插画配对数"),
+    "manga_holdout": ("留出漫画作品数", "留作评估的漫画作品数，每部一页；其任何版本都不参与训练"),
+    "ref_scale": (
+        "参考图缩放",
+        "参考潜变量的边长 = 目标边长除以此值，取 16 的倍数（生成时用相同的值）",
+    ),
+    "variants": (
+        "标注变体数",
+        "稀疏标注数 + 1：embeds_v1 … embeds_v{variants-1} 为去掉部分标签的颜色标注（至少 2）",
+    ),
+    "tag_dropout": ("标签丢弃比例", "稀疏标注去掉的颜色标注标签比例"),
 }
 
 # GenerateRequest fields whose name also exists on another request with a
@@ -147,4 +224,19 @@ FIELDS_CN_GENERATE: dict[str, tuple[str, str]] = {
         "'' = 关闭，'auto' = 内置 MOSS 掩码，'lo-hi' = 第 lo..hi 块，或 dave_alpha.npz 路径",
     ),
     "dave_strength": ("DAVE 强度", "在池内块上去除的均值比例（0 = 关闭，1 = 全部）"),
+    "ref_image": (
+        "参考图",
+        "图生图参考：一张图片，或图片文件夹（每张图片 × 每个提示词一个任务）。"
+        "输出保持参考图比例，面积上限为 宽 × 高；LoRA 中记录的 ref_timestep / ref_isolate 会生效",
+    ),
+    "ref_scale": (
+        "参考图缩放",
+        "设置 ref_image 时：参考潜变量的边长 = 输出边长除以此值，取 16 的倍数。"
+        "须与 LoRA 训练所用的缓存一致（sanitize 为 1，colorize 为 2）",
+    ),
+    "ref_vision": (
+        "参考图进视觉塔",
+        "设置 ref_image 时：参考图同时经视觉塔进入文本编码器，位于提示词之前，"
+        "与 colorize 缓存的编码方式一致。此时提示词留空即只输入该页",
+    ),
 }

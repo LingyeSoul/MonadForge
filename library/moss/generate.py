@@ -9,6 +9,11 @@ shift-5 grid, CFG with the uncond branch skipping block 22, all combining in
 fp32); with ``sampler="euler"``, ``spectrum=None`` it is
 ``MOSSImagePipeline.__call__`` op for op.
 
+``ref_image`` makes each job i2i: the reference is VAE-encoded at 1/``ref_scale``
+of the output's sides and rides every forward (``denoise(ref=…)``); with
+``ref_vision`` it also enters the TE through the vision tower ahead of the prompt
+(``library.moss.vision_te``), as a colorize cache encodes the page.
+
     make daemon-run ARGS="scripts/moss/generate.py --prompt '…' --steps 30"
 """
 
@@ -17,6 +22,8 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
+import re
 import time
 from pathlib import Path
 
@@ -243,12 +250,15 @@ def _jobs(req: GenerateRequest) -> list[dict]:
     else:
         source, prompts = "prompt", [req.prompt.strip()] if req.prompt.strip() else []
     if not prompts:
-        raise SystemExit(f"no prompts in {source}")
+        if not (req.ref_image and req.ref_vision):
+            raise SystemExit(f"no prompts in {source}")
+        prompts = [""]  # the page alone
     if req.prompt_format != "text":
         from library.moss.cache import caption_converter
 
-        prompts = list(map(caption_converter(req.prompt_format), prompts))
-    return [
+        convert = caption_converter(req.prompt_format)
+        prompts = [convert(p) if p else "" for p in prompts]
+    jobs = [
         dict(
             base,
             key=f"{i:03d}",
@@ -259,6 +269,53 @@ def _jobs(req: GenerateRequest) -> list[dict]:
         )
         for i, p in enumerate(prompts)
     ]
+    return _with_refs(req, jobs) if req.ref_image else jobs
+
+
+def ref_images(spec: str) -> list[Path]:
+    """``ref_image``: one image, or every image directly in a folder."""
+    from library.moss.scan import IMAGE_EXTS
+
+    path = resolve_under_home(spec)
+    if path.is_dir():
+        found = sorted(p for p in path.iterdir() if p.suffix.lower() in IMAGE_EXTS)
+        if not found:
+            raise SystemExit(f"no images in {path}")
+        return found
+    if not path.is_file():
+        raise SystemExit(f"no reference image at {path}")
+    return [path]
+
+
+def _with_refs(req: GenerateRequest, jobs: list[dict]) -> list[dict]:
+    """Each job once per reference image, sized to it: its aspect, area capped at
+    ``width × height``, multiples of 16."""
+    from PIL import Image
+
+    from library.moss.cache import target_size
+
+    if req.example:
+        raise SystemExit("ref_image does not combine with example")
+    resolution = round(math.sqrt(req.width * req.height))
+    out = []
+    for ref in ref_images(req.ref_image):
+        with Image.open(ref) as im:
+            width, height = target_size(*im.size, resolution)
+        tag = re.sub(r"[^\w.-]+", "_", ref.stem)[:48]
+        for j in jobs:
+            out.append(
+                dict(
+                    j,
+                    key=f"{j['key']}_{tag}",
+                    width=width,
+                    height=height,
+                    ref=str(ref),
+                    ref_mtime=ref.stat().st_mtime_ns,
+                    ref_scale=req.ref_scale,
+                    ref_vision=req.ref_vision,
+                )
+            )
+    return out
 
 
 def cached_embeds(
@@ -289,6 +346,77 @@ def cached_embeds(
             save_file({"embeds": emb.contiguous()}, path(text))
             out[text] = emb
     print(f"[te] {len(out) - len(missing)} cached, {len(missing)} encoded", flush=True)
+    return out
+
+
+def vision_embeds(
+    model_dir, jobs: list[dict], cache_dir: Path, precision: str
+) -> dict[str, torch.Tensor]:
+    """Per ``ref_vision`` job key, the TE output of its reference page (fitted to
+    the job's size) followed by its prompt, through the vision tower; read from /
+    written to ``cache_dir`` like ``cached_embeds``."""
+    from safetensors.torch import load_file, save_file
+
+    from library.moss.cache import fit, load_rgb
+
+    def path(j):
+        key = "\0".join(
+            map(str, ("vision", precision, j["ref"], j["ref_mtime"], j["width"],
+                      j["height"], j["prompt"]))
+        )
+        return cache_dir / f"v_{hashlib.sha1(key.encode()).hexdigest()[:16]}.safetensors"
+
+    out, missing = {}, []
+    for j in jobs:
+        if path(j).is_file():
+            out[j["key"]] = load_file(path(j))["embeds"]
+        else:
+            missing.append(j)
+    if missing:
+        from library.moss.loader import load_tokenizer
+        from library.moss.vision_te import encode, load_te
+
+        device = torch.device("cuda")
+        tok = load_tokenizer(model_dir)
+        te = load_te(tok, device, model_dir, precision=precision)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        for j in missing:
+            w, h = j["width"], j["height"]
+            page = fit(load_rgb(Path(j["ref"])), w, h)
+            emb, n_img = encode(tok, te, page, j["prompt"], w * h, device)
+            emb = emb.to("cpu", torch.bfloat16).contiguous()
+            save_file({"embeds": emb}, path(j))
+            out[j["key"]] = emb
+            print(
+                f"[te] {j['key']} page {w}x{h}: {emb.shape[0]} rows ({n_img} image)",
+                flush=True,
+            )
+        del te, tok
+        empty_cache()
+    print(
+        f"[te] vision: {len(out) - len(missing)} cached, {len(missing)} encoded",
+        flush=True,
+    )
+    return out
+
+
+def ref_latents(model_dir, jobs: list[dict], device) -> dict[str, torch.Tensor]:
+    """Per job key, its reference fitted to the job's size and then to
+    ``ref_size`` (as ``cache.cache_refs`` builds ``*.moss_ref``), ``(1,128,h,w)``
+    fp32 on the CPU."""
+    from library.moss.cache import fit, load_rgb, ref_size, to_pixels
+    from library.moss.model import encode
+
+    vae = load_vae(model_dir, device=device)
+    out = {}
+    for j in jobs:
+        w, h = j["width"], j["height"]
+        rw, rh = ref_size(w, h, j["ref_scale"])
+        image = fit(fit(load_rgb(Path(j["ref"])), w, h), rw, rh)
+        out[j["key"]] = encode(to_pixels(image), vae).float().cpu()
+        print(f"[ref] {j['key']}: {w}x{h} -> {rw}x{rh}", flush=True)
+    del vae
+    empty_cache()
     return out
 
 
@@ -405,9 +533,14 @@ def _write_manifest(out_dir: Path, req: GenerateRequest, records: list[dict]) ->
 def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
     """TE for the pending jobs only, then the DiT; each latent hits disk as soon
     as its denoise returns, so a killed job loses at most the one in flight."""
-    texts = [j["prompt"] for j, _ in pending]
-    texts += [j["negative"] for j, _ in pending if j["cfg"] != 1.0]
+    jobs = [j for j, _ in pending]
+    texts = [j["prompt"] for j in jobs if not j.get("ref_vision")]
+    texts += [j["negative"] for j in jobs if j["cfg"] != 1.0]
     embeds = cached_embeds(model_dir, texts, out_dir / "_te_cache", req.text_encoder)
+    seen = [j for j in jobs if j.get("ref_vision")]
+    seen = vision_embeds(model_dir, seen, out_dir / "_te_cache", req.text_encoder)
+    refs = [j for j in jobs if j.get("ref")]
+    refs = ref_latents(model_dir, refs, device) if refs else {}
 
     t0 = time.time()
     transformer = load_transformer(model_dir, req.model, device=device)
@@ -427,7 +560,8 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
         compile_blocks(transformer.layers)
     dave = _build_dave(req, len(transformer.layers))
     for j, rec in pending:
-        cond, cond_mask = pad_embeds([embeds[j["prompt"]]], device=device)
+        cond = seen[j["key"]] if j.get("ref_vision") else embeds[j["prompt"]]
+        cond, cond_mask = pad_embeds([cond], device=device)
         uncond = uncond_mask = None
         if j["cfg"] != 1.0:
             uncond, uncond_mask = pad_embeds([embeds[j["negative"]]], device=device)
@@ -451,6 +585,7 @@ def _denoise_pending(req, model_dir, out_dir, pending, device) -> None:
             sampler=req.sampler,
             seed=j["seed"],
             dave=dave,
+            ref=refs[j["key"]].to(device) if j["key"] in refs else None,
         ).cpu()
         torch.cuda.synchronize()
         seconds = time.time() - t0

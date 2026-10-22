@@ -27,8 +27,7 @@ template-mask code is on `moss-template-mask` in the private `preserve` mirror.
 |---|---|
 | `_render.py` | shared render loop (DiT + LoRA + compile, ER-SDE + Spectrum, latent cache, grid) |
 | `lora_ab.py`, `ab_cols.py` | LoRA A/B grids; one sheet per cell |
-| `vision_te.py` | TE call with an image in the user turn |
-| `colorize_{cache,eval,run,wild}.py` | colorize pipeline: cache → `scripts/moss/train.py` → eval, chained by `colorize_run.py`; `wild` for real pages |
+| `colorize_{eval,run,wild}.py` | colorize pipeline: `scripts/moss/colorize_cache.py` → `scripts/moss/train.py` → eval, chained by `colorize_run.py`; `wild` for real pages (the cache and `vision_te.py` shipped to `library/moss/`) |
 | `correction.py`, `correction_train.py`, `correction_ab.py` | corrector LoRA, its trainer, CFG × K grids |
 | `te_gptq.py`, `te_calib.py`, `te_calib_eval.py` | calibrated TE rounding (fp8 / INT8), its calibration manifest, per-category eval |
 

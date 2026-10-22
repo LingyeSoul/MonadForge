@@ -26,7 +26,8 @@ image goes into the single-stream sequence on `r = 1`, and a plain LoRA learns t
 - **Files**: `library/moss/model.py` (`_RoPE.forward(ref_hw=)`, `embed_sample` /
   `forward` / `forward_batched(ref=)`), `generate.py` (`denoise(ref=)`), `cache.py` /
   `scan.py` (`*.moss_ref.safetensors`), `train.py`, `tune.py`; probe scripts
-  `project/moss_lora/src/colorize_{cache,eval,wild,scale}.py` (`_render.py`, `vision_te.py`).
+  `project/moss_lora/src/colorize_{eval,wild,scale}.py` (`_render.py`); the cache and the
+  vision-tower TE call shipped as `library/moss/colorize.py` / `vision_te.py`.
 
 ## Probe 1: EasyControl colorize, 1-hour budget
 

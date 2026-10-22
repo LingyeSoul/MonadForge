@@ -1,7 +1,8 @@
 # Colorize with an OCR caption
 
 Sub-line of the i2i / colorize probe (`docs/proposal/moss_i2i.md`). Code:
-`src/colorize_cache.py`, `src/colorize_eval.py`, chained by `src/colorize_run.py`.
+`scripts/moss/colorize_cache.py` (`library/moss/colorize.py`), `src/colorize_eval.py`,
+chained by `src/colorize_run.py`. The recipe below ships as `configs/moss/i2i/colorize/`.
 
 ## Current recipe
 

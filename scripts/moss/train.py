@@ -2,11 +2,16 @@
 """Train a MOSS-Image LoRA on a precached folder — flags in
 ``library.moss.requests.TrainRequest``, work in ``library.moss.train``."""
 
+import os
+
 from library.moss.requests import TrainRequest
 
 
 def main() -> None:
     req = TrainRequest.from_argv()
+    if req.expandable_segments:
+        # Read when the CUDA allocator initializes: before library.moss.train.
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     from library.moss.train import run_train
 
     run_train(req)

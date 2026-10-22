@@ -39,14 +39,14 @@ def processor(tok, max_pixels):
 def load_te(tok, device, model_dir="", precision="bf16", fp8_path=None):
     """``load_text_encoder`` with the vision tower on the card too (placed before the
     layer budget is taken, so the paging plan accounts for it). ``precision="fp8"``
-    reads an fp8 file (``fp8_path``, else the catalog's): decoder linears fp8, the
-    vision tower bf16."""
+    / ``"int8"`` reads a quantized file (``fp8_path``, else the catalog's row):
+    decoder linears quantized, the vision tower bf16."""
     from transformers import AutoModel
 
-    if precision == "fp8":
+    if precision != "bf16":
         from library.moss.fp8 import load_fp8_text_encoder
 
-        te = load_fp8_text_encoder(fp8_path)
+        te = load_fp8_text_encoder(fp8_path, precision=precision)
     else:
         te = AutoModel.from_pretrained(
             variant_dir(model_dir, "base") / "text_encoder", dtype=torch.bfloat16

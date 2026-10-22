@@ -26,7 +26,7 @@ from safetensors.torch import load_file, save_file
 from library.env import resolve_under_home
 from library.moss import cache as moss_cache
 from library.moss.loader import empty_cache, load_tokenizer
-from vision_te import load_te, te_inputs
+from library.moss.vision_te import load_te, te_inputs
 
 MANIFEST = "post_image_dataset/moss/_te_calib_v2/manifest.json"
 

@@ -158,11 +158,35 @@ defaults and Spectrum; `ComfyUI-Anima-DAVE` 0.2.0 and later runs DAVE on MOSS. T
 encoder loads in **MOSS-Image Load Qwen3.5** as-is (from `models/text_encoders/`); the INT8
 file is in ComfyUI's `int8_tensorwise` + `convrot` format for the same loader.
 
+## i2i (image to image)
+
+An i2i LoRA learns a reference → target edit; the reference rides every forward as clean
+latent tokens on RoPE's `r` axis. Two tasks have a recipe in `configs/moss/i2i/<task>/`
+(`cache.toml`, `train.toml`, `generate.toml`):
+
+| Task | Reference | Text encoder input |
+|---|---|---|
+| `colorize` | the B&W page at half size | the page through Qwen3.5's vision tower, then a caption with its OCR'd lines |
+| `sanitize` | the texted page at full size | the clean twin's caption |
+
+```bash
+make i2i-stage TASK=colorize                    # pair tree under post_image_dataset/i2i/
+make i2i-preprocess TASK=colorize MODEL=moss    # cache (scripts/moss/colorize_cache.py; sanitize: cache.py)
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/i2i/colorize/train.toml"
+make daemon-run ARGS="scripts/moss/generate.py --config configs/moss/i2i/colorize/generate.toml \
+    --lora output/ckpt_moss/moss_i2i_colorize.safetensors --ref_image <page or folder>"
+```
+
+`--ref_image` is one image or a folder (one job per image and prompt); the output keeps its
+aspect with the area capped at `width × height`. `--ref_scale` and `--ref_vision` must match
+the cache the LoRA trained on; the LoRA's own `ref_timestep` / `ref_isolate` apply. The GUI's
+**i2i** tab (`make gui-moss`, or MOSS mode in `make gui`) runs the same four steps.
+
 ## Research flags
 
 Advanced, not recommended: `--repa_weight` / `--repa_layer` / `--repa_pe_root` (relational
 REPA, parked, `_archive/moss_lora/repa.md`); `--ref_timestep` / `--ref_isolate` /
-`--caption_variant_rate` (i2i / colorize probes, `docs/proposal/moss_i2i.md`).
+`--caption_variant_rate` (set by the i2i recipes above; probes in `docs/proposal/moss_i2i.md`).
 
 ## More
 

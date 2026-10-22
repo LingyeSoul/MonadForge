@@ -13,12 +13,14 @@ LoHa). `spectrum.py` re-implements Anima's forecaster rather than importing `net
 | Module | Role |
 |---|---|
 | `model.py` | vendored `MOSSImageTransformer` / `MOSSImageScheduler` (attribution kept, state-dict names unchanged); per-sample `forward` must stay op-for-op with the pipeline, `forward_batched` masks text. i2i: `ref=` latents on RoPE's `r = 1` axis, `ref_timestep` / `ref_isolate` are transformer attributes |
-| `requests.py` | **torch-free** `CacheRequest` / `GenerateRequest` / `TrainRequest` / `TuneSwapRequest`; every flag and default is defined here once |
+| `requests.py` | **torch-free** `CacheRequest` / `ColorizeCacheRequest` / `GenerateRequest` / `TrainRequest` / `TuneSwapRequest`; every flag and default is defined here once. `I2I_CACHE` maps each i2i task to its cache request; its recipes are `configs/moss/i2i/<task>/{cache,train,generate}.toml` (`i2i_config`) |
 | `loader.py` | phase split TE → encode → free → DiT; TE paged by decoder layer (`offload_by_layer`, `te_reserve_gb`) |
 | `fp8.py` | fp8 TE export (`quantize_te`, ComfyUI `comfy_quant` format) and `load_fp8_text_encoder`; `text_encoder=` picks catalog row `moss_te_{precision}`, and TE caches stamp `encoder_id(precision)` so a switch re-encodes |
 | `int8.py` | INT8 ConvRot TE (`Int8ConvRotLinear`, W8A8 or weight-only with `int8_act=False`). **The default TE** (`DEFAULT_TEXT_ENCODER = "int8"`, row `moss_te_int8`); SmoothQuant scales are folded into its RMSNorm weights, so its norms differ from Base's. Regenerate with `project/moss_lora/src/te_gptq.py --grid int8_convrot --smooth 0.5 --act_aware` |
 | `cache.py` | TE cache at natural length (never padded) + packed, BN-normalised latent cache; caption variants `embeds_v{k}` survive a re-encode while the caption is unchanged |
-| `generate.py` | `run_generate(req)`: ER-SDE or Euler, CFG + uncond skip-22, Spectrum. Benches reuse `denoise`, `cached_embeds`, `build_spectrum` |
+| `generate.py` | `run_generate(req)`: ER-SDE or Euler, CFG + uncond skip-22, Spectrum. Benches reuse `denoise`, `cached_embeds`, `build_spectrum`. `ref_image` makes a job i2i: `ref_latents` (fitted as `cache_refs` does) into every forward, and with `ref_vision` the page through the vision tower ahead of the prompt (`vision_embeds`) |
+| `vision_te.py` | the TE call with an image in the user turn (Qwen3.5's own processor settings); `load_te` keeps the vision tower resident, any `text_encoder` precision; `encode_variants` prefills the page once for several captions |
+| `colorize.py` | `run_colorize_cache(req)`: staged B&W page → vision-tower TE (OCR layout / sparse / page-alone captions) + `*.moss_ref`, colour target latent; OCR floors shared with the ComfyUI MOSS Toolkit's caption helper |
 | `cns.py` | CNS recolor on the un-patchified 32 ch grid; bench-only |
 | `spectrum.py` | forecasts cond and uncond separately; `MossSpectrum()` defaults are `GenerateRequest`'s |
 | `dave.py` | DAVE on image tokens via `model.layer_hook` (sees only rows that ran the block, so skip-22 is handled); τ is a step count; massive channels (`calibration/massive_channels.npz`) excluded. `auto` = `calibration/dave_alpha.npz`; the ComfyUI node `~/ComfyUI-Anima-DAVE` bundles the same pool + channel list. User doc `docs/moss/dave.md` |
@@ -28,8 +30,9 @@ LoHa). `spectrum.py` re-implements Anima's forecaster rather than importing `net
 | `tune.py` | `run_tune(req)`: recommends `--blocks_to_swap` / `--activation_memory_budget` |
 | `scan.py` | **torch-free** cache layout + GUI counts; its stale check (`source_sha256` vs `.txt`) can disagree with `cache.py`'s (`_te_current`) |
 
-Sidecars `scripts/moss/{cache,generate,train,tune_swap}.py` are thin argparse over the
-requests, submitted through the daemon; `make gui-moss` submits the same jobs. User doc
+Sidecars `scripts/moss/{cache,colorize_cache,generate,train,tune_swap}.py` are thin argparse over the
+requests, submitted through the daemon; `make gui-moss` submits the same jobs (its i2i tab:
+`gui/moss/i2i.py`). User doc
 `docs/moss/README.md`. Weights: catalog packs `moss-base` / `moss-sft` under
 `models/moss_image/MOSS-Image-{Base,SFT}`; SFT ships its DiT alone, TE / VAE / tokenizer
 always load from Base. Research line: `project/moss_lora/`.
