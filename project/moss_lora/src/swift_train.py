@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SWIFT target extrapolation (arXiv 2610.25844) on a MOSS LoRA (``swift.md``).
+"""SWIFT target extrapolation (arXiv 2610.25844) on a MOSS LoRA (``done/swift.md``).
 
 Trains on ``y = v + α (v − v_weak)``, ``v = noise − latent`` and ``v_weak`` the
 base plus a frozen guide LoRA (``--guide``, an early checkpoint of the same
