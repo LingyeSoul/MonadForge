@@ -1,6 +1,6 @@
 # 나만의 EasyControl 어댑터 만들기
 
-이 가이드는 Anima에 **새로운 EasyControl 컨트롤 태스크**를 개인 용도로 추가하는 방법을 안내합니다. git에 기여하는 것이 아니라 `easycontrol_adapters/<your_task>/` 아래에 두는 로컬 어댑터입니다. 대표 예제인 **colorize** (`easycontrol_adapters/colorization/`)를 단계별로 따라가면서, 자신의 태스크를 위해 정확히 무엇을 바꿔야 하는지 짚어 줍니다.
+이 가이드는 Anima에 **새로운 EasyControl 컨트롤 태스크**를 개인 용도로 추가하는 방법을 안내합니다. git에 기여하는 것이 아니라 `i2i_tasks/<your_task>/` 아래에 두는 로컬 어댑터입니다. 대표 예제인 **colorize** (`i2i_tasks/colorization/`)를 단계별로 따라가면서, 자신의 태스크를 위해 정확히 무엇을 바꿔야 하는지 짚어 줍니다.
 
 기억할 것은 단 하나:
 
@@ -33,7 +33,7 @@ colorize의 방식 — 재사용할 수 있는 아이디어입니다: **실제 �
 
 | # | 항목 | colorize 버전 | 역할 |
 |---|---------|-------------------|--------------|
-| 1 | `easycontrol_adapters/<task>/` 프로젝트 | `colorization/` (`mangafy*.py`, `color_caption.py`, `prep.py`) | 레퍼런스 이미지를 만들고 캐시 (선택적으로 짧은 텍스트 캐시도) |
+| 1 | `i2i_tasks/<task>/` 프로젝트 | `colorization/` (`mangafy*.py`, `color_caption.py`, `prep.py`) | 레퍼런스 이미지를 만들고 캐시 (선택적으로 짧은 텍스트 캐시도) |
 | 2 | `configs/datasets/<task>.toml` | `configs/easycontrol/colorize.toml` | 각 타깃을 레퍼런스와 **cond_cache_dir**로 짝짓는 데이터셋 |
 | 3 | `configs/methods/<task>.toml` (+ `configs/gui-methods/<task>.toml`) | `configs/easycontrol/colorize.toml` | config — 데이터셋을 가리키고 LR / epochs / `network_args` 설정 |
 | 4 | `scripts/tasks/{training,inference}.py` | `_EASYADAPTERS = {"colorize"}` + 분기 | `EASYADAPTER=<task>`가 `make easycontrol*` 명령에서 작동하게 함 |
@@ -42,7 +42,7 @@ colorize의 방식 — 재사용할 수 있는 아이디어입니다: **실제 �
 
 ---
 
-## 2. 항목 1 — 어댑터 프로젝트 (`easycontrol_adapters/<task>/`)
+## 2. 항목 1 — 어댑터 프로젝트 (`i2i_tasks/<task>/`)
 
 실제 작업이 여기에 있습니다. 두 가지 일을 합니다: **레퍼런스 이미지 만들기**와 **캐시하기**. (선택적으로 세 번째로, 태스크별 텍스트 캐시를 구축합니다.)
 
@@ -53,7 +53,7 @@ colorize의 방식 — 재사용할 수 있는 아이디어입니다: **실제 �
 colorize에서 이는 `mangafy.py::mangafy_array`(및 GPU 버전 `mangafy_gpu.py::mangafy_array_gpu`)입니다:
 
 ```python
-# easycontrol_adapters/colorization/prep.py
+# i2i_tasks/colorization/prep.py
 Screener = Callable[[np.ndarray, int], np.ndarray]  # (img_rgb, seed) → cond_rgb
 ```
 
@@ -121,8 +121,8 @@ validation_seed = 42
   [[datasets.subsets]]
   image_dir = 'post_image_dataset/resized'        # the COLOR targets
   cache_dir = 'post_image_dataset/lora'           # target latents + text — REUSED, not rebuilt
-  cond_cache_dir = 'post_image_dataset/easycontrol/colorize/cond'   # ← the reference latents (from prep.py)
-  text_cache_dir = 'post_image_dataset/easycontrol/colorize/text'   # ← color-only text cache (from prep.py)
+  cond_cache_dir = 'post_image_dataset/i2i/colorize/cond'   # ← the reference latents (from prep.py)
+  text_cache_dir = 'post_image_dataset/i2i/colorize/text'   # ← color-only text cache (from prep.py)
   recursive = true
   flip_aug = false        # latents can't be flipped after the fact, and there's no flipped reference
   num_repeats = 1
@@ -200,9 +200,9 @@ unsloth_offload_checkpointing = true
    ```python
    adapter = _easyadapter()
    if adapter == "colorize":
-       run([PY, "easycontrol_adapters/colorization/prep.py", *extra]); return
+       run([PY, "i2i_tasks/colorization/prep.py", *extra]); return
    if adapter == "<task>":
-       run([PY, "easycontrol_adapters/<task>/prep.py", *extra]); return
+       run([PY, "i2i_tasks/<task>/prep.py", *extra]); return
    ```
 
 3. 학습 자체는 **편집이 필요 없습니다** — `cmd_easycontrol`이 이미 `train(_easyadapter() or "easycontrol", extra)`를 호출하므로, 이름이 허용목록에 들어가면 `EASYADAPTER=<task>`가 자동으로 `configs/methods/<task>.toml`을 실행합니다.
@@ -226,7 +226,7 @@ ref_fallback_dir = (ROOT/"post_image_dataset"/"resized") if is_colorize else (RO
 # 1. Build the reference cache (build + VAE-encode). Idempotent.
 make easycontrol-preprocess EASYADAPTER=<task>
 #    Check a few first:
-python easycontrol_adapters/<task>/prep.py --limit 8
+python i2i_tasks/<task>/prep.py --limit 8
 #    Eyeball the staged reference PNGs under post_image_dataset/<task>_staging/
 
 # 2. Train (DiT frozen, adapter only).
@@ -250,7 +250,7 @@ REF_IMAGE=path/to/condition.png make test-easycontrol EASYADAPTER=<task>
 
 ## 8. 체크리스트
 
-- [ ] `easycontrol_adapters/<task>/`에 결정론적이고 원자적으로 쓰는 빌더
+- [ ] `i2i_tasks/<task>/`에 결정론적이고 원자적으로 쓰는 빌더
       (`(img, seed) → reference`, 같은 크기)와 멱등 `prep.py`
       (build → encode → 선택적 text).
 - [ ] 레퍼런스를 **원본 크기**로 인코딩하여 토큰 카운트가 타깃 버킷과 일치하도록(§3).
@@ -267,7 +267,7 @@ REF_IMAGE=path/to/condition.png make test-easycontrol EASYADAPTER=<task>
 
 ## 9. 더 읽을 곳
 
-- **`easycontrol_adapters/colorization/README.md`** — colorize 설계 노트 전문
+- **`i2i_tasks/colorization/README.md`** — colorize 설계 노트 전문
   (캡션 정책, 스크린톤 밴드, Phase B 로드맵). 위 모든 것의 레퍼런스 구현.
 - **`docs/experimental/easycontrol.md`** — 네트워크 자체: 2-스트림 포워드,
   `b_cond` step-0 벤치, 인퍼런스 캐시, 메모리 사용, 한계. `network_args`를

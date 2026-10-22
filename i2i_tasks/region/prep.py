@@ -78,13 +78,13 @@ Target latents and PE come from the shared LoRA cache (``cache_dir =
 post_image_dataset/lora`` in the blueprint) — nothing is re-encoded for
 targets. Run from the repo root::
 
-    python easycontrol_adapters/region/prep.py --skip_encode --skip_text   # staging (GPU: SAM)
-    python easycontrol_adapters/region/prep.py \
+    python i2i_tasks/region/prep.py --skip_encode --skip_text   # staging (GPU: SAM)
+    python i2i_tasks/region/prep.py \
         --skip_select --skip_sam --skip_cond --skip_captions               # preprocess (GPU: VAE+TE)
 
 Via the task runner (knobs from ``configs/easycontrol/region.toml``)::
 
-    make easycontrol-staging    EASYADAPTER=region   # stages 1-4
+    make i2i-stage TASK=region   # stages 1-4
     make easycontrol-preprocess EASYADAPTER=region   # stages 5-6
 
 Contact sheets of the masks / paints / captions: ``contact_sheet.py`` next to
@@ -1063,7 +1063,7 @@ def stage_text(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", default="post_image_dataset/easycontrol/region")
+    parser.add_argument("--base", default="post_image_dataset/i2i/region")
     parser.add_argument(
         "--caption_index", default="post_image_dataset/captions/caption_index.json"
     )

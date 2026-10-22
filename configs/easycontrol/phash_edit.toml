@@ -2,7 +2,7 @@ name = "phash_edit"
 
 # phash-mined aligned instruction-edit descriptor. Three steps, one config:
 #
-#   make easycontrol-staging    EASYADAPTER=phash_edit   # mine the pair tree
+#   make i2i-stage TASK=phash_edit   # mine the pair tree
 #   make easycontrol-preprocess EASYADAPTER=phash_edit   # resize + VAE/TE + cond
 #   make easycontrol            EASYADAPTER=phash_edit   # train
 #
@@ -126,9 +126,9 @@ caption_extension = '.txt'
 batch_size = 1
 
   [[datasets.subsets]]
-  image_dir = 'post_image_dataset/easycontrol/{name}/resized'
-  cache_dir = 'post_image_dataset/easycontrol/{name}/cache'        # denoising target: the _no_tags members
-  cond_cache_dir = 'post_image_dataset/easycontrol/{name}/cond'    # condition: the paired _tags latent (keyed by the _no_tags stem)
+  image_dir = 'post_image_dataset/i2i/{name}/resized'
+  cache_dir = 'post_image_dataset/i2i/{name}/cache'        # denoising target: the _no_tags members
+  cond_cache_dir = 'post_image_dataset/i2i/{name}/cond'    # condition: the paired _tags latent (keyed by the _no_tags stem)
   path_pattern = '*_no_tags.*'     # targets = the edited members only
   recursive = true                 # tree is nested <artist>/<pair_id>_no_tags; caches mirror it
   flip_aug = false                 # latents can't be flipped post-hoc; the cond cache has no flipped variant

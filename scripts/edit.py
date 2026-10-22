@@ -329,7 +329,7 @@ def parse_args() -> argparse.Namespace:
         help="Mask image path (white/nonzero = edit region). The masked "
         "region of the EC cond IMAGE is filled with flat mid-gray (128) "
         "before VAE encode — the inpaint prior's trained hole convention "
-        "(easycontrol_adapters/inpainting/mask_image.py), so the prior "
+        "(i2i_tasks/inpainting/mask_image.py), so the prior "
         "clamps outside the hole and generates freely inside it, steered by "
         "ψ_tar. The fill happens in pixel space, never on the latent. "
         "Requires --easycontrol_weight.",

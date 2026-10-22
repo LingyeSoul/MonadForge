@@ -407,7 +407,7 @@ STRINGS: dict[str, str] = {
     "guidebook_close": "Close",
     # EasyControl adapter guide (build-your-own control task)
     "adapter_guide": "📘 Adapter Guide",
-    "adapter_guide_tooltip": "How to build your own EasyControl adapter (easycontrol_adapters/ADAPTER_GUIDE.md)",
+    "adapter_guide_tooltip": "How to build your own EasyControl adapter (i2i_tasks/ADAPTER_GUIDE.md)",
     "easycontrol_descriptor_note": "This control task is a self-contained descriptor with a multi-table shape, edited as raw TOML on the left:<br><br>• <b>name</b> — output slug; reroutes every derived cache/output path.<br>• <code>[staging]</code> — data generation that materializes the condition tree.<br>• <code>[preprocess]</code> — VAE/TE caching knobs over the staged tree.<br>• <code>[training]</code> — overrides folded onto the base EasyControl method.<br>• <code>[general]</code> / <code>[[datasets]]</code> — the dataset blueprint train.py reads.<br>• <code>[variant]</code> — this dropdown entry's GUI metadata.<br><br>The <b>Preprocess</b> button synthesizes the condition tree + caches it; <b>Train</b> trains the base EasyControl method with this descriptor's <code>[training]</code> overrides folded in. Both survive the GUI closing.",
     "easycontrol_descriptor_form_header": "Editing descriptor <b>{path}</b>. The knob tables below edit as a form; Save writes changed values back, preserving comments and the <code>[[datasets]]</code> blueprint. The blueprint and <code>[variant]</code> metadata aren't shown here — edit the file directly for those. Click a field name for help.",
     "ec_desc_group_top": "descriptor",

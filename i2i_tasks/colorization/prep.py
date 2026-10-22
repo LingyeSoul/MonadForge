@@ -19,12 +19,12 @@ pipeline description; summary of the four idempotent stages:
 
 Run from the repo root::
 
-    python easycontrol_adapters/colorization/prep.py            # full dataset
-    python easycontrol_adapters/colorization/prep.py --limit 8  # quick QA batch
+    python i2i_tasks/colorization/prep.py            # full dataset
+    python i2i_tasks/colorization/prep.py --limit 8  # quick QA batch
 
 Via the task runner::
 
-    make easycontrol-staging    EASYADAPTER=colorize   # stage 1 (mangafy)
+    make i2i-stage TASK=colorize   # stage 1 (mangafy)
     make easycontrol-preprocess EASYADAPTER=colorize   # stages 2-4
 """
 
@@ -122,9 +122,7 @@ def _make_screener(engine: str) -> Screener:
     if engine == "cv2":
         import cv2
 
-        cv2.setNumThreads(
-            1
-        )  # one cv2 thread per worker; the pool parallelizes
+        cv2.setNumThreads(1)  # one cv2 thread per worker; the pool parallelizes
         from mangafy import mangafy_array
 
         return lambda img, seed: mangafy_array(img, seed=seed)
@@ -620,15 +618,13 @@ def stage_text(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--src", default="post_image_dataset/resized")
+    parser.add_argument("--staging", default="post_image_dataset/i2i/colorize/staging")
     parser.add_argument(
-        "--staging", default="post_image_dataset/easycontrol/colorize/staging"
-    )
-    parser.add_argument(
-        "--cond_cache_dir", default="post_image_dataset/easycontrol/colorize/cond"
+        "--cond_cache_dir", default="post_image_dataset/i2i/colorize/cond"
     )
     parser.add_argument(
         "--target_cache_dir",
-        default="post_image_dataset/easycontrol/colorize/target",
+        default="post_image_dataset/i2i/colorize/target",
         help="white-balanced target-latent cache; the colorize dataset's "
         "latent_cache_dir (TE/PE stay on the shared caches)",
     )
@@ -700,7 +696,7 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="skip the mangafy condition-synthesis stage (it's the "
-        "`easycontrol-staging EASYADAPTER=colorize` step); --no-skip_mangafy "
+        "`i2i-stage TASK=colorize` step); --no-skip_mangafy "
         "re-stages inline during preprocess",
     )
     parser.add_argument("--skip_encode", action="store_true")
@@ -742,7 +738,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--text_cache_dir",
-        default="post_image_dataset/easycontrol/colorize/text",
+        default="post_image_dataset/i2i/colorize/text",
         help="where color-only TE caches go; the colorize dataset's text_cache_dir",
     )
     parser.add_argument(

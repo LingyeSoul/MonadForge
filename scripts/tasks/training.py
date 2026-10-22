@@ -277,7 +277,7 @@ def _easy_load(adapter: str) -> tuple[dict, str, str]:
     """Load ``configs/easycontrol/<adapter>.toml`` → ``(cfg, name, base)``.
 
     The top-level ``name`` key (default = the file stem) is the single source
-    of truth for the run: it picks the ``post_image_dataset/easycontrol/<name>/``
+    of truth for the run: it picks the ``post_image_dataset/i2i/<name>/``
     base tree and the ``anima_easycontrol_<name>`` output_name default.
     Explicit ``[preprocess]`` path keys / ``[training].output_name`` still win
     if present (back-compat).
@@ -285,12 +285,12 @@ def _easy_load(adapter: str) -> tuple[dict, str, str]:
     path = _easy_cfg_path(adapter)
     if not path.is_file():
         raise SystemExit(
-            f"{path} not found — run `make easycontrol-staging "
-            f"EASYADAPTER={adapter}` first to materialize the staging tree."
+            f"{path} not found — run `make i2i-stage "
+            f"TASK={adapter}` first to materialize the staging tree."
         )
     cfg = tomllib.loads(path.read_text(encoding="utf-8"))
     name = str(cfg.get("name") or path.stem).strip()
-    base = f"post_image_dataset/easycontrol/{name}"
+    base = f"post_image_dataset/i2i/{name}"
     return cfg, name, base
 
 
@@ -299,13 +299,16 @@ def _resolve_blueprint_path(path: str, name: str) -> str:
 
     Interpolates the ``{name}`` placeholder the miner writes into the
     blueprint tail; falls back to swapping the ``<slug>`` component of an
-    older ``post_image_dataset/easycontrol/<slug>/...`` path. Non-matching
+    older ``post_image_dataset/{i2i,easycontrol}/<slug>/...`` path. Non-matching
     (custom) paths are left untouched.
     """
     path = path.replace("{name}", name)
     parts = Path(path).parts
-    if len(parts) >= 3 and parts[:2] == ("post_image_dataset", "easycontrol"):
-        return str(Path(*parts[:2], name, *parts[3:]))
+    if len(parts) >= 3 and parts[:2] in (
+        ("post_image_dataset", "i2i"),
+        ("post_image_dataset", "easycontrol"),  # pre-rename blueprints
+    ):
+        return str(Path("post_image_dataset", "i2i", name, *parts[3:]))
     return path
 
 
@@ -325,7 +328,7 @@ def _easy_train_extra(adapter: str, extra) -> list[str]:
     if not blueprint.get("datasets"):
         raise SystemExit(
             f"{_easy_cfg_path(adapter)} has no [[datasets]] blueprint — run "
-            f"`make easycontrol-staging EASYADAPTER={adapter}` first."
+            f"`make i2i-stage TASK={adapter}` first."
         )
 
     # Resolve subset paths against the current `name` slug so a `name` change
@@ -415,7 +418,7 @@ def _near_twins_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
 
     Every knob is read from the ``[preprocess]`` table of
     ``configs/easycontrol/near_twins.toml``. The staging/resized/cache/cond
-    dirs default to ``post_image_dataset/easycontrol/<name>/{staging,resized,
+    dirs default to ``post_image_dataset/i2i/<name>/{staging,resized,
     cache,cond}``; an explicit path key still overrides.
 
     The mined ``staging/`` tree holds native-resolution images (symlinks to
@@ -589,7 +592,7 @@ def _near_twins_stage(adapter: str, cfg: dict, base: str, extra) -> None:
         [
             PY,
             "-m",
-            "easycontrol_adapters.tools.near_twins",
+            "i2i_tasks.tools.near_twins",
             "--config",
             cfg_path,
             "--config-out",
@@ -629,7 +632,7 @@ def _colorize_stage(adapter: str, cfg: dict, base: str, extra) -> None:
     run(
         [
             PY,
-            "easycontrol_adapters/colorization/prep.py",
+            "i2i_tasks/colorization/prep.py",
             "--skip_encode",
             "--skip_target",
             "--skip_text",
@@ -650,7 +653,7 @@ def _colorize_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
     run(
         [
             PY,
-            "easycontrol_adapters/colorization/prep.py",
+            "i2i_tasks/colorization/prep.py",
             "--skip_mangafy",
             *_colorize_prep_paths(base),
             *knobs,
@@ -686,7 +689,7 @@ def _inpaint_stage(adapter: str, cfg: dict, base: str, extra) -> None:
     run(
         [
             PY,
-            "easycontrol_adapters/inpainting/prep.py",
+            "i2i_tasks/inpainting/prep.py",
             "--skip_encode",
             "--skip_text",
             *_inpaint_prep_paths(base),
@@ -707,7 +710,7 @@ def _inpaint_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
     run(
         [
             PY,
-            "easycontrol_adapters/inpainting/prep.py",
+            "i2i_tasks/inpainting/prep.py",
             "--skip_mask",
             *_inpaint_prep_paths(base),
             *knobs,
@@ -726,7 +729,7 @@ def _region_stage(adapter: str, cfg: dict, base: str, extra) -> None:
     run(
         [
             PY,
-            "easycontrol_adapters/region/prep.py",
+            "i2i_tasks/region/prep.py",
             "--skip_encode",
             "--skip_text",
             "--base",
@@ -746,7 +749,7 @@ def _region_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
     run(
         [
             PY,
-            "easycontrol_adapters/region/prep.py",
+            "i2i_tasks/region/prep.py",
             "--skip_select",
             "--skip_sam",
             "--skip_cond",
@@ -762,7 +765,7 @@ def _region_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
 def _subject_stage(adapter: str, cfg: dict, base: str, extra) -> None:
     """Subject staging: mine cross-image same-character pairs.
 
-    ``easycontrol_adapters/tools/subject_pairs.py`` reads its ``[staging]``
+    ``i2i_tasks/tools/subject_pairs.py`` reads its ``[staging]``
     table and rewrites the blueprint tail in place (near_twins contract).
     CPU-only: staging is symlinks + a ``pairs.json`` manifest + the ``cond/``
     latent tree — no encode pass (latents/TE reused from the shared cache)."""
@@ -771,7 +774,7 @@ def _subject_stage(adapter: str, cfg: dict, base: str, extra) -> None:
         [
             PY,
             "-m",
-            "easycontrol_adapters.tools.subject_pairs",
+            "i2i_tasks.tools.subject_pairs",
             "--config",
             cfg_path,
             "--config-out",
@@ -790,7 +793,7 @@ def _subject_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
         [
             PY,
             "-m",
-            "easycontrol_adapters.tools.subject_pairs",
+            "i2i_tasks.tools.subject_pairs",
             "--config",
             str(_easy_cfg_path(adapter)),
             "--cond-only",
@@ -802,7 +805,7 @@ def _subject_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
 def _subject_edit_stage(adapter: str, cfg: dict, base: str, extra) -> None:
     """Subject-edit staging: mine delta-caption edit pairs.
 
-    ``easycontrol_adapters/tools/subject_edit_pairs.py`` — subject_pairs
+    ``i2i_tasks/tools/subject_edit_pairs.py`` — subject_pairs
     contract, but the staged ``.txt`` files are REAL files holding the tag
     delta vs the cond partner, not caption symlinks. Still CPU-only; the TE
     encode over the delta captions is the preprocess step."""
@@ -811,7 +814,7 @@ def _subject_edit_stage(adapter: str, cfg: dict, base: str, extra) -> None:
         [
             PY,
             "-m",
-            "easycontrol_adapters.tools.subject_edit_pairs",
+            "i2i_tasks.tools.subject_edit_pairs",
             "--config",
             cfg_path,
             "--config-out",
@@ -833,7 +836,7 @@ def _subject_edit_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
         [
             PY,
             "-m",
-            "easycontrol_adapters.tools.subject_edit_pairs",
+            "i2i_tasks.tools.subject_edit_pairs",
             "--config",
             str(_easy_cfg_path(adapter)),
             "--cond-only",
@@ -898,8 +901,8 @@ def _phash_edit_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
 
     if not manifest.is_file():
         raise SystemExit(
-            f"{manifest} not found — run `make easycontrol-staging "
-            f"EASYADAPTER={adapter}` first to mine the pair pool."
+            f"{manifest} not found — run `make i2i-stage "
+            f"TASK={adapter}` first to mine the pair pool."
         )
 
     target_res = pp.get("target_res")
@@ -1004,7 +1007,7 @@ def _phash_edit_colorize_cond(
     """Synthesize + encode the cond side of the ``kind="colorize"`` records.
 
     Those records have no mined partner: the condition is a **mangafied B&W**
-    view (XDoG + screentone, ``easycontrol_adapters/colorization/prep.py``) of
+    view (XDoG + screentone, ``i2i_tasks/colorization/prep.py``) of
     the target itself. Mangafying the already-bucketed ``resized/`` image keeps
     the cond at the target's exact shape for free.
 
@@ -1044,7 +1047,7 @@ def _phash_edit_colorize_cond(
     run(
         [
             PY,
-            "easycontrol_adapters/colorization/prep.py",
+            "i2i_tasks/colorization/prep.py",
             "--src",
             mono_src,
             "--staging",
@@ -1201,7 +1204,7 @@ def _phash_edit_stage(adapter: str, cfg: dict, base: str, extra) -> None:
         [
             PY,
             "-m",
-            "easycontrol_adapters.tools.phash_edit_pairs",
+            "i2i_tasks.tools.phash_edit_pairs",
             "--config",
             cfg_path,
             "--config-out",
@@ -1221,7 +1224,7 @@ def _twin_edit_stage(adapter: str, cfg: dict, base: str, extra) -> None:
         [
             PY,
             "-m",
-            "easycontrol_adapters.tools.twin_edit_pairs",
+            "i2i_tasks.tools.twin_edit_pairs",
             "--config",
             cfg_path,
             "--config-out",
@@ -1265,7 +1268,7 @@ _EASY_ADAPTERS = {
 def cmd_easycontrol_preprocess(extra):
     """Full EasyControl preprocess: VAE latents + text-encoder outputs.
 
-    Source: ``easycontrol-dataset/``  Caches: ``post_image_dataset/easycontrol/``.
+    Source: ``easycontrol-dataset/``  Caches: ``post_image_dataset/i2i/``.
 
     ``EASYADAPTER=<adapter>`` instead runs the adapter's descriptor-driven
     preprocess (every knob from the ``[preprocess]`` table of
@@ -1283,7 +1286,7 @@ def cmd_easycontrol_preprocess(extra):
         return
 
     src = "easycontrol-dataset"
-    dst = "post_image_dataset/easycontrol"
+    dst = "post_image_dataset/i2i"
     run(
         [
             PY,
@@ -1320,34 +1323,70 @@ def cmd_easycontrol_preprocess(extra):
     )
 
 
-def cmd_easycontrol_staging(extra):
-    """Generate an EasyControl adapter's *staging* dataset (no VAE/TE caching).
+def cmd_i2i_stage(extra):
+    """Generate an i2i task's *staging* tree (no VAE/TE caching).
 
-    The adapter-specific data-generation step that materializes the training/
-    condition tree, kept separate from the later ``easycontrol-preprocess``
-    VAE/TE caching pass. Knobs come from the ``[staging]`` table of
-    ``configs/easycontrol/<adapter>.toml``; extra CLI args override them.
+    ``TASK=<task>`` (``EASYADAPTER`` is read when ``TASK`` is unset) picks the
+    task. Staging is model-agnostic: ``i2i_tasks/<task>`` materializes the
+    condition / pair tree under ``post_image_dataset/i2i/<name>/``, which the
+    EasyControl encode (``easycontrol-preprocess``) and the MOSS i2i cache
+    (``project/moss_lora/src/colorize_cache.py``) both read. Knobs come from
+    the ``[staging]`` table of ``configs/easycontrol/<task>.toml``; extra CLI
+    args override them, e.g.::
 
-    ``EASYADAPTER=near_twins`` mines the in-artist near-twin pair tree into
-    ``post_image_dataset/easycontrol/near_twins/staging/`` and (re)writes the
-    descriptor's blueprint tail, e.g.::
+        make i2i-stage TASK=colorize ARGS="--engine cv2 --limit 8"
+        make i2i-stage TASK=near_twins ARGS="--region --artists ama_mitsuki"
 
-        make easycontrol-staging EASYADAPTER=near_twins \\
-            ARGS="--region --artists ama_mitsuki"
-
-    ``EASYADAPTER=colorize`` runs only the mangafy stage (synthesize the
-    synthetic B&W manga condition tree; idempotent, skips already-staged
-    PNGs), e.g.::
-
-        make easycontrol-staging EASYADAPTER=colorize ARGS="--engine cv2 --limit 8"
+    ``colorize`` runs only prep.py's mangafy stage (idempotent, skips
+    already-staged PNGs); ``near_twins`` mines the in-artist near-twin pair tree
+    and (re)writes the descriptor's blueprint tail.
     """
-    adapter = _easyadapter()
-    spec = _EASY_ADAPTERS.get(adapter)
-    if spec is None or "stage" not in spec:
+    task = _i2i_task("i2i-stage")
+    cfg, _name, base = _easy_load(task)
+    _EASY_ADAPTERS[task]["stage"](task, cfg, base, extra)
+
+
+def _i2i_task(target: str) -> str:
+    """``TASK`` (else ``EASYADAPTER``), validated against ``_EASY_ADAPTERS``."""
+    task = (os.environ.get("TASK") or "").strip() or _easyadapter()
+    if task not in _EASY_ADAPTERS:
         raise SystemExit(
-            "easycontrol-staging needs a staging-capable EASYADAPTER. "
-            f"Known: {sorted(_EASY_ADAPTERS)}.\n"
-            "(The default EasyControl reads easycontrol-dataset/ directly.)"
+            f"{target} needs TASK=<task>; got {task!r}. "
+            f"Known: {sorted(_EASY_ADAPTERS)}."
         )
-    cfg, _name, base = _easy_load(adapter)
-    spec["stage"](adapter, cfg, base, extra)
+    return task
+
+
+def cmd_i2i_preprocess(extra):
+    """Cache a staged i2i task for one model line: ``TASK=<task> MODEL=anima|moss``.
+
+    ``MODEL=anima`` (default) is the EasyControl encode
+    (``easycontrol-preprocess EASYADAPTER=<task>``). ``MODEL=moss`` submits
+    ``scripts/moss/cache.py --config configs/moss/i2i/<task>/cache.toml`` as a
+    daemon command job: the staging tree's ``pairs.jsonl`` → target latents + TE
+    + ``{stem}.moss_ref``. ``--queue`` detaches, ``--inline`` bypasses the
+    daemon; other ARGS reach ``CacheRequest``.
+    """
+    task = _i2i_task("i2i-preprocess")
+    model = (os.environ.get("MODEL") or "anima").strip()
+    if model == "anima":
+        cfg, _name, base = _easy_load(task)
+        _EASY_ADAPTERS[task]["preprocess"](task, cfg, base, extra)
+        return
+    if model != "moss":
+        raise SystemExit(f"i2i-preprocess: MODEL={model!r}; known: anima, moss.")
+    config = Path("configs") / "moss" / "i2i" / task / "cache.toml"
+    if not (ROOT / config).is_file():
+        raise SystemExit(f"{config} not found: MOSS has no i2i cache for {task!r} yet.")
+    mode, extra = _resolve_run_mode(extra)
+    run_command(
+        f"moss_i2i_cache_{task}",
+        ["scripts/moss/cache.py", "--config", config.as_posix(), *extra],
+        mode=mode,
+        stall_timeout=1800,
+    )
+
+
+def cmd_easycontrol_staging(extra):
+    """Alias of :func:`cmd_i2i_stage` (``EASYADAPTER=<task>``)."""
+    cmd_i2i_stage(extra)

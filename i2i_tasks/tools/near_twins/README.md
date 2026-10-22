@@ -19,14 +19,14 @@ The miner is step 1 of a three-step EasyControl flow, driven by one config
 
 ```bash
 # 1. Mine the pair tree + (re)write the dataset blueprint
-make easycontrol-staging    EASYADAPTER=near_twins
+make i2i-stage TASK=near_twins
 # 2. Resize → VAE/TE cache the pairs, then symlink each _tags latent in as the cond
 make easycontrol-preprocess EASYADAPTER=near_twins
 # 3. Train the EasyControl adapter on the mined pairs
 make easycontrol            EASYADAPTER=near_twins
 ```
 
-Everything routes under `post_image_dataset/easycontrol/<name>/{staging,resized,
+Everything routes under `post_image_dataset/i2i/<name>/{staging,resized,
 cache,cond}` where `<name>` is the top-level `name` key in the config (ships as
 `name = "sanitize"`). Change `name`, re-run preprocess → train, and the whole
 pipeline reroutes with no path edits.
@@ -34,7 +34,7 @@ pipeline reroutes with no path edits.
 ### Standalone (no make)
 
 ```bash
-python -m easycontrol_adapters.tools.near_twins \
+python -m i2i_tasks.tools.near_twins \
   --tag-any "speech bubble,thought bubble" \
   --image-dirs "$CAPTION_CORPUS_DIR/retrieved" \
   --sim-min 0.85 --match-frac-min 0.5 --max-extra-diff 6
@@ -126,7 +126,7 @@ the preprocess cond-pairing symlinks an identical cond latent (cond==target). Th
 need ≥1 mined pair to size against; `--identity-seed` (default `0`) fixes the
 random draw for idempotent re-runs.
 
-Run `python -m easycontrol_adapters.tools.near_twins --help` for the full list
+Run `python -m i2i_tasks.tools.near_twins --help` for the full list
 (`--region-*`, `--id-window`, `--per-artist-topk`,
 `--rest-jaccard-min`, `--batch-size`, `--num-workers`, `--device`).
 

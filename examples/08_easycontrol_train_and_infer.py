@@ -12,7 +12,7 @@ condition-LoRA on self-attn (q/k/v/o) + FFN, gated by a learned scalar `b_cond`
      over the flat `configs/methods/`. It uses the same merge-chain +
      `AnimaTrainer().train()` path as `examples/02_config_and_train.py`. Source
      images + `.txt` captions go in `easycontrol-dataset/`; caches are redirected to
-     `post_image_dataset/easycontrol/` via the subset `cache_dir`.
+     `post_image_dataset/i2i/` via the subset `cache_dir`.
 
   2. **Inference** is request-driven like `01`/`03`, but adds two typed fields the
      other flows leave unset: `easycontrol_weight` (the trained adapter) and

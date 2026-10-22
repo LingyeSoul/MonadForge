@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 # Colorization (and other cond≠target tasks) pair a synthetic *condition* latent
-# with each target. Staging (easycontrol_adapters/colorization/prep.py) selects
+# with each target. Staging (i2i_tasks/colorization/prep.py) selects
 # targets via the descriptor's `[staging].only_data_includes` /
 # `exclude_data_includes` tag filters (net set = only − exclude), backed by the
 # tag scan below (tags come from the caption master in image_dataset/; the

@@ -83,6 +83,19 @@ class CacheRequest(Request):
         "with no resized image uses its image_dataset/ original)",
     )
     out: str = _f("post_image_dataset/moss", "cache folder (two files per image, flat)")
+    pairs: str = _f(
+        "",
+        "i2i pair list instead of src: an i2i_tasks staging tree's pairs.jsonl "
+        "(rows stem / target / cond / caption, paths relative to the file). Each "
+        "target is cached as usual and its cond as {stem}.moss_ref",
+        advanced=True,
+    )
+    ref_scale: int = _f(
+        1,
+        "with pairs: the reference latent's sides are the target's divided by "
+        "this, rounded to multiples of 16 (1 = full size)",
+        advanced=True,
+    )
     resolution: int = _f(
         1024,
         "pixel-area cap as a square edge: 1024 means at most ~1024^2 pixels at "
@@ -380,8 +393,7 @@ class TrainRequest(Request):
     )
     repa_layer: int = _f(
         11,
-        "block whose output REPA aligns; the gradient reaches the LoRA in blocks "
-        "<= it",
+        "block whose output REPA aligns; the gradient reaches the LoRA in blocks <= it",
         advanced=True,
     )
     repa_pe_root: str = _f(

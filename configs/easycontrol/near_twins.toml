@@ -57,9 +57,9 @@ caption_extension = '.txt'
 batch_size = 1
 
   [[datasets.subsets]]
-  image_dir = 'post_image_dataset/easycontrol/{name}/resized'
-  cache_dir = 'post_image_dataset/easycontrol/{name}/cache'
-  cond_cache_dir = 'post_image_dataset/easycontrol/{name}/cond'
+  image_dir = 'post_image_dataset/i2i/{name}/resized'
+  cache_dir = 'post_image_dataset/i2i/{name}/cache'
+  cond_cache_dir = 'post_image_dataset/i2i/{name}/cond'
   path_pattern = '*_no_tags.*'
   recursive = true
   flip_aug = false

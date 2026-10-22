@@ -46,8 +46,8 @@ validation_seed = 42
   [[datasets.subsets]]
   image_dir = 'post_image_dataset/resized'
   cache_dir = 'post_image_dataset/lora'
-  cond_cache_dir = 'post_image_dataset/easycontrol/{name}/cond'
-  text_cache_dir = 'post_image_dataset/easycontrol/{name}/text'
+  cond_cache_dir = 'post_image_dataset/i2i/{name}/cond'
+  text_cache_dir = 'post_image_dataset/i2i/{name}/text'
   recursive = true
   flip_aug = false
   num_repeats = 1

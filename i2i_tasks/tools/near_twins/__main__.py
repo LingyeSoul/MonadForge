@@ -6,12 +6,12 @@ Matching core lives in ``engine``; pair-tree export and the dataset blueprint in
 
 Run from the repo root::
 
-    python -m easycontrol_adapters.tools.near_twins \
+    python -m i2i_tasks.tools.near_twins \
         --tag-any "speech bubble,thought bubble,blank speech bubble" \
         --artists ama_mitsuki
 
     # tagless visual attribute:
-    python -m easycontrol_adapters.tools.near_twins --region --artists ama_mitsuki
+    python -m i2i_tasks.tools.near_twins --region --artists ama_mitsuki
 """
 
 from __future__ import annotations
@@ -45,7 +45,12 @@ from .engine import (
     run_artist,
     select_identity_members,
 )
-from .outputs import export_identity_members, export_pairs, write_dataset_config
+from .outputs import (
+    export_identity_members,
+    export_pairs,
+    write_dataset_config,
+    write_pair_manifest,
+)
 
 
 # ---------------------------------------------------------------------------- config ([staging])
@@ -128,7 +133,7 @@ def _default_image_dirs() -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        prog="python -m easycontrol_adapters.tools.near_twins",
+        prog="python -m i2i_tasks.tools.near_twins",
         description="Mine in-artist near-twin variant pairs that differ by one attribute.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -141,7 +146,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--name",
         default=None,
         help="output slug — reroutes the staging/resized/cache/cond tree (and the "
-        "generated blueprint paths) under post_image_dataset/easycontrol/<name>/. "
+        "generated blueprint paths) under post_image_dataset/i2i/<name>/. "
         "Defaults to the config's top-level `name` key, else 'near_twins'. "
         "An explicit --export-dir overrides this.",
     )
@@ -264,7 +269,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--export-dir",
-        default="post_image_dataset/easycontrol/near_twins/staging",
+        default="post_image_dataset/i2i/near_twins/staging",
         help="materialized _tags/_no_tags pair tree (empty string disables)",
     )
     p.add_argument(
@@ -306,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
     # Skip when the user pinned --export-dir explicitly, or disabled it ('').
     if "export_dir" not in _explicit_dests(argv) and args.export_dir:
         name = str(args.name or "near_twins").strip()
-        args.export_dir = f"post_image_dataset/easycontrol/{name}/staging"
+        args.export_dir = f"post_image_dataset/i2i/{name}/staging"
     args.mode = "region" if args.region else "tag"
 
     target_tags: set[str] = set()
@@ -355,7 +360,7 @@ def main(argv: list[str] | None = None) -> int:
 
     device = torch.device(args.device)
     print(f"Loading PE-Spatial-B16-512 on {device}…", file=sys.stderr)
-    embedder = pe_spatial_embedder(device, name="pe_spatial")
+    embedder = pe_spatial_embedder(device)
 
     all_pairs: list[PairRecord] = []
     for artist, members in pairable.items():
@@ -378,6 +383,8 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         _export_identity(args, export_dir, by_artist, all_pairs, target_tags)
+        n = write_pair_manifest(export_dir)
+        print(f"  list  → {export_dir}/pairs.jsonl  ({n} rows)", file=sys.stderr)
         if args.config_out:
             write_dataset_config(export_dir, Path(args.config_out))
             print(f"  cfg   → {args.config_out}", file=sys.stderr)

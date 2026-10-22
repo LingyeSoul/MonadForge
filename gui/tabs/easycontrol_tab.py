@@ -22,7 +22,7 @@ The selected variant implies an ``EASYADAPTER`` value for the preprocess route:
 
   • EasyControl (ref == target) — EASYADAPTER unset → reads easycontrol-dataset/.
   • Colorize (B&W manga → color) — EASYADAPTER=colorize → mangafy + cond/text
-    caching (easycontrol_adapters/colorization/prep.py via the descriptor).
+    caching (i2i_tasks/colorization/prep.py via the descriptor).
 
 Custom variants don't map onto the easycontrol method selection, so the "+ New"
 button and custom entries are suppressed here.
@@ -90,8 +90,8 @@ class EasyControlTab(ConfigTab):
     _VARIANT_ENV = {"colorize": "colorize"}
     # variant stem → cache dir the preprocess-reuse prompt inspects.
     _CACHE_DIRS = {
-        "easycontrol": "post_image_dataset/easycontrol",
-        "colorize": "post_image_dataset/easycontrol/colorize/cond",
+        "easycontrol": "post_image_dataset/i2i",
+        "colorize": "post_image_dataset/i2i/colorize/cond",
     }
 
     def __init__(self):
@@ -136,7 +136,7 @@ class EasyControlTab(ConfigTab):
         from gui.i18n import current_language
 
         # Localized guide: ADAPTER_GUIDE.<lang>.md, English (ADAPTER_GUIDE.md) fallback.
-        base = ROOT / "easycontrol_adapters"
+        base = ROOT / "i2i_tasks"
         path = base / f"ADAPTER_GUIDE.{current_language()}.md"
         if not path.exists():
             path = base / "ADAPTER_GUIDE.md"
@@ -329,8 +329,8 @@ class EasyControlTab(ConfigTab):
                 slug = str(doc.get("name") or variant).strip()
             except (OSError, tomllib.TOMLDecodeError):
                 pass
-            return ROOT / "post_image_dataset" / "easycontrol" / slug / "cond"
-        rel = self._CACHE_DIRS.get(variant, "post_image_dataset/easycontrol")
+            return ROOT / "post_image_dataset" / "i2i" / slug / "cond"
+        rel = self._CACHE_DIRS.get(variant, "post_image_dataset/i2i")
         return ROOT / rel
 
     def _ec_launch(self, argv: list[str], mode: str) -> None:

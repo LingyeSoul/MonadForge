@@ -1,6 +1,6 @@
 """Invariant tests for the region EasyControl staging pipeline.
 
-Covers the two load-bearing pieces of easycontrol_adapters/region/prep.py:
+Covers the two load-bearing pieces of i2i_tasks/region/prep.py:
 
 * ``_mask_gates`` — the dirty-mask filter (drop reasons, speck cleanup).
 * ``_augment_mask`` — every silhouette level must keep the pose readable
@@ -18,7 +18,7 @@ import random
 import numpy as np
 import pytest
 
-from easycontrol_adapters.region.prep import _augment_mask, _mask_gates
+from i2i_tasks.region.prep import _augment_mask, _mask_gates
 
 GATES = dict(
     min_coverage=0.03,

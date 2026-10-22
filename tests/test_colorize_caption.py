@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-COLORIZE_DIR = REPO_ROOT / "easycontrol_adapters" / "colorization"
+COLORIZE_DIR = REPO_ROOT / "i2i_tasks" / "colorization"
 if str(COLORIZE_DIR) not in sys.path:
     sys.path.insert(0, str(COLORIZE_DIR))
 

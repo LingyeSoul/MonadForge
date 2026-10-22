@@ -10,7 +10,7 @@ gate/paint mistake is visible at a glance. Sheets are grouped ``<slice>-<level>`
 a fixed seed, plus a ``drops`` sheet of gate-failed images (their raw masks,
 reason in the footer). CPU only; run any time after the cond stage::
 
-    python easycontrol_adapters/region/contact_sheet.py [--base …] [--per_sheet 8]
+    python i2i_tasks/region/contact_sheet.py [--base …] [--per_sheet 8]
 
 Output: ``{base}/contact_sheets/<group>[-N].png`` + ``index.html``.
 """
@@ -174,7 +174,7 @@ def _sheet(rows: list[Image.Image], title: str, font) -> Image.Image:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--base", default="post_image_dataset/easycontrol/region")
+    ap.add_argument("--base", default="post_image_dataset/i2i/region")
     ap.add_argument("--per_sheet", type=int, default=8)
     ap.add_argument("--max_sheets_per_group", type=int, default=1)
     ap.add_argument("--paint_color", nargs=3, type=int, default=[128, 128, 128])

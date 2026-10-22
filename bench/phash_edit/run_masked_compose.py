@@ -50,7 +50,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 setup_logging()
 logger = logging.getLogger(__name__)
 
-DATASET_DIR = REPO_ROOT / "post_image_dataset" / "easycontrol" / "phash_edit"
+DATASET_DIR = REPO_ROOT / "post_image_dataset" / "i2i" / "phash_edit"
 PAIRS_JSON = DATASET_DIR / "pairs.json"
 RESIZED_DIR = DATASET_DIR / "resized"
 PHASH_WEIGHT = (

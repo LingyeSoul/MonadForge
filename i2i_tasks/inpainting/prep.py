@@ -31,13 +31,13 @@ The cond cache is paired with the original-image target at train time by the
 loader's ``cond_cache_dir`` subset knob (stem-matched); the variant text by
 ``text_cache_dir``. Run from the repo root::
 
-    python easycontrol_adapters/inpainting/prep.py            # full dataset (all 3 stages)
-    python easycontrol_adapters/inpainting/prep.py --limit 8  # quick QA batch
+    python i2i_tasks/inpainting/prep.py            # full dataset (all 3 stages)
+    python i2i_tasks/inpainting/prep.py --limit 8  # quick QA batch
 
 Via the task runner the stages are split across two targets (knobs come from the
 ``[staging]`` / ``[preprocess]`` tables of ``configs/easycontrol/inpaint.toml``)::
 
-    make easycontrol-staging    EASYADAPTER=inpaint   # stage 1 (mask)
+    make i2i-stage TASK=inpaint   # stage 1 (mask)
     make easycontrol-preprocess EASYADAPTER=inpaint   # stages 2-3 (encode + text)
 """
 
@@ -336,11 +336,9 @@ def stage_text(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--src", default="post_image_dataset/resized")
+    parser.add_argument("--staging", default="post_image_dataset/i2i/inpaint/staging")
     parser.add_argument(
-        "--staging", default="post_image_dataset/easycontrol/inpaint/staging"
-    )
-    parser.add_argument(
-        "--cond_cache_dir", default="post_image_dataset/easycontrol/inpaint/cond"
+        "--cond_cache_dir", default="post_image_dataset/i2i/inpaint/cond"
     )
     parser.add_argument("--vae", default="models/vae/qwen_image_vae.safetensors")
     # 2D fold ON by default to match the target cache; see stage_encode.
@@ -384,7 +382,7 @@ def main() -> None:
         "--skip_mask",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="skip the mask stage (it's the `easycontrol-staging EASYADAPTER=inpaint` "
+        help="skip the mask stage (it's the `i2i-stage TASK=inpaint` "
         "step); --no-skip_mask re-stages inline during preprocess",
     )
     parser.add_argument("--skip_encode", action="store_true")
@@ -401,7 +399,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--text_cache_dir",
-        default="post_image_dataset/easycontrol/inpaint/text",
+        default="post_image_dataset/i2i/inpaint/text",
         help="where caption TE caches go; the inpaint dataset's text_cache_dir",
     )
     parser.add_argument(

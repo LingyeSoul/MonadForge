@@ -3,4 +3,4 @@
 <p>&bull; <b>空のプロンプト</b> &rarr; 自動着色 (モデルが妥当な色を選びます)。<br>
 &bull; <b>色プロンプト</b> &rarr; パレットを誘導します (例: "blue hair, red dress")。</p>
 <p>色のみのテキストキャッシュは複数バリアント (完全セット + 色タグの約 30% をドロップしたシャッフル版) で構成されており、部分的な色プロンプトでも機能します; マンガコンディションはロッシーなヒントであるため、線構造を保持するために学習時のコンディション摂動は小さく抑えられています。コンディション潜在変数は <code>post_image_dataset/colorize_cond/</code> にキャッシュされます。</p>
-<p>EasyControl タブから学習してください &mdash; <code>EASYADAPTER=colorize</code> が自動で設定されます &mdash; 前処理時に VAE エンコード前にマンガ化フィルターが実行されます。<code>easycontrol_adapters/colorization/</code> および <code>docs/experimental/easycontrol.md</code> を参照してください。</p>
+<p>EasyControl タブから学習してください &mdash; <code>EASYADAPTER=colorize</code> が自動で設定されます &mdash; 前処理時に VAE エンコード前にマンガ化フィルターが実行されます。<code>i2i_tasks/colorization/</code> および <code>docs/experimental/easycontrol.md</code> を参照してください。</p>

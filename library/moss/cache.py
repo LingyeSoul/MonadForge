@@ -21,6 +21,11 @@ leaves two files per image in one flat folder.
                 the DiT consumes (``model.encode``, the inverse of the decode)
         metadata: width, height, source, source_size, source_mtime, vae_dtype, resampled
 
+    {stem}.moss_ref.safetensors  (``--pairs`` only)
+        latent  (128, h, w) fp32: the pair's condition image, fitted to the
+                target's ``W×H`` and then to 1/``ref_scale`` of its sides
+        metadata: width, height, target, ref_scale, condition, condition_mtime
+
 ``W×H`` is the pixel size the latent was encoded at. Text is never padded: the
 DiT slices each context to its true length and the image's rope frame coordinate
 equals that length, so a padded cache would train an offset inference never sees.
@@ -374,6 +379,39 @@ def find_pairs(src: Path, caption_format: str = "text") -> list[Pair]:
     return pairs
 
 
+def manifest_pairs(
+    path: Path, caption_format: str = "text"
+) -> tuple[list[Pair], dict[str, Path]]:
+    """The targets of an i2i pair list as ``Pair``s, and each stem's condition
+    image. ``path`` is a ``pairs.jsonl`` (``i2i_tasks`` staging), one
+    ``{stem, target, cond, caption}`` object per line, paths relative to it."""
+    root = path.parent
+    pairs, refs = [], {}
+    convert = caption_converter(caption_format) if caption_format != "text" else None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        stem = row["stem"]
+        if stem in refs:
+            raise SystemExit(f"{path}: stem {stem!r} appears twice")
+        raw = (root / row["caption"]).read_text(encoding="utf-8").strip()
+        caption = convert(raw) if convert else raw
+        plain = raw if caption_format == "layout_json" and caption != raw else ""
+        pairs.append(Pair(stem, root / row["target"], caption, caption_sha(raw), plain))
+        refs[stem] = root / row["cond"]
+    return pairs, refs
+
+
+def ref_size(width: int, height: int, ref_scale: int) -> tuple[int, int]:
+    """Reference ``(w, h)`` for a ``width × height`` target: 1/``ref_scale`` of
+    each side, multiples of 16."""
+    return (
+        max(STRIDE, round(width / ref_scale / STRIDE) * STRIDE),
+        max(STRIDE, round(height / ref_scale / STRIDE) * STRIDE),
+    )
+
+
 def is_layout_json(raw: str) -> bool:
     """``raw`` is already a layout-JSON prompt (an object with ``summary``)."""
     if not raw.startswith("{"):
@@ -425,7 +463,11 @@ def _tag_knowledge_base():
 
 
 def _te_current(
-    path: Path, caption: str, max_tokens: int, plain: str = "", encoder: str = ENCODER_ID
+    path: Path,
+    caption: str,
+    max_tokens: int,
+    plain: str = "",
+    encoder: str = ENCODER_ID,
 ) -> bool:
     if not path.exists():
         return False
@@ -484,7 +526,9 @@ def cache_text(
         for text in (p.caption, p.plain)
         if text
     )
-    tok, te = load_text_encoder(model_dir, device, longest, tok=tok, precision=precision)
+    tok, te = load_text_encoder(
+        model_dir, device, longest, tok=tok, precision=precision
+    )
     t_load = time.time() - t0
     torch.cuda.reset_peak_memory_stats()
     t1 = time.time()
@@ -608,6 +652,60 @@ def cache_latents(
     }
 
 
+def cache_refs(
+    pairs, refs, out_dir, model_dir, device, resolution, ref_scale, vae_dtype, overwrite
+) -> dict:
+    """``{stem}.moss_ref`` per pair: the condition fitted to the target's cached
+    size, then to :func:`ref_size`. Current while newer than the condition and
+    stamped with the same target size and ``ref_scale``."""
+    from library.moss.loader import empty_cache, load_vae
+    from library.moss.model import encode
+
+    plan = []
+    for p in pairs:
+        with Image.open(p.image) as im:
+            w, h = target_size(*im.size, resolution)
+        cond = refs[p.stem]
+        path = out_dir / f"{p.stem}{REF_SUFFIX}"
+        current = False
+        if path.exists() and path.stat().st_mtime >= cond.stat().st_mtime:
+            with safe_open(path, "pt") as f:
+                meta = f.metadata() or {}
+            current = meta.get("target") == f"{w}x{h}" and meta.get("ref_scale") == str(
+                ref_scale
+            )
+        if overwrite or not current:
+            plan.append((p.stem, cond, w, h, path))
+    if not plan:
+        print("refs: all cached", flush=True)
+        return {"encoded": 0}
+    dtype = torch.float32 if vae_dtype == "fp32" else torch.bfloat16
+    vae = load_vae(model_dir, dtype=dtype, device=device)
+    t0 = time.time()
+    for i, (stem, cond, w, h, path) in enumerate(plan, 1):
+        rw, rh = ref_size(w, h, ref_scale)
+        image = fit(fit(load_rgb(cond), w, h), rw, rh)
+        latent = encode(to_pixels(image), vae)[0].cpu().contiguous()
+        save_file(
+            {"latent": latent},
+            path,
+            metadata={
+                "width": str(rw),
+                "height": str(rh),
+                "target": f"{w}x{h}",
+                "ref_scale": str(ref_scale),
+                "condition": str(cond),
+                "condition_mtime": str(cond.stat().st_mtime),
+            },
+        )
+        print(f"  refs {i}/{len(plan)} {stem}: {w}x{h} -> {rw}x{rh}", flush=True)
+    seconds = time.time() - t0
+    print(f"refs: {len(plan)} encoded in {seconds:.1f}s", flush=True)
+    del vae
+    empty_cache()
+    return {"encoded": len(plan), "encode_s": seconds, "ref_scale": ref_scale}
+
+
 def summarize(out_dir: Path) -> dict:
     """Token statistics over the complete pairs in the cache."""
     items = list_items(out_dir)
@@ -615,7 +713,7 @@ def summarize(out_dir: Path) -> dict:
         return {"items": 0}
     text = [it.n_text for it in items]
     image = [(it.width // STRIDE) * (it.height // STRIDE) for it in items]
-    joint = [a + b for a, b in zip(text, image)]
+    joint = [a + b + it.n_ref for a, b, it in zip(text, image, items)]
     size = sum(p.stat().st_size for p in out_dir.glob("*.moss_*.safetensors"))
     return {
         "items": len(items),
@@ -643,7 +741,14 @@ def run_cache(req) -> Path:
     out_dir = resolve_under_home(req.out)
     model_dir = resolve_model_dir(req.model_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    pairs = find_pairs(src, req.caption_format)
+    refs = None
+    if req.pairs:
+        src = resolve_under_home(req.pairs)
+        if not src.is_file():
+            raise SystemExit(f"no pair list at {src} (make i2i-stage TASK=<task>)")
+        pairs, refs = manifest_pairs(src, req.caption_format)
+    else:
+        pairs = find_pairs(src, req.caption_format)
     if not pairs:
         raise SystemExit(f"no image/caption pairs under {src}")
     print(f"{len(pairs)} pairs from {src}, model {model_dir}", flush=True)
@@ -670,6 +775,18 @@ def run_cache(req) -> Path:
             req.vae_dtype,
             req.overwrite,
             req.save_crops,
+        )
+    if refs is not None and not req.skip_latents:
+        report["refs"] = cache_refs(
+            pairs,
+            refs,
+            out_dir,
+            model_dir,
+            device,
+            req.resolution,
+            req.ref_scale,
+            req.vae_dtype,
+            req.overwrite,
         )
     report["summary"] = summarize(out_dir)
     (out_dir / "cache_report.json").write_text(json.dumps(report, indent=2))

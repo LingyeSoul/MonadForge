@@ -74,7 +74,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from easycontrol_adapters.tools.near_twins.outputs import (  # noqa: E402
+from i2i_tasks.tools.near_twins.outputs import (  # noqa: E402
     _BLUEPRINT_SENTINEL,
     _strip_blueprint,
 )
@@ -490,7 +490,7 @@ def build_colorize_pairs(
     """Synthetic colorize records: cond = mangafied B&W of the target.
 
     The condition image does not exist yet — ``make easycontrol-preprocess``
-    mangafies (XDoG + screentone, ``easycontrol_adapters/colorization``) each
+    mangafies (XDoG + screentone, ``i2i_tasks/colorization``) each
     selected *resized* target into ``mono/`` and VAE-encodes it into
     ``mono_cache/``; the link step files that latent as the pair's cond. The
     target latent is the pool latent the edit arm already encoded, so the arm
@@ -517,7 +517,7 @@ def build_colorize_pairs(
     """
     if n <= 0:
         return []
-    from easycontrol_adapters.colorization.color_caption import filter_to_colors
+    from i2i_tasks.colorization.color_caption import filter_to_colors
 
     mono = set(MONO_TAGS)
     # already B&W: nothing to colorize, and mangafying it is close to a no-op.
@@ -636,9 +636,9 @@ caption_extension = '.txt'
 batch_size = 1
 
   [[datasets.subsets]]
-  image_dir = 'post_image_dataset/easycontrol/{{name}}/resized'
-  cache_dir = 'post_image_dataset/easycontrol/{{name}}/cache'        # denoising target: the _no_tags members
-  cond_cache_dir = 'post_image_dataset/easycontrol/{{name}}/cond'    # condition: the paired _tags latent (keyed by the _no_tags stem)
+  image_dir = 'post_image_dataset/i2i/{{name}}/resized'
+  cache_dir = 'post_image_dataset/i2i/{{name}}/cache'        # denoising target: the _no_tags members
+  cond_cache_dir = 'post_image_dataset/i2i/{{name}}/cond'    # condition: the paired _tags latent (keyed by the _no_tags stem)
   path_pattern = '*_no_tags.*'     # targets = the edited members only
   recursive = true                 # tree is nested <artist>/<pair_id>_no_tags; caches mirror it
   flip_aug = false                 # latents can't be flipped post-hoc; the cond cache has no flipped variant
@@ -662,7 +662,7 @@ def write_dataset_config(config_path: Path) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        prog="python -m easycontrol_adapters.tools.phash_edit_pairs",
+        prog="python -m i2i_tasks.tools.phash_edit_pairs",
         description=__doc__.splitlines()[0],
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -680,7 +680,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--name",
         default=None,
-        help="output slug — routes post_image_dataset/easycontrol/<name>/",
+        help="output slug — routes post_image_dataset/i2i/<name>/",
     )
     p.add_argument(
         "--image-dirs",
@@ -694,7 +694,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--export-dir",
         dest="export_dir",
         default=None,
-        help="override the staging base (default post_image_dataset/easycontrol/<name>)",
+        help="override the staging base (default post_image_dataset/i2i/<name>)",
     )
 
     p.add_argument(
@@ -896,7 +896,7 @@ def main() -> None:
     base = (
         Path(expand_path(args.export_dir))
         if args.export_dir
-        else (REPO_ROOT / "post_image_dataset" / "easycontrol" / args.name)
+        else (REPO_ROOT / "post_image_dataset" / "i2i" / args.name)
     )
     base.mkdir(parents=True, exist_ok=True)
     n_pool = export_pool(pairs, base)

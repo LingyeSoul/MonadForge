@@ -2,7 +2,7 @@
 """Build the colorize cache for a TE-only MOSS LoRA: the B&W page enters through
 Qwen3.5's vision tower and as a VAE reference; the colour original is the target.
 
-The condition is ``post_image_dataset/easycontrol/colorize/staging/<dir>/<stem>.png``,
+The condition is ``post_image_dataset/i2i/colorize/staging/<dir>/<stem>.png``,
 the target the same path under ``post_image_dataset/resized``; ``--manga N`` adds N
 ``manga_color`` pages as ``manga__{anchor}_{lang}_{page}``. Per pair, in a flat cache
 ``train.py`` reads unchanged:
@@ -57,16 +57,16 @@ from library.moss.loader import empty_cache, load_tokenizer
 from library.moss.scan import REF_SUFFIX, TE_SUFFIX
 from vision_te import encode, encode_variants, load_te
 
-sys.path.insert(0, str(resolve_under_home("easycontrol_adapters/colorization")))
+sys.path.insert(0, str(resolve_under_home("i2i_tasks/colorization")))
 from color_caption import (  # noqa: E402
     filter_to_colors_and_protected,
     is_comic_tag,
     load_copyright_tags,
 )
 
-STAGING = "post_image_dataset/easycontrol/colorize/staging"
+STAGING = "post_image_dataset/i2i/colorize/staging"
 RESIZED = "post_image_dataset/resized"
-MANGA = "post_image_dataset/easycontrol/colorize/manga_color"
+MANGA = "post_image_dataset/i2i/colorize/manga_color"
 # ComfyUI-MOSS-Toolkit's MOSSCaptionHelper copies these floors, readable, dedupe and
 # ocr_caption to build the same prompt at inference: change both together.
 LOW_DET_SCORE = 0.9  # reader score a box under LINE_MIN_DET needs

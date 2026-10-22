@@ -7,6 +7,7 @@ Pure I/O over ``engine.PairRecord``s: the ``_tags`` / ``_no_tags`` pair tree
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from pathlib import Path
@@ -17,8 +18,15 @@ from PIL import Image
 from .engine import (
     Member,
     PairRecord,
-    caption_text,
 )
+
+
+def caption_text(txt_path: Path) -> str:
+    return (
+        txt_path.read_text(encoding="utf-8", errors="ignore").strip()
+        if txt_path.is_file()
+        else ""
+    )
 
 
 def _materialize_one(src: Path, dst: Path, copy: bool) -> None:
@@ -92,6 +100,46 @@ def export_identity_members(members: list[Member], export_dir: Path, copy: bool)
     return written
 
 
+PAIR_MANIFEST = "pairs.jsonl"
+_IMAGE_SUFFIXES = (".png", ".webp", ".jpg", ".jpeg")
+
+
+def write_pair_manifest(export_dir: Path) -> int:
+    """``<export_dir>/pairs.jsonl``: one ``{stem, target, cond, caption}`` row per
+    ``{id}_no_tags`` / ``{id}_tags`` pair in the tree (identity pairs included),
+    paths relative to ``export_dir``. The model-agnostic i2i pair list a model
+    line's cache reads (``library.moss.cache.manifest_pairs``)."""
+    rows = []
+    for target in sorted(export_dir.rglob("*_no_tags.*")):
+        if target.suffix.lower() not in _IMAGE_SUFFIXES:
+            continue
+        pid = target.name[: -len("_no_tags" + target.suffix)]
+        cond = next(
+            (
+                c
+                for ext in _IMAGE_SUFFIXES
+                if (c := target.with_name(f"{pid}_tags{ext}")).exists()
+            ),
+            None,
+        )
+        caption = target.with_suffix(".txt")
+        if cond is None or not caption.exists():
+            continue
+        rows.append(
+            {
+                "stem": pid,
+                "target": str(target.relative_to(export_dir)),
+                "cond": str(cond.relative_to(export_dir)),
+                "caption": str(caption.relative_to(export_dir)),
+            }
+        )
+    (export_dir / PAIR_MANIFEST).write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+        encoding="utf-8",
+    )
+    return len(rows)
+
+
 def _write_mask(p: PairRecord, out: Path) -> None:
     G = p.match.G
     grid = np.zeros((G, G), dtype=np.uint8)
@@ -113,12 +161,12 @@ _BLUEPRINT_SENTINEL = (
 _DEFAULT_STAGING_HEADER = """\
 # near-twin tag-gap miner config. Edit the [staging] table, then run the two
 # pipeline steps (knobs for each live in their own table here):
-#   make easycontrol-staging    EASYADAPTER=near_twins   # [staging] → mine pair tree
+#   make i2i-stage TASK=near_twins   # [staging] → mine pair tree
 #   make easycontrol-preprocess EASYADAPTER=near_twins   # [preprocess] → VAE/TE caches
 # CLI flags override these. Paths support {CAPTION_CORPUS_DIR}/$VARS/~ expansion.
 
 # Output slug — the single source of truth for every derived path. The whole
-# pipeline lives under post_image_dataset/easycontrol/<name>/{staging,resized,
+# pipeline lives under post_image_dataset/i2i/<name>/{staging,resized,
 # cache,cond} and checkpoints save as anima_easycontrol_<name>. Change it (e.g.
 # name = "sanitize") and re-run staging → preprocess → train; no other path edit.
 name = "near_twins"
@@ -197,9 +245,9 @@ caption_extension = '.txt'
 batch_size = 1
 
   [[datasets.subsets]]
-  image_dir = 'post_image_dataset/easycontrol/{{name}}/resized'
-  cache_dir = 'post_image_dataset/easycontrol/{{name}}/cache'        # denoising target: the clean _no_tags members
-  cond_cache_dir = 'post_image_dataset/easycontrol/{{name}}/cond'    # condition: the paired _tags latent (keyed by the _no_tags stem)
+  image_dir = 'post_image_dataset/i2i/{{name}}/resized'
+  cache_dir = 'post_image_dataset/i2i/{{name}}/cache'        # denoising target: the clean _no_tags members
+  cond_cache_dir = 'post_image_dataset/i2i/{{name}}/cond'    # condition: the paired _tags latent (keyed by the _no_tags stem)
   path_pattern = '*_no_tags.*'     # targets = clean members only (the _tags twin rides in as the cond)
   recursive = true                 # tree is nested <artist>/<pair_id>_{{tags,no_tags}}; caches mirror the nesting
   flip_aug = false                 # latents can't be flipped post-hoc; the cond cache has no flipped variant

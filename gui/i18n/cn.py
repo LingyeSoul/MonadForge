@@ -342,7 +342,7 @@ STRINGS: dict[str, str] = {
     "guidebook_close": "关闭",
     # EasyControl 适配器指南（自建控制任务）
     "adapter_guide": "📘 适配器指南",
-    "adapter_guide_tooltip": "如何构建你自己的 EasyControl 适配器 (easycontrol_adapters/ADAPTER_GUIDE.md)",
+    "adapter_guide_tooltip": "如何构建你自己的 EasyControl 适配器 (i2i_tasks/ADAPTER_GUIDE.md)",
     "easycontrol_descriptor_note": "此控制任务是一个具有多表结构的独立描述符，在左侧以原始 TOML 形式编辑:<br><br>• <b>name</b> — 输出标识符；重路由所有衍生的缓存/输出路径。<br>• <code>[staging]</code> — 用于生成条件树的数据生成阶段。<br>• <code>[preprocess]</code> — 针对已暂存树的 VAE/TE 缓存参数。<br>• <code>[training]</code> — 叠加到基础 EasyControl 方法的覆盖项。<br>• <code>[general]</code> / <code>[[datasets]]</code> — train.py 读取的数据集蓝图。<br>• <code>[variant]</code> — 此下拉项的 GUI 元数据。<br><br><b>预处理</b>按钮会合成条件树并缓存；<b>训练</b>会将此描述符的 <code>[training]</code> 覆盖项叠加后训练基础 EasyControl 方法。两个操作在 GUI 关闭后仍会继续执行。",
     "easycontrol_descriptor_form_header": "正在编辑描述符 <b>{path}</b>。下方的参数表以表单形式编辑；保存时将变更值写回，同时保留注释和 <code>[[datasets]]</code> 蓝图。蓝图与 <code>[variant]</code> 元数据不在此处显示 —— 如需编辑请直接修改文件。点击字段名称可查看帮助。",
     "ec_desc_group_top": "描述符",

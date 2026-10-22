@@ -44,11 +44,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from easycontrol_adapters.tools.near_twins.outputs import (  # noqa: E402
+from i2i_tasks.tools.near_twins.outputs import (  # noqa: E402
     _BLUEPRINT_SENTINEL,
     _strip_blueprint,
 )
-from easycontrol_adapters.tools.subject_pairs import (  # noqa: E402
+from i2i_tasks.tools.subject_pairs import (  # noqa: E402
     build_cond_tree,
     latent_buckets,
     load_staging_config,
@@ -81,10 +81,10 @@ caption_extension = '.txt'
 batch_size = 1
 
   [[datasets.subsets]]
-  image_dir = 'post_image_dataset/easycontrol/{{name}}/staging'
+  image_dir = 'post_image_dataset/i2i/{{name}}/staging'
   cache_dir = 'post_image_dataset/lora'                             # shared corpus cache: target latents + PE reused as-is
-  cond_cache_dir = 'post_image_dataset/easycontrol/{{name}}/cond'   # condition: the partner's latent, keyed by the target stem
-  text_cache_dir = 'post_image_dataset/easycontrol/{{name}}/text'   # delta-caption TE cache (the preprocess step encodes it)
+  cond_cache_dir = 'post_image_dataset/i2i/{{name}}/cond'   # condition: the partner's latent, keyed by the target stem
+  text_cache_dir = 'post_image_dataset/i2i/{{name}}/text'   # delta-caption TE cache (the preprocess step encodes it)
   recursive = true                 # tree is nested <artist>/<stem>; the shared cache mirrors it
   flip_aug = false                 # cond latents have no flipped variant
   num_repeats = 1
@@ -110,7 +110,10 @@ def read_tags(resized_dir: Path, key: str) -> list[str] | None:
 
 
 def delta_caption(
-    src_tags: list[str], dst_tags: list[str], removal_prefix: str, include_removals: bool
+    src_tags: list[str],
+    dst_tags: list[str],
+    removal_prefix: str,
+    include_removals: bool,
 ) -> tuple[list[str], int, int]:
     """(delta tag list, n_additions, n_removals). Order: additions in the
     target caption's order, then prefixed removals in the source's order."""
@@ -290,7 +293,7 @@ def main() -> None:
     parser.set_defaults(name=name, **{k: v for k, v in staging.items() if k in known})
     args = parser.parse_args()
 
-    base = REPO_ROOT / "post_image_dataset" / "easycontrol" / args.name
+    base = REPO_ROOT / "post_image_dataset" / "i2i" / args.name
     lora_cache_dir = REPO_ROOT / args.lora_cache_dir
 
     if args.cond_only:

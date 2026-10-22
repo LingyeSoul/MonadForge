@@ -33,7 +33,6 @@ from anime_tools.grouping.features import (  # noqa: F401
     _cache_path,
     _dir_hash,
     _image_size,
-    caption_text,
     embed_members,
     gather_members,
     keep_size_cohabiting,

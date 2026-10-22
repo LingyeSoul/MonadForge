@@ -17,9 +17,9 @@ staging tag filters use, ``library.datasets.dreambooth.stems_with_any_tag``).
 
 Example — the Korean-text colorize slice::
 
-    python easycontrol_adapters/colorization/pool_from_tags.py \\
+    python i2i_tasks/colorization/pool_from_tags.py \\
         --src ~/gelcrawl/retrieved \\
-        --dst post_image_dataset/easycontrol/colorize/korean/src \\
+        --dst post_image_dataset/i2i/colorize/korean/src \\
         --include-tags "korean text" \\
         --skip-existing-in image_dataset
 

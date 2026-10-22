@@ -1,0 +1,15 @@
+# MOSS i2i cache for the sanitize task (text / bubble removal) — CacheRequest fields.
+#
+#   make i2i-stage TASK=sanitize                   # mine the pair tree + pairs.jsonl
+#   make i2i-preprocess TASK=sanitize MODEL=moss   # this file → scripts/moss/cache.py
+#
+# Each row of pairs.jsonl caches its target (the clean `_no_tags` twin) as the
+# latent + TE and its condition (the texted `_tags` twin) as {stem}.moss_ref.
+
+pairs = "post_image_dataset/i2i/sanitize/staging/pairs.jsonl"
+out = "post_image_dataset/moss/i2i_sanitize"
+resolution = 1024
+# Full-size reference: the edit keeps everything but the text, so the condition
+# keeps its detail (colorize ran at 2). Changing it re-encodes the refs only.
+ref_scale = 1
+caption_format = "layout_json"

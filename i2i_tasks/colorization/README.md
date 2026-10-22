@@ -36,7 +36,7 @@ copyright tags are recognized against `groups.copyright` in
 `post_image_dataset/captions/caption_index.json`, minus `original`.
 
 The TE cache lives in its own `text_cache_dir`
-(`post_image_dataset/easycontrol/colorize/text`), built by `prep.py`'s text stage
+(`post_image_dataset/i2i/colorize/text`), built by `prep.py`'s text stage
 as a multi-variant cache: v0 = the full set, v1+ = shuffled with each tag
 dropped at `text_tag_dropout_rate`. **Comic tags are protected from that
 dropout; the copyright tag is not.** Values for both knobs are in the
@@ -78,9 +78,9 @@ tables drive `prep.py`.
 
 ```bash
 # 1a. Staging — synthesize the B&W condition tree (mangafy only). Idempotent.
-make easycontrol-staging EASYADAPTER=colorize
-#    QA a few first:  make easycontrol-staging EASYADAPTER=colorize ARGS="--limit 8"
-#    Inspect PNGs under post_image_dataset/easycontrol/colorize/staging/
+make i2i-stage TASK=colorize
+#    QA a few first:  make i2i-stage TASK=colorize ARGS="--limit 8"
+#    Inspect PNGs under post_image_dataset/i2i/colorize/staging/
 # 1b. Preprocess — cond latents, WB target latents, color-only text. Idempotent.
 make easycontrol-preprocess EASYADAPTER=colorize
 #    (re-stage inline:  ARGS="--no-skip_mangafy")
@@ -105,11 +105,11 @@ add such a slice without touching the shared corpus, give it its own resized
 tree + caches as a second dataset subset. Worked example, the Korean-text slice:
 
 ```bash
-KO=post_image_dataset/easycontrol/colorize/korean
+KO=post_image_dataset/i2i/colorize/korean
 
 # 1. Select — symlink the tagged pages (image + .txt) out of the crawl pool,
 #    minus the stems the curated master already has.
-python easycontrol_adapters/colorization/pool_from_tags.py \
+python i2i_tasks/colorization/pool_from_tags.py \
     --src ~/gelcrawl/retrieved --dst $KO/src \
     --include-tags "korean text" --skip-existing-in image_dataset
 
@@ -131,7 +131,7 @@ python -m anime_tools.masking.cli.merge_masks /tmp/ko-sam --output-dir $KO/masks
 SLICE="--src $KO/resized --caption_src $KO/resized --mask_dir $KO/masks \
        --staging $KO/staging --cond_cache_dir $KO/cond \
        --target_cache_dir $KO/target --text_cache_dir $KO/text"
-make easycontrol-staging    EASYADAPTER=colorize ARGS="$SLICE"
+make i2i-stage TASK=colorize ARGS="$SLICE"
 make easycontrol-preprocess EASYADAPTER=colorize ARGS="$SLICE"
 ```
 

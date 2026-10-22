@@ -9,10 +9,10 @@ No PE matching and no encode pass: both members are corpus images whose
 latents/TE already live in the shared LoRA cache (``post_image_dataset/lora/``),
 so staging is pure symlinks.
 
-Contract (mirrors ``easycontrol_adapters.tools.near_twins``):
+Contract (mirrors ``i2i_tasks.tools.near_twins``):
   * reads its ``[staging]`` table + top-level ``name`` slug from
     ``--config`` (default ``configs/easycontrol/subject.toml``); CLI wins.
-  * emits ``post_image_dataset/easycontrol/<name>/staging/<artist>/<stem>.png``
+  * emits ``post_image_dataset/i2i/<name>/staging/<artist>/<stem>.png``
     (+ ``.txt``) symlinks for every *target*, a ``pairs.json`` manifest beside
     it, and rewrites the descriptor's ``[[datasets]]`` blueprint tail in place.
   * ``--cond-only`` (the ``easycontrol-preprocess`` step) skips mining and
@@ -40,7 +40,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from easycontrol_adapters.tools.near_twins.outputs import (  # noqa: E402
+from i2i_tasks.tools.near_twins.outputs import (  # noqa: E402
     _BLUEPRINT_SENTINEL,
     _strip_blueprint,
 )
@@ -53,7 +53,7 @@ def _blueprint_text() -> str:
     # at train time (see _resolve_blueprint_path). cache_dir points at the
     # SHARED corpus cache on purpose — both pair members are ordinary corpus
     # images, so target latents + TE/PE variants are reused, not re-encoded
-    # (it is outside post_image_dataset/easycontrol/ so slug rerouting skips it).
+    # (it is outside post_image_dataset/i2i/ so slug rerouting skips it).
     return f"""{_BLUEPRINT_SENTINEL}
 # Cross-image subject pairs wired as an EasyControl control task. staging/ holds
 # symlinks to the resized corpus for every mined TARGET; pairs.json (sibling of
@@ -73,9 +73,9 @@ caption_extension = '.txt'
 batch_size = 1
 
   [[datasets.subsets]]
-  image_dir = 'post_image_dataset/easycontrol/{{name}}/staging'
+  image_dir = 'post_image_dataset/i2i/{{name}}/staging'
   cache_dir = 'post_image_dataset/lora'                             # shared corpus cache: target latents + TE/PE reused as-is
-  cond_cache_dir = 'post_image_dataset/easycontrol/{{name}}/cond'   # condition: the partner's latent, keyed by the target stem
+  cond_cache_dir = 'post_image_dataset/i2i/{{name}}/cond'   # condition: the partner's latent, keyed by the target stem
   recursive = true                 # tree is nested <artist>/<stem>; the shared cache mirrors it
   flip_aug = false                 # cond latents have no flipped variant
   num_repeats = 1
@@ -257,7 +257,7 @@ def main() -> None:
     parser.set_defaults(name=name, **{k: v for k, v in staging.items() if k in known})
     args = parser.parse_args()
 
-    base = REPO_ROOT / "post_image_dataset" / "easycontrol" / args.name
+    base = REPO_ROOT / "post_image_dataset" / "i2i" / args.name
     lora_cache_dir = REPO_ROOT / args.lora_cache_dir
 
     if args.cond_only:

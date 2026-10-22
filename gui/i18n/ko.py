@@ -394,7 +394,7 @@ STRINGS: dict[str, str] = {
     "guidebook_close": "닫기",
     # EasyControl 어댑터 가이드 (직접 컨트롤 태스크 만들기)
     "adapter_guide": "📘 어댑터 가이드",
-    "adapter_guide_tooltip": "나만의 EasyControl 어댑터 만들기 (easycontrol_adapters/ADAPTER_GUIDE.md)",
+    "adapter_guide_tooltip": "나만의 EasyControl 어댑터 만들기 (i2i_tasks/ADAPTER_GUIDE.md)",
     "easycontrol_descriptor_note": "이 컨트롤 태스크는 다중 테이블 구조를 가진 독립형 디스크립터로, 왼쪽에서 원시 TOML로 편집합니다:<br><br>• <b>name</b> — 출력 슬러그; 파생되는 모든 캐시/출력 경로를 재지정합니다.<br>• <code>[staging]</code> — 조건 트리를 구체화하는 데이터 생성 단계.<br>• <code>[preprocess]</code> — 스테이징된 트리에 대한 VAE/TE 캐싱 설정.<br>• <code>[training]</code> — 기본 EasyControl 메소드에 병합될 오버라이드.<br>• <code>[general]</code> / <code>[[datasets]]</code> — train.py가 읽는 데이터셋 청사진.<br>• <code>[variant]</code> — 이 드롭다운 항목의 GUI 메타데이터.<br><br><b>전처리</b> 버튼은 조건 트리를 합성하고 캐싱합니다; <b>학습</b>은 이 디스크립터의 <code>[training]</code> 오버라이드를 병합하여 기본 EasyControl 메소드를 학습합니다. 두 작업 모두 GUI를 닫아도 계속 실행됩니다.",
     "easycontrol_descriptor_form_header": "디스크립터 <b>{path}</b> 편집 중. 아래 설정 테이블은 폼으로 편집합니다; 저장 시 변경된 값을 기록하되 주석과 <code>[[datasets]]</code> 청사진은 유지됩니다. 청사진과 <code>[variant]</code> 메타데이터는 여기에 표시되지 않으므로 해당 항목은 파일을 직접 편집하세요. 필드 이름을 클릭하면 도움말이 표시됩니다.",
     "ec_desc_group_top": "디스크립터",

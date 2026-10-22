@@ -6,14 +6,14 @@ steers identity (optionally with an `On the left, <name>` clause); the cond owns
 the scene. Frozen DiT, per-block cond LoRA + `b_cond` gate — the standard
 EasyControl stack ([`easycontrol.md`](easycontrol.md)).
 
-Pipeline: `easycontrol_adapters/region/prep.py` (select → SAM3 masks → gate +
+Pipeline: `i2i_tasks/region/prep.py` (select → SAM3 masks → gate +
 augment + paint → captions → VAE cond cache → TE cache), descriptor
 `configs/easycontrol/region.toml`, bench `bench/region/run_bench.py`, mask
-QA `easycontrol_adapters/region/contact_sheet.py`.
+QA `i2i_tasks/region/contact_sheet.py`.
 
 ```
-make easycontrol-staging    EASYADAPTER=region   # select · SAM · cond · captions  (GPU: SAM3)
-python easycontrol_adapters/region/contact_sheet.py   # → {base}/contact_sheets/index.html
+make i2i-stage TASK=region   # select · SAM · cond · captions  (GPU: SAM3)
+python i2i_tasks/region/contact_sheet.py   # → {base}/contact_sheets/index.html
 make easycontrol-preprocess EASYADAPTER=region   # VAE cond latents + TE variants
 make easycontrol            EASYADAPTER=region ARGS=--queue
 make daemon-run ARGS="--label region-bench bench/region/run_bench.py --label v5"
@@ -156,6 +156,6 @@ flips on skirt/legs renders, not nsfw content.
   pair's girl-minus-boy mask from being overwritten by a plain girl mask;
   `--sam_force` regenerates all.
 - Staging via the daemon: `make daemon-run ARGS="--queue tasks.py
-  easycontrol-staging" EASYADAPTER=region` (the env var reaches the job).
+  i2i-stage" TASK=region` (the env var reaches the job).
 - `paint_color` in `bench/region/run_bench.py` and `contact_sheet.py` must
   match the descriptor (128 gray).

@@ -57,9 +57,9 @@ validation_seed = 42
   [[datasets.subsets]]
   image_dir = 'post_image_dataset/resized'
   cache_dir = 'post_image_dataset/lora'
-  cond_cache_dir = 'post_image_dataset/easycontrol/{name}/cond'
-  text_cache_dir = 'post_image_dataset/easycontrol/{name}/text'
-  latent_cache_dir = 'post_image_dataset/easycontrol/{name}/target'
+  cond_cache_dir = 'post_image_dataset/i2i/{name}/cond'
+  text_cache_dir = 'post_image_dataset/i2i/{name}/text'
+  latent_cache_dir = 'post_image_dataset/i2i/{name}/target'
   recursive = true
   flip_aug = false
   num_repeats = 1
@@ -67,15 +67,15 @@ validation_seed = 42
   # Korean-text slice mined out of the crawler's `retrieved/` pool (the curated
   # corpus only carries 22 such pages). Its own resized tree + caches, so the
   # shared corpus and every other method's dataset stay untouched; see
-  # easycontrol_adapters/colorization/README.md "Appending a tag slice".
+  # i2i_tasks/colorization/README.md "Appending a tag slice".
   # NB the slice is ~80% two artists (eonsang, su_reut) — raise num_repeats
   # only if you're willing to amplify that style skew too.
   [[datasets.subsets]]
-  image_dir = 'post_image_dataset/easycontrol/{name}/korean/resized'
-  cache_dir = 'post_image_dataset/easycontrol/{name}/korean/cache'
-  cond_cache_dir = 'post_image_dataset/easycontrol/{name}/korean/cond'
-  text_cache_dir = 'post_image_dataset/easycontrol/{name}/korean/text'
-  latent_cache_dir = 'post_image_dataset/easycontrol/{name}/korean/target'
+  image_dir = 'post_image_dataset/i2i/{name}/korean/resized'
+  cache_dir = 'post_image_dataset/i2i/{name}/korean/cache'
+  cond_cache_dir = 'post_image_dataset/i2i/{name}/korean/cond'
+  text_cache_dir = 'post_image_dataset/i2i/{name}/korean/text'
+  latent_cache_dir = 'post_image_dataset/i2i/{name}/korean/target'
   recursive = true
   flip_aug = false
   num_repeats = 1
@@ -86,11 +86,11 @@ validation_seed = 42
   # three scripts pass through the text masks. Assembled outside the repo into
   # {name}/manga_color/src/{ja,en,ko}; ~10 artists, top one ~22%.
   [[datasets.subsets]]
-  image_dir = 'post_image_dataset/easycontrol/{name}/manga_color/resized'
-  cache_dir = 'post_image_dataset/easycontrol/{name}/manga_color/cache'
-  cond_cache_dir = 'post_image_dataset/easycontrol/{name}/manga_color/cond'
-  text_cache_dir = 'post_image_dataset/easycontrol/{name}/manga_color/text'
-  latent_cache_dir = 'post_image_dataset/easycontrol/{name}/manga_color/target'
+  image_dir = 'post_image_dataset/i2i/{name}/manga_color/resized'
+  cache_dir = 'post_image_dataset/i2i/{name}/manga_color/cache'
+  cond_cache_dir = 'post_image_dataset/i2i/{name}/manga_color/cond'
+  text_cache_dir = 'post_image_dataset/i2i/{name}/manga_color/text'
+  latent_cache_dir = 'post_image_dataset/i2i/{name}/manga_color/target'
   recursive = true
   flip_aug = false
   num_repeats = 1

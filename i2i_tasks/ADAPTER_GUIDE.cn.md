@@ -1,6 +1,6 @@
 # 构建你自己的 EasyControl 适配器
 
-本指南说明如何为 Anima 添加一个**新的 EasyControl 控制任务**，供你自己使用。这是一个本地适配器，存放在 `easycontrol_adapters/<your_task>/` 下，不提交到 git。我们以示例 **colorize** (`easycontrol_adapters/colorization/`) 为例逐步讲解，并明确指出针对你自己的任务需要修改哪些地方。
+本指南说明如何为 Anima 添加一个**新的 EasyControl 控制任务**，供你自己使用。这是一个本地适配器，存放在 `i2i_tasks/<your_task>/` 下，不提交到 git。我们以示例 **colorize** (`i2i_tasks/colorization/`) 为例逐步讲解，并明确指出针对你自己的任务需要修改哪些地方。
 
 记住一件事：
 
@@ -33,7 +33,7 @@ colorize 的做法——你可以复用的思路：**真实的黑白漫画没有
 
 | # | 内容 | colorize 版本 | 作用 |
 |---|---------|-------------------|--------------|
-| 1 | `easycontrol_adapters/<task>/` 项目 | `colorization/`（`mangafy*.py`、`color_caption.py`、`prep.py`） | 构建并缓存参考图像（以及可选的较短文本缓存） |
+| 1 | `i2i_tasks/<task>/` 项目 | `colorization/`（`mangafy*.py`、`color_caption.py`、`prep.py`） | 构建并缓存参考图像（以及可选的较短文本缓存） |
 | 2 | `configs/datasets/<task>.toml` | `configs/easycontrol/colorize.toml` | 通过 **cond_cache_dir** 将每个目标与参考配对的数据集 |
 | 3 | `configs/methods/<task>.toml`（+ `configs/gui-methods/<task>.toml`） | `configs/easycontrol/colorize.toml` | config——指向数据集，设置 LR / epochs / `network_args` |
 | 4 | `scripts/tasks/{training,inference}.py` | `_EASYADAPTERS = {"colorize"}` + 分支 | 让 `EASYADAPTER=<task>` 在 `make easycontrol*` 命令中正常工作 |
@@ -42,7 +42,7 @@ colorize 的做法——你可以复用的思路：**真实的黑白漫画没有
 
 ---
 
-## 2. 第一件事——适配器项目（`easycontrol_adapters/<task>/`）
+## 2. 第一件事——适配器项目（`i2i_tasks/<task>/`）
 
 真正的工作在这里。它做两件事：**构建参考图像**和**缓存它**。（可选地，第三件事：构建任务专属的文本缓存。）
 
@@ -53,7 +53,7 @@ colorize 的做法——你可以复用的思路：**真实的黑白漫画没有
 在 colorize 中这是 `mangafy.py::mangafy_array`（及其 GPU 版本 `mangafy_gpu.py::mangafy_array_gpu`）：
 
 ```python
-# easycontrol_adapters/colorization/prep.py
+# i2i_tasks/colorization/prep.py
 Screener = Callable[[np.ndarray, int], np.ndarray]  # (img_rgb, seed) → cond_rgb
 ```
 
@@ -121,8 +121,8 @@ validation_seed = 42
   [[datasets.subsets]]
   image_dir = 'post_image_dataset/resized'        # the COLOR targets
   cache_dir = 'post_image_dataset/lora'           # target latents + text — REUSED, not rebuilt
-  cond_cache_dir = 'post_image_dataset/easycontrol/colorize/cond'   # ← the reference latents (from prep.py)
-  text_cache_dir = 'post_image_dataset/easycontrol/colorize/text'   # ← color-only text cache (from prep.py)
+  cond_cache_dir = 'post_image_dataset/i2i/colorize/cond'   # ← the reference latents (from prep.py)
+  text_cache_dir = 'post_image_dataset/i2i/colorize/text'   # ← color-only text cache (from prep.py)
   recursive = true
   flip_aug = false        # latents can't be flipped after the fact, and there's no flipped reference
   num_repeats = 1
@@ -200,9 +200,9 @@ unsloth_offload_checkpointing = true
    ```python
    adapter = _easyadapter()
    if adapter == "colorize":
-       run([PY, "easycontrol_adapters/colorization/prep.py", *extra]); return
+       run([PY, "i2i_tasks/colorization/prep.py", *extra]); return
    if adapter == "<task>":
-       run([PY, "easycontrol_adapters/<task>/prep.py", *extra]); return
+       run([PY, "i2i_tasks/<task>/prep.py", *extra]); return
    ```
 
 3. 训练本身**无需**改动——`cmd_easycontrol` 已经调用了 `train(_easyadapter() or "easycontrol", extra)`，所以只要名称进入允许列表，`EASYADAPTER=<task>` 就会自动运行 `configs/methods/<task>.toml`。
@@ -226,7 +226,7 @@ ref_fallback_dir = (ROOT/"post_image_dataset"/"resized") if is_colorize else (RO
 # 1. Build the reference cache (build + VAE-encode). Idempotent.
 make easycontrol-preprocess EASYADAPTER=<task>
 #    Check a few first:
-python easycontrol_adapters/<task>/prep.py --limit 8
+python i2i_tasks/<task>/prep.py --limit 8
 #    Eyeball the staged reference PNGs under post_image_dataset/<task>_staging/
 
 # 2. Train (DiT frozen, adapter only).
@@ -250,7 +250,7 @@ REF_IMAGE=path/to/condition.png make test-easycontrol EASYADAPTER=<task>
 
 ## 8. 检查清单
 
-- [ ] `easycontrol_adapters/<task>/`，包含一个确定性、原子写入的构建器
+- [ ] `i2i_tasks/<task>/`，包含一个确定性、原子写入的构建器
       （`(img, seed) → reference`，相同尺寸）和一个幂等的 `prep.py`
       （构建 → 编码 → 可选文本）。
 - [ ] 参考按**原生尺寸**编码，使 token 数与目标桶匹配（§3）。
@@ -267,7 +267,7 @@ REF_IMAGE=path/to/condition.png make test-easycontrol EASYADAPTER=<task>
 
 ## 9. 进一步阅读
 
-- **`easycontrol_adapters/colorization/README.md`** — 完整的 colorize 设计笔记
+- **`i2i_tasks/colorization/README.md`** — 完整的 colorize 设计笔记
   （标注策略、网点频段、Phase B 路线图）。上文所有内容的参考实现。
 - **`docs/experimental/easycontrol.md`** — 网络本身：双流前向传播、`b_cond` step-0
   基准、推理缓存、内存使用、限制。改动 `network_args` 前请先阅读。

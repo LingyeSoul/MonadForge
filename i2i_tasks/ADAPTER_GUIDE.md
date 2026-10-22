@@ -1,8 +1,8 @@
 # Building your own EasyControl adapter
 
 This guide adds a **new EasyControl control task** to Anima, following the
-worked example **colorize** (`easycontrol_adapters/colorization/`). A local
-adapter lives under `easycontrol_adapters/<your_task>/`.
+worked example **colorize** (`i2i_tasks/colorization/`). A local
+adapter lives under `i2i_tasks/<your_task>/`.
 
 The network, forward pass, `b_cond` gate and inference cache are shared by every
 control task (`networks/methods/easycontrol.py`). A new task changes **how the
@@ -43,14 +43,14 @@ the dataset in a descriptor, and register the task name.**
 
 | # | Thing | colorize version | what it's for |
 |---|-------|------------------|---------------|
-| 1 | `easycontrol_adapters/<task>/` | `colorization/` (`mangafy*.py`, `wb.py`, `color_caption.py`, `prep.py`) | builds and caches the reference (and optionally a task-specific text cache) |
+| 1 | `i2i_tasks/<task>/` | `colorization/` (`mangafy*.py`, `wb.py`, `color_caption.py`, `prep.py`) | builds and caches the reference (and optionally a task-specific text cache) |
 | 2 | `configs/easycontrol/<task>.toml` | `configs/easycontrol/colorize.toml` | the descriptor: `name` slug, `[staging]` / `[preprocess]` / `[training]` tables, `[[datasets]]` blueprint, optional `[variant]` |
-| 3 | `_EASY_ADAPTERS` in `scripts/tasks/training.py` | `"colorize": {"stage": _colorize_stage, "preprocess": _colorize_preprocess}` | makes `EASYADAPTER=<task>` work for `make easycontrol-staging` / `easycontrol-preprocess` / `easycontrol` |
+| 3 | `_EASY_ADAPTERS` in `scripts/tasks/training.py` | `"colorize": {"stage": _colorize_stage, "preprocess": _colorize_preprocess}` | makes `TASK=<task>` work for `make i2i-stage` and `EASYADAPTER=<task>` for `easycontrol-preprocess` / `easycontrol` |
 | 4 | `_ADAPTERS` in `cmd_test_easycontrol` (`scripts/tasks/inference.py`) | the `"colorize"` row | checkpoint prefix, output folder, reference fallback folder, empty-prompt default for `make test-easycontrol` |
 
 ---
 
-## 2. Thing 1 — the adapter project (`easycontrol_adapters/<task>/`)
+## 2. Thing 1 — the adapter project (`i2i_tasks/<task>/`)
 
 It does two jobs: **make the reference image** and **cache it**, plus optionally
 a task-specific text cache.
@@ -65,7 +65,7 @@ In colorize this is `mangafy.py::mangafy_array` (GPU twin
 `mangafy_gpu.py::mangafy_array_gpu`):
 
 ```python
-# easycontrol_adapters/colorization/prep.py
+# i2i_tasks/colorization/prep.py
 Screener = Callable[[np.ndarray, int], np.ndarray]  # (img_rgb, seed) → cond_rgb
 ```
 
@@ -155,7 +155,7 @@ the latent still lands on a real bucket.
 One file holds everything task-specific (see `configs/easycontrol/colorize.toml`):
 
 - top-level **`name`** — the slug. Trees live under
-  `post_image_dataset/easycontrol/<name>/`, and `output_name` defaults to
+  `post_image_dataset/i2i/<name>/`, and `output_name` defaults to
   `anima_easycontrol_<name>`.
 - **`[staging]`** / **`[preprocess]`** — flat tables your stage/preprocess
   functions turn into `prep.py` flags (`_toml_table_to_argv`: `--key value`,
@@ -175,9 +175,9 @@ colorize's blueprint subset:
   [[datasets.subsets]]
   image_dir = 'post_image_dataset/resized'                         # the color targets
   cache_dir = 'post_image_dataset/lora'                            # shared TE/PE cache, reused
-  cond_cache_dir = 'post_image_dataset/easycontrol/{name}/cond'    # reference latents (prep.py)
-  text_cache_dir = 'post_image_dataset/easycontrol/{name}/text'    # color-only text cache (prep.py)
-  latent_cache_dir = 'post_image_dataset/easycontrol/{name}/target' # WB target latents (prep.py)
+  cond_cache_dir = 'post_image_dataset/i2i/{name}/cond'    # reference latents (prep.py)
+  text_cache_dir = 'post_image_dataset/i2i/{name}/text'    # color-only text cache (prep.py)
+  latent_cache_dir = 'post_image_dataset/i2i/{name}/target' # WB target latents (prep.py)
   recursive = true
   flip_aug = false
   num_repeats = 1
@@ -225,7 +225,7 @@ _EASY_ADAPTERS = {
 ```
 
 `_colorize_stage` / `_colorize_preprocess` are the model: each runs
-`easycontrol_adapters/colorization/prep.py` with stage-skip flags, the
+`i2i_tasks/colorization/prep.py` with stage-skip flags, the
 slug-derived paths (`_colorize_prep_paths(base)`), the table knobs, and `extra`
 last so user `ARGS` win. `_easyadapter()` rejects names missing from this dict.
 `make easycontrol EASYADAPTER=<task>` needs no further edit.
@@ -251,9 +251,9 @@ last so user `ARGS` win. `_easyadapter()` rejects names missing from this dict.
 make preprocess
 
 # 1. Build the reference tree. QA a few first, then eyeball the PNGs under
-#    post_image_dataset/easycontrol/<name>/staging/.
-make easycontrol-staging EASYADAPTER=<task> ARGS="--limit 8"
-make easycontrol-staging EASYADAPTER=<task>
+#    post_image_dataset/i2i/<name>/staging/.
+make i2i-stage TASK=<task> ARGS="--limit 8"
+make i2i-stage TASK=<task>
 
 # 2. Encode the caches. Idempotent.
 make easycontrol-preprocess EASYADAPTER=<task>
@@ -282,7 +282,7 @@ REF_IMAGE=path/to/condition.png make test-easycontrol EASYADAPTER=<task>
 
 ## 7. Checklist
 
-- [ ] `easycontrol_adapters/<task>/` with a deterministic, atomic-writing builder
+- [ ] `i2i_tasks/<task>/` with a deterministic, atomic-writing builder
       (`(img, seed) → reference`, same size) and an idempotent `prep.py`.
 - [ ] References encoded at **native size** (§3).
 - [ ] `configs/easycontrol/<task>.toml`: `name`, `[staging]` / `[preprocess]` /
@@ -295,7 +295,7 @@ REF_IMAGE=path/to/condition.png make test-easycontrol EASYADAPTER=<task>
 
 ## 8. Where to read more
 
-- **`easycontrol_adapters/colorization/README.md`** — the colorize reference
+- **`i2i_tasks/colorization/README.md`** — the colorize reference
   implementation: caption policy, screentone bands, tag slices, inference
   settings.
 - **`docs/experimental/easycontrol.md`** — the network: two-stream forward,

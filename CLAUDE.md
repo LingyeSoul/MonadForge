@@ -146,7 +146,9 @@ self-contained `configs/<method>/<method>.toml` layout, gui-methods rules:
   `bench/` and `scripts/` are packages of the editable install (`uv sync`), so they
   import as `bench.<dir>.<mod>` / `scripts.<dir>.<mod>` from anywhere — no `sys.path`
   bootstrap; import a sibling by its package path. Repo-root modules (`train.py`,
-  `inference.py`, `tasks.py`) and `easycontrol_adapters/` are not installed.
+  `inference.py`, `tasks.py`) and `i2i_tasks/` are not installed. `i2i_tasks/<task>` is the
+  model-agnostic i2i staging (`make i2i-stage TASK=…` → `post_image_dataset/i2i/`) that both
+  EasyControl and MOSS i2i read; map in `i2i_tasks/README.md`.
 - **`library/qwen21/`** is the Qwen-Image-2.1 LoRA line's core — **not Anima**, none of
   the invariants below apply; read `library/qwen21/CLAUDE.md` and **load the `qwen21` skill** before touching it.
 - **`library/moss/`** is the MOSS-Image LoRA line — **not Anima**, none of the invariants

@@ -51,9 +51,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 setup_logging()
 logger = logging.getLogger(__name__)
 
-PAIRS_JSON = (
-    REPO_ROOT / "post_image_dataset" / "easycontrol" / "phash_edit" / "pairs.json"
-)
+PAIRS_JSON = REPO_ROOT / "post_image_dataset" / "i2i" / "phash_edit" / "pairs.json"
 
 GRID = 64
 MIN_BLOB_CELLS = 2  # single-cell hits are decode/screentone noise; 2+ cells

@@ -88,15 +88,26 @@ COMMANDS = {
         "EasyControl training (extended self-attn KV with VAE-encoded reference). "
         "EASYADAPTER=<task> (e.g. colorize) selects a control-task project.",
     ),
+    "i2i-stage": (
+        training.cmd_i2i_stage,
+        "Generate an i2i task's staging tree (i2i_tasks/<task>, no VAE/TE "
+        "caching) under post_image_dataset/i2i/. TASK=<task> (colorize, inpaint, "
+        "region, near_twins, …); read by easycontrol-preprocess and the MOSS i2i cache.",
+    ),
+    "i2i-preprocess": (
+        training.cmd_i2i_preprocess,
+        "Cache a staged i2i task for one model: TASK=<task> MODEL=anima (EasyControl "
+        "encode, = easycontrol-preprocess) | moss (configs/moss/i2i/<task>/cache.toml "
+        "→ target latents + TE + reference latents, daemon job).",
+    ),
     "easycontrol-staging": (
         training.cmd_easycontrol_staging,
-        "Generate an EasyControl adapter's staging dataset (no VAE/TE caching). "
-        "EASYADAPTER=near_twin → mine the in-artist near-twin pair tree.",
+        "Alias of i2i-stage with EASYADAPTER=<task>.",
     ),
     "easycontrol-preprocess": (
         training.cmd_easycontrol_preprocess,
         "Full EasyControl preprocess: latents + text emb. "
-        "Source: easycontrol-dataset/  Cache: post_image_dataset/easycontrol/.",
+        "Source: easycontrol-dataset/ (or TASK staging)  Cache: post_image_dataset/i2i/.",
     ),
     # ── Training daemon ───────────────────────────────────────────────
     "daemon": (
