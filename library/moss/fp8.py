@@ -15,7 +15,7 @@ GPTQ-rounded on the same grid and scale (``quantized=``, from
 
 ``load_fp8_text_encoder`` reads that file back into the HF ``Qwen3_5Model``: the
 quantized linears become :class:`FP8Linear` (fp8 resident, dequantised to bf16 per
-forward, as ComfyUI runs it), so the 32 decoder layers take 6.5 GiB on the card.
+forward), so the 32 decoder layers take 6.5 GiB on the card.
 The same writer and loader take the INT8 ConvRot format (``library/moss/int8.py``),
 told apart by each linear's ``comfy_quant``.
 """
@@ -71,11 +71,13 @@ def quantize_te(
     log=print,
     quantized: dict | None = None,
     fmt: str = "fp8",
+    replace: dict | None = None,
 ) -> dict:
     """``text_encoder/`` (sharded HF safetensors) → ``out_path``. Returns counts.
     ``quantized`` maps a linear's weight key to an already quantized ``(q, scale)``
-    (a calibrated rounding) in place of round to nearest. ``fmt``: ``fp8`` or
-    ``int8_convrot``."""
+    (a calibrated rounding) in place of round to nearest; ``replace`` maps any other
+    key to the tensor written in its place (``te_gptq.py --smooth``'s norms).
+    ``fmt``: ``fp8`` or ``int8_convrot``."""
     src_dir, out_path = Path(src_dir), Path(out_path)
     index = json.loads((src_dir / "model.safetensors.index.json").read_text())
     shards = sorted(set(index["weight_map"].values()))
@@ -97,7 +99,7 @@ def quantize_te(
                     out[f"{prefix}comfy_quant"] = conf.clone()
                     n_q += 1
                 else:
-                    out[key] = t
+                    out[key] = (replace or {}).get(key, t)
         log(f"[{fmt}] {shard}: {len(out)} tensors so far, {n_q} quantized")
     if n_q != N_LINEARS:
         raise ValueError(f"quantized {n_q} linears, expected {N_LINEARS}")
@@ -151,8 +153,8 @@ def load_fp8_text_encoder(
 ):
     """The fp8 file (with ``config.json`` beside it) → ``Qwen3_5Model`` on the CPU,
     eval mode, quantized linears as :class:`FP8Linear`. An INT8 ConvRot file loads
-    as :class:`int8.Int8ConvRotLinear`, W8A8 as ComfyUI runs it unless ``int8_act``
-    is off."""
+    as :class:`int8.Int8ConvRotLinear`: W8A8 with ``int8_act`` (the default),
+    weight-only without."""
     from accelerate import init_empty_weights
     from safetensors.torch import load_file
     from transformers import AutoConfig, AutoModel

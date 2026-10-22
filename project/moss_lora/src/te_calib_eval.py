@@ -5,6 +5,10 @@ Each entry is encoded by the bf16 TE (the reference) and by every ``--fp8 name=p
 file, all with the vision tower on the card (``vision_te.load_te``). Per arm and
 category: rel L2 over all rows, over the image-token rows and over the text rows
 (image entries), the mean row cosine and the share of rows under cosine 0.9.
+``--example`` adds Space gallery prompts (``parameters.json``, as
+``GenerateRequest.example`` takes them), text only, one category each
+(``space<folder>``), left out of ``all``. An arm whose embeds file exists encodes
+only the entries missing from it.
 
     make daemon-run ARGS="project/moss_lora/src/te_calib_eval.py \
         --fp8 rtn=models/moss_image/fp8/qwen35_9b_fp8_e4m3fn.safetensors \
@@ -60,6 +64,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", default=MANIFEST)
     ap.add_argument("--fp8", action="append", default=[], help="name=path, repeatable")
+    ap.add_argument("--example", default="", help="parameters.json paths, comma-separated")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
@@ -73,13 +78,22 @@ def main() -> None:
         for e in json.loads(resolve_under_home(args.manifest).read_text())["entries"]
         if e["split"] == "eval"
     ]
+    for p in filter(None, (p.strip() for p in args.example.split(","))):
+        p = resolve_under_home(p)
+        params = json.loads(p.read_text(encoding="utf-8"))
+        name = f"space{p.parent.name if p.stem == 'parameters' else p.stem}"
+        text = params.get("parameters", params)["prompt"]
+        entries.append(
+            {"id": name, "category": name, "text": text, "image": None, "extra": True}
+        )
     tok = load_tokenizer("")
     arms = {"bf16": None} | dict(f.split("=", 1) for f in args.fp8)
     embeds = {}
     for arm, path in arms.items():
         cached = out / f"embeds_{arm}.safetensors"
-        if cached.exists():
-            embeds[arm] = load_file(str(cached))
+        embeds[arm] = load_file(str(cached)) if cached.exists() else {}
+        todo = [e for e in entries if e["id"] not in embeds[arm]]
+        if not todo:
             continue
         if path is None:
             te = load_te(tok, device)
@@ -88,8 +102,8 @@ def main() -> None:
                 tok, device, precision="fp8", fp8_path=resolve_under_home(path)
             )
         t0 = time.time()
-        embeds[arm] = encode_all(tok, te, entries, device)
-        print(f"[{arm}] {len(entries)} entries in {time.time() - t0:.0f}s", flush=True)
+        embeds[arm] |= encode_all(tok, te, todo, device)
+        print(f"[{arm}] {len(todo)} entries in {time.time() - t0:.0f}s", flush=True)
         save_file({k: v.contiguous() for k, v in embeds[arm].items()}, str(cached))
         del te
         empty_cache()
@@ -103,7 +117,7 @@ def main() -> None:
         for cat in cats + ["all"]:
             acc = {}
             for e in entries:
-                if cat != "all" and e["category"] != cat:
+                if e["category"] != cat and (cat != "all" or e.get("extra")):
                     continue
                 x, r = embeds[arm][e["id"]], ref[e["id"]]
                 parts = {"all": slice(None)}

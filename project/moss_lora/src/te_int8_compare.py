@@ -5,8 +5,9 @@
 2. GPTQ on the INT8 ConvRot grid, v2's calibration (``te_gptq.py --grid int8_convrot
    --manifest``, the ``te_calib.py`` calib split)
 3. ``bench/moss_te_fp8`` text arms: bf16, v2 (the catalog file), each INT8 file W8A8
-   (ComfyUI's ``int8_linear``) and weight-only (``--w8_only``)
-4. ``te_calib_eval.py`` per category on the eval split, INT8 arms W8A8
+   (``comfy_kitchen.int8_linear``) and weight-only (``--w8_only``)
+4. ``te_calib_eval.py`` per category on the eval split: v2 weight-only, the INT8
+   arms W8A8 only
 
 Steps 1–2 skip a file already on disk.
 

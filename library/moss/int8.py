@@ -1,16 +1,20 @@
-"""INT8 ConvRot decoder linears for the Qwen3.5-9B TE, in ComfyUI's mixed-precision
-format (``int8_tensorwise`` + ``convrot``; ComfyUI ≥ 0.27 reads it natively).
+"""INT8 ConvRot decoder linears for the Qwen3.5-9B TE.
 
 Each linear's weight is rotated per 256-column group by a normalised regular
 Hadamard ``h`` (ConvRot, arXiv 2512.03673): ``W_rot = W·blockdiag(h)``, then
 round-to-nearest int8 with one fp32 ``weight_scale`` per output row (amax / 127).
 ``h`` is symmetric and its own inverse, so the same group rotation maps the input
-into the weight's basis and maps a rotated weight back. ComfyUI runs the layer
-through ``comfy_kitchen.int8_linear(convrot=True)``: the activation is rotated
-online and quantised per token (W8A8). :class:`Int8ConvRotLinear` runs that
-kernel (``act=True``) or the rotated input against the dequantised weight in bf16
-(``act=False``: the weight rounding alone). ``library/moss/fp8.py`` writes the
-file (``quantize_te(fmt="int8_convrot")``) and loads it back."""
+into the weight's basis and maps a rotated weight back. The tensors and their
+``comfy_quant`` are ComfyUI's ``int8_tensorwise`` + ``convrot`` layout
+(bit-identical to comfy_kitchen's quantizer).
+
+:class:`Int8ConvRotLinear` runs it two ways: ``act=False`` (weight-only) matmuls
+the rotated input against the dequantised weight in bf16; ``act=True`` (W8A8)
+calls ``comfy_kitchen.int8_linear(convrot=True)``, which also rounds the rotated
+activation to int8 per token — faster, plus that rounding's error. bench/moss_te_fp8
+20261022-1300, GPTQ-rounded: rel L2 0.035 weight-only, 0.058 W8A8 (fp8 GPTQ v2,
+weight-only: 0.048). ``library/moss/fp8.py`` writes the file
+(``quantize_te(fmt="int8_convrot")``) and loads it back."""
 
 from __future__ import annotations
 

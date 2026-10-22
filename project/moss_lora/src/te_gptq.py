@@ -30,7 +30,24 @@ token count over its own category's), and the empty prompt enters once at
 weight and ``H`` are taken into the group-Hadamard basis (``W·R``, ``R·H·R``), the
 per-row int8 scale is fixed at the rotated weight's amax / 127, and GPTQ runs there;
 the layer's own forward (for the next layer's inputs) uses the rotated-back weight.
-Activation rounding (ComfyUI's W8A8) is not modelled.
+W8A8's activation rounding is not modelled unless ``--act_aware``.
+
+Two options of the INT8 ConvRot grid aim at that rounding (W8A8, the activation
+rotated and rounded per token):
+
+- ``--smooth α`` (SmoothQuant): before a layer is quantized, every input channel
+  ``j`` of a linear group is divided by ``s_j = amax|X_j|^α / amax|W_{·j}|^(1−α)``
+  (geometric mean 1) and the weight columns multiplied by it. ``s`` folds into the
+  RMSNorm feeding the group (``input_layernorm`` → the attention input projections,
+  ``post_attention_layernorm`` → ``gate_proj`` / ``up_proj``; stored as fp32
+  ``(1 + w)/s − 1``) and into ``up_proj``'s rows for ``down_proj``. ``out_proj`` /
+  ``o_proj`` are left alone.
+- ``--act_aware``: ``H`` is taken from the rotated, per-token int8-rounded inputs
+  ``X̃``, and GPTQ rounds ``W* = W_r·Gᵀ·(H̃ + λI)⁻¹`` (``G = X̃ᵀX_r``), the least-squares
+  weight from ``X̃`` to the exact output ``X_r W_rᵀ``, so the activation rounding is
+  partly compensated. The layer's output for the next layer runs W8A8
+  (``int8.Int8ConvRotLinear``). The log's ``rtn`` / ``gptq`` errors are then the
+  W8A8 output error ``‖X̃Qᵀ − X_r W_rᵀ‖² / ‖X_r W_rᵀ‖²``.
 
     make daemon-run ARGS="--stall-timeout 1800 project/moss_lora/src/te_gptq.py"
 """
@@ -157,6 +174,83 @@ def manifest_inputs(tok, path: Path, empty_mass: float, device):
     )
 
 
+# norm (or up_proj's rows) → the linears reading its output, per layer type
+SMOOTH = {
+    "linear_attention": {
+        "input_layernorm": (
+            "linear_attn.in_proj_qkv",
+            "linear_attn.in_proj_z",
+            "linear_attn.in_proj_b",
+            "linear_attn.in_proj_a",
+        )
+    },
+    "full_attention": {
+        "input_layernorm": ("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj")
+    },
+}
+SMOOTH_MLP = {
+    "post_attention_layernorm": ("mlp.gate_proj", "mlp.up_proj"),
+    "mlp.up_proj": ("mlp.down_proj",),
+}
+
+
+@torch.no_grad()
+def smooth_layer(layer, kind, samples, alpha):
+    """Fold SmoothQuant scales into ``layer`` (bf16 linears, fp32 norms). Returns
+    ``(exact fp32 smoothed weight per linear, new norm weight per norm)``."""
+    mods = dict(layer.named_modules())
+    groups = {**SMOOTH[kind], **SMOOTH_MLP}
+    amax = {}
+
+    def hook(src):
+        def h(_m, a):
+            x = a[0].reshape(-1, a[0].shape[-1]).abs().amax(0).float()
+            amax[src] = torch.maximum(amax[src], x) if src in amax else x
+
+        return h
+
+    hooks = [
+        mods[names[0]].register_forward_pre_hook(hook(src))
+        for src, names in groups.items()
+    ]
+    for h, kw in samples:
+        layer(h, **kw[kind])
+    for hk in hooks:
+        hk.remove()
+    exact = {
+        n: mods[n].weight.data.float() for names in groups.values() for n in names
+    }
+    norms = {}
+    for src, names in groups.items():
+        wa = torch.stack([mods[n].weight.abs().amax(0).float() for n in names]).amax(0)
+        s = amax[src].clamp(min=1e-5).pow(alpha) / wa.clamp(min=1e-5).pow(1 - alpha)
+        s = s / s.log().mean().exp()
+        for n in names:
+            exact[n] = exact[n] * s
+        if src == "mlp.up_proj":
+            exact[src] = exact[src] / s[:, None]
+        else:
+            norm = mods[src]
+            norm.weight.data = (1 + norm.weight.float()) / s - 1
+            norms[src] = norm.weight.data
+    for n, w in exact.items():
+        mods[n].weight.data = w.to(mods[n].weight.dtype)
+    return exact, norms
+
+
+def act_qdq(x: torch.Tensor) -> torch.Tensor:
+    """Per-row int8 round trip, ``comfy_kitchen``'s activation quantizer."""
+    s = (x.abs().amax(-1, keepdim=True) / int8.INT8_MAX).clamp(min=1e-30)
+    return (x / s).round().clamp(-int8.INT8_MAX - 1, int8.INT8_MAX) * s
+
+
+def w8a8_err(Q, Wr, Hq, G, Hr) -> float:
+    """``‖X̃Qᵀ − X_r W_rᵀ‖² / ‖X_r W_rᵀ‖²`` from ``H̃ = X̃ᵀX̃``, ``G = X̃ᵀX_r``,
+    ``H_r = X_rᵀX_r``."""
+    ref = ((Wr @ Hr) * Wr).sum()
+    return (((Q @ Hq) * Q).sum() - 2 * ((Q @ G) * Wr).sum() + ref).item() / ref.item()
+
+
 def qdq(w: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return (w / scale).clamp(-FP8_MAX, FP8_MAX).to(FP8).float() * scale
 
@@ -241,8 +335,12 @@ def main() -> None:
     ap.add_argument("--manifest", default="", help="te_calib.py manifest (calib split)")
     ap.add_argument("--empty_mass", type=float, default=0.25)
     ap.add_argument("--grid", default="fp8", choices=tuple(OUT))
+    ap.add_argument("--smooth", type=float, default=0.0, help="SmoothQuant α; 0 off")
+    ap.add_argument("--act_aware", action="store_true")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
+    if (args.smooth or args.act_aware) and args.grid != "int8_convrot":
+        ap.error("--smooth / --act_aware need --grid int8_convrot")
     torch.set_grad_enabled(False)
     device = torch.device("cuda")
     out = resolve_under_home(args.out or OUT[args.grid])
@@ -292,7 +390,7 @@ def main() -> None:
     torch.cuda.empty_cache()
     types = te.config.text_config.layer_types
 
-    quantized, report = {}, {}
+    quantized, report, replace = {}, {}, {}
     for i, layer in enumerate(lm.layers):
         layer.to(device)
         lins = {
@@ -304,16 +402,37 @@ def main() -> None:
             for n, m in lins.items()
         }
 
+        exact = {}
+        if args.smooth:
+            exact, norms = smooth_layer(layer, types[i], samples, args.smooth)
+            for norm, w in norms.items():
+                replace[f"language_model.layers.{i}.{norm}.weight"] = w.cpu()
+        if args.act_aware:
+            G = {n: torch.zeros_like(h) for n, h in H.items()}
+            Hr = {n: torch.zeros_like(h) for n, h in H.items()}
+
         weight = [1.0]
 
-        def acc(h):
+        def acc(h, g=None, hr=None):
             def hook(_m, a):
                 x = a[0].reshape(-1, a[0].shape[-1]).float()
-                h.addmm_(x.T, x, alpha=weight[0])
+                if g is None:
+                    h.addmm_(x.T, x, alpha=weight[0])
+                    return
+                xr = int8.rotate(x)
+                xq = act_qdq(xr)
+                h.addmm_(xq.T, xq, alpha=weight[0])
+                g.addmm_(xq.T, xr, alpha=weight[0])
+                hr.addmm_(xr.T, xr, alpha=weight[0])
 
             return hook
 
-        hooks = [m.register_forward_pre_hook(acc(H[n])) for n, m in lins.items()]
+        hooks = [
+            m.register_forward_pre_hook(
+                acc(H[n], G[n], Hr[n]) if args.act_aware else acc(H[n])
+            )
+            for n, m in lins.items()
+        ]
         for (h, kw), w in zip(samples, weights):
             weight[0] = w
             layer(h, **kw[types[i]])
@@ -321,9 +440,16 @@ def main() -> None:
             hk.remove()
 
         for n, m in lins.items():
-            W, Hn = m.weight.data.float(), H[n]
+            W, Hn = exact.get(n, m.weight.data.float()), H[n]
             if args.grid == "int8_convrot":
-                W, Hn = int8.rotate(W), int8.rotate(int8.rotate(Hn).T)
+                if args.act_aware:
+                    Wr = int8.rotate(W)
+                    A = Hn + args.damp * Hn.diagonal().mean() * torch.eye(
+                        Hn.shape[0], device=device
+                    )
+                    W = torch.cholesky_solve(G[n] @ Wr.T, torch.linalg.cholesky(A)).T
+                else:
+                    W, Hn = int8.rotate(W), int8.rotate(int8.rotate(Hn).T)
                 scale = int8.row_scale(W)
                 Q = gptq(
                     W,
@@ -333,10 +459,24 @@ def main() -> None:
                     args.damp,
                     not args.no_act_order,
                 )
-                rtn = out_err(int8.qdq(W, scale) - W, Hn, W)
                 q = (Q / scale[:, None]).round().clamp(-128, 127).to(torch.int8)
                 quantized_w = (q.cpu(), scale[:, None].cpu())
-                restored = int8.rotate(Q)
+                if args.act_aware:
+                    rtn_q = int8.qdq(Wr, int8.row_scale(Wr))
+                    rtn = w8a8_err(rtn_q, Wr, Hn, G[n], Hr[n])
+                    err = w8a8_err(Q, Wr, Hn, G[n], Hr[n])
+                    parent, _, child = n.rpartition(".")
+                    setattr(
+                        layer.get_submodule(parent),
+                        child,
+                        int8.Int8ConvRotLinear(
+                            q.to(device), scale[:, None], int8.GROUP, act=True
+                        ),
+                    )
+                else:
+                    rtn = out_err(int8.qdq(W, scale) - W, Hn, W)
+                    err = out_err(Q - W, Hn, W)
+                    m.weight.data = int8.rotate(Q).to(m.weight.dtype)
             else:
                 scale = W.abs().amax().clamp(min=1e-12) / FP8_MAX
                 Q = gptq(
@@ -348,16 +488,17 @@ def main() -> None:
                     not args.no_act_order,
                 )
                 rtn = out_err(qdq(W, scale) - W, Hn, W)
+                err = out_err(Q - W, Hn, W)
                 quantized_w = (
                     (Q / scale).clamp(-FP8_MAX, FP8_MAX).to(FP8).cpu(),
                     scale.cpu(),
                 )
-                restored = Q
-            err = out_err(Q - W, Hn, W)
+                m.weight.data = Q.to(m.weight.dtype)
             key = f"language_model.layers.{i}.{n}.weight"
             report[key] = {"rtn": rtn, "gptq": err}
             quantized[key] = quantized_w
-            m.weight.data = restored.to(m.weight.dtype)
+        if args.act_aware:
+            del G, Hr
         del H
         samples = [(layer(h, **kw[types[i]]), kw) for h, kw in samples]
         layer.to("cpu")
@@ -379,7 +520,7 @@ def main() -> None:
 
     out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(src / "config.json", out.parent / "config.json")
-    quantize_te(src, out, quantized=quantized, fmt=args.grid)
+    quantize_te(src, out, quantized=quantized, fmt=args.grid, replace=replace)
     (out.parent / "gptq_report.json").write_text(
         json.dumps(
             {

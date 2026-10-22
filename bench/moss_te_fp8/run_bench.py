@@ -12,7 +12,7 @@ token embedding (CPU, as in ``loader``) and the vision tower are left alone. Arm
   w8a8_row     per-channel weight + per-token dynamic activation, ``torch._scaled_mm``
   <name>       ``--fp8_file <name>=<path>``: an fp8 or INT8 ConvRot file in
                ``library/moss/fp8.py``'s format (e.g. ``project/moss_lora/src/te_gptq.py``'s),
-               through ``load_fp8_text_encoder``; an INT8 arm runs W8A8 as ComfyUI does,
+               through ``load_fp8_text_encoder``; an INT8 arm runs W8A8 (``comfy_kitchen.int8_linear``),
                or weight-only (dequantised, bf16 activations) when named in ``--w8_only``
 
 Text: cached ``*.moss_te.safetensors`` captions sampled across
