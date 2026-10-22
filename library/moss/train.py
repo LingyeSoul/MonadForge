@@ -1,4 +1,4 @@
-"""Train a LoRA on a precached folder — flow matching, batch 1.
+"""Train a LoRA on a precached folder: flow matching, batch 1.
 
 Reads only what ``cache.py`` wrote (latents + text embeddings), so neither the
 Qwen3.5-9B TE nor the VAE is loaded. ``--caption_dropout`` reads the empty prompt
@@ -16,19 +16,18 @@ With ``--fit_report``, step 1 is the largest sample with its longest caption (fu
 plain or a variant) and no dropout, so the report bounds the worst case.
 
 Objective (report App. A.2): ``z_σ = (1−σ)·z0 + σ·ε``, the DiT predicts
-``ε − z0`` at timestep ``1000·σ``, MSE averaged over image tokens and channels —
-text tokens never reach the head, and there is no σ/SNR weighting.
+``ε − z0`` at timestep ``1000·σ``, MSE averaged over image tokens and channels
+(text tokens never reach the head), with no σ/SNR weighting.
 
 σ follows the final Stage-3 interval exactly: ``Z ~ N(μ, s²)``, ``S = 1 − sigmoid(Z)``,
 truncated to ``S ≤ cutoff`` and rescaled onto the grid ``{1/1000 … 1}``
-(``σ = ⌈1000·S/cutoff⌉ / 1000``), mixed with 1 % discrete uniform. Shift 1: that
-interval trained at area ≤ 1024², which is the size the cache targets, so no
-resolution shift is added. Median σ ≈ 0.75 — noise-heavy, matching an inference
-grid that spends most of its steps at high σ under shift 5.
+(``σ = ⌈1000·S/cutoff⌉ / 1000``), mixed with 1 % discrete uniform. Shift 1, no
+resolution shift: that interval trained at area ≤ 1024², the size the cache
+targets.
 
 Default memory plan: no checkpointing, 12 blocks swapped, and the compiled
 blocks' saved set capped by ``activation_memory_budget`` (0.1), which is faster
-than checkpointing on 16 GB (measured 2026-10-17).
+than checkpointing on 16 GB.
 ``--grad_checkpointing`` wraps each block's ``forward`` (``checkpoint_blocks``;
 not ``__call__``), so the block swapper's forward hooks fire once per step and
 never again during the recompute.
@@ -350,7 +349,7 @@ def train(
         ref = s.load_ref() if s.load_ref is not None else None
         return latent, embeds, alt, ref
 
-    # bf16 TE rows (S×4096×2) + fp32 latents (128×4 per token): ~17 MB a colorize pair.
+    # bf16 TE rows (S×4096×2 bytes) + fp32 latents (128×4 bytes per token).
     preload_bytes = sum(
         s.n_text * 8192 * (2 if use_plain and s.load_plain else 1)
         + (s.n_img + s.n_ref) * 512

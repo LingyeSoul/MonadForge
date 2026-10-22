@@ -1,25 +1,20 @@
 #!/usr/bin/env python3
 """Calibrated fp8 rounding (GPTQ on the fp8 grid) for the MOSS Qwen3.5-9B TE.
 
-Same file as ``scripts/moss/quantize_te_fp8.py`` — the 248 decoder linears as
-``float8_e4m3fn`` with the same per-tensor ``weight_scale`` (amax / 448) and
-``comfy_quant`` — so it loads wherever the round-to-nearest file does. Only the
-rounding changes: each linear is quantized column by column, and every column's
-rounding error is pushed onto the columns not yet quantized through the inverse
-Hessian ``H = Σ xᵀx`` of that linear's inputs (Frantar et al., GPTQ), so the
-output error ``‖(W − Q) x‖`` is minimised on the calibration inputs, not the
-weight error.
+Writes the same file layout as ``scripts/moss/quantize_te_fp8.py`` (the 248
+decoder linears as ``float8_e4m3fn``, per-tensor ``weight_scale`` amax / 448,
+``comfy_quant``), so it loads wherever the round-to-nearest file does; only the
+rounding changes (GPTQ against ``H = Σ xᵀx`` of each linear's inputs).
 
 Calibration is MOSS's own TE traffic, kept apart from what the evals read:
 cached captions from ``post_image_dataset/moss/*`` (``--seed``, minus the captions
-``bench/moss_te_fp8/run_bench.py`` samples at its default seed) and colorize
-training pages from ``--pages_cache`` (page through the vision tower + its OCR
-caption, never a holdout page), plus the empty prompt — the uncond of every
-sampling step — repeated ``--empty_repeat`` times so its few rows carry weight in
-``H``. Layers run in order on the calibration hidden states, each quantized layer
-feeding the next (sequential); within a layer every linear's ``H`` comes from one
-pass at bf16. Per linear the log gives the output error
-``tr(Δ H Δᵀ) / tr(W H Wᵀ)`` of round-to-nearest and of GPTQ.
+``bench/moss_te_fp8/run_bench.py`` samples at its default seed), colorize training
+pages from ``--pages_cache`` (never a holdout page), and the empty prompt (the
+uncond of every sampling step) repeated ``--empty_repeat`` times so its few rows
+carry weight in ``H``. Layers are quantized sequentially, each quantized layer
+feeding the next; within a layer every linear's ``H`` comes from one bf16 pass.
+Per linear the log gives the output error ``tr(Δ H Δᵀ) / tr(W H Wᵀ)`` of
+round-to-nearest and of GPTQ.
 
 ``--manifest`` (``te_calib.py``'s) calibrates on its ``calib`` split instead: every
 category weighs the same in ``H`` (each sample's ``xᵀx`` scaled by the mean category
@@ -32,8 +27,8 @@ per-row int8 scale is fixed at the rotated weight's amax / 127, and GPTQ runs th
 the layer's own forward (for the next layer's inputs) uses the rotated-back weight.
 W8A8's activation rounding is not modelled unless ``--act_aware``.
 
-Two options of the INT8 ConvRot grid aim at that rounding (W8A8, the activation
-rotated and rounded per token):
+Two INT8 ConvRot options target that rounding (the activation rotated and rounded
+per token):
 
 - ``--smooth α`` (SmoothQuant): before a layer is quantized, every input channel
   ``j`` of a linear group is divided by ``s_j = amax|X_j|^α / amax|W_{·j}|^(1−α)``

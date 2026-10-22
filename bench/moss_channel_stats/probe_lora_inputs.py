@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
 """Per-channel input magnitude at MOSS-Image's LoRA targets — the channel-scaling question.
 
-Anima's channel scaling (``docs/optimizations/channel_scaling.md``) rescales each
-LoRA-target Linear's input by ``mean|x[c]|^α`` because a few DC-bias channels
-dominate Adam's per-channel leverage. The MOSS DAVE probe found massive channels
-(1356, 42, …) holding ~99 % of the residual stream's image-token DC
-(``project/moss_lora/dave.md``), but the LoRA targets read the residual through
-RMSNorm + adaLN, whose weights treat those channels specially (``norm1.weight[1356]``
-≈ 0 on blocks 5–20, FFN shift −6.8 on 1356 / −4.3 on 42). This probe measures what
-actually arrives at the Linear inputs.
-
-Training-path forward (no grad): cached latents noised at each σ in ``--sigmas``,
+Measures what arrives at the Linear inputs after RMSNorm + adaLN (findings in
+``project/moss_lora/done/channel_scaling.md``). Training-path forward (no grad):
+cached latents noised at each σ in ``--sigmas``,
 cond embeds at true length, the reference per-sample forward. A ``forward_pre_hook``
 on ``layers.N.proj.{q,o,ffn_up_gate,ffn_down}`` (k / v share q's input) accumulates
 per input channel, over all tokens (what the LoRA gradient sees) and over the image
@@ -20,7 +13,6 @@ Per (block, target):
 
   * dominance ``max / median`` of ``mean|x|`` (Anima's E-analysis number)
   * leverage dominance ``max / mean`` of ``mean|x|^(1−α)`` at α = 0 and 0.5
-    (the number the channel-scaling doc quotes: Anima 13–80× → 3.8–9.3×)
   * peak-to-mean ``max|x| / mean|x|`` on the top channel (≈1–3 = DC bias)
   * for the residual-indexed inputs (q, ffn_up_gate), the rank, ``mean|x|/median``
     and signed image mean of every massive channel
@@ -29,9 +21,9 @@ Per (block, target):
     make daemon-run ARGS="bench/moss_channel_stats/probe_lora_inputs.py --model sft --label sft"
 
 Writes ``channel_stats.safetensors`` (``mean|x|`` per target, keyed
-``layers.N.proj.{q,k,v,o,ffn_up_gate,ffn_down}`` — the calibration a port would
-read), ``channel_mean.safetensors`` (the signed token mean ``x̄`` per target, same
-keys — the DC direction ``dc_isolate`` reads), ``stats.npz``, ``dominance.png`` and
+``layers.N.proj.{q,k,v,o,ffn_up_gate,ffn_down}``), ``channel_mean.safetensors`` (the
+signed token mean ``x̄`` per target, same keys: the DC direction ``dc_isolate``
+reads), ``stats.npz``, ``dominance.png`` and
 ``result.json``.
 """
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Corrector A/B: CFG against correction on the same denoiser LoRA.
 
-An arm is ``<cfg>:<K>`` — CFG scale and corrections per step. ``K`` corrects the
+An arm is ``<cfg>:<K>``: CFG scale and corrections per step. ``K`` corrects the
 cond branch before CFG (``correction.corrected_velocity``); the corrector never
 trained on the empty prompt, so the uncond branch is left alone. Forwards per
-step: ``1 + K`` (+1 when cfg ≠ 1), so ``1:1`` costs what ``3:0`` does. ER-SDE on
-the snapped shift-5 grid, uncond skip 22, no Spectrum (its forecast has no
-corrected counterpart), blocks compiled. Prompts and seeds are ``lora_ab.py``'s;
-latents are cached under a digest of both LoRAs, prompts and sampler settings.
+step: ``1 + K`` (+1 when cfg ≠ 1). ER-SDE on the snapped shift-5 grid, uncond
+skip 22, no Spectrum (its forecast has no corrected counterpart). Prompts are
+``lora_ab.py``'s; latents are cached under a digest of both LoRAs, prompts and
+sampler settings.
 
     make daemon-run ARGS="project/moss_lora/src/correction_ab.py \\
         --denoiser output/ckpt_moss/<floor>.safetensors \\

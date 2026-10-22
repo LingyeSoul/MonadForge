@@ -8,10 +8,8 @@ token embedding, norms, GDN ``conv1d`` / ``A_log`` / ``dt_bias`` and the vision
 tower keep their checkpoint dtype. Key names are the HF checkpoint's (``language_model.*``,
 ``visual.*``), which ``MOSSImageCLIPLoader`` reads as-is.
 
-bench/moss_te_fp8 (20261021-1113): per-tensor and per-channel scales give the same
-embedding error (rel L2 ~0.10), w8a8 is worse and no faster. The published file is
-GPTQ-rounded on the same grid and scale (``quantized=``, from
-``project/moss_lora/src/te_gptq.py``): rel L2 ~0.05 on held-out captions.
+The published file is GPTQ-rounded on the same grid and scale (``quantized=``,
+from ``project/moss_lora/src/te_gptq.py``).
 
 ``load_fp8_text_encoder`` reads that file back into the HF ``Qwen3_5Model``: the
 quantized linears become :class:`FP8Linear` (fp8 resident, dequantised to bf16 per

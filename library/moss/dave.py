@@ -2,7 +2,7 @@
 
 The edit is Anima's: on each pooled block, during the first τ of the steps,
 ``h ← h − strength·μ`` with ``μ`` the per-channel mean over the image tokens.
-Three things differ from ``library.inference.corrections.dave``:
+What differs from ``library.inference.corrections.dave``:
 
 - MOSS is single-stream, so a block's output is ``[image (H·W) | text]``. ``μ`` is
   taken over the image tokens only and only they are edited; the text tokens
@@ -12,15 +12,13 @@ Three things differ from ``library.inference.corrections.dave``:
   of rows, and the hook sees exactly those rows.
 - τ is a step count (``denoise`` knows the step index), not a σ boundary.
 - The massive-activation channels are left out of the edit. On MOSS the image
-  tokens' mean is ~99 % one channel (1356, ~1900× the median channel at block 0)
-  plus a few more, identical across seeds and prompts; removing a fraction of it
-  would shift the block output instead of unlocking it. The list is
-  ``DEFAULT_CHANNELS_PATH``, from ``bench/moss_dave/derive_massive_channels.py``.
+  tokens' mean is almost entirely one channel (1356) plus a few more, identical
+  across seeds and prompts; removing a fraction of it would shift the block output
+  instead of unlocking it. The list is ``DEFAULT_CHANNELS_PATH``, from
+  ``bench/moss_dave/derive_massive_channels.py``.
 
 The pool is a ``{0,1}`` vector over the 42 blocks: a ``dave_alpha.npz`` (``auto`` =
-the shipped one, blocks 19–30, picked from a DAVE-on pool sweep of
-``bench/moss_dave/probe_dc_convergence.py``; ``project/moss_lora/dave.md``), or a
-block range ``"lo-hi"``.
+the shipped one, blocks 19–30), or a block range ``"lo-hi"``.
 """
 
 from __future__ import annotations
@@ -33,7 +31,7 @@ import torch
 
 from library.env import resolve_under_home
 
-# ``dave="auto"`` reads this: blocks 19–30 from the MOSS pool sweep, not Anima's mask.
+# ``dave="auto"``: blocks 19–30 (MOSS's own pool, not Anima's mask).
 DEFAULT_MASK_PATH = "library/moss/calibration/dave_alpha.npz"
 DEFAULT_CHANNELS_PATH = "library/moss/calibration/massive_channels.npz"
 _RANGE = re.compile(r"(\d+)-(\d+)")

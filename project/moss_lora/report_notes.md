@@ -14,9 +14,8 @@ parentheses. *Italic* = our inference, not the report's.
 - Native ceiling per the text: **area ≤ 1024² px, aspect preserved, sides multiples of
   16, text ≤ 4096 tokens** (p.6 §3.3). The human eval (RLA) generated at ~1 MP (p.26).
 - *The Space presets (1776×1184, 2880×720, ~2.1 MP) match Table 1's Stage 4, not the
-  stated cap: either the weights are a later checkpoint than the prose, or the Space runs
-  Base past its training range. Keep LoRA buckets ≤ ~1 MP until Base is compared at
-  1 MP vs 2 MP.*
+  stated cap: either the weights are later than the prose, or the Space runs Base past
+  its training range. Keep LoRA buckets ≤ ~1 MP until Base is compared at 1 vs 2 MP.*
 
 ## (b) Training facts a LoRA needs
 
@@ -83,7 +82,6 @@ parentheses. *Italic* = our inference, not the report's.
   (p.7 Table 4). LongTextBench Chinese 97.17 (p.28).
 - No dedicated Chinese caption annotation (p.16): the ability comes from verbatim
   transcription plus text-heavy sources (TextAtlas5M, textrecap, poster100k).
-- **Japanese and Korean are never mentioned** — the 2026-10-16 JA/KO renders go beyond
-  what the report documents: quoted text in the main subject came out correct on Base
-  and SFT ("待ってくれ！" vertical in a manga bubble, three handwritten Chinese lines, a
+- **Japanese and Korean are never mentioned.** In the 2026-10-16 renders, quoted text in
+  the main subject came out correct on Base and SFT ("待ってくれ！" vertical in a manga bubble, three handwritten Chinese lines, a
   "오늘도 수고했어" neon sign); small background signage was still pseudo-glyphs.

@@ -23,19 +23,18 @@ side, 512 px tiles). Full-resolution PNGs go to
 `/media/sorryhyun/data/moss_image/bench/<label>/` (`metrics.image_dir`); TE
 embeds are cached in `/media/sorryhyun/data/moss_image/bench/_te_cache/`.
 
-`--compile` compiles every block before the warm-up (whole run; compare two runs for
-eager vs compiled); the warm-up time lands in `metrics.warmup_seconds`.
+Flags:
 
-`--decode_only <image dir>` decodes saved latents and writes the envelope with no DiT.
+- `--compile` compiles every block before the warm-up (whole run; compare two runs for
+  eager vs compiled); the warm-up time lands in `metrics.warmup_seconds`.
+- `--decode_only <image dir>` decodes saved latents and writes the envelope with no DiT.
+- `--example a/parameters.json,b/parameters.json` replays HF Space gallery entries (their
+  own prompt, negative, size, cfg, seed, uncond skip; key `space<folder>`) in place of
+  `--prompts`.
 
-Rel-L2 is a drift number, not a quality score: a plain 30-step arm drifts from the
-50-step one without being worse. Judge by the grids. Run envelopes:
-`bench/moss_spectrum/results/`.
-
-`--example a/parameters.json,b/parameters.json` replays HF Space gallery entries (their own
-prompt, negative, size, cfg, seed, uncond skip; key `space<folder>`) in place of
-`--prompts`.
+Rel-L2 is a drift number, not a quality score: a plain 30-step arm drifts from the 50-step
+one without being worse. Judge by the grids.
 
 `probe_skip_cost.py` scores candidate full-step schedules open-loop on recorded p50
 trajectories, with no DiT in the replay. Its ranking across schedule families does not
-match closed loop. See `docs/moss/findings/spectrum_schedule.md`.
+match closed loop (`docs/moss/findings/spectrum_schedule.md`).

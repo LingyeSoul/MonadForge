@@ -2,15 +2,13 @@
 """LoRA A/B on MOSS-Image Base and SFT: each prompt × seed over ``--arms``.
 
 An arm is ``<sampler>:<multiplier>``; sampler ``euler``, ``er_sde`` or ``cns``
-(er_sde with ``--cns_gamma``'s recolored noise). The default is ER-SDE with
-Spectrum at its shipped settings (50 steps, flex_window 0.5), ``er_sde:1.0,er_sde:0.0``;
-``--no-spectrum --steps 30 --arms euler:1.0,euler:0.0`` is the pre-2026-10-17 A/B.
-Same noise per (prompt, seed), so each row differs by the arm only. Writes one row
-per (variant, prompt, seed) into ``--out``. Blocks are compiled after the LoRA is
-attached (``--no-compile`` for eager; grids made before 2026-10-17 16:30 are eager,
-so compare compiled arms only against compiled arms). Latent names carry a digest of
-the LoRA (path + mtime), prompts, steps, cfg, size, compile, Spectrum (and CNS γ
-on cns arms), so a rerun resumes only what matches.
+(er_sde with ``--cns_gamma``'s recolored noise); Spectrum at its shipped settings
+by default. Same noise per (prompt, seed), so each row differs by the arm only.
+Writes one grid per (variant, prompt, seed) into ``--out``. Blocks are compiled
+after the LoRA is attached (``--no-compile`` for eager; compare compiled arms only
+against compiled arms). Latent names carry a digest of the LoRA (path + mtime),
+prompts, steps, cfg, size, compile, Spectrum (and CNS γ on cns arms), so a rerun
+resumes only what matches.
 
     make daemon-run ARGS="project/moss_lora/src/lora_ab.py --lora output/ckpt_moss/x.safetensors"
 """
@@ -122,8 +120,6 @@ def main() -> None:
         spectrum=spectrum_settings(args.spectrum),
     )
     cns_tag = settings_tag(base=tag, cns_gamma=args.cns_gamma)
-
-    # Each latent hits disk as soon as its denoise ends; reruns skip what is there.
     lat_dir = out / "latents"
     lat_dir.mkdir(exist_ok=True)
     variants = args.variants.split(",")

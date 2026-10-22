@@ -47,9 +47,7 @@ CFG 3, uncond `''` skipping block 22, seed 1. Captions are layout JSON. Arms:
 
 - **The image alone gets the content back.** With no caption (`img`), all four images
   come back with the same characters, outfits and hair colours and roughly the same
-  scene. The two-character cake scene keeps who stands on which side, the cake and the
-  candles. The kneeling figure keeps the pose, the ribbed sweater and the jeans. The
-  uniformed figure keeps the cherry-blossom sky, the railing and the box she holds.
+  scene, down to who stands on which side and held objects.
 - **It is not pixel-aligned.** Positions, proportions and line work drift. Skin went
   much darker on the kneeling figure. A 64 px luma PSNR against the source sits at 7.7–12.0
   on every arm, and the image arms do not beat the caption baseline consistently:
@@ -61,12 +59,11 @@ CFG 3, uncond `''` skipping block 22, seed 1. Captions are layout JSON. Arms:
   | 9859367 | 8.02 | 9.01 | 8.69 | 8.59 | 10.76 | 9.13 |
   | 11115380 | 7.67 | 10.05 | 8.50 | 8.95 | 9.79 | 10.25 |
 
-  At 64 px this measures colour layout more than content. By eye, the image arms are much
-  closer to the source than `cap` is, and the table does not show it.
+  At 64 px this measures colour layout more than content; by eye the image arms are much
+  closer to the source than `cap`.
 - **The DiT reads the image-token rows.** Without them (`img_tmpl`), all four come out
-  off-topic: a poster, a game UI screen, a different character. The 12 template rows
-  saw the image through the LM's attention, but they do not carry a summary the DiT
-  can use.
+  off-topic (a poster, a game UI screen, a different character): the 12 template rows saw
+  the image through the LM's attention but carry no summary the DiT can use.
 - **Resolution matters.** At ~130 image tokens (`img_lo`) the content gets looser
   than at ~1000: the kneeling figure comes back pale and in a different crouch, and the cake
   scene garbles the second character.
@@ -81,11 +78,12 @@ CFG 3, uncond `''` skipping block 22, seed 1. Captions are layout JSON. Arms:
   after the image changes the trailing rows only, which may be why `img_desc` ≈ `img`.
   An instruction or colour spec placed *before* the image would shape the rows the DiT
   actually reads.
-- At 32 px per token the stream carries content and coarse layout, not line placement.
-  A structure-preserving task (colorize, edit) needs a LoRA that learns alignment from
-  these tokens, or a VAE reference in the sequence. The free `r` RoPE axis is the slot for
-  one, and a reference latent at reduced size would keep the cost down.
-  - **Tested 2026-10-19** on colorize: both were tried. A LoRA trained on these tokens
-    alone reached luma r 0.42. Adding a half-size VAE reference on `r = 1` reached 0.97.
-    See `docs/proposal/moss_i2i.md`.
+- At 32 px per token the stream carries content and coarse layout, not line placement, so
+  a structure-preserving task (colorize, edit) needs a LoRA that learns alignment from these
+  tokens, or a VAE reference in the sequence (the free `r` RoPE axis is the slot for one).
 - The probe is one seed on Base. SFT was not run.
+
+## Follow-up (measured 2026-10-19)
+
+On colorize, a LoRA trained on these tokens alone reached luma r 0.42; adding a half-size
+VAE reference on `r = 1` reached 0.97 (`docs/proposal/moss_i2i.md`).

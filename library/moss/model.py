@@ -507,8 +507,8 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
     ):
         """All samples in one forward. Text is right-padded to the longest valid
         length and masked out of every key set (text refiner and joint blocks), so
-        padding never reaches a valid token. Not bit-exact with ``forward`` (the
-        masked SDPA picks a different kernel); within bf16 noise.
+        padding never reaches a valid token. Matches ``forward`` within bf16 noise
+        (the masked SDPA picks a different kernel).
 
         ``skip_layers``: None, one iterable for the whole batch, or a list with one
         iterable per sample (e.g. ``[(), (22,)]`` for cond + skip-22 uncond).
@@ -596,7 +596,7 @@ class MOSSImageScheduler(FlowMatchEulerDiscreteScheduler):
 
 def snapped_sigmas(num_steps, shift=DEFAULT_SHIFT, training_shift=1.0, total=1000):
     """The inference σ grid (descending, no terminal 0): ``shift``-warped linspace
-    snapped to the nearest σ of the training grid, duplicates collapsed — so a
+    snapped to the nearest σ of the training grid, duplicates collapsed, so a
     high step count can return fewer than ``num_steps`` values."""
 
     def grid(count, s):

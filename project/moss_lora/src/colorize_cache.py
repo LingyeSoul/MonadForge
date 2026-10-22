@@ -1,43 +1,35 @@
 #!/usr/bin/env python3
-"""The colorize cache for a TE-only MOSS LoRA: the B&W page enters through
-Qwen3.5's vision tower and as a VAE reference, the colour original is the target.
+"""Build the colorize cache for a TE-only MOSS LoRA: the B&W page enters through
+Qwen3.5's vision tower and as a VAE reference; the colour original is the target.
 
-Pairs are EasyControl colorize's: the condition is the synthetic mangafied page in
-``post_image_dataset/easycontrol/colorize/staging/<dir>/<stem>.png``, the target the
-colour original at the same path under ``post_image_dataset/resized``; ``--manga N``
-adds N pages of the ``manga_color`` slice (hitocrawl's full-colour works, JA / EN /
-KO editions) as ``manga__{anchor}_{lang}_{page}``. Per pair, in a flat cache
+The condition is ``post_image_dataset/easycontrol/colorize/staging/<dir>/<stem>.png``,
+the target the same path under ``post_image_dataset/resized``; ``--manga N`` adds N
+``manga_color`` pages as ``manga__{anchor}_{lang}_{page}``. Per pair, in a flat cache
 ``train.py`` reads unchanged:
 
     {stem}_{W}x{H}.moss_latent.safetensors   the colour target
     {stem}.moss_ref.safetensors              the page VAE-encoded at 1/``--ref_scale``
                                              of the target's sides (multiples of 16)
     {stem}.moss_te.safetensors               the page, then one of three captions:
-        embeds        OCR caption: layout JSON, the colour caption through
-                      ``caption_to_layout`` plus one ``{"label":"text",…,"bbox":…}``
-                      item per OCR line
-        embeds_v{k}   sparse caption: the colour caption shuffled with
-                      ``--tag_dropout`` of its tags dropped, no OCR (k = 1 …
-                      ``--variants`` - 1; ``--caption_variant_rate``)
+        embeds        OCR caption: the colour caption's layout JSON plus one
+                      ``{"label":"text",…,"bbox":…}`` item per OCR line
+        embeds_v{k}   sparse caption: ``--tag_dropout`` of the colour caption's
+                      tags dropped, no OCR (k = 1 … ``--variants`` - 1;
+                      ``--caption_variant_rate``)
         embeds_plain  the page alone (``--plain_caption_rate``)
 
-The colour caption is ``color_caption.filter_to_colors_and_protected`` (copyright +
-comic prefix, colour tags). The OCR reads the condition, never the target: the
-AnimeText detector, every box read by the manga VL reader, ASCII lines kept,
-speech and SFX alike in reading order, an exact repeat dropped (its first box
-kept). Its floors are looser than the stage's (``LINE_MIN_DET`` 0.6, glyph 16):
-the detector scores horizontal English balloons 0.3–0.55 while the reader reads
-them right, so a box down to the detector's 0.25 is kept when the read scores
-``LOW_DET_SCORE``, and an all-ASCII line's glyph floor is ``LATIN_MIN_GLYPH``.
-Boxes are MOSS's ``abs_centralized`` ``yxyx`` in the canvas's pixels. A page with no
-usable line keeps the layout of its colour caption.
+The OCR reads the condition, never the target. Its floors are looser than the
+stage's (``LINE_MIN_DET`` 0.6, glyph 16): the detector scores horizontal English
+balloons 0.3–0.55 while the reader reads them right, so a box down to the
+detector's 0.25 is kept when the read scores ``LOW_DET_SCORE``, and an all-ASCII
+line's glyph floor is ``LATIN_MIN_GLYPH``. Boxes are MOSS's ``abs_centralized``
+``yxyx`` in the canvas's pixels.
 
-Every encode goes through the fp8 TE (the catalog's file, ``--te_file`` for
-another), as does ``<out>/uncond.safetensors``, the eval's empty prompt. Holdout:
-``--holdout`` illustration pairs and one page each of ``--manga_holdout`` works (no
-page of those works, in any edition, trains); their files land in ``<out>/holdout/``
-with ``holdout.json``. OCR reads land in ``<out>/ocr.json``; a rerun reuses them and
-every file already written.
+Every encode, ``<out>/uncond.safetensors`` included, uses the fp8 TE (``--te_file``
+overrides the catalog's). Holdout (``--holdout`` illustration pairs, one page each of
+``--manga_holdout`` works, no edition of which trains) lands in ``<out>/holdout/``
+with ``holdout.json``; OCR reads in ``<out>/ocr.json``. A rerun reuses every file
+already written.
 
     make daemon-run ARGS="--stall-timeout 1800 project/moss_lora/src/colorize_cache.py --out post_image_dataset/moss/<name>"
 """

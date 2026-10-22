@@ -1,28 +1,26 @@
-"""Spectrum for MOSS-Image — Chebyshev forecasting of the image-token hidden state.
+"""Spectrum for MOSS-Image: Chebyshev forecasting of the image-token hidden state.
 
 The forecast target is the image-token hidden state after the last block (before
 ``final_norm_video``); a forecast step runs only ``time_conditioning`` + ``head``,
 skipping all 42 blocks and the text refiner (Spectrum: Han et al., CVPR 2026).
-The when-to-skip rule is Anima's growing window (``networks/spectrum.py``, written
-inline in its sampler loop; ``networks/spectrum_sea.window_decision_fraction``
-replays it), re-implemented here as ``window_schedule`` and precomputed in ``begin``
-because it depends on nothing but the step count.
+The when-to-skip rule is Anima's growing window (``networks/spectrum.py``),
+re-implemented as ``window_schedule`` and precomputed in ``begin`` (it depends on
+the step count only).
 
-The estimator is ``networks/spectrum_forecast.py``'s (``SpectrumPredictor``: Chebyshev ridge fit over the
-step index blended with a first-order Taylor step), re-implemented in its linear
-form (nothing here imports ``networks/``; ``tests/test_moss_spectrum.py`` checks it
-against the core). A
-ridge prediction is ``x*ᵀ (XᵀX + λI)⁻¹ Xᵀ H``, i.e. a weighted sum ``Σ c_k H_k`` of
-the stored observations, and the Taylor term is too. ``_Forecaster`` solves the
-``K``-vector of weights in float64 and sums the bf16 history into an fp32
-accumulator. The core instead ``torch.cat``-grows the history and casts all of it
-to fp32 for every fit: at 1024² with CFG (2 × 4096 × 3072 features per step) that
-cost +3 GiB of peak and allocator OOM retries. Numerically it is the core's fit
-without its bf16 rounding of τ and of the coefficients.
+The estimator is ``networks/spectrum_forecast.py``'s ``SpectrumPredictor``
+(Chebyshev ridge fit over the step index blended with a first-order Taylor step),
+re-implemented in its linear form; nothing here imports ``networks/``, and
+``tests/test_moss_spectrum.py`` checks it against the core. A ridge prediction is
+``x*ᵀ (XᵀX + λI)⁻¹ Xᵀ H``, a weighted sum ``Σ c_k H_k`` of the stored
+observations, and so is the Taylor term. ``_Forecaster`` solves the ``K``-vector
+of weights in float64 and sums the bf16 history into an fp32 accumulator, instead
+of the core's per-fit fp32 cast of the whole history (+3 GiB peak at 1024² with
+CFG). Numerically it is the core's fit without its bf16 rounding of τ and of the
+coefficients.
 
 Rows are stacked ``[cond…, uncond…]`` in one tensor. The weights are shared by
-every element, so each element — and therefore each row — is forecast from its
-own history only: cond and the skip-22 uncond stay separate trajectories.
+every element, so each row is forecast from its own history only: cond and the
+skip-22 uncond stay separate trajectories.
 
 Hook protocol, driven by ``library.moss.generate.denoise``::
 

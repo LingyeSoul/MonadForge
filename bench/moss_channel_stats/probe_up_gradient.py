@@ -1,29 +1,21 @@
 #!/usr/bin/env python3
 """Where does the LoRA ``up`` gradient come from, per input channel? — the GraLoRA question.
 
-GraLoRA (Jung et al., arXiv:2505.20355 § 2.2) says LoRA's problem with an outlier
-input channel is not the ``down`` column (that is what channel scaling rebalances) but
-``∂L/∂up = Σ_t g_t h_tᵀ = Σ_c (∂L/∂W)[:, c] ⊗ down[:, c]``: the outlier channel's column
-of the full-fine-tune gradient enters *every* element of ``up`` through ``down[:, c]``,
-and the fused update ``Δup · down`` then smears it over all input columns. This probe
-measures that decomposition on MOSS, with the trainer's own ``down`` init
-(``weight_svd``, rank 32) and loss, one backward per (sample, σ):
+Measures GraLoRA's (arXiv:2505.20355 § 2.2) decomposition
+``∂L/∂up = Σ_c (∂L/∂W)[:, c] ⊗ down[:, c]`` on MOSS, with the trainer's own ``down``
+init (``weight_svd``, rank 32) and loss, one backward per (sample, σ):
 
-  * ``share[c] = ⟨(∂L/∂W)[:, c] ⊗ down[:, c], ∂L/∂up⟩ / ‖∂L/∂up‖²`` — channel c's
-    projection share of the up gradient (sums to 1 over c; uniform would be 1/N)
-  * the same share in the FFT gradient, ``‖(∂L/∂W)[:, c]‖² / ‖∂L/∂W‖²`` (what a full
-    fine-tune localizes to one column)
-  * rank-1 fraction of ``∂L/∂up`` (``σ₁² / Σσ²``: 1.0 = the whole up update is one
-    direction, the entangled regime)
-  * DC share: the projection share of ``(Σ_t g_t) ⊗ (down · mean_t x)`` — the part of
-    the up gradient that is a token-independent bias learner — and the same share of
-    ``(Σ_t g_t) ⊗ mean_t x`` in ``∂L/∂W``, the FFT reference that says whether the DC is
-    the loss's or the projection's; plus the rank-1 fraction of ``∂L/∂W`` (power
-    iteration) next to ``∂L/∂up``'s
+  * ``share[c] = ⟨(∂L/∂W)[:, c] ⊗ down[:, c], ∂L/∂up⟩ / ‖∂L/∂up‖²``, channel c's
+    projection share of the up gradient (sums to 1 over c)
+  * the same share in the FFT gradient, ``‖(∂L/∂W)[:, c]‖² / ‖∂L/∂W‖²``
+  * rank-1 fraction of ``∂L/∂up`` (``σ₁² / Σσ²``)
+  * DC share: the projection share of ``(Σ_t g_t) ⊗ (down · mean_t x)`` and the same
+    share of ``(Σ_t g_t) ⊗ mean_t x`` in ``∂L/∂W`` (the FFT reference); plus the
+    rank-1 fraction of ``∂L/∂W`` (power iteration) next to ``∂L/∂up``'s
 
-Per step (Adam sees one step at a time), per (block, target); reported as medians over
-steps. ``ffn_up_gate`` and ``q`` are residual-indexed, so ch 42 / 1356 can be read off
-directly. Eager + per-block checkpointing (the trainer's ``--grad_checkpointing`` path,
+Per step, per (block, target); reported as medians over steps. ``ffn_up_gate`` and
+``q`` are residual-indexed, so ch 42 / 1356 can be read off directly. Eager +
+per-block checkpointing (the trainer's ``--grad_checkpointing`` path,
 early-stop off so every Linear's forward hook fires again in the recompute); the
 Linear inputs are stashed only during the recompute, so one block lives at a time
 (see ``Probe`` for the hook ordering).
@@ -33,7 +25,7 @@ Linear inputs are stashed only during the recompute, so one block lives at a tim
 
 ``--dc_isolate`` builds the network with the DC-isolated down init (row 0 = the
 calibrated ``x̄`` direction, rows 1.. ⊥ it); the ``*_rest`` metrics (DC share and rank-1
-fraction of ``∂L/∂up[:, 1:]``) are what it should collapse. Writes ``stats.npz``,
+fraction of ``∂L/∂up[:, 1:]``) measure it. Writes ``stats.npz``,
 ``up_gradient.png`` and ``result.json``.
 """
 

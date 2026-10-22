@@ -15,16 +15,14 @@ and the mean pairwise cross-seed cosine of DC and of AC. The premise holds where
 DC sim ≫ AC sim in the early steps. Each prompt is its own seed set; the
 ``(S, L)`` matrices are averaged over prompts.
 
-On MOSS the first run (2026-10-18) found the DC holding ~99 % of the energy and
-seed-identical from step 0 (``project/moss_lora/dave.md``), so every statistic is
-also reported with the top-k DC-energy channels per block left out
-(``--exclude_k``), alongside the top-k energy share, the cross-prompt cosine of
-the early DC and how far block 0's top-16 set persists through the stack. Per-seed
-DC and pooled AC are kept on the host (fp16 AC, ~125 MB per seed at 30 steps).
+Every statistic is also reported with the top-k DC-energy channels per block left
+out (``--exclude_k``; MOSS's massive channels, ``project/moss_lora/done/dave.md``),
+alongside the top-k energy share, the cross-prompt cosine of the early DC and how
+far block 0's top-16 set persists through the stack. Per-seed DC and pooled AC are
+kept on the host (fp16 AC, ~125 MB per seed at 30 steps).
 
 ``--dave SPEC`` turns on DAVE (``library.moss.dave``) for the run; captures stay
-the block's own output before the edit, so the probe reads the emergent unlock,
-as the Anima probe does.
+the block's own output before the edit.
 
     make daemon-run ARGS="bench/moss_dave/probe_dc_convergence.py --compile"
     make daemon-run ARGS="bench/moss_dave/probe_dc_convergence.py --compile --dave 8-18 --label dave"

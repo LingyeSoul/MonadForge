@@ -1,10 +1,10 @@
-"""What a source folder and a cache folder hold — torch-free, for the GUI.
+"""What a source folder and a cache folder hold; torch-free, for the GUI.
 
 The file layout constants live here so ``cache.py`` and the GUI name files the
-same way. A TE file is current while its ``source_sha256`` (``caption_sha256`` on
-files from before ``caption_format``) matches the caption on disk; the check reads
-the safetensors JSON header directly, without torch. It does not see a
-``caption_format`` switch — ``cache.py`` does, and re-encodes.
+same way. A TE file is current while its ``source_sha256`` (or legacy
+``caption_sha256``) matches the caption on disk, read from the safetensors JSON
+header. A ``caption_format`` switch is invisible here; ``cache.py`` sees it and
+re-encodes.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def original_tree(src: Path) -> tuple[Path | None, frozenset[Path]]:
     for any other ``src``.
 
     anime_tools' Export under ``sidecars_only`` (what the trainer GUI seeds)
-    publishes captions into the resized tree and no pixels — Anima's resize stage
+    publishes captions into the resized tree and no pixels; Anima's resize stage
     fills the PNGs in. The MOSS line has no resize stage, so a caption there whose
     PNG was never written pairs with its original instead."""
     from library.datasets.curation_actions import (
@@ -142,7 +142,7 @@ class CacheScan:
     pairs: int  # of those, with a .txt caption
     text_cached: int  # current TE files
     latents_cached: int
-    stale_text: int  # TE file whose caption changed — re-encoded on the next run
+    stale_text: int  # TE file whose caption changed; re-encoded on the next run
     duplicates: int  # stems prefixed with their folder because they collide
 
 
@@ -172,7 +172,7 @@ def scan(src: Path | None, out: Path | None) -> CacheScan:
 class CacheCounts:
     text: int
     latents: int
-    samples: int  # stems with both files — what training will actually see
+    samples: int  # stems with both files: what training sees
 
 
 def cache_counts(cache: Path) -> CacheCounts:

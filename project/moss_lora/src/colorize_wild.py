@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""Colorize LoRAs on real B&W pages: no target, no caption, page only.
+"""Run colorize LoRAs on real (not mangafied) B&W pages: no target, no caption.
 
-The training conditions are synthetic (EasyControl's Mangafy pass over colour
-originals); this checks the ref LoRAs on pages that never went through it. Per page,
-the fp8 vision-tower TE of the page alone (``embeds_plain``, as ``colorize_cache.py``
-writes it) and a VAE reference at 1/``ref_scale`` of the target's sides. One row per
-page: the page, then one column per LoRA; ER-SDE + Spectrum, same seed.
+Per page, the fp8 vision-tower TE of the page alone (``embeds_plain``, as
+``colorize_cache.py`` writes it) and a VAE reference at 1/``ref_scale`` of the
+target's sides. Grid: one row per page, one column per LoRA, same seed.
 
-Alignment is the 128 px luma Pearson r against the page (``index.json``), the
-held-out eval's luma r with the page in place of the target; chroma is the mean CbCr
-distance from grey at 1/8 size. Page TE and ref files are named by source path digest and size, the
-latents by a digest of the LoRA (path + mtime), those files, steps, cfg and sampler,
-so a rerun resumes only what matches.
+``index.json`` scores alignment as the 128 px luma Pearson r against the page, and
+chroma as the mean CbCr distance from grey at 1/8 size. Page TE and ref files are
+named by source path digest and size, the latents by a digest of the LoRA
+(path + mtime), those files, steps, cfg and sampler, so a rerun resumes only what
+matches.
 
     make daemon-run ARGS="project/moss_lora/src/colorize_wild.py \
         --pages a.png b.webp --loras output/ckpt_moss/x.safetensors output/ckpt_moss/y.safetensors"

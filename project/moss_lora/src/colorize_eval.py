@@ -8,15 +8,13 @@ Per held-out page, same seed, one arm per caption the LoRA trained on:
     lora_sparse  ``embeds_v1``: a tag-dropped colour caption, no OCR
     lora_page    ``embeds_plain``: the page alone
 
-The LoRA arms get the page's reference latent. Grid columns: B&W page | colour
-target | the arms; ER-SDE with Spectrum, blocks compiled after the LoRA is
-attached, the cache's ``uncond.safetensors`` as the empty prompt. ``index.json``
-scores each arm: luma r against the target (128 px), chroma (mean CbCr distance
-from grey at 1/8 size) and chroma error (mean CbCr distance to the target at 1/8
-size). Latent names carry a digest of the LoRA (path + mtime), cache, steps, cfg
-and sampler, so a rerun resumes only what matches. The base arm does not depend on
-the LoRA: its latents live under ``output/tests/colorize_base/<cache>/``, shared by
-every LoRA evaluated on that cache.
+The LoRA arms get the page's reference latent; the cache's ``uncond.safetensors``
+is the empty prompt. ``index.json`` scores each arm: luma r against the target
+(128 px), chroma (mean CbCr distance from grey at 1/8 size) and chroma error (mean
+CbCr distance to the target at 1/8 size). Latent names carry a digest of the LoRA
+(path + mtime), cache, steps, cfg and sampler, so a rerun resumes only what
+matches. Base-arm latents live under ``output/tests/colorize_base/<cache>/``,
+shared by every LoRA evaluated on that cache.
 
     make daemon-run ARGS="project/moss_lora/src/colorize_eval.py --lora output/ckpt_moss/<name>.safetensors --cache post_image_dataset/moss/<name>"
 """

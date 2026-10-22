@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Calibration + evaluation manifest for the TE's calibrated fp8 rounding
-(``te_gptq.py``): MOSS TE inputs of every kind the pipeline feeds it, not only the
-cached captions v1 calibrated on.
+"""Build the calibration + evaluation manifest for the TE's calibrated fp8 rounding
+(``te_gptq.py``): MOSS TE inputs of every kind the pipeline feeds it.
 
-v1 (cached captions, the empty prompt, 12 colorize pages) cut the held-out caption
-error by 54 % but the natural-language prompts' by only 29 %: the gain shrinks off
-the calibration distribution. v2 draws nine kinds of input, each balanced by TE
-tokens rather than entries:
+v1 (cached captions, the empty prompt, 12 colorize pages) cut held-out caption
+error 54 % but natural-language error only 29 %, so v2 draws nine kinds of input,
+each balanced by TE tokens rather than entries:
 
   tags           Anima tag bags (revised captions with no clauses, re-composed from
                  their flat bag)

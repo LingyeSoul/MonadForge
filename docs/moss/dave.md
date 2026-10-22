@@ -55,4 +55,4 @@ close-ups recompose at a visible cost (a hand half through a mug, a softer rende
 same pool and massive-channel list (`moss_dave_alpha.npz`). Its default `tau` is 0.06
 (3 of 50 steps), below `generate.py`'s 0.10.
 
-Probe runs and the pool sweep: `project/moss_lora/dave.md`.
+Probe runs and the pool sweep: `project/moss_lora/done/dave.md`.

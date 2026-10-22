@@ -4,12 +4,11 @@
     transformer   5B, 42 single-stream blocks         10.2 GB  (9.7 GiB resident, bf16)
     vae           FLUX.2 AutoencoderKLFlux2            0.25 GB (decoded in fp32)
 
-The TE's 248k-row token embedding (1.9 GB) stays on the CPU — a lookup needs no
-GPU — and the activation reserve is sized to the longest prompt, so at caption
-lengths (< ~1k tokens) all 32 decoder layers (12.9 GB) fit on the card. Layers
-that still do not fit are paged in whole, one at a time, from pinned memory; the
-encode is PCIe-bound while any are (7 paged ran at ~20 % GPU, 2.3 s per caption).
-Leaf-level offload hooks break on Qwen3.5's gated-DeltaNet layers, which read
+The TE's 248k-row token embedding (1.9 GB) stays on the CPU, and the activation
+reserve is sized to the longest prompt, so at caption lengths (< ~1k tokens) all
+32 decoder layers (12.9 GB) fit on the card. Layers that still do not fit are
+paged in whole, one at a time, from pinned memory; the encode is PCIe-bound while
+any are. Leaf-level offload hooks break on Qwen3.5's gated-DeltaNet layers, which read
 ``conv1d.weight`` functionally instead of calling the module. The quantized TEs
 (``precision="int8"``, the default request setting, W8A8 ``library/moss/int8.py``;
 ``precision="fp8"``, ``library/moss/fp8.py``) put the decoder layers at 6.5 GiB,
@@ -148,7 +147,7 @@ def encode_prompt(tok, te, text: str, device="cuda", max_length=MAX_SEQUENCE_LEN
     """One prompt → ``last_hidden_state`` ``(S, 4096)`` bf16 at its true length.
     Exactly ``MOSSImagePipeline.encode_prompt``: chat template with
     ``add_generation_prompt=True, enable_thinking=True``, one prompt per forward
-    (no padding — the GDN layers misbehave on it)."""
+    (no padding: the GDN layers misbehave on it)."""
     inputs = prompt_ids(tok, text, max_length).to(device)
     return te(**inputs, use_cache=False, return_dict=True).last_hidden_state[0]
 
@@ -206,7 +205,7 @@ def compile_blocks(blocks) -> None:
     torch._dynamo.config.recompile_limit = limit
     # dynamic=True otherwise lifts float attributes (the LoRA's scale ·
     # multiplier) into 0-dim CPU float64 inputs, and Inductor emits a C++ CPU
-    # kernel for them — which needs cl.exe on Windows (InvalidCxxCompiler).
+    # kernel for them, which needs cl.exe on Windows (InvalidCxxCompiler).
     torch._dynamo.config.specialize_float = True
     for block in blocks:
         block.forward = torch.compile(block.forward, dynamic=True)

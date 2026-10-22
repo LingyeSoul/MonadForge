@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
 """σ staircase on MOSS-Image: how close is one bare forward's ``x0_pred`` at each σ.
 
-Tier 3 §3 of ``docs/proposal/moss_anima_negatives_revisit.md``. The Anima reading
-(``docs/findings/sigma_signal_where_anima_resolves.md``): ``x0_pred`` is a
-recognisable picture at σ ≈ 0.75 and essentially final below σ ≈ 0.45, with
-normalised latent-MSE 0.331 / 0.214 / 0.142 / 0.092 at σ 0.75 / 0.65 / 0.55 / 0.45
-(normalised by the σ = 0.95 value).
-
-Each cached latent is noised as ``(1 − σ)·x0 + σ·ε`` (one ε per sample, shared over
-σ) at every σ of the sampler's own grid (``snapped_sigmas(steps, shift)``), one
-reference per-sample forward at true caption length (CFG 1, no LoRA), then
+Compared against Anima's levels (``ANIMA_NORM95``, from
+``docs/findings/sigma_signal_where_anima_resolves.md``). Each cached latent is
+noised as ``(1 − σ)·x0 + σ·ε`` (one ε per sample, shared over σ) at every σ of
+the sampler's own grid (``snapped_sigmas(steps, shift)``), one reference
+per-sample forward at true caption length (CFG 1, no LoRA), then
 ``x0_pred = x_σ − σ·v``. Per σ, pooled over samples:
 
-  * ``mse`` — ``mean((x0_pred − x0)²)``
-  * ``rel`` — ``mse / mean(x0²)``: against predicting zero (latents are BN-normalised)
-  * ``norm95`` — ``mse / mse(σ ≈ 0.95)``: Anima's normalisation
-  * ``rel_low`` / ``norm95_low`` — the same on a 4×4 average-pooled latent (layout,
+  * ``mse``: ``mean((x0_pred − x0)²)``
+  * ``rel``: ``mse / mean(x0²)``, against predicting zero (latents are BN-normalised)
+  * ``norm95``: ``mse / mse(σ ≈ 0.95)``, Anima's normalisation
+  * ``rel_low`` / ``norm95_low``: the same on a 4×4 average-pooled latent (layout,
     1/64 of the image side), so the composition knee separates from the detail knee
 
 ``knees`` interpolates the σ where ``norm95`` crosses each Anima level, and how many
 sampler steps sit above it. ``training_mass_above`` is the share of training σ draws
 (``train.sample_sigma`` at the ``TrainRequest`` defaults) above each knee.
 
-Then the DiT leaves the card and the VAE decodes ``x0_pred`` for ``--grid_n`` samples
-at the grid σ nearest each of ``--grid_sigmas`` (``grid_<model>_<stem>.png``).
+The VAE then decodes ``x0_pred`` for ``--grid_n`` samples at the grid σ nearest
+each of ``--grid_sigmas`` (``grid_<model>_<stem>.png``).
 
     make daemon-run ARGS="bench/moss_sigma_staircase/probe_x0.py --label base-sft"
 

@@ -1,4 +1,4 @@
-"""Relational REPA for the MOSS trainer — Anima's DoG-Gram term on one block.
+"""Relational REPA for the MOSS trainer: Anima's DoG-Gram term on one block.
 
 One block's image-token output, pooled to the PE-Spatial grid, is matched to the
 image's PE-Spatial patch tokens by Gram MSE after per-token L2-norm, with the
@@ -9,10 +9,8 @@ inference-time parameters; the gradient reaches the LoRA in blocks ≤ the layer
 MOSS-specific DiT side: before the Gram the pooled tokens drop the massive-activation
 channels (``calibration/massive_channels.npz``, the set DAVE leaves out) and are
 centered over tokens. Uncentered, those channels make every image token point one
-way (mean pairwise cosine 0.999 on blocks 0–12), the Gram is all ones, and the
-loss would mostly ask the LoRA to cancel the massive-activation DC
-(``_archive/bench/moss_repa/results/20261020-1444-dit_side``: base loss 1.03 raw, 0.08
-centered without them).
+way, the Gram is all ones, and the loss would mostly ask the LoRA to cancel the
+massive-activation DC.
 
 The capture rides ``model.layer_hook`` (called in ``run_layers`` outside the
 compiled block, after the swapper has the block on the card), and only the

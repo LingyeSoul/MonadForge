@@ -8,7 +8,11 @@
   <img src="docs/gui.png" alt="Anima LoRA GUI — training-config editor with method/variant picker, inline method help, and live training monitor" width="900">
 </p>
 
-One line — installs [uv](https://astral.sh/uv), selects NVIDIA CUDA or AMD ROCm on Windows, fetches the latest release, runs `uv sync` (Python 3.13 + torch), and opens the GUI (no git required). The installer is published as a signed-by-checksum release asset:
+LoRA / T-LoRA training and inference engine for the [Anima](https://huggingface.co/circlestone-labs/Anima) diffusion model (DiT, flow matching).
+
+## Install
+
+One line: installs [uv](https://astral.sh/uv), picks NVIDIA CUDA or AMD ROCm on Windows, fetches the latest release, runs `uv sync` and opens the GUI (no git needed).
 
 ```bash
 # Linux / macOS
@@ -19,131 +23,81 @@ curl -LsSf https://github.com/sorryhyun/anima_lora/releases/latest/download/inst
 irm https://github.com/sorryhyun/anima_lora/releases/latest/download/install.ps1 | iex
 ```
 
-> **New feature:** Try caption with Japanese text in the image — e.g. `1girl, solo, speech bubble. Japanese text reads as "何言ってるの?".` See [CJK vocab pack](docs/methods/cjk_vocab_pack.md#intended-use).
+Sign in to Hugging Face and download models from the GUI. Requirements, checksum-verified and pinned installs, and the manual clone path: [Advanced installation](#advanced-installation).
 
-**v2.0.0 — Anima that renders Japanese natively, and you can train LoRAs on it.** The [CJK vocab pack](docs/methods/cjk_vocab_pack.md) ([HF](https://huggingface.co/sorryhyun/anima-vocab-pack-cjk)) is a text-encoder asset, not a LoRA: extra embedding rows that let Anima draw quoted Japanese text in the image. It is on by default — `make download-models` installs it, and training, TE caching and inference all use it, so a LoRA trained on captions with `… Japanese text reads as "…"` clauses learns to render that text. English prompts are bit-identical with or without the pack.
+## Features
 
-Requirements, verified install, pinned versions, and manual setup: [Advanced installation](#advanced-installation).
+Diagrams for every method: [`docs/structure_images/`](docs/structure_images/), prose walkthroughs in [`docs/structure/`](docs/structure/).
 
----
+### Fast training
 
-LoRA / T-LoRA training and inference engine for the [Anima](https://huggingface.co/circlestone-labs/Anima) diffusion model (DiT-based, flow-matching).
+**13.4 GB peak VRAM · 1.1 s/step** on an RTX 5060 Ti (rank 32, 1 MP). Per-block `torch.compile` with a dynamic sequence axis (one graph per token-count tier), fused QKV/KV, an activation memory budget instead of gradient checkpointing, and a compile-clean hot path. Details: [for_compile.md](docs/optimizations/for_compile.md).
 
-Four things this repo aims to do well:
+### On by default
 
-1. **Fast LoRA training** on consumer GPUs — per-block `torch.compile` over a tiny fixed shape set (one block graph per token-count family), end to end.
-2. **Solid conventional implementations** — LoRA (SVD-Down init) and T-LoRA stack together and bake losslessly into a standalone DiT checkpoint.
-3. **Inference stacks, engineered for Anima** — Spectrum, SMC-CFG, modulation guidance, SPD, and embedding inversion: training-free, compose with any checkpoint, each implemented end-to-end against Anima's compile contract rather than dropped in as a toy port.
-4. **Training stacks beyond the conventional path** — HydraLoRA, Soft Tokens, Turbo distillation, EasyControl, DirectEdit.
-
-> **At-a-glance diagrams** for every method (DiT internals, LoRA, T-LoRA, HydraLoRA, Spectrum, modulation, compile optimizations) live in [`docs/structure_images/`](docs/structure_images/) — paired with prose walkthroughs in [`docs/structure/`](docs/structure/).
-
----
-
-## 1. Fast training
-
-**13.4 GB peak VRAM · 1.1 s/step** on a single RTX 5060 Ti while **rank=32 1MP resolution lora training** — achieved by co-designing the data pipeline, attention, and compiler stack so Dynamo sees a tiny fixed set of shapes (one block graph per token-count family) for the whole run.
-
-| Lever | Summary |
+| Feature | Doc |
 |---|---|
-| Dynamic graph compilation | `compile_dynamic_seq` marks only the sequence axis dynamic and bounds it to a tier's token-count range. It's auto-enabled whenever `torch_compile` is on (`configs/base.toml` — default **true**, not opt-in): free-fit bucketing (the only resize mode) keeps each image's native aspect ratio and can land its token count anywhere inside a tier's band, which would otherwise blow up into one static graph per distinct shape. Marking the axis dynamic collapses that whole band back to a single compiled graph per token-count family — still addressing the bucket-count blowup the old constant-token-bucket design was built to solve, now without giving up native aspect ratios. |
-| Per-block `torch.compile` | Each DiT block compiled independently with Inductor (`compile_blocks()`) — one graph per token-count family, eliminating guard recompilation. |
-| QKV / KV fusion | Self- and cross-attention QKV/KV projections are fused into single wide GEMMs instead of three separate Linears — same FLOPs, but the input is read from HBM once, fewer kernel launches, and fewer nodes for Dynamo to trace. `networks/attn_fuse.py` converts fused↔split for ComfyUI-format checkpoints. |
-| Activation memory budget | `activation_memory_budget=0.99` caps Inductor's AOT min-cut partitioner's saved-for-backward set, buying back VRAM headroom without gradient checkpointing's compile-graph mismatch risk. We treat gradient checkpointing as a fallback, not a default lever — it's only forced on by the `low_vram` preset. |
-| Compile-friendly hot path | Audited every forward for patterns dynamo can't trace cleanly — `einops.rearrange` replaced with explicit `.unflatten()/.permute()` chains, `torch.autocast` context managers replaced with direct `.to(dtype)` casts, dict `.items()` loops hoisted out of compiled regions, FA4 wrapped in `@torch.compiler.disable` for clean graph breaks. |
-| Flash Attention 2 | `flash_attn` 2.x with SDPA fallback. FA4 evaluated and removed — see [fa4.md](docs/optimizations/fa4.md). |
+| LoRA with SVD-Down init (`down_init = "weight_svd"`) | [svd-down-lora.md](docs/methods/svd-down-lora.md) |
+| T-LoRA timestep rank masking | [timestep_mask.md](docs/methods/timestep_mask.md) |
+| Channel scaling (`channel_scaling_alpha = 0.5`, Adam-specific) | [channel_scaling.md](docs/optimizations/channel_scaling.md) |
+| Free-fit native-aspect bucketing (the only resize mode) | [for_compile.md](docs/optimizations/for_compile.md) |
+| AdaLN low-rank delta (`train_adaln`, provisional) | [adaln.md](docs/methods/adaln.md) |
+| CJK vocab pack (Japanese text in captions and images) | [cjk_vocab_pack.md](docs/methods/cjk_vocab_pack.md) |
 
-Compile pipeline details in [docs/optimizations/for_compile.md](docs/optimizations/for_compile.md).
+LoRA and T-LoRA bake losslessly into a standalone DiT: `make merge [ADAPTER_DIR=… MULTIPLIER=0.8]`.
 
----
+### Inference stacks
 
-## 2. Solid conventional implementations
+Training-free; each composes with any checkpoint. Overview: [docs/inference/](docs/inference/README.md).
 
-The default training config stacks **LoRA (SVD-Down init) + T-LoRA** together. Both fold losslessly into a standalone DiT checkpoint at save time, so you can ship ComfyUI-compatible `*_merged.safetensors` with no adapter loader dependency.
+| Method | Doc |
+|---|---|
+| Spectrum — feature forecasting, ≈1.75× ([ComfyUI node](https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler)) | [spectrum.md](docs/inference/spectrum.md) |
+| SMC-CFG — sliding-mode CFG correction | [smc_cfg.md](docs/inference/smc_cfg.md) |
+| Modulation guidance | [mod-guidance.md](docs/inference/mod-guidance.md) |
+| SPD — progressive multi-resolution sampling | [spd.md](docs/inference/spd.md) |
+| Embedding inversion | [invert.md](docs/inference/invert.md) |
 
-| Variant | Pitch | Details |
-|---|---|---|
-| **LoRA** | Classic low-rank, rank 16–32. | — |
-| **SVD-Down LoRA** | `lora_down` seeded from the pretrained weight's own top-r right singular vectors instead of random Kaiming init (ΔW=0 at start) — same module, save format, and merge path as plain LoRA, just a better starting basis. Default down-init for the LoRA stack. | [svd-down-lora.md](docs/methods/svd-down-lora.md) |
-| **T-LoRA** | Timestep-dependent rank masking — low rank at high noise, full rank at low noise. Training-only mask, so merge is bit-equivalent. | [timestep_mask.md](docs/methods/timestep_mask.md) |
+### Training stacks
 
-**Merging**:
+| Method | Doc |
+|---|---|
+| HydraLoRA — multi-head LoRA with per-sample routing ([ComfyUI node](https://github.com/sorryhyun/ComfyUI-Anima_lora-Adapter)) | [hydra-lora.md](docs/methods/hydra-lora.md) |
+| Turbo — DP-DMD few-step distillation, output is a normal LoRA ([4-step student](https://huggingface.co/sorryhyun/anima-turbo-4step)) | [turbo.md](docs/methods/turbo.md) |
+| Soft Tokens (experimental) | [soft_tokens.md](docs/experimental/soft_tokens.md) |
+| DirectEdit + Anima Tagger (experimental) | [directedit_editing_v3.md](docs/experimental/directedit_editing_v3.md) |
+| EasyControl (experimental) | [easycontrol.md](docs/experimental/easycontrol.md) |
+
+> **Want to contribute?** EasyControl adapters (canny / depth / pose / …, one PR per control type) — see [CONTRIBUTING.md → Priority areas](CONTRIBUTING.md#priority-areas).
+
+## Usage
 
 ```bash
-make merge                                  # bake latest LoRA at multiplier 1.0
-make merge ADAPTER_DIR=output/ckpt MULTIPLIER=0.8
+make gui                  # config editor + dataset browser + training monitor
+make preprocess           # resize + cache latents / text embeddings
+make lora                 # or PRESET=low_vram make lora
+make test                 # sample with the latest LoRA
 ```
 
-Refuses non-linear-delta variants (HydraLoRA `_moe`) by default; `--allow-partial` drops those and bakes only the LoRA portion.
-
----
-
-## Default true path
-
-Beyond the headline methods below, a handful of things ship **on by default** and quietly do a lot of the work — worth knowing even if you never touch a flag.
-
-| Feature | Default | What it does |
-|---|---|---|
-| Channel scaling | `channel_scaling_alpha = 0.5` | Per-channel LoRA gradient rebalance (SmoothQuant-style) — Adam-specific. [channel_scaling.md](docs/optimizations/channel_scaling.md) |
-| SVD-Down LoRA | `down_init = "weight_svd"` | Plain LoRA's `lora_down` is seeded from the pretrained weight's own top-r singular vectors instead of random Kaiming init. [svd-down-lora.md](docs/methods/svd-down-lora.md) |
-| Free-fit scaling to target res | always on — the only resize mode | Every image keeps its native aspect ratio and lands its patch-grid token count anywhere inside its resolution tier's band, driving crop loss to ~zero. See [Fast training](#1-fast-training) above. |
-| Text area masking | `masked_loss = true` | Excludes tagged regions (e.g. text bubbles) from the training loss. [training.md](docs/guidelines/training.md) |
-| AdamW only | `optimizer_type = "AdamW"` | Other optimizers are still wired but unbenched against the current defaults — channel scaling in particular relies on Adam's near-uniform per-element step size. |
-| Fixed AdaLN rank | `train_adaln = true`, `adaln_rank = 16` | Trains a low-rank delta on the AdaLN modulation Linears too, not just attention/FFN. **Provisional** — plumbed and default-on but not yet bench-gated; pin it explicitly if you're A/B-ing anything else. [adaln.md](docs/methods/adaln.md) |
-
----
-
-## 3. Inference stacks
-
-Training-free runtime techniques — no adapter to train, and each composes with any checkpoint (LoRA, merged, or base) purely at generation time.
-
-| Method | What it is | Doc |
-|---|---|---|
-| **Spectrum inference** | Training-free speedup via Chebyshev polynomial feature forecasting (Han et al., CVPR 2026) — ≈1.75× at default settings, up to ~5× on more aggressive schedules (quality tradeoff). On cached steps every transformer block is skipped — only `t_embedder` + `final_layer` + `unpatchify` run, via a `register_forward_pre_hook` on `final_layer` that captures block outputs without monkey-patching the model; an adaptive window schedule concentrates real forwards on early high-noise steps. Stable ComfyUI node in a separate repo: [ComfyUI-Spectrum-KSampler](https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler). | [spectrum.md](docs/inference/spectrum.md) |
-| **SMC-CFG** | Training-free sliding-mode CFG correction in velocity space (Wang et al., CFG-Ctrl) — treats the cond/uncond combine as a control problem on the residual `e = v_cond − v_uncond`, no extra DiT forwards. Ships the **α-adaptive variant**: the paper's fixed gain `k` (≈14× off on Anima at CFG=4, visibly chattering) is replaced with `k_t = α·mean(\|e_t\|)` per step. `make test-smc-cfg` (λ=5, α=0.2); composes with Spectrum and mod-guidance. | [smc_cfg.md](docs/inference/smc_cfg.md) |
-| **Modulation guidance** | Steers AdaLN modulation coefficients toward quality-positive directions via a distilled `pooled_text_proj` MLP (Starodubcev et al., ICLR 2026) — training-free *to run*, though the MLP itself is distilled once against the frozen DiT (one-shot loop in `project/finished/mod_guidance/`). Applies at AdaLN time so it composes with any LoRA variant; `make test MOD=1` runs a sample with it enabled (composes with `SPECTRUM=1`). | [mod-guidance.md](docs/inference/mod-guidance.md) |
-| **SPD** | Spectral Progressive Diffusion (Xiao et al., 2026) — training-free multi-resolution inference (`--spd`): run early noise-dominated steps at low resolution, then inject high-frequency detail via spectral noise expansion. | [spd.md](docs/inference/spd.md) |
-| **Embedding inversion** | Optimize a text embedding to match a target image through the frozen DiT — a test-time optimization, no adapter weights trained. | [invert.md](docs/inference/invert.md) |
-
----
-
-## 4. Training stacks
-
-Adapter families that train something — a LoRA-style delta, a routing head, or a small conditioning module — on top of the frozen DiT, beyond the conventional LoRA/T-LoRA path in section 2.
-
-| Method | What it is | Doc |
-|---|---|---|
-| **HydraLoRA** | MoE-style multi-head LoRA with layer-local routing — shared `lora_down`, per-expert `lora_up_i`, learned per-sample router. Targets multi-style training without the cross-style bleed a single low-rank subspace produces. Original paper: [arXiv:2605.03252](https://arxiv.org/abs/2605.03252). Saves two side-by-side files: `anima_hydra.safetensors` (baked-down LoRA, ComfyUI drop-in) and `anima_hydra_moe.safetensors` (full multi-head); live routing in ComfyUI via the bundled **Anima Adapter Loader** node ([ComfyUI-Anima_lora-Adapter](https://github.com/sorryhyun/ComfyUI-Anima_lora-Adapter)). | [hydra-lora.md](docs/methods/hydra-lora.md) |
-| **Turbo** | DP-DMD distillation (Wu et al., arXiv:2602.03139) of the CFG=4 / 28-step teacher into a few-step generator. Output is a **normal LoRA** — composes with concept LoRAs like LCM-LoRA does, fully bakeable into the DiT. Bespoke single-GPU distill loop: `make turbo` (honors `PRESET`, `--queue`); infer at `--infer_steps 4 --cfg 1.0` via `make test-turbo`. A ready-made 4-step student ships at [huggingface.co/sorryhyun/anima-turbo-4step](https://huggingface.co/sorryhyun/anima-turbo-4step). | [turbo.md](docs/methods/turbo.md) |
-| **Soft Tokens** | SoftREPA (Lee et al., NeurIPS 2025) — per-layer × per-t learnable text tokens (~1M params) spliced into `crossattn_emb`; DiT frozen. `make exp-soft-tokens`. | [soft_tokens.md](docs/experimental/soft_tokens.md) |
-| **DirectEdit + Anima Tagger** | Flow-inversion image editing (Yang & Ye, 2026) — invert to noise, swap edit conditioning, re-denoise with V-injection. Source captions come from the **Anima Tagger**, a trained image → Anima-format tag model, for ψ_src. `make exp-test-directedit`. | [directedit_editing_v3.md](docs/experimental/directedit_editing_v3.md) |
-| **EasyControl** | Extended self-attention image conditioning. DiT frozen; trains per-block cond LoRA on self-attn + FFN + scalar `b_cond` gate. | [easycontrol.md](docs/experimental/easycontrol.md) |
-
-> **Want to contribute?** An area where outside help would have outsized impact: **EasyControl adapters** (canny / depth / pose / … — each control type is one self-contained PR). See [CONTRIBUTING.md → Priority areas](CONTRIBUTING.md#priority-areas).
-
----
+Config chain: `configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI args`. Flags: [training.md](docs/guidelines/training.md), [inference.md](docs/guidelines/inference.md). All docs: [docs/](docs/README.md).
 
 ## Advanced installation
 
-> The one-line installer is at the [top](#anima_lora). Details on what it does, verified and pinned installs, and the manual clone path are below.
+**Requirements:** NVIDIA Ampere or newer with driver ≥595 (Python 3.13 + PyTorch 2.14 + CUDA 13.2). Windows ROCm targets RDNA 4 (`gfx1200` / `gfx1201`; certified on RX 9060 XT / 9070 XT) with PyTorch 2.13 + ROCm 10.0.
 
-> **Requirements:** NVIDIA needs at least an Ampere GPU (RTX 3000-series / A100 or newer) and driver **≥595**. The Windows ROCm path targets RDNA 4 (`gfx1200` / `gfx1201`) and is certified for Radeon RX 9060 XT and RX 9070 XT. The CUDA path uses **Python 3.13 + PyTorch 2.14 + CUDA 13.2** (2.13 / 2.12 are opt-in, see [Setup → Manual](#manual-from-a-clone)); the Windows AMD path uses **Python 3.13 + PyTorch 2.13 + ROCm 10.0**.
-
-Installs into `./anima_lora/` (override with `ANIMA_DIR`). On Windows it also drops an **"Anima LoRA GUI"** shortcut on your desktop.
-
-Windows selects the GPU vendor automatically. Override detection before running the installer with `$env:ANIMA_BACKEND='cuda'` or `$env:ANIMA_BACKEND='rocm'`. ROCm uses PyTorch SDPA for attention and keeps `torch_compile = true`; CUDA keeps the existing Flash Attention path.
+The installer writes to `./anima_lora/` (`ANIMA_DIR` overrides) and, on Windows, adds an "Anima LoRA GUI" desktop shortcut. Force the backend with `$env:ANIMA_BACKEND='cuda'` or `'rocm'`. Pin a release with `ANIMA_VERSION=<tag>`. Update in place with `make update`.
 
 <details>
-<summary><b>Safer install</b> — inspect &amp; verify the script before running</summary>
+<summary><b>Safer install</b> — verify the script before running</summary>
 
-Every release ships a `checksums.txt` (SHA-256 of the installers + source archives). Download, verify, then run:
+Every release ships a `checksums.txt` (SHA-256 of the installers and source archives).
 
 ```bash
 # Linux / macOS
 curl -fLO https://github.com/sorryhyun/anima_lora/releases/latest/download/install.sh
 curl -fLO https://github.com/sorryhyun/anima_lora/releases/latest/download/checksums.txt
 grep install.sh checksums.txt | sha256sum -c -    # must print "install.sh: OK"
-less install.sh                                    # read it
+less install.sh
 sh install.sh
 ```
 ```powershell
@@ -151,78 +105,31 @@ sh install.sh
 iwr https://github.com/sorryhyun/anima_lora/releases/latest/download/install.ps1 -OutFile install.ps1
 iwr https://github.com/sorryhyun/anima_lora/releases/latest/download/checksums.txt -OutFile checksums.txt
 (Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower()   # compare against checksums.txt
-notepad install.ps1                                            # read it
+notepad install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 </details>
 
-**Reproducible / pinned install** — set `ANIMA_VERSION` to install a specific tag instead of latest (the recommended path when you need a known-good environment):
-
-```bash
-ANIMA_VERSION=v2.0.0 sh install.sh       # or: $env:ANIMA_VERSION='v2.0.0'; irm ... | iex
-```
-
-On Windows the GUI opens automatically when the installer finishes. **Sign in to Hugging Face and download models right in the GUI** — Hugging Face auth is built in now, so there's no `hf auth login` terminal step. Prefer the CLI? After signing in once (the GUI stores your HF token):
-
-```bash
-cd anima_lora
-make download-models      # first-run set: DiT + Qwen3 TE + QwenImage VAE + PE-Spatial + CJK vocab pack + tagger + tag DB, into models/
-make download-list        # what is installed and what is missing (offline), by pack; SAM3 (masking) and OCR are opt-in
-make gui                  # config editor + dataset browser + training monitor
-```
-
-Update later in place with `make update` (release-tarball merge, no git needed). Prefer cloning the repo? See [Setup → Manual](#manual-from-a-clone).
-
 ### Manual (from a clone)
 
 ```bash
-# Linux / macOS / Windows NVIDIA (CUDA is the default backend)
-uv sync
+uv sync                                                    # CUDA (default, every platform)
+uv sync --no-group cuda-windows --group rocm-windows       # Windows AMD only
+uv sync --no-default-groups --group torch-213              # older torch (or torch-212)
 
-# Windows AMD (ROCm) only:
-uv sync --no-group cuda-windows --group rocm-windows
-
-# CUDA on an older torch instead of the default 2.14 (any platform):
-uv sync --no-default-groups --group torch-213   # or torch-212
-
-hf auth login             # or just sign in from the GUI — auth is built in now
-make download-models      # first-run set: DiT + Qwen3 TE + QwenImage VAE + PE-Spatial + CJK vocab pack + tagger + tag DB, into models/
-make download-list        # what is installed and what is missing (offline), by pack; SAM3 (masking) and OCR are opt-in
-# place training images in image_dataset/ with .txt caption sidecars
-make gui                  # recommended — config editor + dataset browser + training monitor
+hf auth login             # or sign in from the GUI
+make download-models      # DiT, TE, VAE, PE-Spatial, CJK vocab pack, tagger, tag DB → models/
+make download-list        # installed vs missing; SAM3 and OCR are opt-in
 ```
 
-On Windows, `cuda-windows` is a **default dependency group** — a plain `uv sync` always lands the CUDA stack, so NVIDIA users can never be demoted to a CPU/ROCm torch by a flagless sync (GH #92). The two backend groups are declared mutually exclusive so `uv` cannot mix CUDA and ROCm wheels; ROCm users must reuse the same `--no-group cuda-windows --group rocm-windows` flags for later manual syncs. `make update` remembers the backend selected by the installer; to keep an opt-in torch stack across updates, run it once as `ANIMA_TORCH=2.13 make update` (saved to `.anima_torch`; `2.14` returns to the default). Every stack pairs a cu132 torch with its own flash-attn 2.8.3 prebuild and triton. The CUDA manual-clone path does **not** auto-install the CUDA 13.2 **toolkit** (needed for `torch.compile`/Triton) — install it per [guidebook appendix C](docs/guidelines/guidebook.md#appendix-c-manual-cuda-install), or use the one-line installer above. The ROCm group uses AMD's official ROCm 10.0 stable package index and does not install Flash Attention; `triton-windows` remains present because it supplies the Windows runtime used by `torch.compile` on both backends.
-
-> **Anima ships as a uv-locked application environment, not a generic pip package.** `pyproject.toml` pins `python ==3.13.*`, specific torch / flash-attn wheel URLs, and `index-strategy = "unsafe-best-match"` — these are maintainer-chosen, known-good builds. Install with `uv sync` against the committed `uv.lock`; don't `pip install` from `pyproject.toml` (pip won't honor uv's index strategy or the prebuilt flash-attn wheels).
-
-CLI path:
-
-```bash
-make preprocess           # VAE-compatible resize & validation
-make lora                 # or: PRESET=fast_16gb make lora / PRESET=low_vram make lora / make exp-soft-tokens
-make test                 # sample generation with the latest trained LoRA
-```
-
-Config chain: `configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI args`. Override with `PRESET=low_vram make lora` or `--network_dim 32 --max_train_epochs 64`. Full flag reference in [docs/guidelines/training.md](docs/guidelines/training.md) and [docs/guidelines/inference.md](docs/guidelines/inference.md).
-
----
-
-## Documentation
-
-| Doc | Contents |
-|-----|----------|
-| [guidelines/training.md](docs/guidelines/training.md) | Training flags, LoRA variants, caption shuffle, masked loss, dataset config |
-| [guidelines/inference.md](docs/guidelines/inference.md) | Inference flags, P-GRAFT, prompt files, LoRA format conversion |
-| [optimizations/](docs/optimizations/) | Compile pipeline, FA4 post-mortem, CUDA 13.2 |
-| [methods/](docs/methods/) | One doc per method — HydraLoRA, Spectrum, inversion, mod guidance, T-LoRA, SVD-Down LoRA |
-
----
+- ROCm users repeat the same `--group` flags on every later manual `uv sync`. To keep an opt-in torch across updates, run `ANIMA_TORCH=2.13 make update` once.
+- The manual CUDA path does not install the CUDA 13.2 toolkit that `torch.compile` / Triton needs: see [guidebook appendix C](docs/guidelines/guidebook.md#appendix-c-manual-cuda-install).
+- Install with `uv sync` against the committed `uv.lock`, not `pip install`: pip ignores uv's index strategy and the prebuilt flash-attn wheels.
 
 ## License
 
 Toolkit code: [MIT](LICENSE).
 
-Portions of this toolkit are **derived from [kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts)**, which is licensed under the **Apache License, Version 2.0**. Those portions remain governed by Apache 2.0 — the full license text is in [LICENSE-APACHE](LICENSE-APACHE), and attribution plus a statement of modifications is in [NOTICE](NOTICE). Thanks to kohya-ss and the sd-scripts contributors for their foundational work.
+Portions are **derived from [kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts)** (Apache License 2.0) and remain under it — full text in [LICENSE-APACHE](LICENSE-APACHE), attribution and a statement of modifications in [NOTICE](NOTICE). Thanks to kohya-ss and the sd-scripts contributors.
 
-Anima / CircleStone **base model weights** ship under the **CircleStone Labs Non-Commercial License v1.0** and are not relicensed by this repo. Any LoRA, fine-tune, or merged checkpoint trained from those weights is a Derivative and inherits the non-commercial terms. See [NOTICE](NOTICE).
+Anima / CircleStone **base model weights** ship under the **CircleStone Labs Non-Commercial License v1.0** and are not relicensed by this repo. Any LoRA, fine-tune, or merged checkpoint trained from them is a Derivative and inherits the non-commercial terms. See [NOTICE](NOTICE).

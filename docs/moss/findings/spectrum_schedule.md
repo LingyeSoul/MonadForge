@@ -3,8 +3,8 @@
 Measured 2026-10-21 on MOSS-Image Base. Probe, runs and grids: `bench/moss_spectrum/`
 (`probe_skip_cost.py`, `run_bench.py` with `full=` / `--example`; runs
 `20261021-2300-skipcost-base5`, `20261021-2321-sched19`, `20261021-2329-space_ba`).
-Follows `sigma_staircase.md`: the layout knee sits at σ 0.87–0.80 (steps 22–28 of 50), so
-the question was whether Spectrum's full forwards are spent in the right places.
+Follows `sigma_staircase.md`: given the layout knee at σ 0.87–0.80 (steps 22–28 of 50),
+are Spectrum's full forwards spent in the right places?
 
 ## Setting
 
@@ -46,8 +46,7 @@ mean latent rel-L2 against p50, which is a drift number. The grids are the verdi
   σ 0.5 is absorbed as detail.
 - The open-loop score assumes displacement errors carry through unchanged, so it
   weights the late steps and misses this.
-- The shipped window is dense early and sparse late. That matches the staircase, even
-  though nobody set it from it.
+- The shipped window is dense early and sparse late, which matches the staircase.
 - Moving forwards out of warmup into the layout band changes nothing. The early
   forwards cost about the same wherever they fall before σ 0.92.
 - Lowering the NFE to 16 costs layout. The speed-up stays at 2.6×.

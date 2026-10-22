@@ -4,38 +4,37 @@ Training never loads the TE (16.8 GB) or the VAE: this runs TE → free → VAE 
 leaves two files per image in one flat folder.
 
     {stem}.moss_te.safetensors
-        embeds  (S, 4096) bf16 — ``last_hidden_state`` at the caption's true length
-        embeds_plain  (S', 4096) bf16 — under ``layout_json`` only: the plain Anima
-                caption the layout came from, which training swaps in at
-                ``plain_caption_rate``
-        embeds_v1, embeds_v2, …  (S_k − P, 4096) bf16 — optional tag-dropped
-                caption variants (``variant_entries`` / ``add_variants``; the
-                colorize probe writes them), which training swaps in at
-                ``caption_variant_rate``. Only the rows after the first
+        embeds  (S, 4096) bf16: ``last_hidden_state`` at the caption's true length
+        embeds_plain  (S', 4096) bf16: under ``layout_json`` only, the plain Anima
+                caption the layout came from (training swaps it in at
+                ``plain_caption_rate``)
+        embeds_v1, embeds_v2, …  (S_k − P, 4096) bf16: optional tag-dropped
+                caption variants (``variant_entries`` / ``add_variants``), swapped
+                in at ``caption_variant_rate``. Only the rows after the first
                 ``P = variant_prefix`` (metadata) are stored: the TE is causal and
-                the variants share ``embeds``' leading rows (the page)
+                the variants share ``embeds``' leading rows
         metadata: caption, caption_sha256, caption_format, source_sha256, source,
                   n_text, max_text_tokens, encoder (+ plain_caption_sha256,
                   n_text_plain; + caption_v{k}, variant_prefix with variants)
     {stem}_{W}x{H}.moss_latent.safetensors
-        latent  (128, H/16, W/16) fp32 — packed 2×2 and BN-normalised, i.e. exactly
-                what the DiT consumes (``model.encode``, the inverse of the decode)
+        latent  (128, H/16, W/16) fp32: packed 2×2 and BN-normalised, exactly what
+                the DiT consumes (``model.encode``, the inverse of the decode)
         metadata: width, height, source, source_size, source_mtime, vae_dtype, resampled
 
 ``W×H`` is the pixel size the latent was encoded at. Text is never padded: the
 DiT slices each context to its true length and the image's rope frame coordinate
 equals that length, so a padded cache would train an offset inference never sees.
 
-Invalidation: a TE file is current while its ``caption_sha256`` (and truncation
-length, and under ``layout_json`` its ``plain_caption_sha256``) match the caption
-on disk, so a caption edit re-encodes that caption only. Re-encoding keeps the
-file's caption variants while its caption is unchanged; after a caption edit they
-are stale and dropped, with a warning. A latent file is current while it is newer than its source image; a latent
-at a different size for the same stem is deleted when the new one is written.
-``--overwrite`` re-encodes everything.
+Invalidation: a TE file is current while its ``caption_sha256``, truncation
+length, ``encoder`` and (under ``layout_json``) ``plain_caption_sha256`` match, so
+a caption edit re-encodes that caption only. A re-encode keeps the file's caption
+variants while its caption is unchanged; after a caption edit they are stale and
+dropped, with a warning. A latent file is current while it is newer than its
+source image; a latent at a different size for the same stem is deleted when the
+new one is written. ``--overwrite`` re-encodes everything.
 
 Sizing (``target_size``): native aspect, both sides multiples of 16, area at most
-``resolution²`` — **never upscaled**. An image whose sides are already multiples
+``resolution²``, **never upscaled**. An image whose sides are already multiples
 of 16 and whose area is within ``AREA_TOLERANCE`` of the cap is encoded as-is (the
 Anima resized tree is already on a 16-px grid at ~1.05 MP, so it is not resampled
 twice). Otherwise it is LANCZOS-resized to cover the target and centre-cropped by
@@ -44,10 +43,10 @@ the < 16 px the rounding leaves. Transparent images are composited onto white.
 Captions: the ``.txt`` beside each image, stripped, mapped onto MOSS's
 layout-JSON prompt by ``anime_tools.captions.layout_json`` (the default
 ``--caption_format layout_json``; ``caption`` / ``caption_sha256`` are the JSON;
-a ``{stem}.layout.txt`` published by anime_tools' Export is read instead) or verbatim with ``--caption_format text``. ``source_sha256`` is always the ``.txt``. Stems must be unique
-in the flat cache; a stem that appears in several subfolders is prefixed with its
-relative folder (``sub__dir__stem``). A caption in the Anima resized tree with no
-PNG beside it (anime_tools' ``sidecars_only`` Export publishes captions only)
+a ``{stem}.layout.txt`` published by anime_tools' Export is read instead) or
+verbatim with ``--caption_format text``. ``source_sha256`` is always the ``.txt``.
+A stem that appears in several subfolders is prefixed with its relative folder
+(``sub__dir__stem``). A caption in the Anima resized tree with no PNG beside it
 pairs with its ``image_dataset/`` original, minus the excluded ones
 (``scan.original_tree``).
 
@@ -334,8 +333,8 @@ def find_pairs(src: Path, caption_format: str = "text") -> list[Pair]:
     Under ``layout_json`` a ``{stem}.layout.txt`` that anime_tools' Export
     published beside the caption is used as is, unless the ``.txt`` is newer
     (edited after the export); every other caption is converted here. Either
-    way the ``.txt`` rides along as ``plain`` — unless it already is layout
-    JSON, which has no plain form."""
+    way the ``.txt`` rides along as ``plain``, unless it already is layout JSON
+    (which has no plain form)."""
     originals, skip = original_tree(src)
     images, found = source_pairs(src, originals, skip)
     if originals is not None:

@@ -7,10 +7,6 @@ list. CPU only, no model load.
 
     uv run python bench/moss_dave/derive_massive_channels.py \
         --probe bench/moss_dave/results/<run>/channels.npz
-
-On the 2026-10-18 Base probe the top 4 per block are 18 distinct channels: 1356 and
-42 on (nearly) every block, the rest specific to a few blocks
-(``project/moss_lora/dave.md``).
 """
 
 from __future__ import annotations

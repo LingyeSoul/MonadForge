@@ -35,9 +35,9 @@ load_network = LoRANetwork.from_file
 
 def ref_settings(path) -> tuple[float | None, bool]:
     """``(ref_timestep, ref_isolate)`` a reference LoRA trained with, as
-    ``MOSSImageTransformer`` takes them. ``ref_timestep`` None = the image's
-    (stamped negative, or absent: the LoRAs from before the flag); ``ref_isolate``
-    is stamped ``"1"`` (``"True"`` on the first isolated LoRAs), absent = off."""
+    ``MOSSImageTransformer`` takes them. ``ref_timestep`` None (stamped negative or
+    absent) = the image's own; ``ref_isolate`` is stamped ``"1"`` or ``"True"``,
+    absent = off."""
     from safetensors import safe_open
 
     with safe_open(str(path), framework="pt") as handle:

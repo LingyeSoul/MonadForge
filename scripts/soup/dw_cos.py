@@ -2,7 +2,7 @@
 """Pairwise ΔW cosine + energy share between soup ingredients.
 
 The pre-build check: ingredients of one soup should carry roughly even energy
-shares; a low cos alone is not a reason to drop one (``project/moss_lora/soup.md``).
+shares; a low cos alone is not a reason to drop one (``project/moss_lora/done/soup.md``).
 <ΔW_i, ΔW_j> = tr((U_i^T U_j)(D_j D_i^T)), no ΔW materialized. Prints each
 ingredient's ‖ΔW‖² and energy share, then per pair the per-module mean / median /
 min / max cos and the full-sum (all modules concatenated) cos.

@@ -1,28 +1,21 @@
 """Correction training (arXiv 2610.14136) on MOSS-Image as a second LoRA.
 
 The denoiser D is the DiT with a frozen LoRA; the corrector C is the same DiT
-with D's LoRA plus a corrector LoRA chained after it, so C starts as a copy of D
-(the paper's init) at the cost of two adapters rather than two models. MOSS is
-v-predicting, so C follows the paper's gated native-space form (App. B.2,
-eq. 8): it reads D's clean estimate ``x̂ = z_t − σ·v₀`` at D's timestep and
-caption, and
+with D's LoRA plus a corrector LoRA chained after it, so C starts as a copy of D.
+C reads D's clean estimate ``x̂ = z_t − σ·v₀`` at D's timestep and caption, and
 
     v₁ = v₀ + γ ⊙ (C(x̂, t) − v₀),    loss = ‖v₁ − (ε − z₀)‖²
 
-with ``γ`` per packed channel (128), zero at init. Sampling repeats the update
-``K`` times per step (``x̂ₖ = z_t − σ·vₖ``).
-
-That form stalls here: C ≈ D at init reads the clean ``x̂`` as a noisy input at
-``t``, so ``C − v₀`` is far off (γ init 0.5: L_corr +95 % over D at step 50,
-the gate closing ~0.07 per 50 steps). ``corr_sigma`` > 0 switches to the
-clean-sample form (``correct_once``), where C at init is the base model
-cleaning ``x̂`` at a low noise level.
+with ``γ`` per packed channel (128). Sampling repeats the update ``K`` times per
+step (``x̂ₖ = z_t − σ·vₖ``). That native form stalls on MOSS (from γ 0.5 the gate
+closes ~0.07 per 50 steps; ``correction.md``); ``corr_sigma`` > 0 switches to the
+clean-sample form (``correct_once``).
 
 ``γ = gate · gate_scale``: Adam's step on ``gate`` is ``lr`` whatever its
-gradient, so ``gate_scale`` sets ``γ``'s own step size (the LoRA lr would move
-it ~0.03 over a 600-step run). ``gate_init`` > 0 starts the gate open: at 0
-the LoRA's gradient is scaled by ``γ`` ≈ 0 and stays noise (caststation, 600
-steps: γ 0.006 → 0.012 over steps 50–200, L_corr −0.1 %). The file is a plain kohya LoRA; ``γ`` goes to a
+gradient, so ``gate_scale`` sets γ's step size (the LoRA lr alone moves γ ~0.03
+over 600 steps). ``gate_init`` > 0 starts the gate open; at 0 the LoRA's
+gradient is scaled by γ ≈ 0 and γ barely moves (0.006 → 0.012 over steps
+50–200). The file is a plain kohya LoRA; ``γ`` goes to a
 ``<stem>.gate.safetensors`` sidecar.
 """
 

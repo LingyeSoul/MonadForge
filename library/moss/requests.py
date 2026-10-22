@@ -1,4 +1,4 @@
-"""Typed requests for the MOSS-Image jobs — caching, generation, LoRA training.
+"""Typed requests for the MOSS-Image jobs: caching, generation, LoRA training.
 
 Torch-free on purpose (a GUI form can be built from these without importing
 torch). Each field carries its CLI help in ``metadata``, so the sidecar CLIs
@@ -39,15 +39,14 @@ DEFAULT_STEPS = 50
 DEFAULT_CFG = 3.0
 DEFAULT_UNCOND_SKIP = (22,)
 DEFAULT_SHIFT = 5.0
-# Qwen3.5-9B weights for the text pass (``library/moss/loader.py::TE_PRECISIONS``):
-# the INT8 W8A8 catalog file, ~1.7x fp8's encode speed at fp8's error.
+# Qwen3.5-9B weights for the text pass (``library/moss/loader.py::TE_PRECISIONS``).
 DEFAULT_TEXT_ENCODER = "int8"
 TEXT_ENCODERS = ("int8", "fp8", "bf16")
 _TE_HELP = (
-    "int8 (the default: decoder linears INT8 W8A8, ~9.2 GB, fetched on first use), fp8 "
+    "int8 (default; INT8 W8A8 decoder linears, ~9.2 GB, fetched on first use), fp8 "
     "(float8_e4m3fn weight-only, ~9.2 GB, fetched on first use) or bf16 (the reference "
-    "shards). Embedding rel. L2 vs bf16 ~0.10 for both quantized files on the "
-    "calibration eval split; int8 encodes ~1.7x faster than fp8"
+    "shards). Both quantized files embed ~0.10 rel. L2 from bf16; int8 encodes ~1.7x "
+    "faster than fp8"
 )
 
 
@@ -86,16 +85,15 @@ class CacheRequest(Request):
     out: str = _f("post_image_dataset/moss", "cache folder (two files per image, flat)")
     resolution: int = _f(
         1024,
-        "pixel-area cap as a square edge — 1024 means at most ~1024^2 pixels at "
+        "pixel-area cap as a square edge: 1024 means at most ~1024^2 pixels at "
         "the image's own aspect, both sides multiples of 16; never upscaled",
     )
     caption_format: str = _f(
         "layout_json",
         "what the TE encodes: the Anima caption mapped onto MOSS's layout-JSON "
         "prompt (anime_tools.captions.layout_json; needs the danbooru tag CSV), or "
-        "the .txt verbatim. Less leakage of the set's attributes onto other "
-        "characters than plain tags (caststation A/B, 2026-10-17); "
-        "generate with the same form",
+        "the .txt verbatim. layout_json leaks the set's attributes onto other "
+        "characters less than plain tags; generate with the same form",
         choices=("text", "layout_json"),
     )
     overwrite: bool = _f(False, "re-encode even when the cache is current")
@@ -178,9 +176,9 @@ class GenerateRequest(Request):
     )
     batched: bool = _f(
         False,
-        "cond + uncond in one masked forward instead of two. Measured ~25%% "
-        "slower at 1024² (the key mask takes SDPA off flash) and not bit-exact "
-        "with the reference",
+        "cond + uncond in one masked forward instead of two: ~25%% slower at "
+        "1024² (the key mask takes SDPA off flash) and matches the reference only "
+        "within bf16 noise",
         advanced=True,
     )
     shift: float = _f(
@@ -188,15 +186,15 @@ class GenerateRequest(Request):
     )
     decode_only: bool = _f(
         False,
-        "decode every latent already in <out_dir>/latents/ to PNG and exit — no "
-        "text encoder, no DiT",
+        "decode every latent already in <out_dir>/latents/ to PNG and exit (no "
+        "text encoder, no DiT)",
         advanced=True,
     )
     compile: bool = _f(
         True,
         "torch.compile each block with dynamic shapes, after the LoRA is applied: "
         "1.37x at 1024² with or without Spectrum, a few seconds of compile once per "
-        "job (2026-10-17). --no-compile for eager",
+        "job. --no-compile for eager",
         advanced=True,
     )
     spectrum: bool = _f(
@@ -210,7 +208,7 @@ class GenerateRequest(Request):
     spectrum_flex_window: float = _f(
         0.5,
         "growth of N after each full forward: 0.25 / 0.5 / 1.0 = 22 / 19 / 16 full "
-        "forwards of 50 steps (bench/moss_spectrum)",
+        "forwards of 50 steps",
         advanced=True,
     )
     spectrum_warmup: int = _f(6, "leading steps that always run full", advanced=True)
@@ -245,7 +243,7 @@ class GenerateRequest(Request):
 
 @dataclass
 class TrainRequest(Request):
-    """Train a LoRA on a precached folder — flow matching."""
+    """Train a LoRA on a precached folder with flow matching."""
 
     SCRIPT: ClassVar[str] = "scripts/moss/train.py"
     # The block's six bias-free linears, as a fullmatch over qualified names.
@@ -282,8 +280,7 @@ class TrainRequest(Request):
     down_init: str = _f(
         "weight_svd",
         "lora only, down-projection init: weight_svd (the base weight's top-r right "
-        "singular vectors / sqrt 3, Anima's SVD-Down; kept the caststation style "
-        "better by eye, 2026-10-17) or kaiming",
+        "singular vectors / sqrt 3, Anima's SVD-Down) or kaiming",
         choices=("kaiming", "weight_svd"),
     )
     svd_slice: int = _f(
@@ -306,11 +303,10 @@ class TrainRequest(Request):
     )
     channel_scaling_alpha: float = _f(
         0.5,
-        "lora only (lokr / loha ignore it): Anima's channel scaling — rescale each "
+        "lora only (lokr / loha ignore it): Anima's channel scaling. Rescales each "
         "target's input channel c by mean|x[c]|^alpha inside the down projection, so "
         "Adam's step no longer favours the few high-magnitude channels (on MOSS: ch 42 "
-        "into ffn_up_gate). Same output, plain LoRA on disk. At lr 1e-4 it kept prompt "
-        "details plain LoRA lost (2026-10-18). 0 = off",
+        "into ffn_up_gate). Same output, plain LoRA on disk. 0 = off",
     )
     channel_stats: str = _f(
         "library/moss/calibration/channel_stats.safetensors",
@@ -323,10 +319,9 @@ class TrainRequest(Request):
         "lora only: put the calibrated input DC direction (token-mean x̄ per target) "
         "into one rank row of down and keep the other rows orthogonal to it, so only "
         "one up column learns the token-independent bias and the rest of the up "
-        "gradient is centered (the GraLoRA up-side entanglement, localised). Same "
-        "output at init, plain LoRA on disk, composes with channel scaling. On by "
-        "default with lr 5e-5 (2026-10-18): clean and on-prompt at lr 1e-4-like style "
-        "strength; at lr 1e-4 it over-fits (text artifacts)",
+        "gradient is centered. Same output at init, plain LoRA on disk, composes "
+        "with channel scaling. Pairs with lr 5e-5; at lr 1e-4 it over-fits (text "
+        "artifacts)",
     )
     channel_mean: str = _f(
         "library/moss/calibration/channel_mean.safetensors",
@@ -336,9 +331,8 @@ class TrainRequest(Request):
     )
     lr: float = _f(
         5e-5,
-        "AdamW learning rate (rank 32 / alpha 128 with channel scaling + dc_isolate: "
-        "5e-5 is clean and on-prompt at lr 1e-4-like style strength; 1e-4 over-fits "
-        "with dc_isolate; without dc_isolate 1e-4 was the pick, 2026-10-18)",
+        "AdamW learning rate (5e-5 for rank 32 / alpha 128 with channel scaling + "
+        "dc_isolate; 1e-4 over-fits with dc_isolate and suits training without it)",
     )
     warmup_ratio: float = _f(0.05, "linear warmup, as a fraction of all steps")
     save_every_epochs: int = _f(
@@ -361,23 +355,20 @@ class TrainRequest(Request):
         "caption variants (embeds_v1…, drawn uniformly) instead of its full "
         "caption. Drawn only when the plain caption was not, so on a sample with "
         "a plain caption the share of variant steps is (1 - plain_caption_rate) "
-        "x this. Only a cache built with variants carries them (colorize probe)",
+        "x this. Only a cache built with variants carries them",
         advanced=True,
     )
     ref_timestep: float = _f(
         0.0,
         "timestep (1000·σ) whose block modulation the reference tokens get (a "
         "cache with *.moss_ref files); 0 = clean, as the reference is. Negative = "
-        "the image's timestep, as the first i2i probes trained "
-        "(docs/proposal/moss_i2i.md, probe 4). Stamped in the LoRA metadata",
+        "the image's timestep. Stamped in the LoRA metadata",
         advanced=True,
     )
     ref_isolate: bool = _f(
         False,
         "the reference tokens attend only to themselves; image and text still "
-        "attend to them. With ref_timestep 0 the reference stream no longer "
-        "depends on the step, so its per-block K/V could be computed once per "
-        "image. Stamped in the LoRA metadata",
+        "attend to them. Stamped in the LoRA metadata",
         advanced=True,
     )
     repa_weight: float = _f(
@@ -390,9 +381,7 @@ class TrainRequest(Request):
     repa_layer: int = _f(
         11,
         "block whose output REPA aligns; the gradient reaches the LoRA in blocks "
-        "<= it. 11: the start of the early plateau in the base model's "
-        "PE-alignment (_archive/bench/moss_repa/probe_layer_sigma_cka.py, "
-        "2026-10-20)",
+        "<= it",
         advanced=True,
     )
     repa_pe_root: str = _f(
@@ -428,24 +417,22 @@ class TrainRequest(Request):
     grad_checkpointing: bool = _f(
         False,
         "per-block activation checkpointing. Off by default: the activation "
-        "budget plus block swap below run 1.78 vs 2.09 s/step at ~4.4k joint "
-        "tokens on 16 GB (2026-10-17). Turn it on with --no-compile, or with "
-        "--blocks_to_swap 0 to keep the whole DiT on the card",
+        "budget plus block swap below is faster. Turn it on with --no-compile, or "
+        "with --blocks_to_swap 0 to keep the whole DiT on the card",
     )
     activation_memory_budget: float = _f(
         0.1,
         "cap on the compiled blocks' saved-for-backward set (Inductor's min-cut "
         "partitioner recomputes the rest); applies with --compile and "
-        "--no-grad_checkpointing, ignored otherwise. 0.1 at rank 32: ~1.7 GB free "
-        "and 1.85 s/step on 16 GB at ~4.5k joint tokens (0.15 left ~0.7 GB at rank 16)",
+        "--no-grad_checkpointing, ignored otherwise. 0.1 at rank 32 leaves ~1.7 GB "
+        "free on 16 GB at ~4.5k joint tokens",
         advanced=True,
     )
     blocks_to_swap: int = _f(
         12,
         "DiT blocks to swap to CPU (-1 = size from free VRAM). 12 fits budget "
-        "0.1 at rank 32 and ~4.5k joint tokens on 16 GB with ~1.7 GB to spare (24 "
-        "for more room); more swap costs PCIe time the step cannot hide. scripts/moss/tune_swap.py measures "
-        "this machine's pair",
+        "0.1 at rank 32 on 16 GB (24 for more room); more swap costs PCIe time the "
+        "step cannot hide. scripts/moss/tune_swap.py measures this machine's pair",
         advanced=True,
     )
     fit_report: bool = _f(
@@ -459,8 +446,8 @@ class TrainRequest(Request):
         True,
         "torch.compile each block with dynamic shapes (the joint image+text "
         "length changes with every caption): 2.0 vs 3.1 s/step at ~4.5k joint "
-        "tokens and 0.7 GB lower peak, for ~30 s of compile and one recompile "
-        "(2026-10-16). --no-compile for a quick smoke",
+        "tokens and 0.7 GB lower peak, for ~30 s of compile and one recompile. "
+        "--no-compile for a quick smoke",
         advanced=True,
     )
     log_every: int = _f(10, "full log line every N steps", advanced=True)

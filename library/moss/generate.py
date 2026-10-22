@@ -4,9 +4,9 @@ Encode every distinct prompt with the layer-offloaded Qwen3.5-9B and drop it,
 denoise every job with the DiT resident, then take the DiT off the card before
 the fp32 VAE decode (at ~2 MP the decode needs more than is free beside the DiT).
 
-``denoise`` is the sampler loop on its own — Euler or ER-SDE on the snapped
-shift-5 grid, CFG with the uncond branch skipping block 22, all combining in fp32
-— and with ``sampler="euler"``, ``spectrum=None`` it is
+``denoise`` is the sampler loop on its own (Euler or ER-SDE on the snapped
+shift-5 grid, CFG with the uncond branch skipping block 22, all combining in
+fp32); with ``sampler="euler"``, ``spectrum=None`` it is
 ``MOSSImagePipeline.__call__`` op for op.
 
     make daemon-run ARGS="scripts/moss/generate.py --prompt '…' --steps 30"
@@ -193,7 +193,7 @@ def denoise(
 def initial_noise(
     seed: int, height: int, width: int, channels: int = 128
 ) -> torch.Tensor:
-    """fp32 noise from a CPU generator, ``(1, 128, H/16, W/16)`` — what the Space
+    """fp32 noise from a CPU generator, ``(1, 128, H/16, W/16)``: what the Space
     and ``randn_tensor(generator=torch.Generator('cpu'))`` draw."""
     gen = torch.Generator("cpu").manual_seed(seed)
     return torch.randn(
@@ -331,7 +331,7 @@ def _fingerprint(req: GenerateRequest, job: dict) -> dict:
     spectrum = {
         k: v for k, v in dataclasses.asdict(req).items() if k.startswith("spectrum")
     }
-    # Stamped only off bf16, so latents saved before the field resume.
+    # Stamped only off bf16, so bf16 latents without the field still match.
     te = {} if req.text_encoder == "bf16" else {"text_encoder": req.text_encoder}
     return dict(
         {k: v for k, v in job.items() if k != "skip"},

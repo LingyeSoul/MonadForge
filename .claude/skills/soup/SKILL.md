@@ -23,7 +23,7 @@ Three stages, submitted as one daemon command job (attach-by-default; `--queue` 
 files) prints each ingredient's ΔW energy share and the pairwise ΔW cos. Run it before a
 manual `scripts.soup.build`: the shares should be roughly even. A low cos alone is not a
 gate — a MOSS 3-seed soup at cos ~0.17 kept the style, while an LR-diverse soup with one
-ingredient at ~82 % of the energy washed out (`project/moss_lora/soup.md`).
+ingredient at ~82 % of the energy washed out (`project/moss_lora/done/soup.md`).
 
 ## Selection
 

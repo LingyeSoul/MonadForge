@@ -6,10 +6,10 @@ fixed seed per prompt. Arm spec: ``p<N>`` = plain N steps, ``s<N>[:k=v,…]`` =
 Spectrum at N steps with ``MossSpectrum`` overrides (``ws`` window_size, ``fw``
 flex_window, ``warm`` warmup, ``stop`` stop_caching_step, ``w``, ``m``, ``lam``,
 ``K`` history, ``cal`` calibration, ``full`` an explicit full-step list such as
-``0-3+6+10+47-49`` in place of the growing window) over its defaults, the generator's (``fw``
-0.5; runs before 2026-10-21 defaulted to ``fw=0.25``); add ``b=1`` to either for the batched
-cond+uncond forward, ``sde=1`` for the ER-SDE sampler instead of Euler,
-``cns=1`` (with ``sde=1``) to recolor its noise with ``--cns_gamma``.
+``0-3+6+10+47-49`` in place of the growing window) over the generator's defaults
+(``fw`` 0.5; runs before 2026-10-21 used ``fw=0.25``). Add ``b=1`` to either for
+the batched cond+uncond forward, ``sde=1`` for the ER-SDE sampler instead of
+Euler, ``cns=1`` (with ``sde=1``) to recolor its noise with ``--cns_gamma``.
 
     make daemon-run ARGS="bench/moss_spectrum/run_bench.py --label base3 \
         --models base --prompts anime_sunset,danbooru_tags,ja_manga"
@@ -38,7 +38,7 @@ from PIL import Image, ImageDraw  # noqa: E402
 
 from bench._common import make_run_dir, start_heartbeat, write_result  # noqa: E402
 
-# The 2026-10-16 first-look prompts (project/moss_lora/plan.md).
+# Shared by the other bench/moss_* probes.
 PROMPTS = {
     "anime_sunset": "An anime illustration of a girl with long silver hair and red eyes, wearing a black "
     "school uniform, sitting on a classroom windowsill at sunset, cherry blossom petals drifting "

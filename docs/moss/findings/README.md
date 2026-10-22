@@ -1,10 +1,8 @@
 # MOSS-Image findings
 
-Observations and analyses of MOSS-Image (`library/moss/`) that are useful but are not
-a shipped feature. Each doc keeps two things apart: what was measured (with the run
-it came from) and the hypotheses the measurements suggest, which are not yet tested.
-Run logs, probe code and raw numbers stay with the bench (`bench/moss_*/`, the folder
-named after the item); a doc here is the summary to read first.
+Measurements of MOSS-Image (`library/moss/`) that are not a shipped feature. Each doc
+separates what was measured (with its run) from untested hypotheses. Run logs, probe code
+and raw numbers live in the matching `bench/moss_*/` folder.
 
 | Doc | What it covers |
 |---|---|
