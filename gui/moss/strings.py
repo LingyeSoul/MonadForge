@@ -157,6 +157,10 @@ FIELDS_CN: dict[str, tuple[str, str]] = {
     ),
     "lr": ("学习率", "AdamW 学习率"),
     "warmup_ratio": ("预热比例", "线性预热占总步数的比例"),
+    "grad_accum": (
+        "梯度累积",
+        "每次优化器更新累积的样本数；步数、轮数和损失日志仍按样本计，预热按更新计",
+    ),
     "save_every_epochs": ("每 N 轮保存", "每 N 轮额外保存一次（0 = 只保存最终结果）"),
     "caption_dropout": (
         "标注丢弃率",

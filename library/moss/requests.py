@@ -429,6 +429,12 @@ class TrainRequest(Request):
         "dc_isolate; 1e-4 over-fits with dc_isolate and suits training without it)",
     )
     warmup_ratio: float = _f(0.05, "linear warmup, as a fraction of all steps")
+    grad_accum: int = _f(
+        1,
+        "samples per optimizer update (gradient accumulation; samples keep their "
+        "own shapes, so this is the only way past batch 1). Steps, epochs and the "
+        "loss log still count samples; warmup counts updates",
+    )
     save_every_epochs: int = _f(
         0,
         "also save every N epochs into <output dir>/<name>/<name>_eN (0 = final only)",

@@ -24,6 +24,7 @@ channel_scaling_alpha = 0.5     # lora only: 0 = off (docs/moss/channel_scaling.
 dc_isolate = true               # lora only: one rank row for the input DC (same doc)
 lr = 5e-5
 warmup_ratio = 0.05
+grad_accum = 1                 # samples per optimizer update; warmup counts updates
 caption_dropout = 0.0
 plain_caption_rate = 0.2       # layout_json cache: share of steps on the plain Anima caption
 caption_variant_rate = 0.0     # cache with embeds_v{k} (colorize probe): x (1 - plain_caption_rate) of steps

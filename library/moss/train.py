@@ -484,13 +484,20 @@ def train(
     total = req.epochs * len(samples)
     if req.max_steps:
         total = min(total, req.max_steps) if req.epochs else req.max_steps
-    warmup = max(1, int(total * req.warmup_ratio))
+    if req.grad_accum < 1:
+        raise SystemExit(f"grad_accum must be >= 1, got {req.grad_accum}")
+    accum = req.grad_accum
+    updates = math.ceil(total / accum)
+    warmup = max(1, int(updates * req.warmup_ratio))
     lr_sched = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lambda step: min(1.0, (step + 1) / warmup)
+        optimizer, lambda update: min(1.0, (update + 1) / warmup)
     )
     epochs = math.ceil(total / len(samples))
     print(
-        f"{total} steps ({epochs} epochs x {len(samples)}), warmup {warmup}", flush=True
+        f"{total} steps ({epochs} epochs x {len(samples)}), "
+        + (f"{updates} updates of {accum}, " if accum > 1 else "")
+        + f"warmup {warmup}",
+        flush=True,
     )
 
     out_path = resolve_under_home(req.output)
@@ -508,6 +515,8 @@ def train(
         "caption_variant_rate": req.caption_variant_rate if n_variant_samples else 0.0,
         "reference_latents": n_refs,
     }
+    if accum > 1:
+        meta["grad_accum"] = accum
     if n_refs:
         meta["ref_timestep"] = req.ref_timestep
         if req.ref_isolate:
@@ -535,7 +544,7 @@ def train(
 
     largest = max(samples, key=lambda s: s.n_img + s.n_ref + s.n_text)
     history, losses_all, fit = [], [], None
-    step = 0
+    step, grad_norm = 0, float("nan")
     torch.cuda.reset_peak_memory_stats()
     t_start = time.time()
     with run_scope(sink, final_step=lambda: step):
@@ -580,24 +589,28 @@ def train(
                 loss = training_loss(transformer, latent, embeds, sigma, ref=ref)
                 align = repa.loss() if repa is not None else None
                 if align is not None:
-                    (loss + req.repa_weight * align).backward()
+                    ((loss + req.repa_weight * align) / accum).backward()
                     aligns.append(align.item())
                 else:
-                    loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(params, req.max_grad_norm)
-                optimizer.step()
-                network.reproject_dc()
-                lr_sched.step()
-                optimizer.zero_grad(set_to_none=True)
+                    (loss / accum).backward()
                 step += 1
+                updated = step % accum == 0 or step == total
+                if updated:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        params, req.max_grad_norm
+                    ).item()
+                    optimizer.step()
+                    network.reproject_dc()
+                    lr_sched.step()
+                    optimizer.zero_grad(set_to_none=True)
                 value = loss.item()
                 sink.log(
                     {
                         "loss": value,
                         "sigma": sigma,
-                        "grad_norm": grad_norm.item(),
                         "lr": lr_sched.get_last_lr()[0],
                     }
+                    | ({"grad_norm": grad_norm} if updated else {})
                     | ({"repa": aligns[-1]} if align is not None else {}),
                     global_step=step,
                     epoch=epoch + 1,
@@ -638,7 +651,7 @@ def train(
                     if align is not None:
                         rate += f" repa {aligns[-1]:.4f}"
                     print(
-                        f"  step {step}/{total} loss {value:.4f} |g| {grad_norm.item():.3f} "
+                        f"  step {step}/{total} loss {value:.4f} |g| {grad_norm:.3f} "
                         f"sigma {sigma:.3f} lr {lr_sched.get_last_lr()[0]:.2e} "
                         f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB"
                         f"{rate}",
