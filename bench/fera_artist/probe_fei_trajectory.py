@@ -96,19 +96,18 @@ import json
 import logging
 import random
 import re
-import sys
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean, pstdev
 
 import torch
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
 
-from bench._anima import add_model_args, discover_latents_by_stem  # noqa: E402
-from bench._common import make_run_dir, write_result  # noqa: E402
-from library.runtime.fei import compute_fei_2band, fei_sigma_low  # noqa: E402
+from bench._anima import add_model_args, discover_latents_by_stem
+from bench._common import make_run_dir, write_result
+from library.runtime.fei import compute_fei_2band, fei_sigma_low
+
+ROOT = Path(__file__).resolve().parents[2]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("fera-trajectory-probe")
@@ -246,8 +245,8 @@ def _install_fei_patch() -> None:
       - Also calls the original so any attached Hydra router still gets its
         FEI set (no-op for base DiT — div is None there).
     """
-    import library.inference.generation as _gen
     import library.inference.adapters as _adapters
+    import library.inference.generation as _gen
 
     original = _adapters.compute_and_set_hydra_fei
 
@@ -316,8 +315,8 @@ def _install_sigma_patch() -> None:
     ``t_expand`` is a 1-D tensor of length B replicated from the scalar
     ``timesteps[i]``; all entries equal, so ``[0].item()`` is fine.
     """
-    import library.inference.generation as _gen
     import library.inference.adapters as _adapters
+    import library.inference.generation as _gen
 
     original = _adapters.set_hydra_sigma
 
@@ -1068,12 +1067,12 @@ def main() -> None:
         raise SystemExit("no usable prompts after filtering")
 
     # Heavy imports go after the cheap sanity checks.
-    from anima_lora import (  # noqa: E402
+    from anima_lora import (
         GenerationRequest,
         get_generation_settings,
     )
-    from library.inference.models import load_shared_models  # noqa: E402
-    from library.runtime.device import clean_memory_on_device  # noqa: E402
+    from library.inference.models import load_shared_models
+    from library.runtime.device import clean_memory_on_device
 
     _install_fei_patch()
     _install_sigma_patch()

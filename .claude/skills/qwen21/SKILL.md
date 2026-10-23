@@ -1,6 +1,6 @@
 ---
 name: qwen21
-description: Qwen-Image-2.1 LoRA line (NOT Anima) — running cache/train through the daemon, `make gui-qwen`, the CacheRequest/TrainRequest flag surface and how to add a field, model-dir resolution, cache layout, swap sizing, and the gotchas (flat stem-keyed cache, --no-x flag spelling, stall budget, GUI-side chain, Test A/B generation). Load before running, changing, or debugging anything under library/qwen21/, scripts/qwen21/, gui/qwen21/ or project/qwen21_lora/.
+description: Qwen-Image-2.1 LoRA line (NOT Anima) — running cache/train through the daemon, `python -m webui`, the CacheRequest/TrainRequest flag surface and how to add a field, model-dir resolution, cache layout, swap sizing, and the gotchas (flat stem-keyed cache, --no-x flag spelling, stall budget, WebUI-side chain, Test A/B generation). Load before running, changing, or debugging anything under library/qwen21/, scripts/qwen21/, webui/frontend/src/ or project/qwen21_lora/.
 ---
 
 # Qwen-Image-2.1 LoRA (`library/qwen21/`)
@@ -15,14 +15,14 @@ and measured numbers: `project/qwen21_lora/README.md` + `report.md`.
 |---|---|
 | `library/qwen21/` | core: `loader` / `lora` / `accel` (the swapper attachment is `library/runtime/blockswap.py`), `cache.run_cache(req)`, `train.run_train(req)`, `generate.run_generate(req)` |
 | `library/qwen21/requests.py` | **torch-free** `CacheRequest` / `TrainRequest` / `GenerateRequest` — the one flag definition |
-| `library/qwen21/scan.py` | torch-free folder/cache counts (GUI) |
+| `library/qwen21/scan.py` | torch-free folder/cache counts (WebUI) |
 | `scripts/qwen21/{cache,train,generate}.py` | sidecar CLIs: `Request.from_argv()` → `run_*` |
-| `gui/qwen21/` | `make gui-qwen` window (en/cn): the `LineSpec` + strings over the shared `gui/lines/window.py` (also used by `make gui-moss`) |
+| `webui/frontend/src/` | `python -m webui` window (en/cn): the `LineSpec` + strings over the shared `webui/frontend/src/views/ConfigEditor.vue` (also used by `python -m webui`) |
 | `project/qwen21_lora/src/` | one-off research scripts (`backward_smoke`, `smoke_t2i`, `bench_accel`) |
 
 `tests/test_qwen21_boundary.py` enforces the island: nothing Anima-side imports
 `library.qwen21`; it imports only `library.env` / `library.runtime.{offloading,blockswap,device,dynamo}`;
-`requests` and `gui.qwen21.app` stay torch-free.
+`requests` and `webui.server` stay torch-free.
 
 ## Running
 
@@ -32,7 +32,7 @@ GPU work goes through the daemon:
 make daemon-run ARGS="--stall-timeout 900 scripts/qwen21/cache.py --src 'post_image_dataset/resized/channel_(caststation)'"
 make daemon-run ARGS="--stall-timeout 900 scripts/qwen21/train.py --epochs 8 --save_every_epochs 4"
 make daemon-run ARGS="--stall-timeout 900 scripts/qwen21/generate.py --lora output/qwen21/qwen21_lora.safetensors"
-make gui-qwen   # the same jobs from a window
+python -m webui   # the same jobs from a window
 ```
 
 **Test / A-B generation** (`GenerateRequest`, the Train tab's Test button): renders each
@@ -42,7 +42,7 @@ every adapter, so no second model copy is loaded. The default prompt is `BOCCHI_
 natural language, a character the base model already knows. `--prompts_file` (one per
 line, e.g. `project/qwen21_lora/eval_prompts.txt`) overrides it. Without
 `--width/--height` it renders square at `--resolution`, which is off-distribution for a
-portrait dataset. The GUI fills an empty `lora` with the Train tab's `output`, writes
+portrait dataset. The WebUI fills an empty `lora` with the Train tab's `output`, writes
 each run to `out_dir/<timestamp>/`, and shows the pair from its `manifest.json`.
 
 Defaults: `--src post_image_dataset/resized` (walks subfolders; captions = the revised
@@ -57,13 +57,12 @@ the dev box that last one is a symlink to the NVMe copy. There is no catalog row
 ## Flags — one definition
 
 A field on `CacheRequest` / `TrainRequest` / `GenerateRequest` is the CLI flag, its default, its help and the
-GUI widget at once. Adding one:
+WebUI widget at once. Adding one:
 
 1. Add the field with `_f(default, help, choices=…, advanced=…, multiline=…)`.
 2. Read it in `run_cache` / `run_train` / `run_generate`.
-3. For the Chinese GUI, add `FIELDS_CN[name]` in `gui/qwen21/strings.py`
-   (`FIELDS_CN_GENERATE` for a `GenerateRequest` field whose name means something else
-   elsewhere, e.g. `resolution`).
+3. For the WebUI, add the label to `webui/frontend/src/i18n/modelWorkspace.ts`
+   (and the other locale files where the field needs a translated help string).
    English needs nothing — the label is the field name, the help comes from the metadata.
 
 Widget type follows the field: `bool` → checkbox, `choices` → combo, `int` with a
@@ -80,23 +79,23 @@ choices made.
   `--no-grad_checkpointing`, `--no-save_crops`. The pre-move `--no_grad_checkpointing`
   is gone.
 - **The cache is flat, keyed by file stem.** Caching refuses a source tree with the same
-  stem in two subfolders; the GUI warns before submitting.
+  stem in two subfolders; the WebUI warns before submitting.
 - **Caching skips existing files.** An edited caption keeps its old embedding until
-  `--overwrite` (or the `.te` file is deleted). The GUI counts these as stale.
+  `--overwrite` (or the `.te` file is deleted). The WebUI counts these as stale.
 - **Resolution is an area, not a crop.** `calculate_dimensions(res², aspect)` keeps the
   native aspect with both edges on a multiple of 32. The image is resized, not cropped, so
   aspect drifts up to ~2 %. `post_image_dataset/resized` input is already Anima-resized,
   so it gets resampled twice.
 - **Stall budget.** The daemon's default command watchdog is 120 s. The text-encoder load
-  and long passes can be quieter than that, so the GUI submits with 900 s; pass
+  and long passes can be quieter than that, so the WebUI submits with 900 s; pass
   `--stall-timeout 900` on the CLI too.
-- **The GUI chains preprocess → train itself.** Training is submitted only on cache
+- **The WebUI chains preprocess → train itself.** Training is submitted only on cache
   success, so a failed cache never trains on a stale folder. Closing the window
-  mid-chain drops the pending train job; the running cache job continues. The GUI
+  mid-chain drops the pending train job; the running cache job continues. The WebUI
   re-attaches to a running `qwen21-cache` / `qwen21-train` / `qwen21-test` job on reopen.
 - **Progress** comes from stdout lines, not `progress.jsonl`: `  text i/n`,
   `  latents i/n`, `  step i/n`, `  image i/n`. Keep that shape if you change the prints
-  — the GUI's bar parses it (tqdm bars too, but tqdm's `\r` redraws only reach the log
+  — the WebUI's bar parses it (tqdm bars too, but tqdm's `\r` redraws only reach the log
   at the next newline, so the denoise bar arrives in one burst).
 - **Swap sizing.** `report_fit` prints after step 1 with a `--blocks_to_swap`
   suggestion measured against `mem_get_info` free. At 1024² the step is compute-bound,

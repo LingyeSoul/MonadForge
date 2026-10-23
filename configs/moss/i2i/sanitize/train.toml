@@ -1,0 +1,7 @@
+# MOSS i2i training for the sanitize task (text / bubble removal) — TrainRequest fields.
+#
+#   make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/i2i/sanitize/train.toml"
+
+cache = "post_image_dataset/moss/i2i_sanitize"
+output = "output/ckpt_moss/moss_i2i_sanitize.safetensors"
+ref_timestep = 0.0             # the reference is clean

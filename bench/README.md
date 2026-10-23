@@ -6,13 +6,12 @@ every new method (Tier 2): a runnable script that reports the headline number(s)
 the change claims to move, **before and after**. This directory is where those
 scripts and their results live.
 
-`bench/` is **not an installed package** (only `anima_lora` / `library` /
-`networks` are) — every script starts with a two-line `sys.path` bootstrap so
-`uv run python bench/<method>/<script>.py` works from the repo root:
+`bench/` is a package of the editable install, so a script imports
+`bench._common` (and its siblings as `bench.<method>.<mod>`) with no `sys.path`
+bootstrap:
 
 ```python
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
-from bench._common import make_run_dir, write_result  # noqa: E402
+from bench._common import make_run_dir, write_result
 ```
 
 ## Layout

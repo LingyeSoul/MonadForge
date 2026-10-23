@@ -15,12 +15,9 @@ steering); ON = head loaded (proj(main) into t_emb) + quality steering delta.
 """
 
 import copy
-import sys
 from pathlib import Path
 
 import torch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root (anima_lora/)
 
 from anima_lora import (
     GenerationRequest,

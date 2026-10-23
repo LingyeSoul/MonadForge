@@ -11,7 +11,7 @@ Coverage census (10-06): preview51's trained kanji are the 1 185 of
 `anima_cjk_vocab_pack_preview51_trained.json`; frequency is every text of
 the Manga109-s annotations (123 k texts, 281 k kanji occurrences, unfiltered
 — `dialogue_pack.tsv` is filtered to the pack's charset and would hide the
-gap); joyo / jinmeiyo from `scripts/distill_cjk/corpus/kanji_allow.py`.
+gap); joyo / jinmeiyo from `_archive/corpus/kanji_allow.py`.
 
 | group | in the set | trained in preview51 | gap | share of kanji occurrences | covered |
 |---|---|---|---|---|---|

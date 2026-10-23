@@ -1,0 +1,30 @@
+# MOSS-Image precache (VAE latents + TE embeddings) — field defaults for scripts/moss/cache.py.
+#
+#   make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --config configs/moss/cache.toml"
+#
+# Keys are CacheRequest field names (library/moss/requests.py, `--help` lists
+# them); CLI flags win over this file, and a key left out keeps the field
+# default. Values below are the shipped defaults. User doc: docs/moss/README.md.
+
+src = "post_image_dataset/resized"   # images + .txt captions, subfolders included
+out = "post_image_dataset/moss"      # flat cache folder (two files per image)
+resolution = 1024              # pixel-area cap as a square edge; sides multiples of 16, never upscaled
+caption_format = "layout_json" # layout_json | text
+overwrite = false              # re-encode even when the cache is current
+skip_text = false              # skip the TE pass
+skip_latents = false           # skip the VAE pass
+
+# VAE
+vae_dtype = "fp32"             # fp32 | bf16
+save_crops = false             # also write the exact pixels each latent was encoded from
+
+# Text encoder (Qwen3.5-9B)
+max_text_tokens = 4096         # truncation length (the model's own limit)
+text_encoder = "int8"          # int8 | fp8 | bf16
+# int8: decoder linears INT8 W8A8 (~9.2 GB, catalog row moss_te_int8, fetched on
+# first use). fp8: float8_e4m3fn weight-only (moss_te_fp8), same error, ~1.7x
+# slower. bf16: the reference shards from the Base pack. Caches stamp the encoder,
+# so switching re-encodes the TE cache; scripts/moss/generate.py takes the same
+# text_encoder flag.
+
+# model_dir = ""

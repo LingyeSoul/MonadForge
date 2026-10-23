@@ -63,7 +63,7 @@ referenced by position-captions v2.
   (kept our ModelScope-aware `scripts/tasks/downloads.py`); dbv4 tagger
   backend; `anima_daemon/` package move (our `scripts/daemon/` continues).
 - `project/` research lines (cjk_renderable_anima, SteerPE, MIST, SR),
-  `gui/` (superseded by webui), ComfyUI custom_nodes, sigma_lowres /
+  `webui/` (superseded by webui), ComfyUI custom_nodes, sigma_lowres /
   sigma_demote, ROCm support, register tokens (DSR), new merge-method
   caption-full work.
 

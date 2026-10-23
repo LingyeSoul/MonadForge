@@ -219,7 +219,7 @@ make preprocess-pe           # (Optional) PE-Core vision encoder feature caching
 ```
 
 > **Caches are reused and not automatically deleted.**
-> `make preprocess` (and the *Preprocess* button in the GUI) **reuses existing caches**. The `.npz` / `_te.safetensors` / `_pe.safetensors` files in `post_image_dataset/lora/` *are not overwritten or deleted*; only missing items are processed. Therefore, re-running is very fast, and interrupting midway is safe.
+> `make preprocess` (and the *Preprocess* button in the WebUI) **reuses existing caches**. The `.npz` / `_te.safetensors` / `_pe.safetensors` files in `post_image_dataset/lora/` *are not overwritten or deleted*; only missing items are processed. Therefore, re-running is very fast, and interrupting midway is safe.
 >
 > In other words, running `make preprocess` again with existing caches will not lose any existing data — rest assured. Conversely, if you **modify captions, tokenizer, or resize options and want to regenerate caches from scratch**, you need to manually delete the cache folder (`post_image_dataset/lora/` or `post_image_dataset/easycontrol/`) and re-run.
 
@@ -308,7 +308,7 @@ The training/preprocessing subprocess re-reads the variant TOML file from disk, 
 
 Even if training is interrupted midway, clicking `Train` again will **automatically resume training from the last saved checkpoint**. This is one of the most useful features for handling power outages, OOM, accidentally closed windows, etc., and is enabled by default.
 
-How to use it in the GUI:
+How to use it in the WebUI:
 
 - In the Training Config view, the **Training** group contains a `checkpointing_epochs` field (gui-methods variants default to `2`, `methods/lora.toml` defaults to `4`). It saves the resume state every N epochs, overwriting the same file, without growing disk usage.
 - After training is interrupted, click `Train` again with the same variant, and the log window will display `auto-resuming from checkpoint at step N`, continuing training from that point. No manual flag adjustments are needed.
@@ -430,7 +430,7 @@ How it works:
 | **HydraLoRA** | `make lora-gui GUI_PRESETS=hydralora` (8GB version: `hydralora-8gb`) | MoE multi-head routing, integrating multiple concepts into a single adapter |
 | **Standalone ReFT** | `make lora-gui GUI_PRESETS=reft` or set `add_reft = true` in `methods/lora.toml` | Representation Fine-Tuning (ReFT), minimal parameter count |
 | **ChimeraHydra** (*Experimental*) | `make exp-chimera` or `make lora-gui GUI_PRESETS=chimera_hydra` | Content/frequency dual-pool MoE — for research only |
-| **EasyControl** (*Experimental*) | `make easycontrol` or GUI Adapter tab | Extended self-attention image conditioning. Frozen DiT with per-block cond LoRA + scalar bias. Dataset: `easycontrol-dataset/` |
+| **EasyControl** (*Experimental*) | `make easycontrol` or WebUI Adapter tab | Extended self-attention image conditioning. Frozen DiT with per-block cond LoRA + scalar bias. Dataset: `easycontrol-dataset/` |
 | **Colorize** (*Experimental*) | `make easycontrol EASYADAPTER=colorize` | EasyControl's manga/lineart colorization variant. Cond = synthetic B&W (XDoG + screentone), target = color illustration |
 
 For detailed options per variant, see [`docs/guidelines/training.md`](training.md) and the individual documents in `docs/methods/`.

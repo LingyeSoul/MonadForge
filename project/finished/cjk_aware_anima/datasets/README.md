@@ -3,7 +3,7 @@
 > **2026-09-24:** the builders a shipped pack needs (`wikidata_lexicon`, `tag_glossary`,
 > `tag_pairs`, `build_pairs`, `synth_names`, `synth_tags`, `desc_pairs`,
 > `build_pairs_sym`, the `kanji_allow` / `mt` libraries and the `tag_overrides*.json`
-> tables) live in `scripts/distill_cjk/corpus/` and run as
+> tables) live in `_archive/corpus/` and run as
 > `python -m scripts.distill_cjk.corpus.<stage>`; `assets/` here is a symlink to
 > `post_image_dataset/cjk_distill/assets/`. What is still in this directory is the
 > exploration-side tooling (D2 commentary, Love Hina eval set, manga text pilot, glossary
@@ -172,7 +172,7 @@ wrote; a rebuild without it prints one `skipping D2` line and silently drops all
 
 Student-side joiner (2026-08-30). Span registers join tags with `", "`
 (80 %) or `、` (20 %), chosen per pair (`build_pairs.pick_joiner`, seeded)
-and stored in the record's `"joiner"` field, which `scripts/distill_cjk/data.py`
+and stored in the record's `"joiner"` field, which `_archive/data.py`
 reads to derive span offsets (records without the field are pre-change
 `、` pairs). `", "` is what users type in every language's prompt box and
 is a native T5 piece, so teacher and student share the delimiter token and

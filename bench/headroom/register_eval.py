@@ -29,23 +29,23 @@ Run:
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from anima_lora import GenerationRequest, load_vae  # noqa: E402
-from bench._anima import add_common_args, add_model_args  # noqa: E402
-from bench._common import make_run_dir, write_result  # noqa: E402
-from bench.headroom.register_adapter import RegisterAdapter  # noqa: E402
-from library.inference.generation import generate_body  # noqa: E402
-from library.inference.models import load_dit_model, load_text_encoder  # noqa: E402
-from library.inference.output import decode_latent, pixels_to_pil  # noqa: E402
-from library.inference.text import ensure_text_strategies, prepare_text_inputs  # noqa: E402
-from library.runtime.device import clean_memory_on_device  # noqa: E402
+from anima_lora import GenerationRequest, load_vae
+from bench._anima import add_common_args, add_model_args
+from bench._common import make_run_dir, write_result
+from bench.headroom.register_adapter import RegisterAdapter
+from library.inference.generation import generate_body
+from library.inference.models import load_dit_model, load_text_encoder
+from library.inference.output import decode_latent, pixels_to_pil
+from library.inference.text import (
+    ensure_text_strategies,
+    prepare_text_inputs,
+)
+from library.runtime.device import clean_memory_on_device
 
 _PROMPTS = [
     ("plain", "1girl, solo, long hair, looking at viewer, standing, simple background, "

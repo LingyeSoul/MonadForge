@@ -24,11 +24,11 @@ dependencies = [
     # Optimizers
     "pytorch-optimizer>=3.9.0",
     "prodigyopt>=1.1.2",
-    # CJK glossary (scripts/distill_cjk/corpus, --lang zh): pure-python OpenCC
+    # CJK glossary (_archive/scripts/distill_cjk/corpus, --lang zh): pure-python OpenCC
     "opencc-python-reimplemented>=0.1.7",
     # Data & Config
     "toml>=0.10.2",
-    "tomlkit>=0.13",  # style-preserving TOML for the GUI's sectioned distill-config editor
+    "tomlkit>=0.13",  # style-preserving TOML for the WebUI's sectioned distill-config editor
     "voluptuous>=0.15.2",
     "safetensors>=0.7.0",
     "imagesize>=1.4.1",
@@ -59,8 +59,7 @@ dependencies = [
     "sam3 @ git+https://github.com/facebookresearch/sam3.git",
     "packaging",
     "pycocotools>=2.0.11",
-    "pyside6>=6.11.0",
-    "ruff>=0.15.9",
+    "ruff==0.15.9",
     "matplotlib",
     "torchsde>=0.2.6",
     "uv>=0.11.7",
@@ -103,13 +102,13 @@ dependencies = [
     "datasets>=4.8.5",
     "send2trash>=2.1.0",
     "onnxruntime-gpu>=1.27.0",
+    "flash-linear-attention>=0.5.2 ; sys_platform == 'linux'",
 ]
 
 [project.gui-scripts]
 monadforge-tray = "scripts.tray.__main__:main"
 
 [project.optional-dependencies]
-gui = ["PySide6>=6.7"]
 # Transition shims (GH #92): v1.16.1/v1.16.2 shipped `update.py` scripts that
 # pass `--extra cuda-windows|rocm-windows`, so these names must keep resolving
 # without error. The real backend selection lives in [dependency-groups] below
@@ -198,7 +197,7 @@ diffusers = { git = "https://github.com/huggingface/diffusers", rev = "80c7ed262
 # lock would then reference ../anime_tools, and a flagless `uv sync` fails on
 # every machine without one. Test an unreleased change with
 # PYTHONPATH=../anime_tools instead.
-anime-tools = { git = "https://github.com/sorryhyun/anime_tools", tag = "v0.7.15" }
+anime-tools = { git = "https://github.com/sorryhyun/anime_tools", tag = "v0.8.1" }
 torch = [
     { index = "pytorch-cu132", marker = "sys_platform != 'darwin' and sys_platform != 'win32'" },
     { index = "pytorch-cu132", group = "cuda-windows" },
@@ -250,7 +249,7 @@ url = "https://stable.repo.amd.com/rocm/whl-next/"
 # (`bench` / `scripts` / `preprocess`) are also installed so cross-tree imports
 # (`from bench._common import …`, `from scripts.distill_turbo.setup import …`) resolve via
 # the editable finder instead of per-file `sys.path.insert` shims — and any tool
-# runs as `python -m bench.dave.foo`. `gui` stays CLI-only (not importable).
+# runs as `python -m bench.dave.foo`. The removed PySide app is not packaged.
 [tool.pytest.ini_options]
 # `slow` tags the sleep/subprocess-bound suites (daemon job queue): ~55s serial
 # but ~4x faster under xdist because they overlap on real timers, not CPU. The

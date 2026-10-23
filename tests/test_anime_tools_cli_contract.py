@@ -549,7 +549,7 @@ def test_curate_group_builds_group_request(monkeypatch):
 
 # ----- every module string and import name the trainer spells -------------------
 
-_SCAN_ROOTS = ("scripts", "gui", "library", "bench", "anima_lora", "networks")
+_SCAN_ROOTS = ("scripts", "library", "bench", "anima_lora", "networks")
 _SCAN_FILES = ("tasks.py", "train.py", "inference.py")
 
 

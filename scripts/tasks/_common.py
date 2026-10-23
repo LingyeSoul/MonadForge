@@ -106,7 +106,7 @@ def _path(key: str, default: str) -> str:
 
 def bespoke_preset_flags(preset: str) -> list[str]:
     """Translate ``configs/presets.toml[<preset>]`` into CLI flags for the
-    bespoke distillation loops (``scripts/distill_turbo``/``scripts/distill_cjk``)
+    bespoke distillation loops (``scripts/distill_turbo``)
     that bypass ``train.py``'s config merge chain.
 
     Honored keys: ``blocks_to_swap`` → ``--blocks_to_swap N``;
@@ -116,7 +116,7 @@ def bespoke_preset_flags(preset: str) -> list[str]:
     """
     try:
         from library.config.io import load_preset_section
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"warn: could not import preset loader: {e}", file=sys.stderr)
         return ["--no_grad_ckpt"]
 
@@ -224,7 +224,7 @@ def _has_console() -> bool:
         import ctypes
 
         return bool(ctypes.windll.kernel32.GetConsoleWindow())
-    except Exception:  # noqa: BLE001 — err on the safe side: keep output visible
+    except Exception:
         return True
 
 
@@ -613,7 +613,7 @@ def _resolve_run_mode(extra: list[str]) -> tuple[str, list[str]]:
 def _safe_job(cl, job_id: str) -> dict | None:
     try:
         return cl.get(job_id)
-    except Exception:  # noqa: BLE001 — a down/racing daemon is expected here
+    except Exception:
         return None
 
 
@@ -703,7 +703,7 @@ def _attach_and_wait(cl, job_id: str) -> int:
                     print(payload, flush=True)
             except KeyboardInterrupt:
                 raise
-            except Exception:  # noqa: BLE001 — socket drop / daemon restart
+            except Exception:
                 pass
             if got_eof:
                 break

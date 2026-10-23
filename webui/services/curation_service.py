@@ -37,7 +37,7 @@ def write_json(path: Path, data: dict, *, exclusive: bool = False) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     if exclusive:
         # create-if-absent is the whole point: never clobber another job's record.
-        with path.open("x", encoding="utf-8") as stream:
+        with path.open("x", encoding="utf-8", newline="") as stream:
             stream.write(payload)
     else:
         atomic_write_text(path, payload)

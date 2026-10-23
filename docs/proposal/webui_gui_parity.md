@@ -1,6 +1,7 @@
-# WebUI Parity Plan — Close GUI Gaps
+# WebUI Parity Plan (completed)
 
-Three gaps remain between the upstream PySide6 GUI and the WebUI. This plan is written for execution by other sessions — each task is self-contained with exact file paths, patterns to follow, and verification steps.
+**Status: done.** The upstream PySide6 GUI was removed in this fork; the WebUI is
+the only desktop UI. This document is kept as the historical parity checklist.
 
 **Prerequisites:** `uv sync` already done. Dev server: `python -m webui` (backend) + `cd webui/frontend && npm run dev` (frontend).
 
@@ -12,7 +13,7 @@ Three gaps remain between the upstream PySide6 GUI and the WebUI. This plan is w
 
 ### Problem
 
-`webui/services/config_service.py` line 93-104 defines `_METHOD_ORDER` with 10 entries but is missing `soft_tokens`. Upstream's `gui/__init__.py` `_METHOD_ORDER` includes it. SPD and Turbo are distill methods (sectioned TOML, not flat) — they need a different treatment (see Task 2).
+`webui/services/config_service.py` line 93-104 defines `_METHOD_ORDER` with 10 entries but is missing `soft_tokens`. Upstream's `webui/__init__.py` `_METHOD_ORDER` includes it. SPD and Turbo are distill methods (sectioned TOML, not flat) — they need a different treatment (see Task 2).
 
 ### Change
 
@@ -395,7 +396,7 @@ Implementation:
 - Count images: `sum(1 for f in Path(dir).iterdir() if f.suffix.lower() in IMAGE_EXTS)`
 - Count captions: `sum(1 for f in Path(dir).iterdir() if f.suffix == '.txt')`
 - Cache counts: scan `post_image_dataset/lora/` for `{stem}_*.npz`, `{stem}_*_anima_te.safetensors`, `{stem}_*_anima_pe.safetensors` matching stems in the source dir
-- Reuse the existing `count_preprocess_caches` pattern from `gui/__init__.py` (line 685-709) — it counts latents/te/pe/masks by suffix matching
+- Reuse the existing `count_preprocess_caches` pattern from `webui/__init__.py` (line 685-709) — it counts latents/te/pe/masks by suffix matching
 
 ### Step 3.2: Frontend — enhance AdapterView.vue
 
@@ -489,10 +490,6 @@ Tasks 1 and 3 are independent. Task 2 is self-contained. All three can be separa
 
 ## Post-execution Cleanup
 
-After all three tasks are verified, the `gui/` directory can be fully removed:
-
-```bash
-git rm -r gui/
-```
-
-The PySide6 GUI is fully superseded by the WebUI. The only GUI files that would remain are `gui/tabs/distill_tab.py` and `gui/tabs/methods_tab.py` — both replaced by Task 2.
+The upstream PySide GUI directory, its launcher tasks, and its tests were removed
+from this fork. The WebUI is the only UI; `scripts/tray` remains as the Windows
+tray controller.

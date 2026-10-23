@@ -1,7 +1,0 @@
-<h2 style='margin:0 0 10px 0; font-size:17px;'>HydraLoRA</h2>
-<p>在 LoRA 上叠加 MoE 风格路由：共享 <code>lora_down</code> + <code>num_experts</code> 个专家各自的 <code>lora_up</code> 头，由适配 Linear 的输入在层本地进行路由。负载均衡损失（<code>balance_loss_weight</code>）防止路由器坍缩到单一专家。</p>
-<p>增加 sinusoidal(σ)→E 路由器偏置与硬 σ 频带专业化：<code>specialize_experts_by_sigma_buckets = true</code> 将专家池按时间步桶分区，使每个 σ 频带只路由到其分配的专家（例如 <code>num_experts = 6</code>、3 个桶时每频带 2 个专家）。<code>sigma_bucket_boundaries = [0.0, 0.5, 0.8, 1.0]</code> 不均匀分布分割点 &mdash; 为后期低噪声细化阶段分配更多容量。</p>
-<p><b>变体</b><br>
-&bull; <b>hydralora</b> &mdash; 默认 16GB+ 配置。<br>
-&bull; <b>hydralora-8gb</b> &mdash; 相同架构，低显存配置（梯度检查点 + 卸载）；如果默认配置 OOM，请选此变体。</p>
-<p>训练会在适配器旁生成 <code>*_moe.safetensors</code> 附属文件；路由器实时推理需要两个文件（<code>make test-hydra</code> / ComfyUI <i>Anima Adapter Loader</i>）。需要 <code>cache_llm_adapter_outputs = true</code>。</p>

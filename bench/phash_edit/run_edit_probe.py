@@ -46,17 +46,17 @@ import time
 from pathlib import Path
 from typing import Optional
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-from bench._common import make_run_dir, start_heartbeat, write_result  # noqa: E402
-from library.env import default_checkpoints  # noqa: E402
-from library.log import setup_logging  # noqa: E402
+from bench._common import make_run_dir, start_heartbeat, write_result
+from library.env import default_checkpoints
+from library.log import setup_logging
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 setup_logging()
 logger = logging.getLogger(__name__)
 
-DATASET_DIR = REPO_ROOT / "post_image_dataset" / "easycontrol" / "phash_edit"
+DATASET_DIR = REPO_ROOT / "post_image_dataset" / "i2i" / "phash_edit"
 PAIRS_JSON = DATASET_DIR / "pairs.json"
 RESIZED_DIR = DATASET_DIR / "resized"
 DEFAULT_EC_WEIGHT = (

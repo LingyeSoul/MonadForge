@@ -24,7 +24,7 @@ re-integration doesn't require commit archaeology.
 | `impl/tlora_ortho_reft.toml` | `configs/gui-methods/tlora_ortho_reft.toml` | The old "default recommended stack". On removal it was re-saved **without** ReFT as `configs/gui-methods/tlora_ortho.toml`; this is the pre-removal copy with ReFT still in it. |
 | `impl/docs_methods_reft.md` | `docs/methods/reft.md` | Method deep-dive. |
 | `impl/docs_structure_reft.md` | `docs/structure/reft.md` | Structure deep-dive. |
-| `impl/guides/{en,ja,ko,cn}_reft.html` | `gui/explanations/guides/<lang>/reft.html` | GUI help HTML, 4 languages. |
+| `impl/guides/{en,ja,ko,cn}_reft.html` | `webui/explanations/guides/<lang>/reft.html` | GUI help HTML, 4 languages. |
 
 ## Live-code hook points removed (re-apply in this order)
 
@@ -65,17 +65,17 @@ not a rewrite. Restoring is mechanical.
 ### 7. Training hook (`library/training/forward/router_conditioning.py`)
 - Re-add the `if hasattr(network, "set_reft_timestep_mask"): network.set_reft_timestep_mask(timesteps, max_timestep=1.0)` call (sequence: timestep_mask → reft_timestep_mask → sigma → fei → balance).
 
-### 8. Merge refusal (`scripts/toolkits/merge_to_dit.py`, `gui/tabs/merge_tab.py`)
+### 8. Merge refusal (`scripts/toolkits/merge_to_dit.py`, `webui/tabs/merge_tab.py`)
 - `merge_to_dit.py`: re-add `"reft_": "ReFT (block-level hook)"` to the unsupported-key dict + the doc/help mentions.
 - `merge_tab.py`: re-add the `"reft"` counter, the `k.startswith("reft_")` count, and the verdict branches (`merge_verdict_reft_only` when reft-only, partial when reft+lora).
 
-### 9. GUI surface (`gui/`)
-- `gui/__init__.py`: `"reft"` in the methods list + form-field names `add_reft`, `reft_dim`, `reft_alpha`, `reft_layers`.
-- `gui/app.py`: `"reft"` in the `methods=[...]` list.
-- `gui/explanations/__init__.py`: `"reft"` in the two method sets/lists.
-- Restore `gui/explanations/guides/<lang>/reft.html` from `impl/guides/`.
+### 9. GUI surface (`webui/`)
+- `webui/__init__.py`: `"reft"` in the methods list + form-field names `add_reft`, `reft_dim`, `reft_alpha`, `reft_layers`.
+- `webui/server.py`: `"reft"` in the `methods=[...]` list.
+- `webui/explanations/__init__.py`: `"reft"` in the two method sets/lists.
+- Restore `webui/explanations/guides/<lang>/reft.html` from `impl/guides/`.
 
-### 10. i18n (`gui/i18n/{en,ja,ko,cn}.py`)
+### 10. i18n (`webui/i18n/strings/{en,ja,ko,cn}.py`)
 - The 3 merge strings still reference ReFT generically (`merge_verdict_partial`, `merge_verdict_reft_only`, `merge_allow_partial`). On removal, `merge_verdict_reft_only` was dropped and the other two reworded to drop "ReFT". Re-add the ReFT wording across all 4 languages.
 
 ### 11. Config TOML (re-enable the variant)

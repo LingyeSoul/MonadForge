@@ -168,6 +168,40 @@
       </v-col>
     </v-row>
 
+    <v-row class="mt-4">
+      <v-col cols="12">
+        <v-card variant="tonal">
+          <v-card-title class="text-subtitle-1">
+            <v-icon icon="mdi-swap-horizontal-bold" class="mr-2" />
+            {{ t('adI2i') }}
+          </v-card-title>
+          <v-card-text>
+            <div class="text-body-2 mb-3" v-html="t('adI2iDesc')" />
+            <v-select
+              v-model="i2iTask"
+              :items="i2iTasks"
+              :label="t('adI2iTask')"
+              density="compact"
+              hide-details
+              class="mb-3"
+              style="max-width: 320px"
+            />
+          </v-card-text>
+          <v-card-actions>
+            <v-btn color="primary" :loading="isRunning('i2i-stage')" @click="runTask('i2i-stage', { TASK: i2iTask })">
+              {{ t('adI2iStage') }}
+            </v-btn>
+            <v-btn variant="text" :loading="isRunning('i2i-preprocess')" @click="runTask('i2i-preprocess', { TASK: i2iTask, MODEL: 'moss' })">
+              {{ t('adI2iCacheMoss') }}
+            </v-btn>
+            <v-btn variant="text" :loading="isRunning('i2i-preprocess')" @click="runTask('i2i-preprocess', { TASK: i2iTask, MODEL: 'anima' })">
+              {{ t('adI2iCacheAnima') }}
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-col>
+    </v-row>
+
     <v-divider class="my-4" />
 
     <div class="d-flex align-center mb-2">
@@ -227,8 +261,10 @@ async function refreshTasks(): Promise<void> {
 void refreshTasks()
 
 const adapterCommands = [
-  'easycontrol', 'easycontrol-preprocess',
+  'easycontrol', 'easycontrol-preprocess', 'i2i-stage', 'i2i-preprocess',
 ]
+const i2iTasks = ['colorize', 'sanitize', 'inpaint', 'region', 'near_twins']
+const i2iTask = ref('colorize')
 
 const adapterTasks = computed(() =>
   taskStore.tasks.filter(tp => adapterCommands.includes(tp.command))
@@ -255,9 +291,9 @@ function stateColor(state: string) {
   return undefined
 }
 
-async function runTask(command: string) {
+async function runTask(command: string, env?: Record<string, string>) {
   if (taskStore.loading || isRunning(command)) return
-  const taskId = await taskStore.startTask(command)
+  const taskId = await taskStore.startTask(command, [], env)
   if (taskId) {
     notify.show(t('notifyTaskStarted', { command }), 'success')
   } else {

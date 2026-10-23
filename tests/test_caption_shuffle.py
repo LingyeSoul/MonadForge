@@ -14,23 +14,21 @@ got wrong:
 from __future__ import annotations
 
 import random
-import sys
 from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
-from library.anima.training import (  # noqa: E402
+from anime_tools.captions.taxonomy import is_artist_tag as _is_artist_tag
+
+from library.anima.training import (
     NO_ARTIST_SENTINEL,
     anima_smart_shuffle_caption,
     find_anima_prefix_end,
     strip_no_artist_sentinel,
 )
-from anime_tools.captions.taxonomy import is_artist_tag as _is_artist_tag  # noqa: E402
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # ----- predicate ----------------------------------------------------------
 

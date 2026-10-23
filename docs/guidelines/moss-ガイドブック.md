@@ -1,8 +1,8 @@
 # MOSS-Image LoRA ガイドブック
 
-GUI で MOSS-Image 用の LoRA を学習・テストするためのガイドです。`make gui` で開き、上部バーの **モデル** ドロップダウンを **MOSS-Image** に切り替えます（`make gui-moss` は同じパネルを別ウィンドウで開きます）。パネルは英語で表示され、GUI の言語が中国語のときだけ中国語で表示されます。
+WebUI で MOSS-Image 用の LoRA を学習・テストするためのガイドです。`python -m webui` で開き、上部バーの **モデル** ドロップダウンを **MOSS-Image** に切り替えます（`python -m webui` は同じパネルを別ウィンドウで開きます）。パネルは英語で表示され、WebUI の言語が中国語のときだけ中国語で表示されます。
 
-MOSS ラインは **アルファ** 段階です。実際のスタイル学習はこれまで 1 回（30 枚の絵師セット）しか計測しておらず、フラグやデフォルト値は今後変わる可能性があります。以下の数値はすべて、その学習と 16 GB の RTX 5070 Ti でのベンチマークによるものです。
+MOSS ラインは **アルファ** 段階です。スタイルのセットはこれまで 1 つ（1 人の絵師の画像 30 枚）だけですが、それで多くの A/B を行っており、フラグやデフォルト値は今後変わる可能性があります。以下の数値は、その A/B と 16 GB の RTX 5070 Ti でのベンチマークによるものです。
 
 ---
 
@@ -28,7 +28,7 @@ MOSS ラインは **アルファ** 段階です。実際のスタイル学習は
 | 拡散モデル | Anima DiT | 5B single-stream DiT（42 ブロック） |
 | テキストエンコーダー | Qwen3 0.6B | Qwen3.5-9B |
 | VAE | QwenImage VAE | FLUX.2 VAE |
-| キャッシュ | `post_image_dataset/lora/` | `output/moss/cache/` |
+| キャッシュ | `post_image_dataset/lora/` | `post_image_dataset/moss/` |
 | LoRA | `output/ckpt/` | `output/ckpt_moss/` |
 | 設定 | variant TOML + Hardware プリセット | パネルの入力欄 |
 
@@ -44,7 +44,7 @@ MOSS ラインは **アルファ** 段階です。実際のスタイル学習は
 | `moss-base` | DiT、テキストエンコーダー、VAE、トークナイザー | 約 27 GB |
 | `moss-sft`（任意） | SFT の DiT のみ。テキストエンコーダーと VAE は Base のものを使用 | 約 10 GB |
 
-GUI の「モデルのダウンロード」画面から取得するか、次のコマンドを実行します。
+WebUI の「モデルのダウンロード」画面から取得するか、次のコマンドを実行します。
 
 ```bash
 make download-model ARGS=moss-base
@@ -59,7 +59,7 @@ make download-model ARGS=moss-sft
 
 ## 3. 前処理・学習・テスト
 
-パネルには **Preprocess** と **Train** の 2 つのタブがあり、**Test** ボックスは Train タブの下部にあります。あまり使わない項目は **Advanced** の中に折りたたまれています。各ボタンは学習デーモンにジョブを投入します。モデルのドロップダウンを Anima に戻しても GUI を閉じてもジョブは動き続け、再度開くと実行中のジョブに再接続し（`Re-attached to running job …`）、**Stop** でキャンセルします。
+パネルには **Preprocess** と **Train** の 2 つのタブがあり、**Test** ボックスは Train タブの下部にあります。あまり使わない項目は **Advanced** の中に折りたたまれています。各ボタンは学習デーモンにジョブを投入します。モデルのドロップダウンを Anima に戻しても WebUI を閉じてもジョブは動き続け、再度開くと実行中のジョブに再接続し（`Re-attached to running job …`）、**Stop** でキャンセルします。
 
 ### 3.1 データセットとキャプション
 
@@ -70,7 +70,7 @@ make download-model ARGS=moss-sft
 - **学習とプロンプトは同じ形式で**: `caption_format`（Preprocess）と `prompt_format`（Test）を一致させます。両方 `layout_json`、または通常のキャプションなら両方 `text` です。どちらの場合もプロンプトは Anima のタグ形式で入力し、`layout_json` が変換します。
 - **トリガーはキャプションに書かれているとおりの絵師タグです。** 例: `@channel (caststation)`。プロンプトにも同じ書き方で入れます。
 - 自然言語のプロンプトは `layout_json` を通っても 1 つの caption 文字列として渡され、テキストのままのプロンプトと同じように動作します。
-- ComfyUI では、**Anima Caption → MOSS Layout JSON** ノード（Anima Tagger パック）がテキストエンコーダーの前で同じ変換を行います。
+- ComfyUI では、**Anima Caption → MOSS Layout JSON** ノード（[MOSS Toolkit](https://github.com/sorryhyun/ComfyUI-MOSS-Toolkit) パック）がテキストエンコーダーの前で同じ変換を行います。
 
 ### 3.2 前処理（Preprocess）
 
@@ -79,7 +79,7 @@ make download-model ARGS=moss-sft
 | 項目 | デフォルト | 役割 |
 |---|---|---|
 | `src` | `post_image_dataset/resized` | 画像 + キャプションのフォルダ |
-| `out` | `output/moss/cache` | キャッシュフォルダ: 画像 1 枚につき 2 ファイル、フラットに保存 |
+| `out` | `post_image_dataset/moss` | キャッシュフォルダ: 画像 1 枚につき 2 ファイル、フラットに保存 |
 | `resolution` | `1024` | ピクセル面積の上限: 元の比率のまま最大約 1024² ピクセル、両辺は 16 の倍数、アップスケールはしない |
 | `caption_format` | `layout_json` | `layout_json` または `text`（§3.1） |
 
@@ -89,11 +89,11 @@ make download-model ARGS=moss-sft
 
 | 項目 | デフォルト | 役割 |
 |---|---|---|
-| `cache` | `output/moss/cache` | 前処理の出力 |
+| `cache` | `post_image_dataset/moss` | 前処理の出力 |
 | `output` | `output/ckpt_moss/moss_lora.safetensors` | LoRA の保存先。隣に `.json` の実行レポート（ステップごとの loss）が保存される |
 | `model` | `base` | 学習に使う DiT |
 | `epochs` | `8` | キャッシュを回る回数（1 ステップに画像 1 枚） |
-| `save_every_epochs` | `0` | N エポックごとに `<name>_e10.safetensors` などとして追加保存 |
+| `save_every_epochs` | `0` | N エポックごとに最終ファイルの隣の `<name>/<name>_e10.safetensors` などとして追加保存（最後のエポックは最終ファイルそのもの） |
 
 ランク、alpha、lr、アダプターの種類は §4 で扱います。**Train** は `cache` を読み込み、**Preprocess, then train** は先に前処理を実行してから `cache` をその `out` に合わせて学習します。
 
@@ -103,26 +103,27 @@ make download-model ARGS=moss-sft
 
 - `lora` を空欄にすると Train タブの `output` を使います。別のファイル（例: `_e10` チェックポイント）をテストするにはここで指定します。
 - `model` を `sft` にすると、Base の LoRA を SFT でテストします。
-- 出力: `output/moss/test/<日付-時刻>/lora/` と `…/base/`、それぞれ `manifest.json` 付き。テストごとに新しいフォルダが作られるので、以前の結果は残ります。
+- 出力: `output/tests/<日付-時刻>/lora/` と `…/base/`、それぞれ `manifest.json` 付き。テストごとに新しいフォルダが作られるので、以前の結果は残ります。
 
 ---
 
 ## 4. 推奨設定
 
-計測した学習: 1 人の絵師（`@channel (caststation)`）の画像 30 枚、Base、LoRA ランク 16、alpha 16、lr 1e-4（以前のデフォルト）、`weight_svd`、20 エポック = 600 ステップ、約 18–21 分。試した設定の中で、絵師の特徴を最も多く拾い、漏れも見られませんでした。現在のデフォルト（ランク 32、alpha 128、lr 2e-5）はその後の比較で決まったもので、下で説明します。
+比較は 1 人の絵師（`@channel (caststation)`）の画像 30 枚、Base、`weight_svd`、20 エポック = 600 ステップ（約 18–21 分）で行いました。
 
 | 項目 | デフォルト | メモ |
 |---|---|---|
 | `algo` | `lora` | `lokr` / `loha`: §4.1 |
 | `rank` | `32` | ランク 16 でパラメータ 37.2 M（以前のデフォルト） |
 | `alpha` | `lora` は `128`（ランク 32 で scale 4）、`lokr` / `loha` は = rank | scale = alpha / rank |
-| `lr` | `2e-5` | AdamW、5 % の線形ウォームアップ |
+| `lr` | `5e-5` | AdamW、5 % の線形ウォームアップ |
+| `channel_scaling_alpha` | `0.5` | `lora` のみ。`0` で無効 |
+| `dc_isolate` | オン | `lora` のみ。入力の定数オフセット用に LoRA のランク 1 行を割り当てる |
 | `down_init` | `weight_svd` | `weight_svd` または `kaiming` |
 | `epochs` | `8` | 計測した学習は 20 |
-| `caption_dropout` | `0` | 計測した学習は 0 |
+| `plain_caption_rate` | `0.2` | `layout_json` キャッシュのみ: layout JSON の代わりに通常の Anima キャプションで学習するステップの割合 |
 
-- **alpha と lr**: AdamW では、scale を上げることは LoRA の up 行列の lr をその倍率だけ上げることと同じです。ランク 16、alpha 90（scale 5.6）、lr 1e-4 では up 行列は約 5.6e-4 になります。この設定はデフォルトと同じスタイルになりましたが、セットのサインを写し始めました。1 枚のサンプルに絵師のウォーターマークとハンドル名が出ています。alpha 90、lr 5e-5 では転写が弱く部分的でした。その比較では alpha = rank、lr 1e-4 が 1 位で、下の後の比較までデフォルトでした。
-- **現在のデフォルト（ランク 32、alpha 128、lr 2e-5）**: caststation セット（20 エポック、`weight_svd`、layout_json）で絵師タグを入れた状態で、複雑なギャラリープロンプト 2 つ（10 人のアンサンブル、4:1 バナー）の結果が分かれました。ランク 32 / alpha 128、lr 1e-4 はスタイルを強く押し（白い背景、平坦で淡い塗り）、プロンプトの細部を落としました（バッグを持つキャラクターが違う、ぬいぐるみが欠落）。lr 2e-5 では細部が保たれ（バッグの持ち主が正しい、ぬいぐるみあり）、スタイルの変化は穏やかで、「ずっと良い」と判断されてデフォルトになりました。AdamW では scale 4、lr 2e-5 の実効 lr は up 行列 8e-5、down 行列 2e-5 です。
+- **lr、チャンネルスケーリング、DC 分離**: FFN の入力では 1 つの入力チャンネルだけが他よりはるかに大きくなっています。チャンネルスケーリングと `dc_isolate` は、LoRA がそのチャンネルを通じて全体的なシフトに更新を使ってしまうのを防ぎます（開始時の出力は変わらず、ファイルは通常の LoRA です）。lr 5e-5 ではこの 2 つにより、lr 1e-4 と同等のスタイル強度でクリーンかつプロンプトに沿った結果になりました。以前のデフォルトと各変更の根拠となった比較: `docs/moss/channel_scaling.md`。
 - **down_init**: `weight_svd` は LoRA の down 行列をベース重みの上位特異ベクトルから始め、`kaiming` はランダム初期化です。目視では `weight_svd` のほうが絵師のスタイルをよく保ちました。2 つの初期化は同じシードでも別のサンプルになり、その差はシードを変えた程度です。
 - **epochs**: 20 エポック中 10 エポック時点の結果はゆるく多様で、20 エポックではより整って均一になる一方、正面・中央の上半身構図へ少し寄りました。`save_every_epochs` を設定すれば 1 回の学習で両方を比べられます。
 - **sigma_\***（Advanced）: デフォルトは MOSS の最終事前学習段階のノイズ分布です。Anima の分布（`sigma_mu 0`、`sigma_s 1`、`sigma_cutoff 1.0`、`sigma_uniform 0`）は全設定の中で転写が最も弱くなりました。
@@ -173,6 +174,8 @@ make download-model ARGS=moss-sft
 | `sampler` | `er_sde` | `er_sde` または `euler` |
 | `width` / `height` | `1024` | 16 の倍数 |
 | `negative_prompt` | 空 | パイプラインのデフォルト |
+| `dave` | 空 | `auto` = DAVE: 同じプロンプトでシードごとのバリエーションが増える（構図、ポーズ、レイアウト）代わりに、手が少し甘くなる。`docs/moss/dave.md` |
+| `dave_strength` | `0.3` | DAVE が取り除く量。`dave_tau`（Advanced、`0.10`）= DAVE を適用する序盤ステップの割合 |
 
 - **er_sde と euler**: `euler` はリファレンスパイプラインのサンプラーです。`er_sde` は同じコストで線がよりシャープになり、ディテールも密になります。LoRA 適用時は手もきれいに出ました。一方で、プロンプトの一部のディテール（夕焼けの光、髪色、"sitting on a bench"）から外れ、セットの絵柄も少し失われました。同じシードでも 2 つのサンプラーは別の画像を出すので、LoRA とベースの比較は同じサンプラー内で行ってください。
 - **Spectrum**（チェックボックス）: ほとんどのステップで 42 ブロックすべてを実行する代わりにモデル出力を予測します。50 ステップ、デフォルトの `spectrum_flex_window 0.5`（Advanced）で 2.6 倍速く、VRAM は 0.85 GiB 増え、グリッド表示では 50 ステップ全実行と見分けがつきにくい結果です。`0.25` は 2.2 倍でより保守的、`1.0` は 3.1 倍ですが細部が崩れます。
@@ -184,6 +187,8 @@ make download-model ARGS=moss-sft
 | 通常、コンパイルあり | 52 秒 |
 | Spectrum、コンパイルあり | 20 秒 |
 
+- **ComfyUI**: MOSS の LoRA は、`moss-image` ノードで作ったモデルに ComfyUI の LoRA ローダーで読み込めます（2026-10-17 より前に保存したファイルは読み込めません）。**KSampler (Spectrum for MOSS)**（Spectrum ノードパック）がこれらのサンプラーのデフォルトと Spectrum を備え、`ComfyUI-Anima-DAVE` 0.2.0 以降が MOSS で DAVE を実行します。
+
 **比較のしかた**: Test ボタンは最初から LoRA ありとなしを同じシードでレンダリングします。2 つの LoRA やエポック同士を比べるときは、プロンプト、シード、サンプラー、compile 設定を固定し、`lora` だけを変えてください。
 
 ---
@@ -194,7 +199,7 @@ make download-model ARGS=moss-sft
 |---|---|
 | 学習中にメモリ不足 | Basic: `blocks_to_swap 24`、次に Advanced: `activation_memory_budget 0.1`。または `tune_swap.py` を実行。LoKr/LoHa は 24 / 0.1 が必要。`grad_checkpointing` オン + `blocks_to_swap 0` は swap なしで収まる遅めの構成 |
 | スタイルが弱すぎる | エポックを増やす（計測した学習は 20）。プロンプトの絵師タグがキャプションと同じ表記か、`prompt_format` が `caption_format` と一致しているかを確認 |
-| スタイルが強すぎる、セットのサインやウォーターマークが出る、どの画像も同じ構図になる | 早いエポックの `_e<N>` チェックポイントをテストするか、`lora_multiplier` を下げる。サインを写し始めたのは実効 lr を上げた設定（現在のデフォルト lr は 2e-5） |
+| スタイルが強すぎる、セットのサインやウォーターマークが出る、どの画像も同じ構図になる | 早いエポックの `_e<N>` チェックポイントをテストするか、`lora_multiplier` を下げる。サインを写し始めたのは実効 lr を上げた設定。`lr 2e-5` を試してください |
 | セットの衣装や色が他のキャラクターに漏れる | `caption_format layout_json` を使う（デフォルト。通常のタグより漏れが少なかった）。LoHa は LoRA か LoKr に戻す |
 | `caption_format` を変更した | 前処理を再実行: テキストキャッシュは再エンコードされ、潜在は再利用される。ステータス行の件数には形式変更が反映されない。`prompt_format` を合わせてから再学習 |
 | `layout_json needs the danbooru tag CSV` | `make download-model ARGS=danbooru_tags` |
@@ -204,21 +209,21 @@ make download-model ARGS=moss-sft
 
 ## 付録. CLI
 
-GUI が投入するジョブと同じもので、デーモン経由で直接実行することもできます。各スクリプトの `--help` にすべてのフラグが表示されます。 `train.py --config configs/moss/lora.toml` でフラグを TOML ファイルから読み込めます（同梱のデフォルト値。コピーしてレシピとして使えます）。コマンドラインで指定したフラグが優先されます。
+WebUI が投入するジョブと同じもので、デーモン経由で直接実行することもできます。各スクリプトの `--help` にすべてのフラグが表示されます。 `train.py --config configs/moss/lora.toml` でフラグを TOML ファイルから読み込めます（同梱のデフォルト値。コピーしてレシピとして使えます）。コマンドラインで指定したフラグが優先されます。
 
 ```bash
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'output/moss/cache/<set>'"
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'post_image_dataset/moss/<set>'"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
-make daemon-run ARGS="scripts/moss/tune_swap.py --cache output/moss/cache/<set>"
+make daemon-run ARGS="scripts/moss/tune_swap.py --cache post_image_dataset/moss/<set>"
 ```
 
 LoKr / LoHa:
 
 ```bash
-make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
-make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
+make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
+make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
 ```
 
-詳しい計測結果: [`docs/experimental/moss_lora.md`](../experimental/moss_lora.md)。
+詳しい計測結果: [`docs/moss/README.md`](../moss/README.md)。

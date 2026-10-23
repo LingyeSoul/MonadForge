@@ -39,20 +39,22 @@ import argparse
 import glob
 import os
 import re
-import sys
 from pathlib import Path
 
+
+import torch
+
+from bench._anima import add_model_args
+from bench._common import make_run_dir, write_result
+from library.inference.sampling import get_timesteps_sigmas
+from library.io.cache import (
+    load_cached_latents,
+    load_cached_text_features,
+)
+from library.runtime.harness import build_anima
+from library.training.forward.renoise import renoise
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
-
-import torch  # noqa: E402
-
-from bench._anima import add_model_args  # noqa: E402
-from bench._common import make_run_dir, write_result  # noqa: E402
-from library.runtime.harness import build_anima  # noqa: E402
-from library.io.cache import load_cached_latents, load_cached_text_features  # noqa: E402
-from library.inference.sampling import get_timesteps_sigmas  # noqa: E402
-from library.training.forward.renoise import renoise  # noqa: E402
 
 
 def find_pairs(root: str, limit: int) -> list[tuple[str, str]]:

@@ -15,7 +15,7 @@ behind a live train run instead of OOM-colliding, and survive the terminal.
 
 ## Targets
 
-`make daemon | daemon-run ARGS="<script.py> …" | daemon-wait [JOB=<id>] | daemon-attach [JOB=<id>] | daemon-jobs | daemon-log [JOB=<id>] | daemon-pause [JOB=<id>] | daemon-resume [JOB=<id>] | daemon-kill | daemon-terminate | daemon-prune`
+`make daemon | daemon-run ARGS="<script.py> …" | daemon-wait [JOB=<id>] | daemon-attach [JOB=<id>] | daemon-status [JOB=<id>] | daemon-jobs | daemon-log [JOB=<id>] | daemon-pause [JOB=<id>] | daemon-resume [JOB=<id>] | daemon-kill | daemon-terminate | daemon-prune`
 
 - Front door: **`make daemon-run ARGS="<script.py> [flags]"`** — attach-by-default, exits
   with the job's code; `--queue` detaches, `--inline` bypasses the daemon;
@@ -34,7 +34,7 @@ behind a live train run instead of OOM-colliding, and survive the terminal.
   recompile, not instant). Protocol: `pause.request` / `pause.ack.json` in the job dir,
   `library/training/pause.py`.
 - Append `--queue` to any train/distill target to enqueue instead of running inline
-  (`make lora --queue`, `make turbo --queue`). GUI Train button, ComfyUI trainer node,
+  (`make lora --queue`, `make turbo --queue`). WebUI Train button, ComfyUI trainer node,
   and preprocessing all submit here.
 - Long-quiet phases: prefer `--stall-timeout` over a heartbeat, else
   `bench/_common.py::start_heartbeat()` (the watchdog also spares a quiet-but-CPU-burning
@@ -82,7 +82,7 @@ shell does **not** set — comes from the shell that booted the daemon, possibly
 
 | question | command | what comes back |
 |---|---|---|
-| Is a job running / is the queue busy? | `make daemon-jobs ARGS="--state queued,running,paused"` | one line per unfinished job, then `N of M jobs` — a bare `0 of M` **is** the "nothing running" answer (exit 1 = daemon down) |
+| Is a job running / is the queue busy? | `make daemon-status` (health line + unfinished jobs), or `make daemon-jobs ARGS="--state queued,running,paused"` | one line per unfinished job, then `N of M jobs` — a bare `0 of M` **is** the "nothing running" answer (exit 1 = daemon down) |
 | How far along is the current run? | `make run-status` | `step N/total`, it/s, ETA, last losses, last ckpt (§ Run status below) |
 | Did job `<id>` finish, and with what exit code? | `make daemon-jobs ARGS="--all" \| grep <id>` | one line: when · id · state · `rc=` · duration · target · first error line |
 | …and block until it does? | `make daemon-wait JOB=<id>` | exits with the job's own code (record + envelope on stdout) |
@@ -125,7 +125,7 @@ unaffected).
 `step N/total`, it/s, ETA, last losses, last ckpt, and `RUNNING`/`OK`/`ERROR`/`DEAD` (no
 `run_end` + dead pid), digested from the run's `progress.jsonl`
 (`library/training/progress.py::read_status` — importable; `scripts/run_status.py` is the
-CLI). Covers train.py methods **and** `make turbo`; a bespoke loop that writes no
+CLI). Covers train.py methods, `make turbo` **and** moss train (`scripts/moss/train.py`); a bespoke loop that writes no
 `progress.jsonl` (e.g. `project/cjk_anima_reseed/run.py`) shows nothing here — read the
 step off `make daemon-log JOB=<id>`.
 

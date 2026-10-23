@@ -15,6 +15,8 @@ from library.lines.adapters import (  # noqa: F401  (the line's adapter surface)
     LoHaAdapter,
     LoKrAdapter,
     LoRAAdapter,
+    channel_scale,
+    load_channel_stats,
 )
 from library.lines.adapters import LoRANetwork as _LoRANetwork
 from library.moss.requests import TrainRequest
@@ -29,4 +31,27 @@ class LoRANetwork(_LoRANetwork):
 
 
 load_network = LoRANetwork.from_file
-load_for_inference = LoRANetwork.for_inference
+
+
+def ref_settings(path) -> tuple[float | None, bool]:
+    """``(ref_timestep, ref_isolate)`` a reference LoRA trained with, as
+    ``MOSSImageTransformer`` takes them. ``ref_timestep`` None (stamped negative or
+    absent) = the image's own; ``ref_isolate`` is stamped ``"1"`` or ``"True"``,
+    absent = off."""
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt") as handle:
+        meta = handle.metadata() or {}
+    t = meta.get("ref_timestep")
+    return (
+        None if t is None or float(t) < 0 else float(t),
+        meta.get("ref_isolate") in ("1", "True"),
+    )
+
+
+def load_for_inference(transformer, path, multiplier: float = 1.0) -> LoRANetwork:
+    """``LoRANetwork.for_inference``, plus the reference settings the LoRA trained
+    with (``ref_settings``) set on ``transformer``."""
+    network = LoRANetwork.for_inference(transformer, path, multiplier)
+    transformer.ref_timestep, transformer.ref_isolate = ref_settings(path)
+    return network

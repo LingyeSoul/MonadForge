@@ -44,7 +44,7 @@ section scopes it. The vocab pack ships meaning; this LoRA ships glyphs.
   component, not a design pillar** (user call, 2026-08-17): manga-ocr + the
   measured logprob gate is the default; any better reader drops in behind the
   same sidecar format.
-- **The name-grid render (2026-08-17, `bench/cjk_adapter/results/20260817-0924/`)
+- **The name-grid render (2026-08-17, `_archive/results/20260817-0924/`)
   settled what this line does NOT need to carry**: character *identity* lives
   in EN tag-id sequences and is served by the (orthogonal, optional) name
   dictionary or the D5 register. Glyphs are the one thing no encoder-side

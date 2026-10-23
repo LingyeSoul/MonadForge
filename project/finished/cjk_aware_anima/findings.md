@@ -22,7 +22,7 @@ all-EN reference, discrimination 0.91 = no prompt-specific signal). Feeding the
 T5 side an EN translation of the same JA prompt recovers cos 0.69–0.76 with
 healthy discrimination (~0.11). So the T5 stream needs to be semantic, not
 Japanese, and the broken piece is small, isolated, and has a working reference
-(`t5en`) to imitate. `bench/cjk_adapter/results/20260815-1836/`.
+(`t5en`) to imitate. `_archive/results/20260815-1836/`.
 
 Ruled out by the probe (do not reopen): romanization (`t5rom` cos ~0.06 —
 non-unk is not enough); reverse routing (EN on Qwen, JA on T5: cos ~0.07/0.15,
@@ -183,7 +183,7 @@ endgame is upstream to core. Details in [`deliverables.md`](deliverables.md#ship
 ## 8. Word-row minting, one day in (plan_ko3 M1–M2, 2026-09-01)
 
 What ran (all same-day; envelopes `bench/cjk_distill/results/20260901-15*` /
-`-16*`, grids `bench/cjk_adapter/results/20260901-15*` / `-16*`):
+`-16*`, grids `_archive/results/20260901-15*` / `-16*`):
 the eojeol boundary guard (risk 1) landed unit-tested; M1 densified the
 corpus (레이무 27→203 pairs via `synth_names --only`, 그레이스케일/커플룩/무녀복
 1/2/10→~300 via the new `synth_tags --lang ko`, 11th row minted, 2,348-pair

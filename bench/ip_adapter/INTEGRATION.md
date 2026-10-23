@@ -95,11 +95,11 @@ rewrite. Restoring is mechanical.
 - `configs/methods/ip_adapter.toml`, `configs/gui-methods/ip_adapter.toml`,
   `configs/datasets/ip_adapter.toml` — restore from `impl/`.
 
-### 8. GUI surface (`gui/`)
-- `gui/app.py`: `ip_adapter` in the methods list.
-- `gui/tabs/adapter_tab.py`, `gui/tabs/config_tab.py`, `gui/core/paths.py`: the IP-Adapter
+### 8. GUI surface (`webui/`)
+- `webui/server.py`: `ip_adapter` in the methods list.
+- `webui/tabs/adapter_tab.py`, `webui/tabs/config_tab.py`, `webui/core/paths.py`: the IP-Adapter
   form fields / path handling.
-- `gui/i18n/{en,ja,ko,cn}.py`: the IP-Adapter UI strings (4 languages).
+- `webui/i18n/strings/{en,ja,ko,cn}.py`: the IP-Adapter UI strings (4 languages).
 
 ### 9. Tests
 - `tests/test_method_network_lifecycle.py`: the `IPAdapterNetwork` import + lifecycle case.

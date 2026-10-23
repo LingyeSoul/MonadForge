@@ -7,7 +7,7 @@
   读取 progress.jsonl / tensorboard / snapshot.toml / stdout.log / job.json。
   UI 设计遵循 `~/Projects/toolbox/终末地官网/analysis/design-system-report.md`。
 - `webui/` — 主 WebUI（FastAPI + Vue3/Vuetify），实时训练看板与数据集预处理。
-- `scripts/daemon/` — 训练守护进程（HTTP API + MCP + job 队列）。
+- `anima_daemon/` — 训练守护进程（HTTP API + MCP + job 队列）；`scripts/daemon/` 是旧导入兼容 shim。
 - `library/training/progress.py` — progress.jsonl 事件流写入方（run_start/step/ckpt/sample/run_end）。
 
 ## 数据约定

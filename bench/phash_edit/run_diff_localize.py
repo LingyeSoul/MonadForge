@@ -35,7 +35,6 @@ import argparse
 import csv
 import json
 import logging
-import sys
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -43,18 +42,16 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-from bench._common import make_run_dir, write_result  # noqa: E402
-from library.log import setup_logging  # noqa: E402
+from bench._common import make_run_dir, write_result
+from library.log import setup_logging
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 setup_logging()
 logger = logging.getLogger(__name__)
 
-PAIRS_JSON = (
-    REPO_ROOT / "post_image_dataset" / "easycontrol" / "phash_edit" / "pairs.json"
-)
+PAIRS_JSON = REPO_ROOT / "post_image_dataset" / "i2i" / "phash_edit" / "pairs.json"
 
 GRID = 64
 MIN_BLOB_CELLS = 2  # single-cell hits are decode/screentone noise; 2+ cells

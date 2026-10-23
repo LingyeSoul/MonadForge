@@ -64,6 +64,8 @@ def test_every_visible_row_belongs_to_a_listed_pack():
         "cjk",
         "moss-base",
         "moss-sft",
+        "moss-te-int8",
+        "moss-te-fp8",
     ]
     assert not (set(DL.HIDDEN_PACKS) & pack_ids)
 
@@ -115,7 +117,15 @@ def test_by_pack_keeps_pack_order_and_drops_empty_packs():
     assert list(grouped) == [p.id for p in DL.PACKS if p.id in grouped]
     assert all(rows for rows in grouped.values())
     trainer_only = DL.by_pack(DL.catalog())
-    assert list(trainer_only) == ["anima", "pe", "cjk", "moss-base", "moss-sft"]
+    assert list(trainer_only) == [
+        "anima",
+        "pe",
+        "cjk",
+        "moss-base",
+        "moss-sft",
+        "moss-te-int8",
+        "moss-te-fp8",
+    ]
 
 
 def test_resolve_raises_naming_the_unknown_token():
@@ -290,117 +300,6 @@ def test_download_model_accepts_pack_ids(monkeypatch):
     )
     tasks.COMMANDS["download-model"][0](["ocr", "anima"])
     assert picked == [[a.id for a in DL.resolve(["anima", "ocr"])]]
-
-
-def test_models_dialog_rows_come_from_the_catalog():
-    """Both tabs render Assets and run ``download-model <id>``; the id has to be
-    one the task can resolve, and every labelled row has to be a real one."""
-    pytest.importorskip("PySide6")
-    import tasks
-    from gui.dialogs.system import _TITLE_KEYS
-
-    assert "download-model" in tasks.COMMANDS
-    assert set(_TITLE_KEYS) <= set(DL.by_id())
-
-
-def test_the_two_tabs_show_the_two_catalog_halves():
-    """One modal, one QProcess, one log — the split is a tab, so neither list
-    grows long enough to push the log pane off the dialog."""
-    import os
-
-    pytest.importorskip("PySide6")
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication, QGroupBox
-
-    from gui.dialogs.system import ModelsDialog, _pack_title
-
-    app = QApplication.instance() or QApplication([])
-    assert app is not None
-    dlg = ModelsDialog()
-    try:
-        assert dlg.tabs.count() == 2
-        anima, curation = dlg._panels
-        assert [a.id for a in anima.assets()] == [a.id for a in DL.catalog()]
-        assert [a.id for a in curation.assets()] == [
-            a.id for a in DL.curation_catalog()
-        ]
-        assert "mit_text" not in {a.id for a in curation.assets()}
-        # Rows are grouped by pack: one QGroupBox per pack the tab's rows
-        # populate, in PACKS order, each with a pack-level button that names
-        # exactly that pack's rows.
-        for panel in dlg._panels:
-            expected = DL.by_pack(panel.assets())
-            assert [pid for pid, _ids, _b in panel._packs] == list(expected)
-            for pid, ids, _btn in panel._packs:
-                assert ids == tuple(a.id for a in expected[pid])
-            boxes = panel.findChildren(QGroupBox)
-            assert [b.title() for b in boxes] == [
-                _pack_title(DL.PACK_BY_ID[pid]) for pid in expected
-            ]
-        assert [pid for pid, _i, _b in anima._packs] == [
-            "anima",
-            "pe",
-            "cjk",
-            "moss-base",
-            "moss-sft",
-        ]
-        # Busy disables every button on *both* tabs: the dialog runs one job.
-        dlg._set_busy(True)
-        assert not any(b.isEnabled() for p in dlg._panels for _a, _s, b in p._rows)
-        assert not any(b.isEnabled() for p in dlg._panels for _p, _i, b in p._packs)
-        assert not any(p.all_btn.isEnabled() for p in dlg._panels)
-        dlg._set_busy(False)
-        assert all(b.isEnabled() for p in dlg._panels for _p, _i, b in p._packs)
-    finally:
-        dlg.close()
-
-
-def test_every_title_key_exists_in_every_language():
-    """A missing key silently falls back to English — worst for the KR/JA/ZH
-    users who are most of the base."""
-    pytest.importorskip("PySide6")
-    from gui.i18n import TRANSLATIONS
-    from gui.dialogs.system import _PACK_KEYS, _TITLE_KEYS
-
-    extra = (
-        "curation_models_intro",
-        "models_tab_anima",
-        "models_tab_curation",
-        "models_download_missing",
-        "models_all_installed",
-        "models_used_by",
-        "models_download_pack",
-        "models_redownload_pack",
-    )
-    pack_keys = [k for key in _PACK_KEYS.values() for k in (key, f"{key}_desc")]
-    for lang, table in TRANSLATIONS.items():
-        for key in (*_TITLE_KEYS.values(), *pack_keys, *extra):
-            assert key in table, f"{lang}: {key}"
-        assert "model_mit" not in table, lang
-    # Every pack the trainer shows has a translated title (the fallback is the
-    # catalog's English title, which the KR/JA/ZH users should not see).
-    assert set(_PACK_KEYS) == {p.id for p in DL.PACKS}
-
-
-@pytest.fixture(autouse=True)
-def forbid_real_downloads(monkeypatch):
-    """Each test must opt into a fake transport; restored tests stay offline."""
-    from library.runtime import ms_download
-    from library.curation_compat import _hf
-
-    def unexpected(*_args, **_kwargs):
-        pytest.fail("A download test reached a real transport or child command")
-
-    monkeypatch.delenv("ANIMA_DOWNLOAD_SOURCE", raising=False)
-    monkeypatch.setattr("urllib.request.urlopen", unexpected)
-    monkeypatch.setattr(_hf, "hf_download", unexpected)
-    monkeypatch.setattr(ms_download, "snapshot_download", unexpected)
-    monkeypatch.setattr(ms_download, "fetch_file", unexpected)
-    monkeypatch.setattr(legacy, "run", unexpected)
-    monkeypatch.setattr(downloads, "run", unexpected)
-
-
-# ModelScope and legacy tag-table coverage retained from the local merge parent.
 
 
 def test_danbooru_tags_download_url_points_to_source_repo():

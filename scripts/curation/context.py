@@ -37,7 +37,7 @@ def tools():
         })
     except ImportError as exc:
         raise CurationUnavailable(
-            f"anime-tools v0.7.15 is required for curation: {exc}. "
+            f"anime-tools v0.8.1 is required for curation: {exc}. "
             "Use the registered curation runtime; do not replace a V100 training environment."
         ) from exc
 

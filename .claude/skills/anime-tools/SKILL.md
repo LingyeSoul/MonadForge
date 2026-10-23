@@ -23,7 +23,7 @@ directly — the `library._moved` shims and every forwarding shell are gone.
 
 What stays trainer-side:
 
-- **GUI panels** — they reach the package only via the `autotag_server` stdio protocol,
+- **WebUI panels** — they reach the package only via the `autotag_server` stdio protocol,
   daemon jobs, and the torch-free grammar.
 - `library/models/pe.py` — a permanent re-export. **The vendored PE vision tower is owned
   by `anime_tools.vision.pe`**, so a standalone `anime_tools` groups with the same
@@ -69,7 +69,7 @@ under `[tool.uv.sources]` (a plain project dependency) — cut with the
 package's `release` skill (version bump → annotated tag → `release.yml`).
 
 **The trainer `.venv` holds the pinned copy, not `../anime_tools`.** An edit in the
-sibling checkout is invisible to `make` targets, daemon jobs and the GUI until a tag is
+sibling checkout is invisible to `make` targets, daemon jobs and the WebUI until a tag is
 cut and the pin moves — this has silently run stale package code on the GPU before.
 `python -c "import anime_tools"` with cwd=`../anime_tools` lies (sys.path[0]); check from
 the trainer root.

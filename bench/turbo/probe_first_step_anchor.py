@@ -38,28 +38,27 @@ in-repo encoder behind CMMD; a relative-diversity signal across arms, not DINOv3
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-import torch  # noqa: E402
+import torch
 
-from anima_lora import GenerationRequest, load_vae  # noqa: E402
-from bench._anima import add_model_args  # noqa: E402
-from library.inference.models import load_shared_models  # noqa: E402
-from library.runtime.harness import build_anima  # noqa: E402
-from library.inference.text import prepare_text_inputs  # noqa: E402
-from library.inference.sampling import get_timesteps_sigmas  # noqa: E402
-from library.inference.adapters import (  # noqa: E402
+from anima_lora import GenerationRequest, load_vae
+from bench._anima import add_model_args
+from bench._common import make_run_dir, write_result
+from library.inference.adapters import (
     compute_and_set_hydra_fei,
     set_hydra_crossattn,
     set_hydra_sigma,
 )
-from library.runtime.device import clean_memory_on_device  # noqa: E402
-from library.vision.encoders import get_encoder_info  # noqa: E402
-from bench._common import make_run_dir, write_result  # noqa: E402
+from library.inference.models import load_shared_models
+from library.inference.sampling import get_timesteps_sigmas
+from library.inference.text import prepare_text_inputs
+from library.runtime.device import clean_memory_on_device
+from library.runtime.harness import build_anima
+from library.vision.encoders import get_encoder_info
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Curated prompts where prompt-conditioned diversity is meaningful (open-ended
 # subjects + composition latitude). One line each.

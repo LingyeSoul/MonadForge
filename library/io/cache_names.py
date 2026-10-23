@@ -2,7 +2,7 @@
 
 The suffixes the preprocess pipeline writes, plus the by-name classifier /
 counter built on them (:func:`classify_cache_file`,
-:func:`count_preprocess_caches`). Stdlib-only at import time so the PySide6 GUI
+:func:`count_preprocess_caches`). Stdlib-only at import time so the WebUI
 (which cannot import torch — see ``gui/CLAUDE.md``) shares these rules instead
 of copying the literals.
 """

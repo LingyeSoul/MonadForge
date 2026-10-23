@@ -203,7 +203,7 @@ One artist (`sincos`, 334 images), paired designs throughout (see
 | `scripts/soup/pipeline.py` | 3-phase orchestrator (`make soup` entry) |
 | `scripts/soup/build.py` | ΔW rank-concat soup + rank-r SVD truncation (`python -m scripts.soup.build`) |
 | `scripts/tasks/training.py::cmd_soup` | `make soup` / env-knob → pipeline argv |
-| `gui/tabs/soup_tab.py` | GUI launcher (Experimental tab) |
+| `webui/frontend/src/views/DistillView.vue` | GUI launcher (Experimental tab) |
 | `bench/memorization/report.md` | the validating study (uncond-init ladder) |
 
 ## Standalone soup builder

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -54,6 +55,10 @@ def _fail_replace(monkeypatch, destination):
     monkeypatch.setattr(Path, "replace", fail)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows does not expose POSIX mode bits through stat().",
+)
 def test_atomic_write_preserves_symlink_and_permissions(tmp_path):
     target = tmp_path / "actual.toml"
     target.write_text("old")

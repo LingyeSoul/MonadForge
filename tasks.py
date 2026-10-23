@@ -49,7 +49,6 @@ class _LazyModule:
 curate = _LazyModule("scripts.tasks.curate")
 daemon = _LazyModule("scripts.tasks.daemon")
 downloads = _LazyModule("scripts.tasks.downloads")
-gui = _LazyModule("scripts.tasks.gui")
 inference = _LazyModule("scripts.tasks.inference")
 masking = _LazyModule("scripts.tasks.masking")
 preprocess = _LazyModule("scripts.tasks.preprocess")
@@ -96,15 +95,26 @@ COMMANDS = {
         "EasyControl training (extended self-attn KV with VAE-encoded reference). "
         "EASYADAPTER=<task> (e.g. colorize) selects a control-task project.",
     ),
+    "i2i-stage": (
+        training.cmd_i2i_stage,
+        "Generate an i2i task's staging tree (i2i_tasks/<task>, no VAE/TE "
+        "caching) under post_image_dataset/i2i/. TASK=<task> (colorize, inpaint, "
+        "region, near_twins, …); read by easycontrol-preprocess and the MOSS i2i cache.",
+    ),
+    "i2i-preprocess": (
+        training.cmd_i2i_preprocess,
+        "Cache a staged i2i task for one model: TASK=<task> MODEL=anima (EasyControl "
+        "encode, = easycontrol-preprocess) | moss (configs/moss/i2i/<task>/cache.toml "
+        "→ target latents + TE + reference latents, daemon job).",
+    ),
     "easycontrol-staging": (
         training.cmd_easycontrol_staging,
-        "Generate an EasyControl adapter's staging dataset (no VAE/TE caching). "
-        "EASYADAPTER=near_twin → mine the in-artist near-twin pair tree.",
+        "Alias of i2i-stage with EASYADAPTER=<task>.",
     ),
     "easycontrol-preprocess": (
         training.cmd_easycontrol_preprocess,
         "Full EasyControl preprocess: latents + text emb. "
-        "Source: easycontrol-dataset/  Cache: post_image_dataset/easycontrol/.",
+        "Source: easycontrol-dataset/ (or TASK staging)  Cache: post_image_dataset/i2i/.",
     ),
     # ── Training daemon ───────────────────────────────────────────────
     "daemon": (
@@ -118,6 +128,12 @@ COMMANDS = {
         "--limit N/--all/--running/--failed/--done/--state s; reads the "
         "on-disk records when the daemon is down. One job's full record + its "
         "result envelope: python -m anima_daemon status <id>.",
+    ),
+    "daemon-status": (
+        daemon.cmd_daemon_status,
+        "Daemon health in one line, then the running / paused / queued jobs "
+        "(exit 1 = daemon down). JOB=<id>: that job's full record + result "
+        "envelope as JSON.",
     ),
     "daemon-log": (
         daemon.cmd_daemon_log,
@@ -383,20 +399,6 @@ COMMANDS = {
         masking.cmd_mask_clean,
         "Remove mask_dir/ (configs/preprocess.toml; default post_image_dataset/masks/)",
     ),
-    # ── GUI ───────────────────────────────────────────────────────────
-    "gui": (gui.cmd_gui, "Launch PySide6 GUI"),
-    "gui-qwen": (
-        gui.cmd_gui_qwen,
-        "Launch the Qwen-Image-2.1 LoRA GUI (preprocess + train only)",
-    ),
-    "gui-moss": (
-        gui.cmd_gui_moss,
-        "Launch the MOSS-Image LoRA GUI (alpha: preprocess + train + A/B test)",
-    ),
-    "gui-shortcut": (
-        gui.cmd_gui_shortcut,
-        "Create a Windows desktop shortcut that launches the GUI (no console window)",
-    ),
     # ── Utilities ─────────────────────────────────────────────────────
     "merge": (
         utilities.cmd_merge,
@@ -437,19 +439,6 @@ COMMANDS = {
         exp_training.cmd_byg_data,
         "[experimental] Build BYG edit-tuple sidecars (tag-swap) into "
         "post_image_dataset/byg/. Usage: exp-byg-data [--limit N --overwrite].",
-    ),
-    "exp-distill-cjk": (
-        exp_training.cmd_distill_cjk,
-        "[experimental] Distill the extended CJK T5-vocab rows against the "
-        "en-translation teacher. Gates in order: ARGS='--mode oracle' → "
-        "'--mode capacity' → '--mode train'. Emits a vocab pack, not a LoRA.",
-    ),
-    "exp-cjk-corpus": (
-        exp_training.cmd_cjk_corpus,
-        "[experimental] Run one CJK distillation corpus-builder stage "
-        "(scripts/distill_cjk/corpus/). Usage: exp-cjk-corpus ARGS='<stage> [flags]' "
-        "— stages: wikidata_lexicon, tag_glossary, tag_pairs, build_pairs, synth_names, "
-        "synth_tags, desc_pairs, build_pairs_sym, mt. Recipes: docs/methods/cjk_vocab_pack.md.",
     ),
     "exp-test-soft": (
         exp_inference.cmd_test_soft,

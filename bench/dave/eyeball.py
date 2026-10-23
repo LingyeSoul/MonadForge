@@ -12,14 +12,11 @@ configs (the model is loaded once and shared) and dumps labeled PNGs into
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from anima_lora import (  # noqa: E402
+from anima_lora import (
     GenerationRequest,
     decode_to_pil,
     default_checkpoints,
@@ -29,9 +26,8 @@ from anima_lora import (  # noqa: E402
     load_vae,
     prepare_text_inputs,
 )
-
-from bench._anima import DEFAULT_NEG as DEFAULT_NEGATIVE  # noqa: E402
-from bench._anima import DEFAULT_PROMPT  # noqa: E402
+from bench._anima import DEFAULT_NEG as DEFAULT_NEGATIVE
+from bench._anima import DEFAULT_PROMPT
 
 # (label, dave-on, strength, block_lo, block_hi, tau). block_hi=-1 → last block.
 # tau>0 = DAVE paper's early-step cutoff (overrides the σ window); 0 = full schedule.

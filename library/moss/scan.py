@@ -1,10 +1,10 @@
-"""What a source folder and a cache folder hold — torch-free, for the GUI.
+"""What a source folder and a cache folder hold; torch-free, for the GUI.
 
 The file layout constants live here so ``cache.py`` and the GUI name files the
-same way. A TE file is current while its ``source_sha256`` (``caption_sha256`` on
-files from before ``caption_format``) matches the caption on disk; the check reads
-the safetensors JSON header directly, without torch. It does not see a
-``caption_format`` switch — ``cache.py`` does, and re-encodes.
+same way. A TE file is current while its ``source_sha256`` (or legacy
+``caption_sha256``) matches the caption on disk, read from the safetensors JSON
+header. A ``caption_format`` switch is invisible here; ``cache.py`` sees it and
+re-encodes.
 """
 
 from __future__ import annotations
@@ -13,35 +13,103 @@ import hashlib
 import json
 import re
 import struct
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+from library.env import resolve_under_home
 
 IMAGE_EXTS = (".webp", ".png", ".jpg", ".jpeg")
 TE_SUFFIX = ".moss_te.safetensors"
 LATENT_SUFFIX = ".moss_latent.safetensors"
+# Optional clean reference latent per stem (i2i probe), key ``latent``.
+REF_SUFFIX = ".moss_ref.safetensors"
 LATENT_RE = re.compile(
-    r"^(?P<stem>.+)_(?P<w>\d+)x(?P<h>\d+)\.moss_latent\.safetensors$"
+    rf"^(?P<stem>.+)_(?P<w>\d+)x(?P<h>\d+){re.escape(LATENT_SUFFIX)}$"
 )
 
 
-def source_pairs(src: Path) -> tuple[list[Path], list[tuple[str, Path, Path]]]:
+def glob_escape(text: str) -> str:
+    return re.sub(r"([\[\]*?])", r"[\1]", text)
+
+
+def latent_files(
+    folder: Path, stem: str | None = None
+) -> Iterator[tuple[str, int, int, Path]]:
+    """``(stem, width, height, path)`` of each latent file in ``folder``, or of
+    ``stem``'s only."""
+    pattern = "*" if stem is None else f"{glob_escape(stem)}_*"
+    for p in folder.glob(pattern + LATENT_SUFFIX):
+        m = LATENT_RE.match(p.name)
+        if m is not None and (stem is None or m["stem"] == stem):
+            yield m["stem"], int(m["w"]), int(m["h"]), p
+
+
+def original_tree(src: Path) -> tuple[Path | None, frozenset[Path]]:
+    """The ``image_dataset/`` folder ``src`` mirrors when ``src`` sits in the Anima
+    resized tree, and the originals the exclusion ledgers name; ``(None, ∅)``
+    for any other ``src``.
+
+    anime_tools' Export under ``sidecars_only`` (what the trainer GUI seeds)
+    publishes captions into the resized tree and no pixels; Anima's resize stage
+    fills the PNGs in. The MOSS line has no resize stage, so a caption there whose
+    PNG was never written pairs with its original instead."""
+    from library.datasets.curation_actions import (
+        RESIZED_DIR,
+        SOURCE_DIR,
+        excluded_rels,
+        workspace_excluded_rels,
+    )
+
+    resized = resolve_under_home(RESIZED_DIR)
+    source = resolve_under_home(SOURCE_DIR)
+    for a, b in ((src, resized), (src.resolve(), resized.resolve())):
+        if a.is_relative_to(b):
+            rel = a.relative_to(b)
+            break
+    else:
+        return None, frozenset()
+    rels = {*excluded_rels(), *workspace_excluded_rels()}
+    return source / rel, frozenset(source / r for r in rels)
+
+
+def source_pairs(
+    src: Path, originals: Path | None = None, skip: frozenset[Path] = frozenset()
+) -> tuple[list[Path], list[tuple[str, Path, Path]]]:
     """Every image under ``src`` and, for those with a ``.txt`` beside them,
     ``(cache stem, image, caption)``. A stem that appears in several subfolders
-    is prefixed with its relative folder (``sub__dir__stem``)."""
+    is prefixed with its relative folder (``sub__dir__stem``).
+
+    With ``originals`` (a tree mirroring ``src``), a caption under ``src`` with
+    no image beside it pairs with the image at the same relative folder and stem
+    there, unless that image is in ``skip``."""
     images = sorted(
         p for p in src.rglob("*") if p.suffix.lower() in IMAGE_EXTS and p.is_file()
     )
+    roots = {p: src for p in images}
+    if originals is not None and originals.is_dir():
+        have = {p.relative_to(src).with_suffix("") for p in images}
+        for p in sorted(originals.rglob("*")):
+            if p.suffix.lower() not in IMAGE_EXTS or not p.is_file() or p in skip:
+                continue
+            rel = p.relative_to(originals).with_suffix("")
+            if rel in have or not (src / rel.parent / f"{p.stem}.txt").exists():
+                continue
+            have.add(rel)
+            images.append(p)
+            roots[p] = originals
     counts: dict[str, int] = {}
     for p in images:
         counts[p.stem] = counts.get(p.stem, 0) + 1
     pairs = []
     for p in images:
-        caption = p.with_suffix(".txt")
+        rel = p.relative_to(roots[p])
+        caption = src / rel.parent / f"{p.stem}.txt"
         if not caption.exists():
             continue
         stem = p.stem
         if counts[stem] > 1:
-            stem = "__".join((*p.relative_to(src).parent.parts, p.stem))
+            stem = "__".join((*rel.parent.parts, p.stem))
         pairs.append((stem, p, caption))
     return images, pairs
 
@@ -74,7 +142,7 @@ class CacheScan:
     pairs: int  # of those, with a .txt caption
     text_cached: int  # current TE files
     latents_cached: int
-    stale_text: int  # TE file whose caption changed — re-encoded on the next run
+    stale_text: int  # TE file whose caption changed; re-encoded on the next run
     duplicates: int  # stems prefixed with their folder because they collide
 
 
@@ -82,15 +150,11 @@ def scan(src: Path | None, out: Path | None) -> CacheScan:
     images: list[Path] = []
     pairs: list[tuple[str, Path, Path]] = []
     if src is not None and src.is_dir():
-        images, pairs = source_pairs(src)
+        images, pairs = source_pairs(src, *original_tree(src))
     dupes = sum(1 for stem, image, _ in pairs if stem != image.stem)
     text = latents = stale = 0
     if out is not None and out.is_dir():
-        latent_stems = {
-            m["stem"]
-            for p in out.glob(f"*{LATENT_SUFFIX}")
-            if (m := LATENT_RE.match(p.name))
-        }
+        latent_stems = {stem for stem, *_ in latent_files(out)}
         for stem, _, caption in pairs:
             te = out / f"{stem}{TE_SUFFIX}"
             if te.exists():
@@ -108,16 +172,12 @@ def scan(src: Path | None, out: Path | None) -> CacheScan:
 class CacheCounts:
     text: int
     latents: int
-    samples: int  # stems with both files — what training will actually see
+    samples: int  # stems with both files: what training sees
 
 
 def cache_counts(cache: Path) -> CacheCounts:
     if not cache.is_dir():
         return CacheCounts(0, 0, 0)
     text = {p.name[: -len(TE_SUFFIX)] for p in cache.glob(f"*{TE_SUFFIX}")}
-    latents = {
-        m["stem"]
-        for p in cache.glob(f"*{LATENT_SUFFIX}")
-        if (m := LATENT_RE.match(p.name))
-    }
+    latents = {stem for stem, *_ in latent_files(cache)}
     return CacheCounts(len(text), len(latents), len(text & latents))

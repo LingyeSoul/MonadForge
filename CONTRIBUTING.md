@@ -20,13 +20,13 @@ Five areas where outside contributions would have the biggest impact right now. 
 
 Per-block cond LoRA on self-attn + FFN with a logit-bias gate. DiT frozen; trains a handful of cond LoRA blocks plus a scalar gate. The architecture is naturally contribution-friendly: each control type is one independent adapter, no method changes required. See [`docs/experimental/easycontrol.md`](docs/experimental/easycontrol.md). The wall right now is the **adapter zoo** around it.
 
-**There is already one shipped control task to copy: colorize** (`easycontrol_adapters/colorization/`). It's the worked template for everything below — a per-task project that builds its own *condition* (mangafied B&W → color) while reusing the shipped network unchanged. A new control type follows the same mold rather than inventing structure:
+**There is already one shipped control task to copy: colorize** (`i2i_tasks/colorization/`). It's the worked template for everything below — a per-task project that builds its own *condition* (mangafied B&W → color) while reusing the shipped network unchanged. A new control type follows the same mold rather than inventing structure:
 
-- a **project dir** under `easycontrol_adapters/<task>/` (the condition builder + `prep.py` + a README), exactly like `easycontrol_adapters/colorization/`;
-- a **method config** `configs/methods/<task>.toml` (+ a `configs/gui-methods/<task>.toml` GUI variant), selected at runtime by the **`EASYADAPTER=<task>`** env var — *not* a `make easycontrol-<task>` target. The existing `make easycontrol[-preprocess] EASYADAPTER=<task>` and `make test-easycontrol EASYADAPTER=<task>` targets already dispatch on it;
+- a **project dir** under `i2i_tasks/<task>/` (the condition builder + `prep.py` + a README), exactly like `i2i_tasks/colorization/`;
+- a **method config** `configs/methods/<task>.toml` (+ a `configs/gui-methods/<task>.toml` WebUI variant), selected at runtime by the **`EASYADAPTER=<task>`** env var — *not* a `make easycontrol-<task>` target. The existing `make easycontrol[-preprocess] EASYADAPTER=<task>` and `make test-easycontrol EASYADAPTER=<task>` targets already dispatch on it;
 - a **dataset blueprint** `configs/datasets/<task>.toml` wiring the `cond_cache_dir` (and `text_cache_dir` if the task reshapes the text channel, as colorize does).
 
-Read colorize's [README](easycontrol_adapters/colorization/README.md) before starting a new one — its caption policy, cond-noise, and inference-settings notes generalize. Concretely, the zoo still needs:
+Read colorize's [README](i2i_tasks/colorization/README.md) before starting a new one — its caption policy, cond-noise, and inference-settings notes generalize. Concretely, the zoo still needs:
 
 - **Trained adapters** — canny, depth, pose, lineart, scribble, segmentation, … each one a self-contained PR in colorize's shape (project dir + `configs/methods/<task>.toml` + model card + samples). Hosted under a HuggingFace collection (planned: `anima-easycontrol`). *[Tier 1.5 — bench numbers and side-by-side samples carry the PR; no new method code]*
 - **Per-task dataset spec** — one doc per control type covering pair format, recommended size (~2k pairs), where to source signal images. colorize's README is the only one written so far. *[Tier 1]*
@@ -65,44 +65,42 @@ A second-order bench-gap contribution worth calling out:
 
 ### 4. Translations & localization
 
-Translatable content lives in four places, each with its own contribution shape but all reviewed as Tier 1 (no bench, no test — `make gui` walkthrough screenshots in the PR description are the proof). Missing entries in every surface below **fall back to English**, so it's fine to ship an incomplete translation and grow it over time. Currently shipped: `en` (canonical), `ko` (mostly complete), `cn` (machine-translated stub, unproofread).
+Translatable content lives in four places, each with its own contribution shape but all reviewed as Tier 1 (no bench, no test — `python -m webui` walkthrough screenshots in the PR description are the proof). Missing entries in every surface below **fall back to English**, so it's fine to ship an incomplete translation and grow it over time. Currently shipped: `en` (canonical), `ko` (mostly complete), `cn` (machine-translated stub, unproofread).
 
-**(a) GUI strings — `gui/i18n/<code>.py`.** One module per language, each exporting `STRINGS: dict[str, str]`. `gui/i18n/__init__.py` assembles these into `TRANSLATIONS` and `t(key, **kwargs)` resolves keys against the current language. To **add a new language**, drop in `gui/i18n/<code>.py` mirroring `en.py`'s key set, register it in `TRANSLATIONS`, and add a friendly label to `LANG_NAMES` in `gui/app.py` (e.g. `"ja": "日本語"`). Every key you do include must use the same `{placeholder}` names as the English source — `t()` calls `.format(**kwargs)` and will raise at runtime on a typo. *[Tier 1]*
+**(a) Backend strings — `webui/i18n/strings/<code>.py`.** The FastAPI side's
+public strings (task errors, validation messages, tray-facing text) live here.
+Each module exports `STRINGS: dict[str, str]`; `webui/i18n/loader.py` assembles
+them. Add a language by dropping in a module and registering it in the loader.
 
-**(b) Per-field tooltips — `gui/explanations/__init__.py`.** Two dict-of-dicts power the form-field help: `FIELD_HELP` (config-form tooltips, ~50 keys) and `PREPROCESS_FIELD_HELP` (Preprocessing tab knobs, ~10 keys). Each entry is `{"en": "...", "ko": "..."}`. Add your language code as a sibling key in every entry you want translated. `field_help()` / `preprocess_field_help()` fall back to `"en"` for missing language keys. These are the strings users see when they click a form-row label, so translation quality matters more than for transient buttons — keep technical terms (LoRA, MoE, σ-bucket, VAE) untranslated. *[Tier 1]*
+**(b) Frontend strings — `webui/frontend/src/i18n/<code>.ts`.** The Vue app's
+labels and help text live here; register the language in
+`webui/frontend/src/i18n/index.ts` and the app store's language list. Keep the
+same key set as `en.ts` so a missing key falls back cleanly.
 
-**(c) Long-form method guides — `gui/explanations/guides/<name>.<lang>.html`.** Right-panel HTML blocks for method variants and the Preprocessing tab. Filename convention is `<name>.<lang>.html`; the loader (`_read_guide` in `gui/explanations/__init__.py`) auto-falls back to `.en.html` when the language version is absent. Names currently present: `lora`, `tlora`, `hydralora`, `preprocess`, plus the shared snippets `_apply_note` and `_not_mergeable`. To translate, drop in `<name>.<code>.html` files alongside the English ones — no code change required. Preserve any `<a href="…">`, `<code>`, and color-coded `<span>` markup; the GUI's QTextBrowser renders these. *[Tier 1]*
+**(c) Field help and guides — `webui/explanations/guides/<lang>/`.** Per-field
+JSON (`_fields.json`, `_preprocess_fields.json`, `_stage_fields.json`) and the
+long-form HTML guides. The loader in `webui/explanations/__init__.py` falls back
+to English. Preserve the `<a>`, `<code>`, and `<span>` markup.
 
 **(d) Docs and structure images — `docs/`.**
-- `docs/guidelines/가이드북.md` is the end-to-end onboarding doc and only exists in Korean. An English translation (or any other language) would significantly widen the audience. The `guidebook_tooltip` string in `gui/i18n/en.py` currently points users at the Korean file — once a translation lands, wire the Guidebook button (in `gui/app.py`) to pick the right file based on `current_language()`.
+- `docs/guidelines/가이드북.md` is the end-to-end onboarding doc and only exists in Korean. An English translation (or any other language) would significantly widen the audience. The `guidebook_tooltip` string in `webui/i18n/strings/en.py` currently points users at the Korean file — once a translation lands, wire the Guidebook button (in `webui/server.py`) to pick the right file based on `current_language()`.
 - `docs/structure_images_korean/` holds Korean-labeled versions of the architecture diagrams under `docs/structure_images/` (e.g. `animakor.png` ↔ `anima.png`). English/other-language equivalents are welcome under the natural sibling tree (`docs/structure_images/` is the English baseline; e.g. the existing `docs/structure_images_korean/`). Mention which markdown files reference the diagram so the reviewer can update the embed paths.
-- Method docs under `docs/methods/`, `docs/experimental/`, `docs/proposal/`, and `docs/optimizations/` are **English-only by convention** — translations are welcome as `<name>.<code>.md` siblings, but nothing reads them at runtime yet. If you contribute one, also propose how it should surface (e.g. a language switcher in the README's docs table, or wiring it into a GUI "Open method doc" button). Don't translate `CLAUDE.md` — that file is consumed by Claude Code and is single-source-of-truth for project conventions.
+- Method docs under `docs/methods/`, `docs/experimental/`, `docs/proposal/`, and `docs/optimizations/` are **English-only by convention** — translations are welcome as `<name>.<code>.md` siblings, but nothing reads them at runtime yet. If you contribute one, also propose how it should surface (e.g. a language switcher in the README's docs table, or wiring it into a WebUI "Open method doc" button). Don't translate `CLAUDE.md` — that file is consumed by Claude Code and is single-source-of-truth for project conventions.
 
 **(e) Tag knowledge-base descriptions — `models/danbooru_tags_classified.csv` (KR) + `.en.csv` (EN).** The anime_tools panel's tag-explanation view (a KB tooltip with a tag's category and a written description) is powered by these CSVs (`name,category,post_count,description`; loaded by `anime_tools.captions.correction.load_tag_knowledge_base`). The base CSV's `description` column is **Korean** (from `Localsmile/danbooru_KR_wiki_tag_search`); `download-danbooru-tags` also builds an **English** sibling `danbooru_tags_classified.en.csv` (`anime_tools.tagger.cli.build_english_tag_csv`, joining tag names against the `isek-ai/danbooru-wiki-2024` wiki mirror). `find_tag_csv(root, lang)` resolves per UI language: `ko` → Korean base; any other language → same-language sibling `danbooru_tags_classified.<code>.csv` if present, else the English `.en.csv`. To add a fully-translated language, ship `danbooru_tags_classified.<code>.csv` and it's picked up automatically. ~114k rows, so partial coverage is fine — untranslated rows fall back to the name+category head with no description line. *[Tier 1]*
 
-**Parity check (covers all per-language surfaces):**
+**Parity check (covers both UI surfaces):**
+
 ```bash
-python -c "
-from gui.i18n import TRANSLATIONS as T
-from gui.explanations import FIELD_HELP, PREPROCESS_FIELD_HELP
-en_keys = set(T['en'])
-for lang in T:
-    if lang == 'en': continue
-    missing = sorted(en_keys - set(T[lang]))
-    print(f'{lang} i18n missing  ({len(missing)}):', missing[:5], '…' if len(missing) > 5 else '')
-for name, d in (('FIELD_HELP', FIELD_HELP), ('PREPROCESS_FIELD_HELP', PREPROCESS_FIELD_HELP)):
-    en_entries = {k for k, v in d.items() if 'en' in v}
-    for lang in ('ko', 'cn'):
-        missing = sorted(k for k in en_entries if lang not in d[k])
-        print(f'{lang} {name:24s} missing ({len(missing)}):', missing[:5], '…' if len(missing) > 5 else '')
-"
+cd webui/frontend && npm test && npm run build
+pytest tests/test_webui_config_ui.py tests/test_webui_config_persistence.py
 ```
 
-If a translated string is too long for its widget, mention it in the PR — the fix is usually a layout tweak in the relevant `gui/tabs/*.py`, not a shorter translation.
+If a translated string is too long for its widget, mention it in the PR — the fix is usually a layout tweak in the relevant `webui/frontend/src/views/*.vue`, not a shorter translation.
 
 ## Tier 1 — bug fixes, typos, UI, arg/CLI tweaks
 
-Lightweight contributions. Examples: fixing a regex in a LoRA target list, a typo in a docstring, a confused error message, a GUI label, a missing CLI flag, a `tasks.py` argument-forwarding bug.
+Lightweight contributions. Examples: fixing a regex in a LoRA target list, a typo in a docstring, a confused error message, a WebUI label, a missing CLI flag, a `tasks.py` argument-forwarding bug.
 
 **Requirements:**
 - Existing tests pass:
@@ -110,7 +108,7 @@ Lightweight contributions. Examples: fixing a regex in a LoRA target list, a typ
   make test-unit
   ```
 - The change is minimal and scoped. No drive-by refactors, no new abstractions, no "while I'm here" reformatting in unrelated files.
-- For GUI changes, actually launch the GUI (`make gui`) and exercise the affected tab before claiming the PR is done. Type-checking is not a substitute for clicking the button.
+- For WebUI changes, launch `python -m webui` and exercise the affected page before claiming the PR is done. Type-checking is not a substitute for clicking the button.
 - For training-path changes, smoke-test one short run end-to-end (`PRESET=low_vram make lora` truncated to a few steps is fine) and paste the tail of the log into the PR description.
 
 That's it. Open the PR.

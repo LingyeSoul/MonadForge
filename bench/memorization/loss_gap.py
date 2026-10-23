@@ -80,25 +80,23 @@ from pathlib import Path
 import numpy as np
 import torch
 
-import sys
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
-
-from bench._anima import build_anima  # noqa: E402
-from bench._common import make_run_dir, write_result  # noqa: E402
-from bench.memorization.probe import _Acc, build_training_args  # noqa: E402
-from library.anima import strategy as strategy_anima  # noqa: E402
-from library.anima.strategy import AnimaLatentsCachingStrategy  # noqa: E402
-from library.anima.uncond import (  # noqa: E402
+from bench._anima import build_anima
+from bench._common import make_run_dir, write_result
+from bench.memorization.probe import _Acc, build_training_args
+from library.anima import strategy as strategy_anima
+from library.anima.strategy import AnimaLatentsCachingStrategy
+from library.anima.uncond import (
     default_uncond_path,
     load_uncond_crossattn,
 )
-from library.runtime.device import clean_memory_on_device, str_to_dtype  # noqa: E402
-from library.training.validation import (  # noqa: E402
+from library.runtime.device import clean_memory_on_device, str_to_dtype
+from library.training.validation import (
     _build_val_crossattn_emb,
     _load_safetensors,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_SIGMAS = [0.3, 0.5, 0.7, 0.9]
 _SNAPSHOT_KNOBS = (
@@ -151,8 +149,8 @@ def build_items(
     artists_shard expansion + path_pattern subset filter) replayed so the item
     set is exactly what a run with those knobs trains on. ``include_val`` folds
     the validation split back in (for the full non-member pool)."""
-    from library.config import loader as config_util  # noqa: PLC0415
-    from library.config.io import load_dataset_config_from_base  # noqa: PLC0415
+    from library.config import loader as config_util
+    from library.config.io import load_dataset_config_from_base
 
     lat_strategy = AnimaLatentsCachingStrategy(True, 1, True)
 
@@ -183,8 +181,8 @@ def build_items(
             for sub in ds.get("subsets", []):
                 sub["path_pattern"] = path_pattern
     if artists_shard:
-        from library.datasets.artist_shard import apply_artist_shard  # noqa: PLC0415
-        from library.env import resolve_under_home  # noqa: PLC0415
+        from library.datasets.artist_shard import apply_artist_shard
+        from library.env import resolve_under_home
 
         apply_artist_shard(user_config, artists_shard, resolve=resolve_under_home)
 
@@ -465,7 +463,7 @@ def main() -> None:
     if run_pp in ("*", ""):
         run_pp = None  # matches everything — same as unset
 
-    from library.runtime.accelerator import prepare_accelerator  # noqa: PLC0415
+    from library.runtime.accelerator import prepare_accelerator
 
     acc = prepare_accelerator(targs)
     shim = _Acc(acc.device, dtype)
@@ -738,7 +736,7 @@ def _write_hist(path: Path, d_mem, d_same, d_cross) -> None:
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"  (histogram skipped: {e})", flush=True)
         return
     fig, ax = plt.subplots(figsize=(6, 4))

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """plan_render S1 — trainer prep for the bubble-fill EasyControl task.
 
-A thin sibling of ``easycontrol_adapters/inpainting/prep.py`` over the tree
+A thin sibling of ``i2i_tasks/inpainting/prep.py`` over the tree
 ``cut.py`` wrote (``post_image_dataset/render/<ed>/``). Three idempotent
 stages::
 
@@ -45,7 +45,7 @@ from PIL import Image
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]
 sys.path.insert(0, str(REPO))
-INPAINT = REPO / "easycontrol_adapters" / "inpainting"
+INPAINT = REPO / "i2i_tasks" / "inpainting"
 sys.path.insert(0, str(INPAINT))  # mask_image, the inpaint prep's sibling import
 
 

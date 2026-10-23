@@ -35,30 +35,29 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
-import sys
 from pathlib import Path
 from random import Random
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-import torch  # noqa: E402
-from PIL import Image  # noqa: E402
+import torch
+from PIL import Image
 
-from anima_lora import default_checkpoints, load_vae  # noqa: E402
-from bench._common import make_run_dir, write_result  # noqa: E402
-from bench.memorization.eyeball import _caption_for, _pick  # noqa: E402
-from bench.memorization.generalize import (  # noqa: E402
+from anima_lora import default_checkpoints, load_vae
+from bench._common import make_run_dir, write_result
+from bench.memorization.eyeball import _caption_for, _pick
+from bench.memorization.generalize import (
     Prompt,
     _pil_to_minus1to1,
     encode_pool,
     render_model,
 )
-from library.env import resolve_under_home  # noqa: E402
-from library.inference.output import decode_latent  # noqa: E402
-from library.runtime.device import clean_memory_on_device  # noqa: E402
-from library.training.cmmd import cmmd_from_pools  # noqa: E402
-from library.vision.encoder import load_pe_encoder  # noqa: E402
+from library.env import resolve_under_home
+from library.inference.output import decode_latent
+from library.runtime.device import clean_memory_on_device
+from library.training.cmmd import cmmd_from_pools
+from library.vision.encoder import load_pe_encoder
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 TILE_W = 384

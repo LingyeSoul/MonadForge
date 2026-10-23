@@ -18,8 +18,8 @@ subset in `easycontrol.toml` in sync with it until gui-methods is migrated.
 
 | File | Producer | Points at |
 |---|---|---|
-| `near_twins.toml` | `python -m easycontrol_adapters.tools.near_twin` | the materialized `_tags`/`_no_tags` near-twin pair tree under `post_image_dataset/easycontrol/near_twins/staging/` (VAE/TE caches land beside it under `near_twins/cache/`) |
-| `subject.toml` | `python -m easycontrol_adapters.tools.subject_pairs` | cross-image same-character pairs (directedit_ec Phase 2): `subject/staging/` target symlinks + `pairs.json` + `subject/cond/`; **no encode pass** — target latents/TE reused from the shared LoRA cache (`cache_dir = post_image_dataset/lora`), staging + preprocess are both CPU-only symlink steps |
+| `near_twins.toml` | `python -m i2i_tasks.tools.near_twin` | the materialized `_tags`/`_no_tags` near-twin pair tree under `post_image_dataset/i2i/near_twins/staging/` (VAE/TE caches land beside it under `near_twins/cache/`) |
+| `subject.toml` | `python -m i2i_tasks.tools.subject_pairs` | cross-image same-character pairs (directedit_ec Phase 2): `subject/staging/` target symlinks + `pairs.json` + `subject/cond/`; **no encode pass** — target latents/TE reused from the shared LoRA cache (`cache_dir = post_image_dataset/lora`), staging + preprocess are both CPU-only symlink steps |
 
 `near_twins.toml` carries three hand-edited tables above the generated
 blueprint: `[staging]` (mining run knobs, read by the miner — legacy name
@@ -32,7 +32,7 @@ verbatim; only the blueprint tail (below the sentinel) is rewritten.
 Train on the mined tree with:
 
 ```bash
-make easycontrol-staging    EASYADAPTER=near_twin   # mine pair tree
+make i2i-stage TASK=near_twin   # mine pair tree
 make easycontrol-preprocess EASYADAPTER=near_twin   # VAE/TE caches
 make easycontrol            EASYADAPTER=near_twin   # train (easycontrol method
                                                     #   + near_twins blueprint
@@ -42,7 +42,7 @@ make easycontrol            EASYADAPTER=near_twin   # train (easycontrol method
 The training run uses the shipped `configs/easycontrol/easycontrol.toml` method.
 train.py's dataset-config validator only accepts `[general]`/`[[datasets]]`, so
 the train step first extracts the blueprint into a generated sidecar
-(`post_image_dataset/easycontrol/near_twins/dataset_config.toml`, regenerated
+(`post_image_dataset/i2i/near_twins/dataset_config.toml`, regenerated
 each run) and points `--dataset_config` there; keys in `[training]` override the
 method defaults (CLI wins the merge chain).
 
@@ -65,7 +65,7 @@ rebuilt from scratch on every preprocess run.
 
 These start as **seed / eval** pair sets: each accepted pair is a `{id}_tags` /
 `{id}_no_tags` couple (the `_tags` side holds the discriminator attribute). See
-`easycontrol_adapters/tools/near_twins/README.md`.
+`i2i_tasks/tools/near_twins/README.md`.
 
 Source images stay user-facing; VAE/TE/PE caches land under
 `post_image_dataset/` via the subset `cache_dir` (the IP-Adapter / EasyControl

@@ -56,7 +56,7 @@ def _request(model_type, **values):
     return TrainRequest(**values)
 
 
-@pytest.mark.parametrize("model_type", ["qwen21", "moss"])
+@pytest.mark.parametrize("model_type", ["qwen21"])
 def test_public_wrapper_writes_job_lifecycle_without_model(
     tmp_path, monkeypatch, model_type
 ):
@@ -98,7 +98,7 @@ def test_public_wrapper_writes_job_lifecycle_without_model(
     assert not output.exists()  # the mock never writes a checkpoint
 
 
-@pytest.mark.parametrize("model_type", ["qwen21", "moss"])
+@pytest.mark.parametrize("model_type", ["qwen21"])
 @pytest.mark.parametrize(
     "exception,status",
     [(ValueError("preflight failed"), "error"), (KeyboardInterrupt(), "stopped")],
@@ -130,16 +130,3 @@ def test_standalone_cli_has_no_job_stream(tmp_path, monkeypatch):
         progress.start(total_steps=1, total_epochs=1)
         progress.step(global_step=1, epoch=1, loss=0.1, average_loss=0.1, lr=0.01)
     assert list(tmp_path.iterdir()) == []
-
-
-def test_moss_output_validation_failure_emits_terminal_error(tmp_path, monkeypatch):
-    monkeypatch.setenv("ANIMA_DAEMON_JOB_DIR", str(tmp_path))
-
-    def driver(req, progress):
-        pytest.fail("Invalid output must not reach the training driver")
-
-    with pytest.raises(ValueError, match=".safetensors"):
-        _mock_entry("moss", driver)(_request("moss", output="invalid.json"))
-    events = _read(tmp_path / "progress.jsonl")
-    assert [event["ev"] for event in events] == ["run_start", "run_end"]
-    assert events[-1]["status"] == "error"

@@ -4,9 +4,9 @@
 #
 # Keys are TrainRequest field names (library/moss/requests.py, `--help` lists
 # them); CLI flags win over this file, and a key left out keeps the field
-# default. Values below are the shipped defaults.
+# default. Values below are the shipped defaults. User doc: docs/moss/README.md.
 
-cache = "output/moss/cache"
+cache = "post_image_dataset/moss"
 output = "output/ckpt_moss/moss_lora.safetensors"
 model = "base"                 # base | sft
 epochs = 8
@@ -18,9 +18,16 @@ rank = 32
 # alpha = 128.0                # unset: 128 for lora, = rank for lokr / loha
 # factor = -1                  # lokr only
 down_init = "weight_svd"       # lora only: weight_svd | kaiming
-lr = 2e-5
+# svd_slice = 0                # weight_svd only: window [k·r, (k+1)·r) of W0's basis
+# svd_slice_count = 0          # > 0: interleaved slices {k, k+N, …}
+channel_scaling_alpha = 0.5     # lora only: 0 = off (docs/moss/channel_scaling.md)
+dc_isolate = true               # lora only: one rank row for the input DC (same doc)
+lr = 5e-5
 warmup_ratio = 0.05
+grad_accum = 1                 # samples per optimizer update; warmup counts updates
 caption_dropout = 0.0
+plain_caption_rate = 0.2       # layout_json cache: share of steps on the plain Anima caption
+caption_variant_rate = 0.0     # cache with embeds_v{k} (colorize probe): x (1 - plain_caption_rate) of steps
 lora_dtype = "bf16"            # bf16 | fp16 | fp32
 
 # Memory / speed (16 GB card). scripts/moss/tune_swap.py measures this machine's pair.
@@ -28,6 +35,15 @@ blocks_to_swap = 12
 activation_memory_budget = 0.1
 compile = true
 grad_checkpointing = false
+
+# Reference latents (a cache with *.moss_ref files; i2i probe). Stamped in the LoRA.
+ref_timestep = 0.0             # reference tokens' modulation timestep; < 0 = the image's
+ref_isolate = false            # reference tokens attend only to themselves
+
+# Relational REPA (parked: no gain over channel scaling, 2026-10-20).
+repa_weight = 0.0              # 0 = off
+# repa_layer = 11
+# repa_pe_root = "post_image_dataset/lora"
 
 # Noise sampling (report App. A.2).
 # sigma_mu = -1.09

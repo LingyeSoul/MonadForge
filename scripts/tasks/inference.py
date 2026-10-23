@@ -283,7 +283,7 @@ def cmd_test_easycontrol(extra):
         },
         # region: ref is a white canvas + paint blob marking where the character
         # goes; the prompt owns identity/scene. Staged conds under
-        # post_image_dataset/easycontrol/region/cond_images/ make ready refs.
+        # post_image_dataset/i2i/region/cond_images/ make ready refs.
         "region": {
             "weight": "anima_easycontrol_region",
             "out": "region",

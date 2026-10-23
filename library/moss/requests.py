@@ -1,4 +1,4 @@
-"""Typed requests for the MOSS-Image jobs — caching, generation, LoRA training.
+"""Typed requests for the MOSS-Image jobs: caching, generation, LoRA training.
 
 Torch-free on purpose (a GUI form can be built from these without importing
 torch). Each field carries its CLI help in ``metadata``, so the sidecar CLIs
@@ -34,6 +34,20 @@ MODEL_DIR_ENV = "ANIMA_MOSS_MODEL_DIR"
 VARIANTS = tuple(VARIANT_DIRS)
 # LoRA alpha when the request leaves it unset (lokr / loha fall back to rank).
 LORA_ALPHA = 128.0
+# The reference sampler's defaults (``MOSSImagePipeline.__call__``).
+DEFAULT_STEPS = 50
+DEFAULT_CFG = 3.0
+DEFAULT_UNCOND_SKIP = (22,)
+DEFAULT_SHIFT = 5.0
+# Qwen3.5-9B weights for the text pass (``library/moss/loader.py::TE_PRECISIONS``).
+DEFAULT_TEXT_ENCODER = "int8"
+TEXT_ENCODERS = ("int8", "fp8", "bf16")
+_TE_HELP = (
+    "int8 (default; INT8 W8A8 decoder linears, ~9.2 GB, fetched on first use), fp8 "
+    "(float8_e4m3fn weight-only, ~9.2 GB, fetched on first use) or bf16 (the reference "
+    "shards). Both quantized files embed ~0.10 rel. L2 from bf16; int8 encodes ~1.7x "
+    "faster than fp8"
+)
 
 
 def default_model_dir() -> Path:
@@ -65,21 +79,34 @@ class CacheRequest(Request):
     src: str = _f(
         "post_image_dataset/resized",
         "folder of images + .txt captions, subfolders included (default: the "
-        "Anima resized tree, whose captions are the revised ones)",
+        "Anima resized tree, whose captions are the revised ones; a caption there "
+        "with no resized image uses its image_dataset/ original)",
     )
-    out: str = _f("output/moss/cache", "cache folder (two files per image, flat)")
+    out: str = _f("post_image_dataset/moss", "cache folder (two files per image, flat)")
+    pairs: str = _f(
+        "",
+        "i2i pair list instead of src: an i2i_tasks staging tree's pairs.jsonl "
+        "(rows stem / target / cond / caption, paths relative to the file). Each "
+        "target is cached as usual and its cond as {stem}.moss_ref",
+        advanced=True,
+    )
+    ref_scale: int = _f(
+        1,
+        "with pairs: the reference latent's sides are the target's divided by "
+        "this, rounded to multiples of 16 (1 = full size)",
+        advanced=True,
+    )
     resolution: int = _f(
         1024,
-        "pixel-area cap as a square edge — 1024 means at most ~1024^2 pixels at "
+        "pixel-area cap as a square edge: 1024 means at most ~1024^2 pixels at "
         "the image's own aspect, both sides multiples of 16; never upscaled",
     )
     caption_format: str = _f(
         "layout_json",
         "what the TE encodes: the Anima caption mapped onto MOSS's layout-JSON "
         "prompt (anime_tools.captions.layout_json; needs the danbooru tag CSV), or "
-        "the .txt verbatim. Less leakage of the set's attributes onto other "
-        "characters than plain tags (project/moss_lora/lora.md, 2026-10-17); "
-        "generate with the same form",
+        "the .txt verbatim. layout_json leaks the set's attributes onto other "
+        "characters less than plain tags; generate with the same form",
         choices=("text", "layout_json"),
     )
     overwrite: bool = _f(False, "re-encode even when the cache is current")
@@ -93,6 +120,75 @@ class CacheRequest(Request):
     )
     max_text_tokens: int = _f(
         4096, "TE truncation length (the model's own limit)", advanced=True
+    )
+    text_encoder: str = _f(
+        DEFAULT_TEXT_ENCODER,
+        f"Qwen3.5-9B weights for the text pass: {_TE_HELP}. Switching re-encodes the TE cache",
+        choices=TEXT_ENCODERS,
+        advanced=True,
+    )
+    model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
+
+
+@dataclass
+class ColorizeCacheRequest(Request):
+    """Build the colorize cache: the B&W page enters through the TE's vision tower
+    and as a VAE reference, the colour original is the target."""
+
+    SCRIPT: ClassVar[str] = "scripts/moss/colorize_cache.py"
+
+    out: str = _f(
+        "post_image_dataset/moss/i2i_colorize",
+        "cache folder (flat; held-out pairs in <out>/holdout/ with holdout.json)",
+    )
+    n: int = _f(1667, "illustration pairs to train on (staging page + resized target)")
+    manga: int = _f(1667, "manga_color pages to add (0 = illustrations only)")
+    holdout: int = _f(8, "illustration pairs held out for the eval")
+    manga_holdout: int = _f(
+        4, "manga works held out, one page each; no edition of them trains"
+    )
+    resolution: int = _f(
+        1024,
+        "pixel-area cap as a square edge (native aspect, multiples of 16, never "
+        "upscaled)",
+    )
+    ref_scale: int = _f(
+        2,
+        "the reference latent's sides are the target's divided by this, rounded to "
+        "multiples of 16 (generate with the same value)",
+    )
+    variants: int = _f(
+        4,
+        "sparse captions + 1: embeds_v1 … embeds_v{variants-1} hold tag-dropped "
+        "colour captions (at least 2)",
+    )
+    tag_dropout: float = _f(0.8, "share of the colour caption's tags a sparse caption drops")
+    seed: int = _f(0, "RNG seed of the pair draw, holdout and sparse captions")
+    staging: str = _f(
+        "post_image_dataset/i2i/colorize/staging",
+        "the mangafied pages (make i2i-stage TASK=colorize); each pairs with the same "
+        "path under resized",
+        advanced=True,
+    )
+    resized: str = _f(
+        "post_image_dataset/resized",
+        "colour targets with their .txt captions",
+        advanced=True,
+    )
+    manga_dir: str = _f(
+        "post_image_dataset/i2i/colorize/manga_color",
+        "manga pages as {staging,resized}/<lang>/{anchor}_{lang}_{page}.png",
+        advanced=True,
+    )
+    text_encoder: str = _f(
+        "fp8",
+        f"Qwen3.5-9B weights for every encode, with the vision tower in bf16: {_TE_HELP}. "
+        "The shipped colorize recipe is fp8; generate with the same",
+        choices=TEXT_ENCODERS,
+        advanced=True,
+    )
+    te_file: str = _f(
+        "", "quantized TE file instead of the catalog's (fp8 / int8 only)", advanced=True
     )
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
 
@@ -127,8 +223,10 @@ class GenerateRequest(Request):
     lora_multiplier: float = _f(1.0, "LoRA strength; 0.0 is the base model exactly")
     width: int = _f(1024, "multiple of 16")
     height: int = _f(1024, "multiple of 16")
-    steps: int = _f(50, "denoising steps (the snapped grid can return fewer)")
-    cfg: float = _f(3.0, "CFG scale; 1.0 = no uncond forward")
+    steps: int = _f(
+        DEFAULT_STEPS, "denoising steps (the snapped grid can return fewer)"
+    )
+    cfg: float = _f(DEFAULT_CFG, "CFG scale; 1.0 = no uncond forward")
     sampler: str = _f(
         "er_sde",
         "er_sde = ER-SDE-Solver-3 on the same σ grid, noise seeded by the prompt's "
@@ -136,7 +234,7 @@ class GenerateRequest(Request):
         choices=("euler", "er_sde"),
     )
     uncond_skip: str = _f(
-        "22",
+        ",".join(map(str, DEFAULT_UNCOND_SKIP)),
         "comma-separated DiT blocks the uncond branch skips ('' = plain CFG); "
         "the pipeline default replaces the negative with a block-22-skipped "
         "prediction, still two forwards per step",
@@ -144,7 +242,25 @@ class GenerateRequest(Request):
     seed: int = _f(
         42, "seed of the first prompt (+1 per prompt); fp32 noise from a CPU generator"
     )
-    out_dir: str = _f("output/moss/test", "images + manifest.json land here")
+    out_dir: str = _f("output/tests", "images + manifest.json land here")
+    ref_image: str = _f(
+        "",
+        "i2i reference: an image, or a folder of images (one job per image and "
+        "prompt). The output keeps its aspect, area capped at width x height; the "
+        "LoRA's stamped ref_timestep / ref_isolate apply",
+    )
+    ref_scale: int = _f(
+        1,
+        "with ref_image: the reference latent's sides are the output's divided by "
+        "this, multiples of 16. Match the cache the LoRA trained on (sanitize 1, "
+        "colorize 2)",
+    )
+    ref_vision: bool = _f(
+        False,
+        "with ref_image: the reference also enters the TE through its vision tower, "
+        "ahead of the prompt, as a colorize cache encodes the page. An empty prompt "
+        "is then the page alone",
+    )
     prompts_file: str = _f("", "one prompt per line; overrides prompt", advanced=True)
     example: str = _f(
         "",
@@ -154,23 +270,25 @@ class GenerateRequest(Request):
     )
     batched: bool = _f(
         False,
-        "cond + uncond in one masked forward instead of two. Measured ~25%% "
-        "slower at 1024² (the key mask takes SDPA off flash) and not bit-exact "
-        "with the reference",
+        "cond + uncond in one masked forward instead of two: ~25%% slower at "
+        "1024² (the key mask takes SDPA off flash) and matches the reference only "
+        "within bf16 noise",
         advanced=True,
     )
-    shift: float = _f(5.0, "scheduler shift (pipeline default)", advanced=True)
+    shift: float = _f(
+        DEFAULT_SHIFT, "scheduler shift (pipeline default)", advanced=True
+    )
     decode_only: bool = _f(
         False,
-        "decode every latent already in <out_dir>/latents/ to PNG and exit — no "
-        "text encoder, no DiT",
+        "decode every latent already in <out_dir>/latents/ to PNG and exit (no "
+        "text encoder, no DiT)",
         advanced=True,
     )
     compile: bool = _f(
         True,
         "torch.compile each block with dynamic shapes, after the LoRA is applied: "
         "1.37x at 1024² with or without Spectrum, a few seconds of compile once per "
-        "job (2026-10-17). --no-compile for eager",
+        "job. --no-compile for eager",
         advanced=True,
     )
     spectrum: bool = _f(
@@ -184,7 +302,7 @@ class GenerateRequest(Request):
     spectrum_flex_window: float = _f(
         0.5,
         "growth of N after each full forward: 0.25 / 0.5 / 1.0 = 22 / 19 / 16 full "
-        "forwards of 50 steps (bench/moss_spectrum)",
+        "forwards of 50 steps",
         advanced=True,
     )
     spectrum_warmup: int = _f(6, "leading steps that always run full", advanced=True)
@@ -196,19 +314,37 @@ class GenerateRequest(Request):
     )
     spectrum_m: int = _f(3, "Chebyshev degree", advanced=True)
     spectrum_lam: float = _f(0.1, "ridge regularisation", advanced=True)
+    dave: str = _f(
+        "",
+        "DAVE same-prompt diversity: attenuate the image tokens' per-channel mean on "
+        "a block pool during the first steps. '' = off, 'auto' = the shipped MOSS "
+        "mask, 'lo-hi' = blocks lo..hi, or a dave_alpha.npz path (library/moss/dave.py)",
+    )
+    dave_strength: float = _f(
+        0.3, "fraction of the mean removed on a pooled block (0 = off, 1 = all)"
+    )
+    dave_tau: float = _f(
+        0.10, "attenuate the first tau of the steps (at least one)", advanced=True
+    )
+    text_encoder: str = _f(
+        DEFAULT_TEXT_ENCODER,
+        f"Qwen3.5-9B weights for the prompts: {_TE_HELP}",
+        choices=TEXT_ENCODERS,
+        advanced=True,
+    )
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
 
 
 @dataclass
 class TrainRequest(Request):
-    """Train a LoRA on a precached folder — flow matching."""
+    """Train a LoRA on a precached folder with flow matching."""
 
     SCRIPT: ClassVar[str] = "scripts/moss/train.py"
     # The block's six bias-free linears, as a fullmatch over qualified names.
     TARGETS: ClassVar[str] = r"layers\.\d+\.proj\.(q|k|v|o|ffn_up_gate|ffn_down)"
 
     cache: str = _f(
-        "output/moss/cache", "cache folder written by scripts/moss/cache.py"
+        "post_image_dataset/moss", "cache folder written by scripts/moss/cache.py"
     )
     output: str = _f(
         "output/ckpt_moss/moss_lora.safetensors",
@@ -238,21 +374,121 @@ class TrainRequest(Request):
     down_init: str = _f(
         "weight_svd",
         "lora only, down-projection init: weight_svd (the base weight's top-r right "
-        "singular vectors / sqrt 3, Anima's SVD-Down; kept the caststation style "
-        "better by eye, 2026-10-17) or kaiming",
+        "singular vectors / sqrt 3, Anima's SVD-Down) or kaiming",
         choices=("kaiming", "weight_svd"),
     )
+    svd_slice: int = _f(
+        0,
+        "lora + weight_svd only: seed down from the base weight's right singular "
+        "vectors [k·r, (k+1)·r) instead of the top-r. Slices of one basis are "
+        "mutually orthogonal, so LoRAs trained on different slices own disjoint "
+        "input subspaces (Anima's svd_slice, docs/methods/svd-down-lora.md); under "
+        "dc_isolate every slice shares row 0, the DC direction. Stamped as "
+        "ss_svd_slice. 0 = the top-r",
+        advanced=True,
+    )
+    svd_slice_count: int = _f(
+        0,
+        "> 0 interleaves the slices: slice k takes singular vectors {k, k+N, "
+        "k+2N, …}, so every slice gets one of the top-N directions instead of "
+        "slice 0 holding the whole top of the spectrum. Needs svd_slice < N. "
+        "0 = contiguous",
+        advanced=True,
+    )
+    channel_scaling_alpha: float = _f(
+        0.5,
+        "lora only (lokr / loha ignore it): Anima's channel scaling. Rescales each "
+        "target's input channel c by mean|x[c]|^alpha inside the down projection, so "
+        "Adam's step no longer favours the few high-magnitude channels (on MOSS: ch 42 "
+        "into ffn_up_gate). Same output, plain LoRA on disk. 0 = off",
+    )
+    channel_stats: str = _f(
+        "library/moss/calibration/channel_stats.safetensors",
+        "per-target mean|x| calibration for channel_scaling_alpha (from "
+        "scripts/calibration/moss_channel_stats.py on Base)",
+        advanced=True,
+    )
+    dc_isolate: bool = _f(
+        True,
+        "lora only: put the calibrated input DC direction (token-mean x̄ per target) "
+        "into one rank row of down and keep the other rows orthogonal to it, so only "
+        "one up column learns the token-independent bias and the rest of the up "
+        "gradient is centered. Same output at init, plain LoRA on disk, composes "
+        "with channel scaling. Pairs with lr 5e-5; at lr 1e-4 it over-fits (text "
+        "artifacts)",
+    )
+    channel_mean: str = _f(
+        "library/moss/calibration/channel_mean.safetensors",
+        "per-target signed token-mean x̄ for dc_isolate (from "
+        "scripts/calibration/moss_channel_stats.py on Base)",
+        advanced=True,
+    )
     lr: float = _f(
-        2e-5,
-        "AdamW learning rate (2e-5 with rank 32 / alpha 128 kept complex prompts' "
-        "details that 1e-4 lost, 2026-10-17)",
+        5e-5,
+        "AdamW learning rate (5e-5 for rank 32 / alpha 128 with channel scaling + "
+        "dc_isolate; 1e-4 over-fits with dc_isolate and suits training without it)",
     )
     warmup_ratio: float = _f(0.05, "linear warmup, as a fraction of all steps")
-    save_every_epochs: int = _f(0, "also save every N epochs (0 = final only)")
+    grad_accum: int = _f(
+        1,
+        "samples per optimizer update (gradient accumulation; samples keep their "
+        "own shapes, so this is the only way past batch 1). Steps, epochs and the "
+        "loss log still count samples; warmup counts updates",
+    )
+    save_every_epochs: int = _f(
+        0,
+        "also save every N epochs into <output dir>/<name>/<name>_eN (0 = final only)",
+    )
     caption_dropout: float = _f(
         0.0,
         "probability of training a step on the empty-prompt embedding (CFG's "
-        "uncond); > 0 encodes it once into <cache>/_empty.moss_te.safetensors",
+        "uncond), read from library/moss/asset/empty_prompt.safetensors",
+    )
+    plain_caption_rate: float = _f(
+        0.2,
+        "probability of training a step on the plain Anima caption instead of its "
+        "layout JSON; only a caption_format=layout_json cache carries the plain one",
+    )
+    caption_variant_rate: float = _f(
+        0.0,
+        "probability of training a step on one of the TE file's tag-dropped "
+        "caption variants (embeds_v1…, drawn uniformly) instead of its full "
+        "caption. Drawn only when the plain caption was not, so on a sample with "
+        "a plain caption the share of variant steps is (1 - plain_caption_rate) "
+        "x this. Only a cache built with variants carries them",
+        advanced=True,
+    )
+    ref_timestep: float = _f(
+        0.0,
+        "timestep (1000·σ) whose block modulation the reference tokens get (a "
+        "cache with *.moss_ref files); 0 = clean, as the reference is. Negative = "
+        "the image's timestep. Stamped in the LoRA metadata",
+        advanced=True,
+    )
+    ref_isolate: bool = _f(
+        False,
+        "the reference tokens attend only to themselves; image and text still "
+        "attend to them. Stamped in the LoRA metadata",
+        advanced=True,
+    )
+    repa_weight: float = _f(
+        0.0,
+        "relational REPA (Anima's DoG-Gram term, docs/methods/repa.md): weight of "
+        "the Gram MSE between block repa_layer's image tokens and the image's "
+        "PE-Spatial patch tokens. 0 = off",
+        advanced=True,
+    )
+    repa_layer: int = _f(
+        11,
+        "block whose output REPA aligns; the gradient reaches the LoRA in blocks <= it",
+        advanced=True,
+    )
+    repa_pe_root: str = _f(
+        "post_image_dataset/lora",
+        "root of the Anima PE-Spatial sidecars "
+        "(<root>/<source dir>/{stem}_anima_pe_spatial.safetensors; "
+        "make preprocess-pe-spatial writes them)",
+        advanced=True,
     )
     lora_dtype: str = _f(
         "bf16",
@@ -280,31 +516,44 @@ class TrainRequest(Request):
     grad_checkpointing: bool = _f(
         False,
         "per-block activation checkpointing. Off by default: the activation "
-        "budget plus block swap below run 1.78 vs 2.09 s/step at ~4.4k joint "
-        "tokens on 16 GB (2026-10-17). Turn it on with --no-compile, or with "
-        "--blocks_to_swap 0 to keep the whole DiT on the card",
+        "budget plus block swap below is faster. Turn it on with --no-compile, or "
+        "with --blocks_to_swap 0 to keep the whole DiT on the card",
     )
     activation_memory_budget: float = _f(
         0.1,
         "cap on the compiled blocks' saved-for-backward set (Inductor's min-cut "
         "partitioner recomputes the rest); applies with --compile and "
-        "--no-grad_checkpointing, ignored otherwise. 0.1 at rank 32: ~1.7 GB free "
-        "and 1.85 s/step on 16 GB at ~4.5k joint tokens (0.15 left ~0.7 GB at rank 16)",
+        "--no-grad_checkpointing, ignored otherwise. 0.1 at rank 32 leaves ~1.7 GB "
+        "free on 16 GB at ~4.5k joint tokens",
         advanced=True,
     )
     blocks_to_swap: int = _f(
         12,
         "DiT blocks to swap to CPU (-1 = size from free VRAM). 12 fits budget "
-        "0.1 at rank 32 and ~4.5k joint tokens on 16 GB with ~1.7 GB to spare (24 "
-        "for more room); more swap costs PCIe time the step cannot hide. scripts/moss/tune_swap.py measures "
-        "this machine's pair",
+        "0.1 at rank 32 on 16 GB (24 for more room); more swap costs PCIe time the "
+        "step cannot hide. scripts/moss/tune_swap.py measures this machine's pair",
+        advanced=True,
+    )
+    fit_report: bool = _f(
+        False,
+        "train the largest sample (longer caption) at step 1 and report its peak "
+        "against free VRAM, with a --blocks_to_swap suggestion; off, epoch 1 is "
+        "shuffled like the rest",
+        advanced=True,
     )
     compile: bool = _f(
         True,
         "torch.compile each block with dynamic shapes (the joint image+text "
         "length changes with every caption): 2.0 vs 3.1 s/step at ~4.5k joint "
-        "tokens and 0.7 GB lower peak, for ~30 s of compile and one recompile "
-        "(2026-10-16). --no-compile for a quick smoke",
+        "tokens and 0.7 GB lower peak, for ~30 s of compile and one recompile. "
+        "--no-compile for a quick smoke",
+        advanced=True,
+    )
+    expandable_segments: bool = _f(
+        False,
+        "set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True before CUDA starts "
+        "(an existing setting wins): long captions that vary per step, such as "
+        "colorize's OCR layouts, fragment the allocator's pool without it",
         advanced=True,
     )
     log_every: int = _f(10, "full log line every N steps", advanced=True)
@@ -321,7 +570,7 @@ class TuneSwapRequest(Request):
     SCRIPT: ClassVar[str] = "scripts/moss/tune_swap.py"
 
     cache: str = _f(
-        "output/moss/cache",
+        "post_image_dataset/moss",
         "cache folder; its largest sample (image + text tokens) is the one timed",
     )
     sizes: str = _f(
@@ -354,7 +603,22 @@ class TuneSwapRequest(Request):
     warmup: int = _f(2, "untimed steps per arm (compile lands here)", advanced=True)
     steps: int = _f(5, "timed steps per arm", advanced=True)
     output: str = _f(
-        "output/moss/tune/tune_swap.json", "JSON report path", advanced=True
+        "output/ckpt_moss/tune/tune_swap.json", "JSON report path", advanced=True
     )
     seed: int = _f(0, "RNG seed", advanced=True)
     model_dir: str = _f("", _MODEL_DIR_HELP, advanced=True)
+
+
+# i2i tasks with a MOSS recipe in ``configs/moss/i2i/<task>/`` (``cache.toml``,
+# ``train.toml``, ``generate.toml``): the cache request per task; training and
+# generation are the shared ``TrainRequest`` / ``GenerateRequest``.
+I2I_CONFIG_DIR = "configs/moss/i2i"
+I2I_CACHE: dict[str, type[Request]] = {
+    "colorize": ColorizeCacheRequest,
+    "sanitize": CacheRequest,
+}
+
+
+def i2i_config(task: str, kind: str) -> Path:
+    """``configs/moss/i2i/<task>/<kind>.toml`` under the repo home."""
+    return resolve_under_home(f"{I2I_CONFIG_DIR}/{task}/{kind}.toml")

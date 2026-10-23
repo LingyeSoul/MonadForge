@@ -38,7 +38,7 @@ already holds). From a fresh VM it took
 ### The `colab-cu128` branch
 
 One commit on top of main that changes only the install surface; it never
-merges into main. The VM has torch `2.11.0+cu128` on driver 580, and main
+merges into main. Since 2026-10-22 it lives only in the private `preserve` mirror. The VM has torch `2.11.0+cu128` on driver 580, and main
 locks cu132 / torch 2.12. The branch:
 
 - takes torch 2.11.0 / torchvision 0.26.0 from `pytorch-cu128`, pinned also

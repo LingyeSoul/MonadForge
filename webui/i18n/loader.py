@@ -1,6 +1,6 @@
 """Standalone translation loader for the WebUI.
 
-Loads STRINGS dicts from ``webui/i18n/strings/*.py`` directly — no PySide6
+Loads STRINGS dicts from ``webui/i18n/strings/*.py`` directly — no Qt
 dependency.
 """
 

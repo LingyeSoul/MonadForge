@@ -1327,7 +1327,10 @@ class JobManager:
         # observes process exit must not rewrite a successful run as stopped.
         # Cooperative stops still emit run_end:stopped and therefore retain the
         # stopped state and the checkpoint/state evidence.
-        if ev and ev.get("ev") == "run_end":
+        # A command job can run a training loop and then more work (train →
+        # eval chains): its nonzero exit outranks that loop's run_end "ok".
+        ok_but_failed = job.kind == "command" and rc not in (0, None)
+        if ev and ev.get("ev") == "run_end" and not ok_but_failed:
             status = ev.get("status")
             mapped = {
                 "ok": STATE_DONE,

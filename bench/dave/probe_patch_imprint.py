@@ -48,15 +48,12 @@ Usage
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root (anima_lora/)
-
-from anima_lora import (  # noqa: E402
+from anima_lora import (
     GenerationRequest,
     decode_to_pil,
     default_checkpoints,
@@ -66,9 +63,9 @@ from anima_lora import (  # noqa: E402
     load_vae,
     prepare_text_inputs,
 )
-from bench._anima import DEFAULT_NEG as DEFAULT_NEGATIVE  # noqa: E402
-from bench._anima import DEFAULT_PROMPT  # noqa: E402
-from bench._common import make_run_dir, write_result  # noqa: E402
+from bench._anima import DEFAULT_NEG as DEFAULT_NEGATIVE
+from bench._anima import DEFAULT_PROMPT
+from bench._common import make_run_dir, write_result
 
 # One-hot mask scratch file (in-repo so setup_dave's resolve_under_home finds it).
 ONEHOT_REL = "output/tests/dave/_imprint_onehot.npz"

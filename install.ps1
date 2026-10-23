@@ -50,11 +50,10 @@ Say "selected $Backend backend (override with ANIMA_BACKEND=auto|cuda|rocm)"
 
 # 0. neutralize an active Conda env (GH #21) ---------------------------------
 # With `conda activate base` live, conda's Library\bin sits on PATH. uv builds
-# its own .venv with the correct PySide6 DLLs, but at GUI launch Windows loads
-# conda's mismatched Qt DLLs first and PySide6 dies with
-#   ImportError: DLL load failed while importing QtCore
+# its own .venv, but child tools can still pick up conda's mismatched native
+# DLLs first. Strip conda for this install session and warn the user.
 # We strip conda dirs from PATH and clear CONDA_* for THIS install session so
-# `uv sync` and the GUI launch below are clean, then warn the user to
+# `uv sync` and the WebUI launch below are clean, then warn the user to
 # `conda deactivate` before relaunching later (their shell still has it active).
 $CondaActive = $env:CONDA_PREFIX -or $env:CONDA_DEFAULT_ENV
 if ($CondaActive) {
@@ -243,29 +242,16 @@ if ($Backend -eq 'rocm') {
   if ($LASTEXITCODE -ne 0) { Die 'ROCm PyTorch smoke test failed' }
 }
 
-# 6. shortcuts (best-effort — never abort the install over this) -------------
-# Always lands an 'Anima LoRA GUI.lnk' in the install dir (policy-proof), and a
-# desktop copy when login/OneDrive policy allows it.
-Say 'creating shortcuts (Anima LoRA GUI)'
-# The environment was synced above. A flagless uv run would sync it again with
-# the default CUDA group and replace a validated ROCm install (GH #105).
-try {
-  uv run --no-sync python tasks.py gui-shortcut
-  if ($LASTEXITCODE -ne 0) { throw "gui-shortcut exited $LASTEXITCODE" }
-} catch {
-  Say "shortcut skipped; find 'Anima LoRA GUI.lnk' in $Dir or run: uv run --no-sync python tasks.py gui-shortcut"
-}
-
+# 6. launch the WebUI (best-effort, detached; never abort a finished install)
 Write-Host ""
 Write-Host "[OK] installed to $Dir\" -ForegroundColor Green
 Write-Host @"
 
-The GUI is opening now. To finish setup from inside it:
-  - sign in to Hugging Face (built into the GUI now — no terminal step)
+The WebUI is opening now. To finish setup from inside it:
+  - sign in to Hugging Face (built into the WebUI now; no terminal step)
   - use the Models dialog to fetch the DiT + Qwen3 text encoder + VAE
 
-Re-launch later from the "Anima LoRA GUI" desktop shortcut,
-or run:  cd $Dir; python tasks.py gui
+Re-launch later with:  cd $Dir; python -m webui
 
 Update later with:  python tasks.py update
 "@
@@ -274,18 +260,14 @@ if ($CondaActive) {
   Write-Host @"
 
 NOTE: a Conda environment was active. This installer ran clean by ignoring it,
-but a NEW terminal with Conda active will fail to launch the GUI
-('DLL load failed while importing QtCore'). Run 'conda deactivate' first,
-or launch from the desktop shortcut (which does not inherit Conda's PATH).
+but a NEW terminal with Conda active can still shadow the project environment.
+Run 'conda deactivate' first, or launch with the project's uv environment.
 "@ -ForegroundColor Yellow
 }
 
-# 7. launch the GUI (best-effort, detached — never abort a finished install) -
-# Start-Process so the installer returns immediately with the message above
-# visible; a launch failure on a headless box just falls back to the shortcut.
-Say 'launching the Anima LoRA GUI'
+Say 'launching the WebUI'
 try {
-  Start-Process -FilePath 'uv' -ArgumentList 'run', '--no-sync', 'python', 'tasks.py', 'gui' -WorkingDirectory (Resolve-Path '.').Path
+  Start-Process -FilePath 'uv' -ArgumentList 'run', '--no-sync', 'python', '-m', 'webui' -WorkingDirectory (Resolve-Path '.').Path
 } catch {
-  Say 'GUI launch skipped; start it later with: python tasks.py gui'
+  Say 'WebUI launch skipped; start it later with: python -m webui'
 }

@@ -39,16 +39,14 @@ from pathlib import Path
 import torch
 from safetensors.torch import load_file
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from bench._anima import add_common_args, build_anima, resolve_dtype  # noqa: E402
-from library.io.cache import load_cached_latents  # noqa: E402
-from library.training.forward import (  # noqa: E402
+from bench._anima import add_common_args, build_anima, resolve_dtype
+from library.io.cache import load_cached_latents
+from library.training.forward import (
     from_dit_5d,
     make_padding_mask,
     to_dit_5d,
 )
-from networks.methods.byg import (  # noqa: E402
+from networks.methods.byg import (
     BYGConditioning,
     _crossattn_seqlens,
 )

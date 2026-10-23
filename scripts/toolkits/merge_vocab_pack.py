@@ -18,14 +18,13 @@ import logging
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
 
-from library import downloads as DL  # noqa: E402
-from library.anima.vocab_pack import merge_pack_into_dit  # noqa: E402
-from library.env import resolve_under_home  # noqa: E402
-from library.log import setup_logging  # noqa: E402
+from library import downloads as DL
+from library.anima.vocab_pack import merge_pack_into_dit
+from library.env import resolve_under_home
+from library.log import setup_logging
+
+REPO = Path(__file__).resolve().parents[2]
 
 setup_logging()
 logger = logging.getLogger(__name__)

@@ -1,6 +1,6 @@
 ---
 name: model-catalog
-description: The model catalog (library/downloads.py) — one Asset row per weight (repo, files, destination, installed probe), packs, resolve() name order, and the rule that loaders import their default paths from here. Load before adding or moving a weight, changing a loader's default path, adding a download target, or touching a GUI Models panel.
+description: The model catalog (library/downloads.py) — one Asset row per weight (repo, files, destination, installed probe), packs, resolve() name order, and the rule that loaders import their default paths from here. Load before adding or moving a weight, changing a loader's default path, adding a download target, or touching a WebUI Models panel.
 ---
 
 # Model catalog
@@ -11,7 +11,7 @@ Anima half) and concatenates `anime_tools.downloads` for the curation half. The
 package's own catalog skill is `../anime_tools/.claude/skills/model-catalog/SKILL.md`.
 
 **Add a weight by adding a row, not a command.** `make download-*`, `make download-list`
-and both GUI Models panels read the catalog; `resolve()` takes a name as **legacy alias →
+and both WebUI Models panels read the catalog; `resolve()` takes a name as **legacy alias →
 pack id → row id** (so `pe` keeps its historical meaning), and raises `KeyError` naming
 the unknown token. **Loaders import their default paths from here** rather than spelling
 them.

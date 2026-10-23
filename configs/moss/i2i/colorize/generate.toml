@@ -1,0 +1,15 @@
+# MOSS i2i test for the colorize task — GenerateRequest fields.
+#
+#   make daemon-run ARGS="scripts/moss/generate.py --config configs/moss/i2i/colorize/generate.toml \
+#       --lora output/ckpt_moss/moss_i2i_colorize.safetensors --ref_image <page or folder>"
+#
+# The page enters the TE through the vision tower (ref_vision) and as a half-size
+# VAE reference, as the cache encoded it; an empty prompt is the page alone.
+
+prompt = ""
+ref_scale = 2
+ref_vision = true
+text_encoder = "fp8"
+steps = 30
+spectrum = true
+out_dir = "output/tests/moss_i2i_colorize"

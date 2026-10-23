@@ -34,17 +34,15 @@ import argparse
 import csv
 import json
 import os
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-import torch  # noqa: E402
-from safetensors.torch import save_file  # noqa: E402
+import torch
+from safetensors.torch import save_file
 
-from bench._anima import add_common_args, add_model_args, build_anima  # noqa: E402
-from bench._common import make_run_dir, start_heartbeat, write_result  # noqa: E402
-from bench.grad_init.probe_subspace import (  # noqa: E402
+from bench._anima import add_common_args, add_model_args, build_anima
+from bench._common import make_run_dir, start_heartbeat, write_result
+from bench.grad_init.probe_subspace import (
     _BLOCK_RE,
     SketchAccumulator,
     capture,
@@ -55,7 +53,7 @@ from bench.grad_init.probe_subspace import (  # noqa: E402
     top_right_basis,
     weight_svd_basis,
 )
-from library.env import resolve_under_home  # noqa: E402
+from library.env import resolve_under_home
 
 # Depth bands from the noise-scale probe (README §gradient noise scale): early
 # blocks are B_simple-dominated (the "gradient basis" there is really the

@@ -54,11 +54,10 @@ import shutil
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))  # allow `python scripts/soup/pipeline.py`
 
-from scripts.tasks._common import build_launch_cmd, build_method_args, run  # noqa: E402
+from scripts.tasks._common import build_launch_cmd, build_method_args, run
+
+ROOT = Path(__file__).resolve().parents[2]
 
 UNCOND_SEED = 1000  # fixed: the uncond init is a shared, reusable artifact
 

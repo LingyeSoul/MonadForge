@@ -1,0 +1,19 @@
+# MOSS i2i training for the colorize task — TrainRequest fields; the recipe of the
+# kept run moss_colorize_3k_ocr (project/moss_lora/colorize_ocr.md).
+#
+#   make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/i2i/colorize/train.toml"
+
+cache = "post_image_dataset/moss/i2i_colorize"
+output = "output/ckpt_moss/moss_i2i_colorize.safetensors"
+epochs = 3
+max_steps = 10000
+lr = 5e-5
+save_every_epochs = 1
+plain_caption_rate = 0.3       # the page alone
+caption_variant_rate = 0.3     # of the rest, sparse captions; else the OCR layout
+ref_timestep = 0.0             # the reference is clean
+# OCR layouts run to ~2.2k text rows: start on the worst case, keep the pool whole.
+activation_memory_budget = 0.15
+blocks_to_swap = 28
+fit_report = true
+expandable_segments = true

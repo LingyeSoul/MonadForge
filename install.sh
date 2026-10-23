@@ -117,10 +117,10 @@ $(printf '\033[1;32m✓ installed to %s/\033[0m' "$DIR")
 
 Next steps:
   cd $DIR
-  make gui                 # sign in to Hugging Face + download models in the GUI
-                           #   (Hugging Face auth is built into the GUI now)
+  uv run --no-sync python -m webui   # sign in to Hugging Face + download models
+                                     #   (Hugging Face auth is built into the WebUI)
 
-Prefer the CLI? After signing in once (the GUI stores your HF token):
+Prefer the CLI? After signing in once (the WebUI stores your HF token):
   make download-models     # DiT + Qwen3 text encoder + VAE into models/
   make lora                # start training
 

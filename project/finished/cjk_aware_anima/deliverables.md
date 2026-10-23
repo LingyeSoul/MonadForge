@@ -9,21 +9,21 @@ here duplicates measured tables — those stay with the reports and
 
 | Piece | Where | State |
 |---|---|---|
-| Ext table build (Qwen CJK tokens → T5 space, anchor init, byte-permutation tie-break) | `bench/cjk_adapter/build_ext.py`, `ext_vocab.build_ext_table` → `bench/cjk_adapter/assets/ext_embed.{safetensors,json}` | done; rebuild only after an init change |
-| Hybrid encoder (CJK spans → ext ids; bit-identical on pure EN) | `library/anima/ext_vocab.py::HybridT5Encoder` (canonical since 2026-09-01; `bench/cjk_adapter/ext_vocab.py` is a re-export shim) | promoted; also on the Adapter node's `_vendor` surface |
-| Probe / acceptance harness (arm sweep, `--ext`, `--prompts` render grid, `--adapter_lora`) | `bench/cjk_adapter/run_bench.py` | done |
-| Residual name probe (adapter-space floor gate) | `bench/cjk_adapter/residual_probe.py` | done; diagnostic only |
-| Distill loop: corpus cache (process-pool stager, 67 pairs/s), ext-table ladder, objectives (`span`/`attn`/`flat`), register sampling / span scaling, warm start | `scripts/distill_cjk/{cache,config,data,distill,ext_table,losses,attn_bank}.py` (`make exp-distill-cjk`; the cache stager runs by module: `python -m scripts.distill_cjk.cache`) | done |
-| Real-query bank for the attention readout | `scripts/distill_cjk/build_query_bank.py` → `bench/cjk_distill/assets/query_bank.safetensors` | done |
-| Ext-gated adapter LoRA (`g = any(id ≥ 32128)`, forward-hook delta, standard `lora_A/lora_B` keys) | `scripts/distill_cjk/adapter_lora.py`, `--adapter_lora r=…` | done, inert without the flag; does not ship (plan3 closed) |
+| Ext table build (Qwen CJK tokens → T5 space, anchor init, byte-permutation tie-break) | `_archive/build_ext.py`, `ext_vocab.build_ext_table` → `_archive/assets/ext_embed.{safetensors,json}` | done; rebuild only after an init change |
+| Hybrid encoder (CJK spans → ext ids; bit-identical on pure EN) | `library/anima/ext_vocab.py::HybridT5Encoder` (canonical since 2026-09-01; `_archive/ext_vocab.py` is a re-export shim) | promoted; also on the Adapter node's `_vendor` surface |
+| Probe / acceptance harness (arm sweep, `--ext`, `--prompts` render grid, `--adapter_lora`) | `_archive/run_bench.py` | done |
+| Residual name probe (adapter-space floor gate) | `_archive/residual_probe.py` | done; diagnostic only |
+| Distill loop: corpus cache (process-pool stager, 67 pairs/s), ext-table ladder, objectives (`span`/`attn`/`flat`), register sampling / span scaling, warm start | `_archive/{cache,config,data,distill,ext_table,losses,attn_bank}.py` (`# archived: exp-distill-cjk`; the cache stager runs by module: `python -m scripts.distill_cjk.cache`) | done |
+| Real-query bank for the attention readout | `_archive/build_query_bank.py` → `bench/cjk_distill/assets/query_bank.safetensors` | done |
+| Ext-gated adapter LoRA (`g = any(id ≥ 32128)`, forward-hook delta, standard `lora_A/lora_B` keys) | `_archive/adapter_lora.py`, `--adapter_lora r=…` | done, inert without the flag; does not ship (plan3 closed) |
 | One-off gate drivers (G2, G3/G4, G5, coverage, separability) | [`gates/`](gates/) (run by path, e.g. `python project/finished/cjk_aware_anima/gates/g34.py`) | done |
-| Tests | `tests/test_cjk_distill.py` (G1 EN bit-exactness, 23 cases), `tests/test_cjk_glossary.py` (24 invariants), `tests/test_cjk_adapter_lora.py` | green |
+| Tests | `_archive/` (G1 EN bit-exactness, 23 cases), `_archive/` (24 invariants), `_archive/` | green |
 | `process_escape` mojibake fix | `c8cf3ce2` | shipped |
 
 ## Data builders (measured numbers in [`datasets/README.md`](datasets/README.md))
 
-The pack-recipe builders moved to `scripts/distill_cjk/corpus/` on 2026-09-24 (run as
-`python -m scripts.distill_cjk.corpus.<stage>` / `make exp-cjk-corpus ARGS='<stage> …'`; their
+The pack-recipe builders moved to `_archive/corpus/` on 2026-09-24 (run as
+`python -m scripts.distill_cjk.corpus.<stage>` / `# archived: exp-cjk-corpus ARGS='<stage> …'`; their
 outputs now live in `post_image_dataset/cjk_distill/assets/`, and `datasets/assets` here is a
 symlink to it). `commentary.py`, `lovehina.py`, `manga_text.py`, `mint_corpus.py`,
 `audit_glossary.py` and the OCR builders stay in `datasets/` — none of them is on the path
@@ -60,12 +60,12 @@ Caches on disk: `post_image_dataset/cjk_distill/cache_synth2` (~155–170 G,
 | `synthja_attn`, `synth`, `synth_bal`, `names`, `item2`, `tagpair`, `wide`, `global{,_row}` | the measured ladder | superseded; safe to delete once `findings.md` is trusted |
 
 Envelopes: `bench/cjk_distill/results/<stamp>-<label>/`; render grids:
-`bench/cjk_adapter/results/<stamp>-<label>-grid/` (labels match the pack).
+`_archive/results/<stamp>-<label>-grid/` (labels match the pack).
 
 ## Eval assets (`assets/`)
 
 `ja_eval_prompts.json` (20 prompts, five registers — the binding grid; it and
-its `ko_` / `zh_` twins moved to `scripts/distill_cjk/corpus/assets/` on
+its `ko_` / `zh_` twins moved to `_archive/corpus/assets/` on
 2026-10-15, where `synth_tags.py` reads them),
 `ja_eval_prompts_names_mixed.json`, `ja_eval_prompts_residual.json`
 (name-stripped twins), `grid_labels.json` (eyeball labels, 5 arms × 7–9 prompts),
@@ -97,7 +97,7 @@ Surfaces (status notes inline in [`plan.md`](plan.md) Phase 3 — as of
 
 ## Hard blocker on ship — CLEARED 2026-08-30
 
-**Human sign-off on `assets/tag_glossary_review.md` → `tag_overrides.json` (now `scripts/distill_cjk/corpus/`)** — done; the 22 pinned overrides stood, no re-cache needed (rows unchanged, stager is pair-keyed). Rationale kept for the record:
+**Human sign-off on `assets/tag_glossary_review.md` → `tag_overrides.json` (now `_archive/corpus/`)** — done; the 22 pinned overrides stood, no re-cache needed (rows unchanged, stager is pair-keyed). Rationale kept for the record:
 36.6% of span tokens are `mt_unverified`; a wrong wording trains that tag's
 rows toward the wrong meaning and no aggregate metric can see it (G4b). Two
 review axes: the polysemy class (`bow`) and katakana-vs-kanji (`armor`→鎧 vs

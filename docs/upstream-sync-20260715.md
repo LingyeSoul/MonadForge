@@ -172,7 +172,7 @@ train.py
 
 冲突主要来自三条架构分叉：
 
-1. 上游继续维护 `gui/` Qt 应用，fork 已迁移为 `webui/` FastAPI + Vue。
+1. 上游继续维护 `webui/` Qt 应用，fork 已迁移为 `webui/` FastAPI + Vue。
 2. 上游把 daemon 迁到顶层 `anima_daemon/`，fork 继续在 `scripts/daemon/` 上加入 sidecar 和恢复机制。
 3. 上游删除 SPD/DCW/foveated 等路线，fork 保留 SPD/DCW，并对推理/训练接口做了独立扩展。
 

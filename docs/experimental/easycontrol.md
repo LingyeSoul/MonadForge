@@ -230,12 +230,12 @@ EasyControl is a family of control tasks: they all share the shipped network
 (`networks/methods/easycontrol.py`) and the two-stream forward above, and differ
 only in how the condition is built. A variant is selected by the
 `EASYADAPTER` env var (unset → the default ref==target EasyControl); per-task
-projects live under `easycontrol_adapters/`.
+projects live under `i2i_tasks/`.
 
 | Variant      | `EASYADAPTER` | Condition                                   | Config                                | Project                              |
 | ------------ | ------------- | ------------------------------------------- | ------------------------------------- | ------------------------------------ |
 | default      | (unset)       | the reference image itself (cond == target) | `configs/easycontrol/easycontrol.toml` | —                                    |
-| colorize     | `colorize`    | synthetic mangafied B&W (XDoG + screentone) | `configs/easycontrol/colorize.toml`†  | `easycontrol_adapters/colorization/` |
+| colorize     | `colorize`    | synthetic mangafied B&W (XDoG + screentone) | `configs/easycontrol/colorize.toml`†  | `i2i_tasks/colorization/` |
 
 † colorize is a self-contained descriptor (top-level `name` + `[staging]` /
 `[preprocess]` / `[training]` knob tables + a `[general]`/`[[datasets]]` blueprint,
@@ -251,14 +251,14 @@ the target is an existing color illustration (latents + captions reused from
 the shared `post_image_dataset/lora/` cache — nothing re-encoded) and the
 condition is a synthetic mangafied version of that same image (XDoG lineart
 + value-banded algorithmic screentone), cached to a parallel `cond_cache_dir`
-(`post_image_dataset/easycontrol/colorize/cond/`). The text channel is reduced to
+(`post_image_dataset/i2i/colorize/cond/`). The text channel is reduced to
 color-only captions (hair/eye/garment colors) in its own `text_cache_dir`
-(`post_image_dataset/easycontrol/colorize/text/`), so the prompt carries the one variable
+(`post_image_dataset/i2i/colorize/text/`), so the prompt carries the one variable
 B&W can't — hue — giving a strong prompt→color binding. At inference an empty
 prompt auto-colorizes; a color prompt (`pink hair, blue eyes`) steers.
 
 ```bash
-make easycontrol-staging    EASYADAPTER=colorize   # stage 1: mangafy cond tree
+make i2i-stage TASK=colorize   # stage 1: mangafy cond tree
 make easycontrol-preprocess EASYADAPTER=colorize   # stages 2-3: VAE-encode cond + color text
 make easycontrol            EASYADAPTER=colorize   # train (frozen DiT, adapter-only)
 REF_IMAGE=page.png make test-easycontrol EASYADAPTER=colorize   # inference
@@ -273,7 +273,7 @@ the descriptor's blueprint + `[training]` overrides folded in (via the daemon, s
 it survives the GUI closing).
 
 Full design notes (caption policy, screentone bands, inference settings, Phase B)
-live in `easycontrol_adapters/colorization/README.md`.
+live in `i2i_tasks/colorization/README.md`.
 
 ## Usage
 
@@ -476,4 +476,4 @@ cond_scale)` change; subsequent KSampler steps use the cache automatically.
 | `configs/gui-methods/easycontrol.toml`          | GUI-friendly self-contained variant                    |
 | `configs/easycontrol/colorize.toml`             | Colorize descriptor — `name` + `[staging]`/`[preprocess]`/`[training]` tables + blueprint + `[variant]` GUI metadata (the single source of truth; folds onto the base easycontrol method) |
 | `configs/easycontrol/near_twins.toml`           | Near-twins descriptor (same shape; text-removal control task)          |
-| `easycontrol_adapters/colorization/`            | Colorize project — mangafy + `prep.py` + color-caption filter + README |
+| `i2i_tasks/colorization/`            | Colorize project — mangafy + `prep.py` + color-caption filter + README |

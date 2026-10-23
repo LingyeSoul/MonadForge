@@ -1692,6 +1692,25 @@ def test_command_job_end_to_end(real_cmd_daemon):
     assert "shuf=7" in log
 
 
+def test_command_job_nonzero_exit_outranks_its_run_end_ok(real_cmd_daemon):
+    """A command job that streams a training loop (moss train) then fails later
+    in the same process tree (a train → eval chain) ends in error, not done."""
+    cl, _ = real_cmd_daemon
+    script = (
+        "import json, os, sys\n"
+        "p = os.path.join(os.environ['ANIMA_DAEMON_JOB_DIR'], 'progress.jsonl')\n"
+        "with open(p, 'w') as f:\n"
+        "    f.write(json.dumps({'ev': 'run_end', 'ts': 1.0, 'status': 'ok',"
+        " 'final_step': 4}) + '\\n')\n"
+        "sys.exit(3)\n"
+    )
+    jid = cl.submit_command(label="chain", argv=["-c", script])["job_id"]
+    assert _wait_until(lambda: cl.get(jid)["state"] == "error", timeout=15)
+    job = cl.get(jid)
+    assert job["returncode"] == 3
+    assert job["latest"]["ev"] == "run_end"  # the stream is still read
+
+
 def test_command_job_result_lift_end_to_end(real_cmd_daemon):
     """End-to-end Phase 1a: a command job reads the daemon-exported
     ANIMA_DAEMON_JOB_DIR, writes an envelope + `result_path.json` pointer (as

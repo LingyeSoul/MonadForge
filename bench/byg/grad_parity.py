@@ -37,8 +37,6 @@ Run:  python bench/byg/grad_parity.py
 from __future__ import annotations
 
 import math
-import sys
-from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -46,9 +44,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 # bench/ is not an installed package — bootstrap repo root onto sys.path.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from library.anima.models import unsloth_checkpoint  # noqa: E402
+from library.anima.models import unsloth_checkpoint
 
 
 class TwoStreamBlock(nn.Module):

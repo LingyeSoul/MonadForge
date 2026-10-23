@@ -4,13 +4,14 @@ The recolor numerics are Anima's (``library.inference.corrections.cns_core``). M
 adds one thing: the FFT runs on the **un-patchified** grid ``(B, 32, 2h, 2w)``, not
 on the packed ``(B, 128, h, w)`` the DiT sees. On the packed grid the top octave of
 the FLUX.2 latent lives in the 2×2 phase channels, out of reach of a spatial
-filter, and that octave is the one CNS feeds late. The reshape is the pure
-un-patchify of ``model.unpack_latents`` without its BatchNorm affine: white noise
+filter, and that octave is the one CNS feeds late. The reshape is
+``model.unpatchify``, ``unpack_latents`` without its BatchNorm affine: white noise
 stays white under it, and γ is per-channel scale-invariant.
 
 γ comes from the deterministic Euler trajectory (``gamma_for_trajectory``, the
 same estimator as ``scripts/calibration/gamma_probe.py``); the recolor applies on
-``sampler="er_sde"`` only.
+``sampler="er_sde"`` only. ``MossCNS.auto`` picks the shipped γ calibrated for the
+variant at the cfg nearest the sampler's (``GAMMA_PATHS``).
 """
 
 from __future__ import annotations
@@ -20,27 +21,28 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from library.env import resolve_under_home
 from library.inference.corrections.cns_core import CNSRecolorer, radial_bins
+from library.moss.model import patchify, unpatchify
+
+# (variant, cfg) → γ from scripts/calibration/moss_cns_calibrate.py (50 steps).
+GAMMA_PATHS = {
+    ("base", 3.0): "networks/calibration/moss_cns_gamma.npz",
+    ("base", 4.0): "networks/calibration/moss_cns_gamma_cfg4.npz",
+    ("base", 5.0): "networks/calibration/moss_cns_gamma_cfg5.npz",
+    ("sft", 3.0): "networks/calibration/moss_cns_gamma_sft_cfg3.npz",
+    ("sft", 4.0): "networks/calibration/moss_cns_gamma_sft_cfg4.npz",
+    ("sft", 5.0): "networks/calibration/moss_cns_gamma_sft_cfg5.npz",
+}
 
 
-def unpatchify(z: torch.Tensor) -> torch.Tensor:
-    """``(B,128,h,w)`` → ``(B,32,2h,2w)``: ``unpack_latents`` without the BN affine."""
-    b, c, h, w = z.shape
-    return (
-        z.reshape(b, c // 4, 2, 2, h, w)
-        .permute(0, 1, 4, 2, 5, 3)
-        .reshape(b, c // 4, 2 * h, 2 * w)
-    )
-
-
-def patchify(z: torch.Tensor) -> torch.Tensor:
-    """Inverse of :func:`unpatchify`."""
-    b, c, h, w = z.shape
-    return (
-        z.view(b, c, h // 2, 2, w // 2, 2)
-        .permute(0, 1, 3, 5, 2, 4)
-        .reshape(b, c * 4, h // 2, w // 2)
-    )
+def auto_gamma_path(variant: str, cfg: float) -> Path:
+    """The shipped γ for ``variant`` at the calibrated cfg nearest ``cfg``."""
+    cfgs = [c for v, c in GAMMA_PATHS if v == variant]
+    if not cfgs:
+        raise ValueError(f"no MOSS CNS γ for variant {variant!r}")
+    nearest = min(cfgs, key=lambda c: abs(c - cfg))
+    return resolve_under_home(GAMMA_PATHS[(variant, nearest)])
 
 
 class MossCNS:
@@ -52,6 +54,14 @@ class MossCNS:
     @classmethod
     def from_npz(cls, path: str | Path, strength: float = 1.0) -> "MossCNS":
         return cls(CNSRecolorer.from_npz(str(path), strength=strength))
+
+    @classmethod
+    def from_spec(
+        cls, spec: str | Path, variant: str, cfg: float, strength: float = 1.0
+    ) -> "MossCNS":
+        """``"auto"`` → :func:`auto_gamma_path`; anything else is an npz path."""
+        path = auto_gamma_path(variant, cfg) if str(spec) == "auto" else spec
+        return cls.from_npz(resolve_under_home(path), strength=strength)
 
     def recolor(self, white: torch.Tensor, sigma_s: float) -> torch.Tensor:
         return patchify(self.core.recolor(unpatchify(white), sigma_s))

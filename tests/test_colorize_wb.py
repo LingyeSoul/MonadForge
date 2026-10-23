@@ -1,4 +1,4 @@
-"""Colorize target white-balance (easycontrol_adapters/colorization/wb.py).
+"""Colorize target white-balance (i2i_tasks/colorization/wb.py).
 
 The colorize target pool is corpus-wide warm/desaturated, so the prep step
 white-balances each target before VAE-encoding it into the colorize-specific
@@ -15,9 +15,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-COLORIZE_DIR = Path(__file__).resolve().parent.parent / (
-    "easycontrol_adapters/colorization"
-)
+COLORIZE_DIR = Path(__file__).resolve().parent.parent / ("i2i_tasks/colorization")
 if str(COLORIZE_DIR) not in sys.path:
     sys.path.insert(0, str(COLORIZE_DIR))
 

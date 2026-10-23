@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from library.env import resolve_under_home
 from library.moss.requests import (
+    DEFAULT_TEXT_ENCODER,
     CacheRequest,
     GenerateRequest,
     TrainRequest,
@@ -88,6 +89,15 @@ def request_from_values(
     return req
 
 
+def text_encoder_path(base: Path, precision: str) -> Path:
+    """Where a given TE precision lives: Base's bf16 shards, or the catalog file."""
+    if precision == "bf16":
+        return base / "text_encoder"
+    from library import downloads
+
+    return downloads.by_id()[f"moss_te_{precision}"].dest
+
+
 def resolve_values(values: dict[str, Scalar]) -> ResolvedPaths:
     req = request_from_values(TrainRequest, values)
     root = resolve_model_dir(req.model_dir)
@@ -95,7 +105,11 @@ def resolve_values(values: dict[str, Scalar]) -> ResolvedPaths:
     return ResolvedPaths(
         model_dir=str(root),
         dit=str(variant_dir(req.model_dir, req.model) / "transformer"),
-        text_encoder=str(base / "text_encoder"),
+        text_encoder=str(
+            text_encoder_path(
+                base, getattr(req, "text_encoder", DEFAULT_TEXT_ENCODER)
+            )
+        ),
         vae=str(base / "vae"),
         tokenizer=str(base / "tokenizer"),
     )
@@ -106,10 +120,13 @@ def output_path(value: str) -> Path:
     roots = [
         resolve_under_home("output/moss").resolve(),
         resolve_under_home("output/ckpt_moss").resolve(),
+        resolve_under_home("post_image_dataset/moss").resolve(),
+        resolve_under_home("post_image_dataset/i2i").resolve(),
     ]
     if not any(path == root or path.is_relative_to(root) for root in roots):
         raise ValueError(
-            "Browser MOSS outputs must stay inside output/moss or output/ckpt_moss"
+            "Browser MOSS outputs must stay inside output/moss, output/ckpt_moss, "
+            "post_image_dataset/moss or post_image_dataset/i2i"
         )
     return path
 
@@ -132,7 +149,9 @@ def validate_paths(req) -> None:
         require_directory(resolve_under_home(req.src), "Image source")
         output_path(req.out)
         if not req.skip_text:
-            require_component(base / "text_encoder", "MOSS text encoder")
+            require_component(
+                text_encoder_path(base, req.text_encoder), "MOSS text encoder"
+            )
             require_directory(base / "tokenizer", "MOSS tokenizer")
         if not req.skip_latents:
             require_component(base / "vae", "MOSS VAE")
@@ -150,7 +169,9 @@ def validate_paths(req) -> None:
                 variant_dir(req.model_dir, req.model) / "transformer",
                 "MOSS transformer",
             )
-            require_component(base / "text_encoder", "MOSS text encoder")
+            require_component(
+                text_encoder_path(base, req.text_encoder), "MOSS text encoder"
+            )
             require_directory(base / "tokenizer", "MOSS tokenizer")
         for value in (req.lora, req.prompts_file, *req.example.split(",")):
             if value and not resolve_under_home(value.strip()).is_file():

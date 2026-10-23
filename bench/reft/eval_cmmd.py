@@ -36,27 +36,24 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import sys
 from pathlib import Path
 from random import Random
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
-import torch  # noqa: E402
-from PIL import Image  # noqa: E402
-from safetensors import safe_open  # noqa: E402
+import torch
+from PIL import Image
+from safetensors import safe_open
 
-from anima_lora import (  # noqa: E402
+from anima_lora import (
     GenerationRequest,
     default_checkpoints,
     generate,
     get_generation_settings,
     load_vae,
 )
-from bench._common import make_run_dir, write_result  # noqa: E402
-from bench.memorization.eyeball import _pick  # noqa: E402
-from bench.memorization.generalize import (  # noqa: E402
+from bench._common import make_run_dir, write_result
+from bench.memorization.eyeball import _pick
+from bench.memorization.generalize import (
     GEN_SEED_BASE,
     Prompt,
     _pil_to_minus1to1,
@@ -65,13 +62,15 @@ from bench.memorization.generalize import (  # noqa: E402
     split_items,
     to_prompts,
 )
-from bench.reft import reft_network  # noqa: E402
-from library.inference import load_shared_models  # noqa: E402
-from library.inference.models import load_dit_model  # noqa: E402
-from library.inference.output import decode_latent  # noqa: E402
-from library.runtime.device import clean_memory_on_device  # noqa: E402
-from library.training.cmmd import cmmd_from_pools  # noqa: E402
-from library.vision.encoder import load_pe_encoder  # noqa: E402
+from bench.reft import reft_network
+from library.inference import load_shared_models
+from library.inference.models import load_dit_model
+from library.inference.output import decode_latent
+from library.runtime.device import clean_memory_on_device
+from library.training.cmmd import cmmd_from_pools
+from library.vision.encoder import load_pe_encoder
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _network_module_of(ckpt: str) -> str:

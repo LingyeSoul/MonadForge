@@ -245,6 +245,18 @@ def main() -> int:
         "normalize_global_scale": f"{g_scale:.6f}",
         "adaln_merge": args.adaln,
     }
+    with safe_open(args.loras[0], framework="pt") as f:
+        src_meta = f.metadata() or {}
+    if "targets" in src_meta:
+        # library.lines LoRAs (MOSS / qwen21) rebuild the network from the
+        # rank / alpha / targets metadata, one rank for every module.
+        if len(rank_hist) != 1:
+            raise SystemExit(
+                f"merged ranks differ across modules {rank_hist}; a library.lines "
+                "LoRA needs one rank"
+            )
+        rank = str(next(iter(rank_hist)))
+        metadata = {**src_meta, "rank": rank, "alpha": rank, **metadata}
     save_file(merged, str(args.out), metadata=metadata)
     logger.info(
         "wrote %s  (%d modules, rank histogram %s)",

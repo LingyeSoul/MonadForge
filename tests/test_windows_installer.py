@@ -17,7 +17,7 @@ POWERSHELL = shutil.which("powershell.exe") or shutil.which("pwsh")
     reason="requires Windows PowerShell",
 )
 @pytest.mark.parametrize("backend", ["rocm", "cuda"])
-def test_installer_preserves_backend_through_gui_launch(backend, tmp_path):
+def test_installer_preserves_backend_through_webui_launch(backend, tmp_path):
     result = subprocess.run(
         [
             POWERSHELL,
@@ -53,7 +53,7 @@ def test_installer_preserves_backend_through_gui_launch(backend, tmp_path):
     else:
         assert calls[0]["argv"] == ["sync"]
         assert not any("tests/rocm_smoke_test.py" in call["argv"] for call in calls)
-    assert any("gui-shortcut" in call["argv"] for call in calls)
+    assert not any("gui-shortcut" in call["argv"] for call in calls)
     assert calls[-1]["kind"] == "launch"
-    assert calls[-1]["argv"][-3:] == ["python", "tasks.py", "gui"]
+    assert calls[-1]["argv"][-3:] == ["python", "-m", "webui"]
     assert all("--no-sync" in call["argv"] for call in calls[1:]), calls

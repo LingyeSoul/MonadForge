@@ -46,6 +46,8 @@ The forward is bit-equivalent at init (`(x · s⁻¹) @ (down · s)ᵀ == x @ do
 
 `inv_scale` is calibration data — it carries no gradient and never updates during training. It rides through `state_dict` as a persistent buffer.
 
+What it does **not** touch: the `lora_up` gradient. `∂L/∂up = Σ_t g_t h_tᵀ` depends only on the adapter latent `h = down·x`, which the reparameterization leaves bit-identical, so the up-side effect GraLoRA describes (the outlier channel's column of the full-fine-tune gradient entering every element of `up` through `down[:, c]`, then smeared over all input columns by `Δup·down`) is untouched. On MOSS-Image this up-side term is large and has its own fix (`dc_isolate`, on by default): `docs/moss/channel_scaling.md`.
+
 Dead-channel caveat (standard SmoothQuant wart): channels with near-zero `mean|x|` get a gradient boost of up to `1/s ≈ 325` (main `mlp.layer2`) / 648 (cond stream). Bounded by the `clamp_min(1e-6)` and their leverage still scales as `mean|x|^(1-α)`, so it is not a hazard — just don't be surprised by large `inv_scale` entries on post-GELU inputs.
 
 ## Liveness: which variants this actually affects
@@ -95,9 +97,8 @@ See `scripts/calibration/README.md` for the script flags and the output JSON lay
 
 ## When this helps more
 
-The bench analysis confirms the precondition (20–100× per-channel dominance, DC-bias not attention sinks) holds on the current Anima DiT, and the 2026-06-10 audit confirms the gradient geometry changes exactly as designed on every Live variant. For standard flow-matching LoRA training the sample-quality delta has not been A/B-measured. The one A/B that exists is on turbo (DP-DMD) distillation, where α=0.5 was clearly net-negative (melted faces, washed/oversaturated color vs a clean α=0 twin, 2026-06-16) — turbo therefore defaults to α=0.0. Recalibrating the scale on the turbo rollout does not rescue it (turbo's per-channel input profile matches the shipped calibration at cosine 0.996), and α=0.01 is a numerical no-op (dominance 6.14→6.01); the surviving explanation is that the Adam-geometry reparam is only safe under a stationary MSE target, not a co-training critic. For the standard path the regime that should see the largest payoff is:
+The bench analysis confirms the precondition (20–100× per-channel dominance, DC-bias not attention sinks) holds on the current Anima DiT, and the 2026-06-10 audit confirms the gradient geometry changes exactly as designed on every Live variant. For standard flow-matching LoRA training the sample-quality delta has not been A/B-measured. The one A/B that exists is on turbo (DP-DMD) distillation, where α=0.5 was clearly net-negative (melted faces, washed/oversaturated color vs a clean α=0 twin, 2026-06-16) — turbo therefore defaults to α=0.0. Recalibrating the scale on the turbo rollout does not rescue it (turbo's per-channel input profile matches the shipped calibration at cosine 0.996), and α=0.01 is a numerical no-op (dominance 6.14→6.01); the surviving explanation is that the Adam-geometry reparam is only safe under a stationary MSE target, not a co-training critic. The `down`-side leverage change is rank-independent, so GraLoRA's "helps more at high rank" prediction does not carry over. For the standard path the regime that should see the largest payoff is:
 
-- Higher rank (≥64, where GraLoRA's argument bites hardest).
 - Shared-A across experts (HydraLoRA) — the shared `lora_down` amplifies the bias K-fold.
 - Long single-domain runs — the column-imbalanced gradient compounds over more steps.
 
@@ -105,7 +106,7 @@ The bench analysis confirms the precondition (20–100× per-channel dominance, 
 
 - Xiao et al., SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models, ICML 2023 — the original `s = mean|x|^α` absorption trick (this implementation borrows the parameterization, not the quantization goal).
 - Dettmers et al., LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale, NeurIPS 2022 — the "outlier features" phenomenon the bench observes in the Anima DiT.
-- Jung et al., GraLoRA: Granular Low-Rank Adaptation for Parameter-Efficient Fine-Tuning, NeurIPS 2025, arXiv:2505.20355 — the more invasive `k×k`-block alternative; weighed against and rejected for now (same mechanism targeted, far higher integration cost).
+- Jung et al., GraLoRA: Granular Low-Rank Adaptation for Parameter-Efficient Fine-Tuning, NeurIPS 2025, arXiv:2505.20355 — the paper that prompted the input-channel analysis. Its mechanism is the `up` gradient (`∂L/∂B = ∂L/∂Y Xᵀ A`), which this reparameterization does not reach (see "What it does not touch" above); the `k×k`-block structure is the open alternative for that side, not a more invasive version of this one.
 
 ## Code
 

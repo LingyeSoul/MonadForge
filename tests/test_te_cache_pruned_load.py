@@ -16,20 +16,18 @@ tuple shape, not the flag, so the loader must serve whatever the file holds.
 from __future__ import annotations
 
 import random
-import sys
 from pathlib import Path
 
 import pytest
 import torch
 from safetensors.torch import save_file
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
-from library.anima.strategy import (  # noqa: E402
+from library.anima.strategy import (
     AnimaTextEncoderOutputsCachingStrategy,
 )
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 S, D = 4, 8  # tiny seq / hidden dims
 

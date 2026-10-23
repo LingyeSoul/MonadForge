@@ -1,6 +1,6 @@
 # Anima LoRA Guidebook
 
-A complete guide to the Anima LoRA training/inference pipeline: install → dataset → preprocessing → training → inference → ComfyUI deployment. It assumes Windows and the GUI; every terminal command is collected in [Appendix A](#appendix-a-cli-reference). For WSL, Linux, and training optimization, see the other docs.
+A complete guide to the Anima LoRA training/inference pipeline: install → dataset → preprocessing → training → inference → ComfyUI deployment. It assumes Windows and the WebUI; every terminal command is collected in [Appendix A](#appendix-a-cli-reference). For WSL, Linux, and training optimization, see the other docs.
 
 ---
 
@@ -11,7 +11,7 @@ A complete guide to the Anima LoRA training/inference pipeline: install → data
 3. [Hugging Face Sign-in and Model Download](#3-hugging-face-sign-in-and-model-download)
 4. [Dataset Preparation](#4-dataset-preparation)
 5. [Preprocessing](#5-preprocessing)
-6. [Using the GUI](#6-using-the-gui)
+6. [Using the WebUI](#6-using-the-gui)
 7. [Training](#7-training)
 8. [Adapter Variant Selection Guide](#8-adapter-variant-selection-guide)
 9. [Inference](#9-inference)
@@ -40,7 +40,7 @@ A complete guide to the Anima LoRA training/inference pipeline: install → data
 
 ## 2. Installation
 
-Paste this one line into PowerShell. It installs `uv`, the CUDA 13.2 toolkit, Python 3.13, and all dependencies automatically, then opens the GUI for you when it's done.
+Paste this one line into PowerShell. It installs `uv`, the CUDA 13.2 toolkit, Python 3.13, and all dependencies automatically, then opens the WebUI for you when it's done.
 
 ```powershell
 irm https://raw.githubusercontent.com/sorryhyun/anima_lora/main/install.ps1 | iex
@@ -52,9 +52,9 @@ irm https://raw.githubusercontent.com/sorryhyun/anima_lora/main/install.ps1 | ie
 
 - Installs into `.\anima_lora\` (change with `$env:ANIMA_DIR`, pin a version with `$env:ANIMA_VERSION='v2.0.0'`).
 - If it asks for a reboot (common after the CUDA step), reboot and re-run the same one-liner — it picks up where it left off.
-- To reopen it later, use the "Anima LoRA GUI" desktop shortcut.
+- To reopen it later, run `python -m webui` from the install directory.
 
-Once installed, continue in the GUI with §3 → §4 → §5.
+Once installed, continue in the WebUI with §3 → §4 → §5.
 
 > Prefer to `git clone` yourself, or the automatic install failed? See [Appendix B](#appendix-b-manual-install-uv--git) / [Appendix C](#appendix-c-manual-cuda-install).
 
@@ -65,13 +65,13 @@ Once installed, continue in the GUI with §3 → §4 → §5.
 ### 3.1 Sign in
 
 1. Create a read token at <https://huggingface.co/settings/tokens>.
-2. Paste it into the Hugging Face sign-in field in the GUI.
+2. Paste it into the Hugging Face sign-in field in the WebUI.
 
-The token is stored in the standard Hugging Face cache, so the GUI and the CLI share the same credentials.
+The token is stored in the standard Hugging Face cache, so the WebUI and the CLI share the same credentials.
 
 ### 3.2 Download models
 
-The Models dialog in the GUI lists every weight grouped into packs; Download the first-run set fetches everything a first training run needs with one button.
+The Models dialog in the WebUI lists every weight grouped into packs; Download the first-run set fetches everything a first training run needs with one button.
 
 | File | Path |
 |---|---|
@@ -121,7 +121,7 @@ absurdres, safe, 1girl, chitanda eru, hyouka, @channel (caststation), full body,
 
 ## 5. Preprocessing
 
-To optimize training speed and VRAM, resize → VAE latent caching → text embedding caching are done in advance. The GUI's Preprocess tab runs all three with one button.
+To optimize training speed and VRAM, resize → VAE latent caching → text embedding caching are done in advance. The WebUI's Preprocess tab runs all three with one button.
 
 | Step | What it does | Output |
 |---|---|---|
@@ -139,7 +139,7 @@ PE vision feature caching (`{stem}_anima_pe.safetensors`) is an optional step ne
 
 ---
 
-## 6. Using the GUI
+## 6. Using the WebUI
 
 Edit configs, preprocess, start/monitor training, and merge LoRA — all in one window.
 
@@ -148,34 +148,34 @@ Edit configs, preprocess, start/monitor training, and merge LoRA — all in one 
 - Curation — captions, Autotag, masks, Grouping, excluding images — happens in the anime_tools panel, opened from the Preprocess tab ([§6.3](#63-curation-the-anime_tools-panel)).
 - Merge: bake a trained LoRA into the base DiT to produce a standalone ComfyUI checkpoint (base LoRA / T-LoRA only).
 
-The GUI reads `configs/gui-methods/<variant>.toml` (one clean file per variant) and calls `train.py` internally, so any GUI setup is reproducible from the CLI ([Appendix A](#appendix-a-cli-reference)).
+The WebUI reads `configs/gui-methods/<variant>.toml` (one clean file per variant) and calls `train.py` internally, so any WebUI setup is reproducible from the CLI ([Appendix A](#appendix-a-cli-reference)).
 
 ### 6.1 Form Editing and Save Behavior
 
-Training/preprocess subprocesses re-read the variant TOML from disk, so edits you don't save never reach training. The GUI handles this two ways:
+Training/preprocess subprocesses re-read the variant TOML from disk, so edits you don't save never reach training. The WebUI handles this two ways:
 
 - Change detection: editing any field (or the `+ Extra args` box) turns the `Save` button orange and marks it `Save *` — the signal that the screen and the disk differ.
 - Auto-save: if you forget and press `Train` / `Preprocess` anyway, the current form values are written to the variant file first, then the subprocess starts. (`Test` infers from the last checkpoint, so it is not auto-saved.)
 
 > To discard edits, switch to another variant and back — the file is reloaded from disk.
 
-### 6.2 Stopping Training and Closing the GUI
+### 6.2 Stopping Training and Closing the WebUI
 
-Training does not run inside the GUI window — pressing `Train` hands the job to a background training daemon that runs `train.py` as a detached process.
+Training does not run inside the WebUI window — pressing `Train` hands the job to a background training daemon that runs `train.py` as a detached process.
 
 - `Stop` cancels the current job only. The daemon stays up and moves on to the next queued job.
-- Closing the GUI does not stop training. Reopen it and it automatically re-attaches to the running job (`Re-attached to running job …`), with the progress bar and logs resuming live.
-- Exceptions: `Test` and `Preprocess` run as in-window subprocesses, so closing the GUI cancels them.
+- Closing the WebUI does not stop training. Reopen it and it automatically re-attaches to the running job (`Re-attached to running job …`), with the progress bar and logs resuming live.
+- `Test` and `Preprocess` are daemon jobs too: closing the browser does not cancel them. Stop them from the Task Monitor.
 - To shut training down completely and release the GPU, use the CLI's `make daemon-terminate` ([Appendix A](#appendix-a-cli-reference)).
 
 ### 6.3 Curation: the anime_tools panel
 
-Captioning, Autotag, position clauses, masks, Grouping and excluding images happen in the anime_tools panel, shown in the GUI's **anime_tools** tab. The panel starts the first time you open the tab and stops when you close the GUI. If it fails to start, switch to another tab and back to retry.
+Captioning, Autotag, position clauses, masks, Grouping and excluding images happen in the anime_tools panel, shown in the WebUI's **anime_tools** tab. The panel starts the first time you open the tab and stops when you close the WebUI. If it fails to start, switch to another tab and back to retry.
 
 The panel never edits the images in `image_dataset/`. It works in its own `workspace/` folder and publishes only its decisions:
 
 1. Curate in the panel.
-2. Run **Export** in the panel. The GUI sets Export to *sidecars only*: captions go to `post_image_dataset/resized/`, masks to `post_image_dataset/masks/`, and the revised master caption back next to the image in `image_dataset/`. No images are copied.
+2. Run **Export** in the panel. The WebUI sets Export to *sidecars only*: captions go to `post_image_dataset/resized/`, masks to `post_image_dataset/masks/`, and the revised master caption back next to the image in `image_dataset/`. No images are copied.
 3. Run preprocessing in the Preprocess tab. Resize skips the images you excluded, and the text cache re-encodes every caption that is newer than its cache.
 
 The Preprocess tab's status line says when the panel has edits newer than its last Export.
@@ -188,7 +188,7 @@ The Preprocess tab's status line says when the panel has edits newer than its la
 
 The config merge order is `configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI args`, and method settings win over preset settings.
 
-Start with the `tlora` variant (T-LoRA; see [§8](#8-adapter-variant-selection-guide)): in the GUI, pick `tlora` in the variant dropdown plus your Hardware preset.
+Start with the `tlora` variant (T-LoRA; see [§8](#8-adapter-variant-selection-guide)): in the WebUI, pick `tlora` in the variant dropdown plus your Hardware preset.
 
 ### 7.1 Commonly Adjusted Settings (LoRA defaults)
 
@@ -240,7 +240,7 @@ Images without a mask are trained on in full. Mask lookup details are in [`train
 
 > **🌟 Recommended**: if this is your first run or an ordinary character/style LoRA, start with `tlora` (T-LoRA).
 
-| Variant | GUI variant name | When to use |
+| Variant | WebUI variant name | When to use |
 |---|---|---|
 | T-LoRA ⭐ | `tlora` | Recommended. SVD-Down LoRA stacked with per-timestep rank masking (T-LoRA). Produces `anima_tlora.safetensors` |
 | Plain LoRA | `lora` | Simplest baseline, for comparison runs |
@@ -258,7 +258,7 @@ For per-variant options see [`docs/guidelines/training.md`](training.md) and the
 
 ## 9. Inference
 
-To sample from the adapter you just trained, press Test in the GUI — it automatically picks the most recent checkpoint in `output/ckpt/` and writes results to `output/tests/`. For batch generation and fine-grained flag control the CLI is easier ([Appendix A](#appendix-a-cli-reference)).
+To sample from the adapter you just trained, press Test in the WebUI — it automatically picks the most recent checkpoint in `output/ckpt/` and writes results to `output/tests/`. For batch generation and fine-grained flag control the CLI is easier ([Appendix A](#appendix-a-cli-reference)).
 
 Commonly used options:
 
@@ -286,7 +286,7 @@ ComfyUI core supports the Anima base DiT natively (load it with `UNETLoader` / `
 
 Copy the `.safetensors` from `output/ckpt/` into `ComfyUI/models/loras/` and use ComfyUI's stock LoraLoader node.
 
-For a cleaner standalone checkpoint, bake it into the base DiT from the GUI's Merge tab (or `make merge`, [Appendix A](#appendix-a-cli-reference)). The resulting `*_merged.safetensors` loads as a standalone model in `UNETLoader`.
+For a cleaner standalone checkpoint, bake it into the base DiT from the WebUI's Merge tab (or `make merge`, [Appendix A](#appendix-a-cli-reference)). The resulting `*_merged.safetensors` loads as a standalone model in `UNETLoader`.
 
 ### 10.2 HydraLoRA / Postfix
 
@@ -312,14 +312,14 @@ Updating never touches `image_dataset/`, `post_image_dataset/`, `output/`, or `m
 
 ## Appendix A. CLI Reference
 
-Everything the GUI does is also available from the CLI. `make <target>` and `python tasks.py <target>` are equivalent, and since the one-line install does not install `make`, use `python tasks.py` if `make` is missing (or `winget install ezwinports.make`).
+Everything the WebUI does is also available from the CLI. `make <target>` and `python tasks.py <target>` are equivalent, and since the one-line install does not install `make`, use `python tasks.py` if `make` is missing (or `winget install ezwinports.make`).
 
 > Getting `ModuleNotFoundError`? Prefix commands with `uv run` or activate the venv — see [Appendix B](#appendix-b-manual-install-uv--git).
 
 Model download
 
 ```bash
-hf auth login                # Same token cache as the GUI sign-in
+hf auth login                # Same token cache as the WebUI sign-in
 make download-models         # First-run set: DiT + text encoder + VAE + PE-Spatial + CJK vocab pack + tagger + tag DB
 make download-list           # What is installed and what is missing, grouped by pack (offline, no network)
 make download-anima          # Retry pieces individually if a download breaks
@@ -344,7 +344,7 @@ make curate-group            # Group similar images → workspace/groups/groups.
 Training
 
 ```bash
-make lora-gui GUI_PRESETS=tlora                  # Recommended combo (same per-variant files as the GUI)
+make lora-gui GUI_PRESETS=tlora                  # Recommended combo (same per-variant files as the WebUI)
 PRESET=low_vram make lora-gui GUI_PRESETS=tlora  # 8–12 GB VRAM
 make lora-gui GUI_PRESETS=lora                   # Plain LoRA
 make lora-gui GUI_PRESETS=hydralora              # MoE multi-head
@@ -388,13 +388,13 @@ python inference.py \
     --save_path output/tests
 ```
 
-Merge · GUI · update
+Merge · WebUI · update
 
 ```bash
 make merge ADAPTER_DIR=output/ckpt                 # Bake the latest weights into the base DiT
 make merge ADAPTER_DIR=output/ckpt MULTIPLIER=0.8  # Adjust strength
-make gui                                           # Launch the GUI
-make gui-shortcut                                  # Create a Windows desktop shortcut
+python -m webui                                           # Launch the WebUI
+pythonw -m scripts.tray                                  # Windows tray controller
 make update                                        # = python tasks.py update
 ```
 
@@ -463,7 +463,7 @@ A kohya-ss style option in `configs/base.toml`'s `[[datasets.subsets]]`: how man
 
 - Leave it at `1`. With all images in one folder, raising it has the same effect as raising `max_train_epochs`, and every preset and method config assumes `num_repeats = 1`.
 - It only makes sense as a balancing tool when a run has multiple subsets (folders) with very different image counts (e.g. Character A with 1000 images + B with 50: set only the B subset to `num_repeats = 20`).
-- It's a dataset setting, so it is not exposed in the GUI or method files. If you really need it, edit `configs/base.toml` (or the TOML given via `--dataset_config`) directly.
+- It's a dataset setting, so it is not exposed in the WebUI or method files. If you really need it, edit `configs/base.toml` (or the TOML given via `--dataset_config`) directly.
 
 ---
 

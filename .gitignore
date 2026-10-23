@@ -15,6 +15,11 @@ output/
 !networks/calibration/channel_stats.safetensors
 !networks/calibration/channel_stats_anima40.safetensors
 !networks/calibration/cond_channel_stats.safetensors
+# MOSS-Image's (scripts/calibration/moss_channel_stats.py), same role.
+!library/moss/calibration/channel_stats.safetensors
+!library/moss/calibration/channel_mean.safetensors
+# The empty prompt's MOSS TE embedding (caption dropout's uncond); train.py re-encodes it if missing.
+!library/moss/asset/empty_prompt.safetensors
 *.ckpt
 *.pt
 .DS_Store
@@ -72,7 +77,6 @@ bench/x0_contradiction/prompts/
 .pytest_tmp/
 .pytest_tmp_base/
 /.impeccable
-gui/gui_settings.json
 near_twins_temp.toml
 sincos_decensored/
 # ResShift SR sidecar (finished — lives under project/finished/sr/, whose own
@@ -92,7 +96,7 @@ project/sigma_lowres/bench/probe1280_cache
 # checkout). Anchored: a bare `workspace/` also swallowed the
 # library/curation_compat/workspace/ package, which is tracked source.
 /workspace/
-# anime_tools panel settings (seeded by the GUI's anime_tools tab)
+# anime_tools panel settings (seeded by the WebUI's anime_tools panel)
 .anime_tools_gui.json
 
 # Path rules for a subdirectory go in a .gitignore inside it, not here: ripgrep
@@ -102,11 +106,10 @@ project/sigma_lowres/bench/probe1280_cache
 # project/finished/{sr,cjk_aware_anima,cjk_aware_anima_dit,…/datasets}.
 
 # Font binaries (CJK lines fetch their own; on main their per-dir ignores are absent).
-# The GUI ships Pretendard.
+# The WebUI ships its own web fonts.
 *.ttf
 *.otf
 *.ttc
-!gui/fonts/*.ttf
 
 # ocr_reader gate images (labels stay tracked in project/finished/ocr_reader/assets/)
 project/finished/ocr_reader/eval_data/

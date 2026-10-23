@@ -96,7 +96,9 @@ def test_runtime_list_reports_individual_errors_without_exposing_environment(api
     assert response.status_code == 200
     rows = response.json()["runtimes"]
     assert [row["name"] for row in rows] == ["default", "curation", "v100"]
-    assert rows[0]["available"] and rows[0]["python"] == "/registered/python"
+    assert rows[0]["available"] and rows[0]["python"] == str(
+            Path("/registered/python")
+        )
     assert not rows[2]["available"] and "not registered" in rows[2]["error"]
     assert "PRIVATE_VALUE" not in response.text and "not-for-browser" not in response.text
 

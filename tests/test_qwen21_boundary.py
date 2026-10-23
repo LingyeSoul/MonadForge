@@ -88,7 +88,7 @@ def test_qwen_configuration_and_web_forms_do_not_import_torch():
     subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True)
 
 
-def test_gui_is_torch_free():
-    code = "import sys, gui.qwen21.app; sys.exit('torch' in sys.modules)"
+def test_webui_is_torch_free():
+    code = "import sys, webui.server; sys.exit('torch' in sys.modules)"
     result = subprocess.run([sys.executable, "-c", code], cwd=ROOT)
-    assert result.returncode == 0, "gui.qwen21.app imports torch"
+    assert result.returncode == 0, "webui.server imports torch"

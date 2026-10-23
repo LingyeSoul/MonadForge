@@ -192,7 +192,7 @@ method / CLI still override):
 - `mask_dir` applies to every dataset subset that doesn't set its own
   (`--mask_dir` overrides it), and only if the directory exists — otherwise
   training falls back to the legacy `masks/{merged,sam}` lookup. The same key
-  drives `make mask` / `make mask-clean`, `make preprocess-reconcile`, the GUI
+  drives `make mask` / `make mask-clean`, `make preprocess-reconcile`, the WebUI
   mask counter and overlay, and the turbo distill loop.
 
 ---

@@ -22,7 +22,7 @@ tables for both commands below.
 | `prep.py` | Phase 1 (`T5("")` uncond sidecar) + Phase 2 (teacher-synthesized clean latents) |
 | `synth.py` | Phase 2 teacher-driven synthesis |
 | `distill.py` | The training loop — student (uncond crossattn + pooled inject) vs frozen teacher, MSE |
-| `config.py` | argparser → frozen dataclass (CLI-first, no TOML layer; the template `scripts/distill_cjk/` was cloned from) |
+| `config.py` | argparser → frozen dataclass (CLI-first, no TOML layer; the template `_archive/` was cloned from) |
 | `teacher_cache.py` | Train + val teacher-prediction caches (K pre-sampled σ bins per sample) |
 | `validation.py` | Fixed-σ teacher↔student MSE pass |
 

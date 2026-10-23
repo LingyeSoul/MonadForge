@@ -1,8 +1,8 @@
 # MOSS-Image LoRA 指南书
 
-在 GUI 中为 MOSS-Image 训练和测试 LoRA 的指南。用 `make gui` 打开，把顶栏的 **模型** 下拉框切换到 **MOSS-Image** 即可（`make gui-moss` 会在独立窗口中打开同一个面板）。GUI 语言为中文时面板显示中文，其他语言时显示英文。下文的界面名称按中文面板书写，括号中是字段名；面板未翻译的字段直接显示字段名。
+在 WebUI 中为 MOSS-Image 训练和测试 LoRA 的指南。用 `python -m webui` 打开，把顶栏的 **模型** 下拉框切换到 **MOSS-Image** 即可（`python -m webui` 会在独立窗口中打开同一个面板）。WebUI 语言为中文时面板显示中文，其他语言时显示英文。下文的界面名称按中文面板书写，括号中是字段名；面板未翻译的字段直接显示字段名。
 
-MOSS 线目前处于 **alpha** 阶段：迄今只实测过一次真实风格训练（30 张图的画师数据集），参数和默认值仍可能变化。下文所有数字都来自这次训练以及在 16 GB RTX 5070 Ti 上的基准测试。
+MOSS 线目前处于 **alpha** 阶段：迄今只有一个风格数据集（同一画师的 30 张图），并在其上做了大量 A/B，参数和默认值仍可能变化。下文的数字来自这些 A/B 以及在 16 GB RTX 5070 Ti 上的基准测试。
 
 ---
 
@@ -28,7 +28,7 @@ MOSS 线目前处于 **alpha** 阶段：迄今只实测过一次真实风格训�
 | 扩散模型 | Anima DiT | 5B single-stream DiT（42 个块） |
 | 文本编码器 | Qwen3 0.6B | Qwen3.5-9B |
 | VAE | QwenImage VAE | FLUX.2 VAE |
-| 缓存 | `post_image_dataset/lora/` | `output/moss/cache/` |
+| 缓存 | `post_image_dataset/lora/` | `post_image_dataset/moss/` |
 | LoRA | `output/ckpt/` | `output/ckpt_moss/` |
 | 设置 | variant TOML + Hardware 预设 | 面板中的字段 |
 
@@ -44,7 +44,7 @@ MOSS 线目前处于 **alpha** 阶段：迄今只实测过一次真实风格训�
 | `moss-base` | DiT、文本编码器、VAE、分词器 | 约 27 GB |
 | `moss-sft`（可选） | 仅 SFT 的 DiT，文本编码器和 VAE 复用 Base 的 | 约 10 GB |
 
-在 GUI 的「下载模型」窗口中下载，或运行：
+在 WebUI 的「下载模型」窗口中下载，或运行：
 
 ```bash
 make download-model ARGS=moss-base
@@ -59,7 +59,7 @@ make download-model ARGS=moss-sft
 
 ## 3. 预处理、训练、测试
 
-面板有 **预处理** 和 **训练** 两个标签页，**测试** 区域位于训练页底部。不常用的字段折叠在 **高级** 中。每个按钮都会向训练守护进程提交一个任务：把模型下拉框切回 Anima 或关闭 GUI，任务都会继续运行；重新打开时会自动重新连接（「已重新连接到正在运行的任务 …」）；**停止** 用于取消任务。
+面板有 **预处理** 和 **训练** 两个标签页，**测试** 区域位于训练页底部。不常用的字段折叠在 **高级** 中。每个按钮都会向训练守护进程提交一个任务：把模型下拉框切回 Anima 或关闭 WebUI，任务都会继续运行；重新打开时会自动重新连接（「已重新连接到正在运行的任务 …」）；**停止** 用于取消任务。
 
 ### 3.1 数据集与标注
 
@@ -70,7 +70,7 @@ make download-model ARGS=moss-sft
 - **训练和提示词使用同一格式**：`caption_format`（预处理）与 `prompt_format`（测试）必须一致——都用 `layout_json`，或普通标注都用 `text`。无论哪种，提示词都按 Anima 标签格式输入，`layout_json` 会自动转换。
 - **触发词就是标注中原样出现的画师标签**，例如 `@channel (caststation)`。在提示词中按同样的写法使用。
 - 自然语言提示词经过 `layout_json` 后作为一整段 caption 字符串传入，效果与纯文本提示词相同。
-- 在 ComfyUI 中，**Anima Caption → MOSS Layout JSON** 节点（Anima Tagger 包）会在文本编码器前做同样的转换。
+- 在 ComfyUI 中，**Anima Caption → MOSS Layout JSON** 节点（[MOSS Toolkit](https://github.com/sorryhyun/ComfyUI-MOSS-Toolkit) 包）会在文本编码器前做同样的转换。
 
 ### 3.2 预处理
 
@@ -79,7 +79,7 @@ make download-model ARGS=moss-sft
 | 字段 | 默认值 | 作用 |
 |---|---|---|
 | 图片文件夹（`src`） | `post_image_dataset/resized` | 图片 + 标注文件夹 |
-| 缓存文件夹（`out`） | `output/moss/cache` | 缓存文件夹：每张图片两个文件，平铺存放 |
+| 缓存文件夹（`out`） | `post_image_dataset/moss` | 缓存文件夹：每张图片两个文件，平铺存放 |
 | 分辨率（`resolution`） | `1024` | 像素面积上限：按原始比例最多约 1024² 像素，两边均为 16 的倍数，不放大 |
 | `caption_format` | `layout_json` | `layout_json` 或 `text`（§3.1） |
 
@@ -89,11 +89,11 @@ make download-model ARGS=moss-sft
 
 | 字段 | 默认值 | 作用 |
 |---|---|---|
-| 缓存文件夹（`cache`） | `output/moss/cache` | 预处理的输出 |
+| 缓存文件夹（`cache`） | `post_image_dataset/moss` | 预处理的输出 |
 | 输出（`output`） | `output/ckpt_moss/moss_lora.safetensors` | LoRA 路径；同目录下写入 `.json` 运行报告（逐步 loss） |
 | 模型（`model`） | `base` | 在哪个 DiT 上训练 |
 | 轮数（`epochs`） | `8` | 遍历缓存的次数（每步一张图） |
-| 每 N 轮保存（`save_every_epochs`） | `0` | 每 N 轮额外保存为 `<name>_e10.safetensors` 等 |
+| 每 N 轮保存（`save_every_epochs`） | `0` | 每 N 轮额外保存到最终文件旁的 `<name>/<name>_e10.safetensors` 等（最后一轮即最终文件本身） |
 
 秩、alpha、学习率和适配器类型见 §4。**开始训练** 读取 缓存文件夹（`cache`）；**预处理后训练** 先运行预处理，再把 `cache` 指向其输出文件夹并开始训练。
 
@@ -103,26 +103,27 @@ make download-model ARGS=moss-sft
 
 - `lora` 留空 = 训练页的 输出（`output`）。要测试其他文件（例如 `_e10` 检查点），在这里指定。
 - 模型（`model`）设为 `sft` 即可在 SFT 上测试 Base LoRA。
-- 输出：`output/moss/test/<日期-时间>/lora/` 和 `…/base/`，各带一个 `manifest.json`。每次测试新建一个文件夹，之前的结果会保留。
+- 输出：`output/tests/<日期-时间>/lora/` 和 `…/base/`，各带一个 `manifest.json`。每次测试新建一个文件夹，之前的结果会保留。
 
 ---
 
 ## 4. 推荐设置
 
-实测的训练：同一画师（`@channel (caststation)`）的 30 张图，Base，LoRA 秩 16，alpha 16，学习率 1e-4（此前的默认值），`weight_svd`，20 轮 = 600 步，约 18–21 分钟。在尝试过的各种设置中，它保留的画师特征最多，且没有泄漏。当前默认值（秩 32、alpha 128、学习率 2e-5）来自之后的对比，见下文。
+对比在同一画师（`@channel (caststation)`）的 30 张图上进行，Base，`weight_svd`，20 轮 = 600 步（约 18–21 分钟）。
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | 适配器（`algo`） | `lora` | `lokr` / `loha`：§4.1 |
 | 秩（`rank`） | `32` | 秩 16 时参数量 37.2 M（此前的默认值） |
 | `alpha` | `lora` 为 `128`（秩 32 时缩放 4）；`lokr` / `loha` 为 = 秩 | 缩放 = alpha / 秩 |
-| 学习率（`lr`） | `2e-5` | AdamW，5 % 线性预热 |
+| 学习率（`lr`） | `5e-5` | AdamW，5 % 线性预热 |
+| `channel_scaling_alpha` | `0.5` | 仅 `lora`；`0` 表示关闭 |
+| `dc_isolate` | 开启 | 仅 `lora`；为输入的恒定偏移单独分配一行 LoRA 秩 |
 | down 初始化（`down_init`） | `weight_svd` | `weight_svd` 或 `kaiming` |
 | 轮数（`epochs`） | `8` | 实测训练用 20 |
-| 标注丢弃率（`caption_dropout`） | `0` | 实测训练用 0 |
+| `plain_caption_rate` | `0.2` | 仅 `layout_json` 缓存：用普通 Anima 标注而非 layout JSON 训练的步数占比 |
 
-- **alpha 与学习率**：在 AdamW 下，提高缩放等同于把 LoRA up 矩阵的学习率提高同样的倍数。秩 16、alpha 90（缩放 5.6）、学习率 1e-4 时，up 矩阵相当于约 5.6e-4。这一组的风格与默认设置相同，但开始复制数据集的签名：一张样图上出现了画师的水印和账号名。alpha 90、学习率 5e-5 的迁移更弱、不完整。该对比中 alpha = 秩、学习率 1e-4 排名第一，在下面的后续对比之前一直是默认值。
-- **当前默认值（秩 32，alpha 128，学习率 2e-5）**：在 caststation 数据集上（20 轮，`weight_svd`，layout_json），注入画师标签后，两条复杂的画廊提示词（十人群像、4:1 横幅）表现不同。秩 32 / alpha 128、学习率 1e-4 把风格推得很重（白色背景、平涂的浅色填充），却丢了提示词细节（拿包的角色错了，缺少玩偶）。学习率 2e-5 时细节保住了（拿包的角色正确，玩偶在），风格偏移较温和，被判定为“好得多”，因此成为默认值。在 AdamW 下，缩放 4、学习率 2e-5 的有效学习率为：up 矩阵 8e-5，down 矩阵 2e-5。
+- **学习率、通道缩放、DC 隔离**：FFN 输入处有一个输入通道比其余通道强得多；通道缩放和 `dc_isolate` 避免 LoRA 通过它把更新浪费在全局平移上（起始时输出不变，文件是普通 LoRA）。在学习率 5e-5 下，这两者做到了干净、贴合提示词，风格强度与学习率 1e-4 相当。此前的默认值以及每次改动背后的对比见 `docs/moss/channel_scaling.md`。
 - **down 初始化**：`weight_svd` 用基础权重的前几个奇异向量初始化 LoRA 的 down 矩阵，`kaiming` 是随机初始化。目测 `weight_svd` 更好地保留了画师风格。两种初始化在同一种子下得到不同的样图，差异约等于换一个种子。
 - **轮数**：20 轮训练中，第 10 轮的结果更松散、更多样；第 20 轮更干净、更统一，但略微偏向正面居中的半身构图。设置 每 N 轮保存（`save_every_epochs`）即可在一次训练中比较两者。
 - **sigma_\***（高级）：默认值是 MOSS 最终预训练阶段的噪声分布。Anima 的分布（`sigma_mu 0`、`sigma_s 1`、`sigma_cutoff 1.0`、`sigma_uniform 0`）在所有设置中迁移最弱。
@@ -173,6 +174,8 @@ make download-model ARGS=moss-sft
 | 采样器（`sampler`） | `er_sde` | `er_sde` 或 `euler` |
 | 宽度 / 高度（`width` / `height`） | `1024` | 16 的倍数 |
 | 反向提示词（`negative_prompt`） | 空 | 管线默认值 |
+| `dave` | 空 | `auto` = DAVE：同一提示词在不同种子下变化更多（构图、姿势、布局），代价是手部略松；见 `docs/moss/dave.md` |
+| `dave_strength` | `0.3` | DAVE 去除的程度；`dave_tau`（高级，`0.10`）= 其生效的前期步数占比 |
 
 - **er_sde 与 euler**：`euler` 是参考管线的采样器。`er_sde` 耗时相同，线条更锐利、细节更密；加载 LoRA 时手部也更干净。但它会偏离部分提示词细节（夕阳光、发色、"sitting on a bench"），也会损失一点数据集的画风。两者在同一种子下生成不同的图，所以 LoRA 与基础模型的比较要在同一采样器内进行。
 - **Spectrum**（复选框）：大部分步数预测模型输出，而不是运行全部 42 个块。50 步、默认 `spectrum_flex_window 0.5`（高级）时快 2.6 倍，多用 0.85 GiB 显存，在网格尺寸下与完整 50 步难以区分。`0.25` 为 2.2 倍，更保守；`1.0` 为 3.1 倍，但会丢失细节。
@@ -184,6 +187,8 @@ make download-model ARGS=moss-sft
 | 普通，编译 | 52 秒 |
 | Spectrum，编译 | 20 秒 |
 
+- **ComfyUI**：MOSS LoRA 通过 ComfyUI 的 LoRA 加载器加载到由 `moss-image` 节点得到的模型上（2026-10-17 之前保存的文件无法加载）。**KSampler (Spectrum for MOSS)**（Spectrum 节点包）带有这些采样默认值和 Spectrum，`ComfyUI-Anima-DAVE` 0.2.0 及以上版本可在 MOSS 上运行 DAVE。
+
 **比较方法**：测试按钮本身就会用同一种子生成加载与不加载 LoRA 的两张图。比较两个 LoRA 或不同轮数时，固定提示词、种子、采样器和 compile 设置，只改 `lora`。
 
 ---
@@ -194,7 +199,7 @@ make download-model ARGS=moss-sft
 |---|---|
 | 训练时显存不足 | 基础：`blocks_to_swap 24`；再不行到高级调 `activation_memory_budget 0.1`；或运行 `tune_swap.py`。LoKr/LoHa 需要 24 / 0.1。梯度检查点开启 + `blocks_to_swap 0` 是不用 swap 也能放下的较慢方案 |
 | 风格太弱 | 增加轮数（实测训练用 20）。确认提示词中的画师标签与标注写法一致，`prompt_format` 与 `caption_format` 一致 |
-| 风格太强、出现数据集的签名或水印、所有图构图相同 | 测试更早的 `_e<N>` 检查点，或降低 LoRA 强度（`lora_multiplier`）。开始复制签名的正是提高了有效学习率的那一组（当前默认学习率为 2e-5） |
+| 风格太强、出现数据集的签名或水印、所有图构图相同 | 测试更早的 `_e<N>` 检查点，或降低 LoRA 强度（`lora_multiplier`）。开始复制签名的正是提高了有效学习率的那一组；可尝试 `lr 2e-5` |
 | 数据集的服装或颜色泄漏到其他角色 | 使用 `caption_format layout_json`（默认值，泄漏比普通标签少）。LoHa 改回 LoRA 或 LoKr |
 | 更改了 `caption_format` | 重新运行预处理：文本缓存会重新编码，潜变量复用。状态栏的计数不会反映格式变化。把 `prompt_format` 改成一致后重新训练 |
 | `layout_json needs the danbooru tag CSV` | `make download-model ARGS=danbooru_tags` |
@@ -204,21 +209,21 @@ make download-model ARGS=moss-sft
 
 ## 附录. CLI
 
-与 GUI 提交的任务相同，也可以直接通过守护进程运行。各脚本的 `--help` 列出全部参数。 `train.py --config configs/moss/lora.toml` 可从 TOML 文件读取参数（内含默认值，可复制后作为配方保存）；命令行直接给出的参数优先。
+与 WebUI 提交的任务相同，也可以直接通过守护进程运行。各脚本的 `--help` 列出全部参数。 `train.py --config configs/moss/lora.toml` 可从 TOML 文件读取参数（内含默认值，可复制后作为配方保存）；命令行直接给出的参数优先。
 
 ```bash
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'output/moss/cache/<set>'"
-make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/cache.py --src 'post_image_dataset/resized/<set>' --out 'post_image_dataset/moss/<set>'"
+make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/train.py --config configs/moss/lora.toml"
 make daemon-run ARGS="--stall-timeout 900 scripts/moss/generate.py --lora output/ckpt_moss/moss_lora.safetensors --spectrum"
-make daemon-run ARGS="scripts/moss/tune_swap.py --cache output/moss/cache/<set>"
+make daemon-run ARGS="scripts/moss/tune_swap.py --cache post_image_dataset/moss/<set>"
 ```
 
 LoKr / LoHa：
 
 ```bash
-make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
-make daemon-run ARGS="scripts/moss/train.py --cache 'output/moss/cache/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
+make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo lokr --rank 100000 --factor 8 --blocks_to_swap 24 --activation_memory_budget 0.1"
+make daemon-run ARGS="scripts/moss/train.py --cache 'post_image_dataset/moss/<set>' --epochs 20 --algo loha --rank 16 --lr 5e-5 --blocks_to_swap 24 --activation_memory_budget 0.1"
 ```
 
-更多实测数据：[`docs/experimental/moss_lora.md`](../experimental/moss_lora.md)。
+更多实测数据：[`docs/moss/README.md`](../moss/README.md)。

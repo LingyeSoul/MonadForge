@@ -31,13 +31,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
@@ -146,8 +144,8 @@ def main() -> None:
     # so caption_indices() keeps ONLY general tags: character/copyright/count/artist
     # (separate categories) and rating/metadata/deprecated all drop out. Same
     # masking the readback primitive uses for the "general_only" set.
-    from anime_tools.tagger.tagger import AnimaTagger
     from anime_tools.tagger.readback import TagReadback
+    from anime_tools.tagger.tagger import AnimaTagger
 
     rb_gen = TagReadback(
         AnimaTagger(args.model_dir, device="cpu"), content_categories=("general",)

@@ -46,6 +46,8 @@ _WEBUI_COMMAND_NAMES = frozenset(
         "preprocess-cond-resize",
         "preprocess-cond-vae",
         "easycontrol-preprocess",
+        "i2i-stage",
+        "i2i-preprocess",
         "mask",
         "mask-clean",
         "merge",
