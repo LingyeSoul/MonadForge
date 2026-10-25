@@ -1,3 +1,5 @@
+<h1 align="center">本仓库不再维护，请使用继任 [MonadForge-Kohaku](https://github.com/LingyeSoul/MonadForge-Kohaku)</h1>
+
 <h1 align="center">太初玄鼎 · MonadForge</h1>
 
 <p align="center">
